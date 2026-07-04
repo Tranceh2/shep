@@ -50,6 +50,13 @@ func TestInit_WritesPathAgnosticExample(t *testing.T) {
 	if err := toml.Unmarshal(data, &struct{}{}); err != nil {
 		t.Errorf("init example is not valid TOML: %v", err)
 	}
+	// The example must document the selector field and its valid values so
+	// users discover the picker-routing knob from the generated config.
+	for _, want := range []string{"selector", "builtin", "fzf", "auto"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("init example missing %q in selector docs", want)
+		}
+	}
 }
 
 // TestInit_ConfigOverride honours --config to choose the destination path,

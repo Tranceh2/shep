@@ -49,13 +49,30 @@ exits 1.`,
 	return cmd
 }
 
-// selectorFactory builds the cascade for `shep open`. The default is
-// [Direct, Fzf, Tui]; tests override via the selectorBuilder field.
+// selectorFactory builds the cascade for `shep open` honouring
+// [general].selector. Tests override the cascade via the selectorBuilder
+// field. Direct always runs first regardless of selector value.
 func (a *App) selectorFactory() *selector.Cascade {
 	if a.selectorBuilder != nil {
 		return a.selectorBuilder()
 	}
-	return selector.New(selector.Direct{}, selector.NewFzf(), &tuiSelector{})
+	return cascadeFor(a.Config().General.Selector)
+}
+
+// cascadeFor builds the selector cascade for a [general].selector value.
+// builtin skips fzf and uses the Bubble Tea TUI; fzf and auto include fzf
+// (Fzf.Select no-ops when the binary is absent, so both fall back to the TUI).
+// Direct is always first so exact / single matches short-circuit. An unknown
+// or empty value degrades to the builtin shape rather than blocking open.
+func cascadeFor(sel string) *selector.Cascade {
+	direct := selector.Direct{}
+	tui := &tuiSelector{}
+	switch sel {
+	case config.SelectorFzf, config.SelectorAuto:
+		return selector.New(direct, selector.NewFzf(), tui)
+	default: // SelectorBuiltin, empty, or unknown
+		return selector.New(direct, tui)
+	}
 }
 
 // tuiSelector is the universal interactive fallback: it runs the embedded

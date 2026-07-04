@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -117,6 +118,58 @@ func runOpen(t *testing.T, cfg *config.Config, driver *openDriver, cascade *sele
 }
 
 // --- tests ---
+
+// TestCascadeFor_RoutesBySelector (PL-9) verifies the selector cascade is
+// built from [general].selector: builtin skips fzf, fzf and auto include
+// fzf, and an unknown/empty value falls back to the builtin shape. Direct
+// always runs first regardless of selector value.
+func TestCascadeFor_RoutesBySelector(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		sel  string
+		want []string
+	}{
+		{name: "builtin skips fzf", sel: config.SelectorBuiltin, want: []string{"direct", "tui"}},
+		{name: "fzf includes fzf", sel: config.SelectorFzf, want: []string{"direct", "fzf", "tui"}},
+		{name: "auto includes fzf", sel: config.SelectorAuto, want: []string{"direct", "fzf", "tui"}},
+		{name: "empty defaults to builtin", sel: "", want: []string{"direct", "tui"}},
+		{name: "unknown treated as builtin", sel: "nope", want: []string{"direct", "tui"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := cascadeFor(tc.sel).Names()
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("selector %q: cascade names got %v want %v", tc.sel, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestOpen_DirectMatchBypassesSelector (PL-9) confirms a single exact match
+// auto-opens via Direct without invoking the interactive cascade, for every
+// selector value. The sentinel cascade raises a hard error if Select is ever
+// called, so a non-nil error proves the interactive picker leaked through.
+func TestOpen_DirectMatchBypassesSelector(t *testing.T) {
+	t.Parallel()
+	for _, sel := range []string{config.SelectorBuiltin, config.SelectorFzf, config.SelectorAuto} {
+		cfg, root := seedCfg(t, "foo")
+		cfg.General.Selector = sel
+		foo := resolved(filepath.Join(root, "foo"))
+		driver := &openDriver{detect: true, workspaceID: "wA"}
+		// Sentinel: errors if Select runs, proving Direct short-circuits.
+		sentinel := fakeSelector{err: errors.New("interactive selector must not run on a single match")}
+		c := selector.New(sentinel)
+		_, _, err := runOpen(t, cfg, driver, c, "foo")
+		if err != nil {
+			t.Fatalf("selector %q: open: %v", sel, err)
+		}
+		if driver.lastCand.NormalizedPath != foo {
+			t.Errorf("selector %q: driver got %q want %q", sel, driver.lastCand.NormalizedPath, foo)
+		}
+	}
+}
 
 // TestOpen_ExactQueryInvokesDriver (S2): a single exact match calls
 // FocusOrCreate with the resolved candidate.

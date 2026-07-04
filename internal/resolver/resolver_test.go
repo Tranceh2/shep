@@ -274,3 +274,83 @@ func (fakeErrDriver) FocusOrCreate(context.Context, source.Candidate) (source.Fo
 func (fakeErrDriver) RunStartup(context.Context, string, string) error {
 	return errors.New("fakeErrDriver does not implement RunStartup")
 }
+
+// fakeWorkspacesDriver is a HerdrDriver that returns a fixed workspace set, used
+// by the priority-dedup contract test (CD-7 / PL-9).
+type fakeWorkspacesDriver struct {
+	workspaces []source.Workspace
+}
+
+func (fakeWorkspacesDriver) Detect(context.Context) bool { return true }
+func (d fakeWorkspacesDriver) ListWorkspaces(context.Context) ([]source.Workspace, error) {
+	return d.workspaces, nil
+}
+func (fakeWorkspacesDriver) FocusOrCreate(context.Context, source.Candidate) (source.FocusResult, error) {
+	return source.FocusResult{}, errors.New("fakeWorkspacesDriver does not implement FocusOrCreate")
+}
+func (fakeWorkspacesDriver) RunStartup(context.Context, string, string) error {
+	return errors.New("fakeWorkspacesDriver does not implement RunStartup")
+}
+
+// TestDedup_PriorityOrderOwnsDuplicatePath (CD-7, PL-9) proves the provider
+// order owns duplicate paths: when two providers return the same normalised
+// path, the candidate from the highest-priority provider (earliest in
+// provider_order) survives and the lower-priority duplicate is dropped. This is
+// a contract test over the existing Registry.Collect -> Dedup pipeline; no
+// production change is expected because Enabled() honours provider_order and
+// Dedup keeps the first-seen candidate.
+func TestDedup_PriorityOrderOwnsDuplicatePath(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	foo := filepath.Join(tmp, "foo")
+	if err := os.Mkdir(foo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fooResolved, err := filepath.EvalSymlinks(foo)
+	if err != nil {
+		t.Fatalf("resolve foo: %v", err)
+	}
+	// herdr provider (fake) and the "dev" roots source both emit foo.
+	herdrCand := source.Workspace{ID: "wfoo", Label: "foo", CWD: foo}
+
+	cases := []struct {
+		name      string
+		order     []string
+		wantOwner string
+	}{
+		{name: "herdr first owns duplicate", order: []string{"herdr", "roots"}, wantOwner: "herdr"},
+		{name: "roots first owns duplicate", order: []string{"roots", "herdr"}, wantOwner: "dev"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.Defaults()
+			cfg.General.ProviderOrder = tc.order
+			cfg.Sources["dev"] = config.Source{
+				Kind: config.KindRoots, Enabled: true,
+				Options: map[string]string{"path": tmp},
+			}
+			r := source.NewRegistry(cfg, config.Probes{Herdr: true},
+				fakeWorkspacesDriver{workspaces: []source.Workspace{herdrCand}})
+			raw, err := r.Collect(context.Background())
+			if err != nil {
+				t.Fatalf("collect: %v", err)
+			}
+			out := Dedup(raw)
+			var survivor source.Candidate
+			foos := 0
+			for _, c := range out {
+				if c.NormalizedPath == fooResolved {
+					foos++
+					survivor = c
+				}
+			}
+			if foos != 1 {
+				t.Fatalf("expected foo once after dedup, got %d: %+v", foos, out)
+			}
+			if survivor.Source != tc.wantOwner {
+				t.Errorf("dedup owner: source=%q want %q (order=%v)", survivor.Source, tc.wantOwner, tc.order)
+			}
+		})
+	}
+}

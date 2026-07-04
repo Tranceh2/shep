@@ -34,6 +34,30 @@ func TestDirect_MultipleCandidates(t *testing.T) {
 	}
 }
 
+// TestCascade_Names exposes the cascade shape so callers can assert routing
+// without invoking real binaries or a TUI. The returned slice is a defensive
+// copy so mutating it cannot reorder a live cascade.
+func TestCascade_Names(t *testing.T) {
+	fzf := withLookPathAndRunner(func(string) (string, error) { return "/usr/bin/fzf", nil }, stubRunner{})
+	c := New(Direct{}, fzf)
+	got := c.Names()
+	want := []string{"direct", "fzf"}
+	if len(got) != len(want) {
+		t.Fatalf("names len: got %d want %d (%v)", len(got), len(want), got)
+	}
+	for i, n := range want {
+		if got[i] != n {
+			t.Errorf("names[%d]: got %q want %q", i, got[i], n)
+		}
+	}
+	// Defensive copy: mutating the returned slice must not affect the cascade.
+	got[0] = "tampered"
+	again := c.Names()
+	if again[0] != "direct" {
+		t.Errorf("Names returned shared backing array; mutating it changed the cascade: got %q", again[0])
+	}
+}
+
 // Cascade runs selectors in order and returns the first successful pick.
 func TestCascade_FirstApplicableWins(t *testing.T) {
 	cands := []source.Candidate{mkCand("/x/foo", "foo"), mkCand("/x/bar", "bar")}

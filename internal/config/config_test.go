@@ -178,6 +178,83 @@ func TestProbe(t *testing.T) {
 	}
 }
 
+// TestDefaults_SelectorIsBuiltin (CD-7) confirms Defaults() ships the builtin
+// selector so commands that read Defaults() (no file loaded) route to the
+// Bubble Tea TUI instead of relying on a configured file.
+func TestDefaults_SelectorIsBuiltin(t *testing.T) {
+	t.Parallel()
+	if got, want := Defaults().General.Selector, SelectorBuiltin; got != want {
+		t.Errorf("defaults selector: got %q want %q", got, want)
+	}
+}
+
+// TestLoad_SelectorDefaultsToBuiltin (CD-7) confirms an absent selector field
+// resolves to the builtin default at load time.
+func TestLoad_SelectorDefaultsToBuiltin(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(path, []byte("[general]\nprovider_order = [\"cwd\"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got, want := cfg.General.Selector, SelectorBuiltin; got != want {
+		t.Errorf("default selector: got %q want %q", got, want)
+	}
+}
+
+// TestLoad_SelectorTable (CD-7) covers valid values accepted, empty->default,
+// and the descriptive rejection of an unknown value listing valid options.
+func TestLoad_SelectorTable(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		doc     string
+		want    string
+		wantErr bool
+		errSub  string
+	}{
+		{name: "builtin accepted", doc: "[general]\nselector = \"builtin\"\n", want: SelectorBuiltin},
+		{name: "fzf accepted", doc: "[general]\nselector = \"fzf\"\n", want: SelectorFzf},
+		{name: "auto accepted", doc: "[general]\nselector = \"auto\"\n", want: SelectorAuto},
+		{name: "empty defaults to builtin", doc: "[general]\nselector = \"\"\n", want: SelectorBuiltin},
+		{name: "invalid rejected", doc: "[general]\nselector = \"invalid\"\n", wantErr: true, errSub: "invalid"},
+		{name: "garbage value rejected", doc: "[general]\nselector = \"browser\"\n", wantErr: true, errSub: "browser"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tmp := t.TempDir()
+			path := filepath.Join(tmp, "config.toml")
+			if err := os.WriteFile(path, []byte(tc.doc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), tc.errSub) {
+					t.Errorf("error %q missing substring %q", err.Error(), tc.errSub)
+				}
+				if !strings.Contains(err.Error(), "valid:") {
+					t.Errorf("error should list valid options: %q", err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			if cfg.General.Selector != tc.want {
+				t.Errorf("selector: got %q want %q", cfg.General.Selector, tc.want)
+			}
+		})
+	}
+}
+
 // TestHerdrBinary_Default checks the empty-config default.
 func TestHerdrBinary_Default(t *testing.T) {
 	t.Parallel()

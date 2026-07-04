@@ -32,6 +32,17 @@ const (
 	KindRoots  Kind = "roots"
 )
 
+// Selector values for the [general].selector field. They pick the interactive
+// candidate picker used by `shep open` after the direct (exact/single) match.
+// SelectorBuiltin skips fzf and always uses the Bubble Tea TUI; SelectorFzf
+// prefers fzf and falls back to the TUI when the binary is missing; SelectorAuto
+// preserves the v1 cascade (fzf if present else Bubble Tea).
+const (
+	SelectorBuiltin = "builtin"
+	SelectorFzf     = "fzf"
+	SelectorAuto    = "auto"
+)
+
 // Config is the top-level shep configuration document.
 type Config struct {
 	General General           `toml:"general,omitempty"`
@@ -45,6 +56,10 @@ type General struct {
 	// ProviderOrder overrides the order in which providers are queried. When
 	// empty, the registry uses a fixed default order.
 	ProviderOrder []string `toml:"provider_order,omitempty"`
+	// Selector picks the interactive picker for `shep open` after the direct
+	// match. Valid values are builtin, fzf, auto (see the Selector* constants).
+	// Absent or empty defaults to builtin (Bubble Tea TUI).
+	Selector string `toml:"selector,omitempty"`
 }
 
 // Herdr configures how the shep<->Herdr bridge locates the binary.
@@ -107,7 +122,7 @@ func ProbesFor(cfg *Config) Probes {
 // pristine machine without leaking developer paths into the shipped defaults.
 func Defaults() *Config {
 	return &Config{
-		General: General{},
+		General: General{Selector: SelectorBuiltin},
 		Herdr:   Herdr{},
 		Sources: map[string]Source{},
 		Layouts: map[string]Layout{},
@@ -175,7 +190,22 @@ func Load(path string) (*Config, error) {
 	if cfg.Layouts == nil {
 		cfg.Layouts = map[string]Layout{}
 	}
+	if cfg.General.Selector == "" {
+		cfg.General.Selector = SelectorBuiltin
+	}
+	if !isValidSelector(cfg.General.Selector) {
+		return nil, fmt.Errorf("invalid general.selector %q (valid: builtin, fzf, auto)", cfg.General.Selector)
+	}
 	return cfg, nil
+}
+
+// isValidSelector reports whether s is one of the supported selector values.
+func isValidSelector(s string) bool {
+	switch s {
+	case SelectorBuiltin, SelectorFzf, SelectorAuto:
+		return true
+	}
+	return false
 }
 
 // HerdrBinary returns the configured herdr binary name, defaulting to "herdr".

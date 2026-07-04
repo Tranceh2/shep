@@ -13,8 +13,15 @@ func ExampleTOML() string {
 
 # [general] overrides global behaviour. provider_order is optional; leave it
 # unset to use the default order: herdr -> roots -> zoxide -> cwd.
+# selector picks the interactive picker for "shep open" after the direct
+# (exact / single-match) short-circuit. Valid values: builtin, fzf, auto.
+#   builtin -> always use the Bubble Tea TUI (skip fzf even if installed)
+#   fzf     -> prefer fzf, fall back to the Bubble Tea TUI when fzf is absent
+#   auto    -> v1 behaviour: fzf if installed, else the Bubble Tea TUI
+# Absent or empty defaults to "builtin".
 # [general]
 # provider_order = ["herdr", "zoxide", "cwd"]
+# selector = "builtin"
 
 # [herdr] locates the Herdr CLI binary. Leave binary empty to use "herdr" from
 # PATH. Set it to an absolute path only if Herdr is not on PATH.

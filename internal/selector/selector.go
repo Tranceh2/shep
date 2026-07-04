@@ -40,6 +40,17 @@ func New(selectors ...Selector) *Cascade {
 	return &Cascade{selectors: selectors}
 }
 
+// Names returns the selector names in cascade order as a defensive copy. It
+// lets tests assert the cascade shape (direct, fzf, tui...) without invoking
+// real binaries or a TUI, and without reading the private selectors slice.
+func (c Cascade) Names() []string {
+	out := make([]string, len(c.selectors))
+	for i, s := range c.selectors {
+		out[i] = s.Name()
+	}
+	return out
+}
+
 // Select runs the cascade. ok=false means no selector produced a pick.
 func (c Cascade) Select(ctx context.Context, candidates []source.Candidate, query string) (source.Candidate, bool, error) {
 	for _, s := range c.selectors {
