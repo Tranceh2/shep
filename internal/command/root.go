@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/herdr"
+	"github.com/tranceh2/shep/internal/selector"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -42,6 +43,9 @@ type App struct {
 	// herdrDriverInjected guards against PersistentPreRunE overwriting a
 	// test-injected driver.
 	herdrDriverInjected bool
+	// selectorBuilder overrides the `shep open` selector cascade for tests.
+	// nil falls back to the default [Direct, Fzf] cascade.
+	selectorBuilder func() *selector.Cascade
 }
 
 // Config returns the loaded configuration, defaulting to path-agnostic
@@ -157,17 +161,23 @@ func (a *App) rootCmd() *cobra.Command {
 		if cmd.Annotations != nil && cmd.Annotations["shep/skip-preload"] == "true" {
 			return nil
 		}
-		cfg, err := config.Load(a.configPath)
-		if err != nil {
-			return err
+		// Tests inject cfg + probes directly before Execute; honour them by
+		// loading only when nothing has been set yet. Real invocations leave
+		// a.cfg nil, so they always resolve --config / discover + probe.
+		if a.cfg == nil {
+			cfg, err := config.Load(a.configPath)
+			if err != nil {
+				return err
+			}
+			a.cfg = cfg
+			a.probes = config.ProbesFor(cfg)
 		}
-		a.cfg = cfg
-		a.probes = config.ProbesFor(cfg)
 		return nil
 	}
 
 	root.AddCommand(a.initCmd())
 	root.AddCommand(a.listCmd())
+	root.AddCommand(a.openCmd())
 
 	return root
 }
