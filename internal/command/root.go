@@ -134,6 +134,7 @@ func (a *App) rootCmd() *cobra.Command {
 	}
 
 	root.AddCommand(a.initCmd())
+	root.AddCommand(a.listCmd())
 
 	return root
 }
