@@ -4,6 +4,10 @@
 /bin/
 /dist/
 
+# Nix build outputs
+/result
+/result-*
+
 # Scratch / debug artifacts
 *.log
 *.patch
