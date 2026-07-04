@@ -12,6 +12,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"github.com/tranceh2/shep/internal/config"
 )
 
 // App wires the shep command tree and holds runtime state shared across
@@ -22,11 +23,30 @@ type App struct {
 	versionInfo versionInfo
 	// configPath is the --config override; empty means "discover".
 	configPath string
+	// cfg is the loaded configuration, populated by PersistentPreRunE. It is
+	// nil until the first command runs; subcommands must read it through the
+	// Config() accessor.
+	cfg *config.Config
+	// probes records which optional binaries are present at startup.
+	probes config.Probes
 	// out and err are the streams commands write to. They default to os.Std*
 	// but may be overridden via WithStreams for tests.
 	out io.Writer
 	err io.Writer
 }
+
+// Config returns the loaded configuration, defaulting to path-agnostic
+// Defaults when nothing has been loaded yet (e.g. commands invoked before
+// PersistentPreRunE in tests, or when config discovery itself is skipped).
+func (a *App) Config() *config.Config {
+	if a.cfg == nil {
+		return config.Defaults()
+	}
+	return a.cfg
+}
+
+// Probes returns the binary availability snapshot.
+func (a *App) Probes() config.Probes { return a.probes }
 
 // versionInfo bundles injected build metadata.
 type versionInfo struct {
@@ -96,13 +116,24 @@ func (a *App) rootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&a.configPath, "config", "",
 		"path to shep config.toml (default: discovered via os.UserConfigDir)")
 
-	// PersistentPreRunE runs before every subcommand. The config loader and
-	// binary probes are wired here once the config package exists; the
-	// skeleton keeps the hook structural so subcommands inherit a stable
-	// run hook contract from day one.
+	// PersistentPreRunE runs before every subcommand: it loads the config
+	// (from --config or the discovered path, falling back to Defaults when
+	// the file is absent) and probes optional binaries. `init` opts out via a
+	// sentinel annotation so it can write the file even when none exists.
 	root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
+		if cmd.Annotations != nil && cmd.Annotations["shep/skip-preload"] == "true" {
+			return nil
+		}
+		cfg, err := config.Load(a.configPath)
+		if err != nil {
+			return err
+		}
+		a.cfg = cfg
+		a.probes = config.ProbesFor(cfg)
 		return nil
 	}
+
+	root.AddCommand(a.initCmd())
 
 	return root
 }
