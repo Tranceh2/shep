@@ -1,7 +1,14 @@
 # Binaries
 /shep
+/shep-bin
 /bin/
 /dist/
+
+# Scratch / debug artifacts
+*.log
+*.patch
+*.orig
+*.bak
 
 # Test / coverage
 *.out

@@ -1,9 +1,10 @@
 // Package config defines the shep configuration model, discovery rules and
 // the binary probe used to gate optional source providers.
 //
-// Configuration lives at $XDG_CONFIG_HOME/shep/config.toml (resolved through
-// os.UserConfigDir so it honours XDG on Linux and Library/Application Support
-// on macOS). A missing config is not an error: callers fall back to
+// Configuration lives at $XDG_CONFIG_HOME/shep/config.toml (falling back to
+// ~/.config/shep/config.toml when XDG_CONFIG_HOME is unset), so shep uses the
+// same location across Linux and macOS. A missing config is not an error:
+// callers fall back to
 // Defaults(), which enables Herdr workspaces, zoxide (if installed) and the
 // current working directory without any hardcoded user-specific paths.
 package config
@@ -113,14 +114,34 @@ func Defaults() *Config {
 	}
 }
 
-// DiscoverPath returns the config file path resolved through the user config
-// directory. It never creates files; callers (init) are responsible for that.
+// DiscoverPath returns the config file path. It prefers the XDG base directory
+// ($XDG_CONFIG_HOME, or ~/.config when unset) on every platform so shep lives
+// alongside other XDG-style tools, including on macOS. It falls back to
+// os.UserConfigDir only when no home directory can be resolved. It never
+// creates files; callers (init) are responsible for that.
 func DiscoverPath() (string, error) {
+	if dir := configHome(); dir != "" {
+		return filepath.Join(dir, "shep", "config.toml"), nil
+	}
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve user config dir: %w", err)
 	}
 	return filepath.Join(dir, "shep", "config.toml"), nil
+}
+
+// configHome resolves the XDG config base directory: $XDG_CONFIG_HOME when set
+// to an absolute path, otherwise ~/.config. Returns "" when neither is
+// available so the caller can fall back to os.UserConfigDir.
+func configHome() string {
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); filepath.IsAbs(xdg) {
+		return xdg
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".config")
 }
 
 // Load reads and parses the config at path. When path is empty, DiscoverPath
