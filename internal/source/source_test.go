@@ -12,9 +12,9 @@ import (
 
 // fakeDriver is a controllable HerdrDriver for tests.
 type fakeDriver struct {
-	detect   bool
+	detect     bool
 	workspaces []Workspace
-	listErr  error
+	listErr    error
 }
 
 func (f fakeDriver) Detect(context.Context) bool { return f.detect }

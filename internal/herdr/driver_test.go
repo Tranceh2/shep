@@ -42,8 +42,6 @@ func (f *fakeRunner) Run(_ context.Context, name string, args ...string) ([]byte
 	return nil, errors.New("not scripted: " + key)
 }
 
-
-
 // workspaceListJSON builds a workspace list envelope with a single workspace.
 func workspaceListJSON(id, label string) []byte {
 	return []byte(`{"id":"cli:workspace:list","result":{"type":"workspace_list","workspaces":[` +

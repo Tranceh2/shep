@@ -1,0 +1,41 @@
+# shep cable for Television — https://github.com/alexpasmantier/television
+#
+# Copy this file into the cable-channels directory your Television build reads
+# (commonly ~/.config/television/cable-channels/shep.toml) and launch it with
+# `tv shep`. The cable uses `shep list --format tsv` as its source, so every
+# candidate from Herdr workspaces, zoxide, the current directory and any
+# configured roots appears in the picker. Selecting an entry opens it through
+# `shep open --path`, which focuses an existing Herdr workspace for that path
+# or creates one and falls back to printing the normalised path when Herdr is
+# unavailable.
+
+[metadata]
+name = "shep"
+description = "Browse shep project candidates and open them with Herdr"
+requirements = ["shep", "herdr"]
+
+# `shep list --format tsv` prints one "path<TAB>label" line per candidate. The
+# path is the first field and is what Television forwards to {0} below.
+[source]
+command = "shep list --format tsv"
+
+# :basic: shows the full entry string (path + label) without requiring a
+# dedicated shep preview command in v1; swap for a custom `shep preview` once
+# such a command lands.
+[preview]
+command = ":basic:"
+
+# Open the selected project: focus-or-create a Herdr workspace for its path,
+# or print the resolved absolute path when Herdr is absent (HI-5/HI-6). `mode =
+# "execute"` lets the opened workspace replace the picker process.
+[actions.open]
+description = "Open the selected project with Herdr (or print its path)"
+command = "shep open --path {0}"
+mode = "execute"
+
+[keybindings]
+enter = "actions:open"
+
+# Example roots can also be mixed in at the shep level by pointing a
+# [sources.repos] entry in shep's own config.toml at a projects directory; the
+# cable itself stays path-agnostic and safe to share across machines.

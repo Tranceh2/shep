@@ -1,9 +1,9 @@
 package config
 
 // ExampleTOML returns a commented, path-agnostic example configuration suitable
-// for `shep init` to write to disk. It DOES NOT contain any absolute user
-// paths (no /Users/<user>, no ~/Proyectos); example roots live only in
-// comments as generic placeholders the user replaces.
+// for `shep init` to write to disk. It contains no absolute user-home paths;
+// example roots live only in comments as generic placeholders the user
+// replaces.
 func ExampleTOML() string {
 	return `# shep configuration — see https://github.com/tranceh2/shep
 #

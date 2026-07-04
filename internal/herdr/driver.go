@@ -7,12 +7,12 @@
 //
 // The shapes captured against a live Herdr daemon are:
 //
-//   workspace list {"id":"cli:workspace:list","result":{"type":"workspace_list",
-//                 "workspaces":[{workspace_id,label,active_tab_id,focused,number,...}]}}
-//   pane list     {"id":"cli:pane:list","result":{"panes":[{pane_id,workspace_id,
-//                 cwd,foreground_cwd,focused,...}]}}
-//   pane current  {"id":"cli:pane:current","result":{"pane":{pane_id,workspace_id,
-//                 cwd,foreground_cwd,focused,...}}}
+//	workspace list {"id":"cli:workspace:list","result":{"type":"workspace_list",
+//	              "workspaces":[{workspace_id,label,active_tab_id,focused,number,...}]}}
+//	pane list     {"id":"cli:pane:list","result":{"panes":[{pane_id,workspace_id,
+//	              cwd,foreground_cwd,focused,...}]}}
+//	pane current  {"id":"cli:pane:current","result":{"pane":{pane_id,workspace_id,
+//	              cwd,foreground_cwd,focused,...}}}
 //
 // Workspaces do NOT carry a cwd; the driver joins workspaces to panes by
 // workspace_id to derive a representative cwd. All command execution goes
@@ -104,7 +104,7 @@ func (d *Driver) Detect(_ context.Context) bool {
 type workspaceListEnvelope struct {
 	ID     string `json:"id"`
 	Result struct {
-		Type       string        `json:"type"`
+		Type       string         `json:"type"`
 		Workspaces []rawWorkspace `json:"workspaces"`
 	} `json:"result"`
 }

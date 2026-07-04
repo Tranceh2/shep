@@ -34,7 +34,8 @@ type Cascade struct {
 	selectors []Selector
 }
 
-// New builds a Cascade from the supplied selectors (tried in order).
+// New builds a Cascade from the supplied selectors (tried in order). The
+// default cascade shep uses is DefaultCascade().
 func New(selectors ...Selector) *Cascade {
 	return &Cascade{selectors: selectors}
 }

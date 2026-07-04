@@ -1,0 +1,59 @@
+# golangci-lint v2 config for shep.
+#
+# The linters enabled here are the ones shep relies on for code review. They
+# run in CI and via `make lint`. Keep this file lean; add linters deliberately
+# rather than enabling the full suite and drowning the signal in noise.
+
+version: "2"
+
+run:
+  timeout: 3m
+  tests: true
+  allow-parallel-runners: true
+
+linters:
+  default: none
+  enable:
+    - govet
+    - errcheck
+    - staticcheck
+    - unused
+    - ineffassign
+    - revive
+
+  settings:
+    errcheck:
+      # Ignore Close on deferred writers (best-effort cleanup).
+      exclude-functions:
+        - (io.Closer).Close
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+
+  exclusions:
+    rules:
+      # teatest helpers and small test-only members may relax style rules.
+      - path: _test\.go
+        linters: [errcheck, revive]
+      # cobra root Predicates and the tui palette are data, not logic.
+      - path: internal/tui/palette\.go
+        linters: [unused]
+      # shep's convention: writes to stdout/stderr are fire-and-forget user
+      # messages; checking every fmt.Fprint return adds noise without value
+      # (matches the existing list.go style).
+      - text: "Error return value of `fmt\\."
+        linters: [errcheck]
+
+formatters:
+  default: none
+  enable:
+    - gofmt
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+output:
+  sort-results: true
+  path-prefix: ""

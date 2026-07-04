@@ -13,6 +13,7 @@ import (
 	"github.com/tranceh2/shep/internal/resolver"
 	"github.com/tranceh2/shep/internal/selector"
 	"github.com/tranceh2/shep/internal/source"
+	"github.com/tranceh2/shep/internal/tui"
 )
 
 // openCmd builds `shep open [query]`. The command resolves the query (or the
@@ -49,13 +50,27 @@ exits 1.`,
 }
 
 // selectorFactory builds the cascade for `shep open`. The default is
-// [Direct, Fzf]; the TUI selector is appended in commit "feat(tui)". Tests
-// override via the selectorBuilder field without depending on the TUI package.
+// [Direct, Fzf, Tui]; tests override via the selectorBuilder field.
 func (a *App) selectorFactory() *selector.Cascade {
 	if a.selectorBuilder != nil {
 		return a.selectorBuilder()
 	}
-	return selector.New(selector.Direct{}, selector.NewFzf())
+	return selector.New(selector.Direct{}, selector.NewFzf(), &tuiSelector{})
+}
+
+// tuiSelector is the universal interactive fallback: it runs the embedded
+// Bubble Tea picker over the candidates. When stdin is not a TTY the program
+// degrades harmlessly and the user can press esc; the cascade never blocks on
+// a permanent hang because Bubble Tea exits on esc/ctrl+c/enter.
+type tuiSelector struct{}
+
+func (tuiSelector) Name() string { return "tui" }
+
+func (tuiSelector) Select(ctx context.Context, candidates []source.Candidate, query string) (source.Candidate, bool, error) {
+	if len(candidates) == 0 {
+		return source.Candidate{}, false, nil
+	}
+	return tui.Run(ctx, candidates, query)
 }
 
 // runOpen is the pipeline so tests can call it directly against a fresh App.

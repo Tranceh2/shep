@@ -116,7 +116,7 @@ func TestFzf_PassesQueryFlag(t *testing.T) {
 
 type stubRunner struct {
 	line        string
-	err        error
+	err         error
 	captureArgs *[][]string
 }
 

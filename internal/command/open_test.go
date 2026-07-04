@@ -62,8 +62,6 @@ func (f fakeSelector) Select(context.Context, []source.Candidate, string) (sourc
 	return f.pick, f.ok, f.err
 }
 
-var probeAll = config.Probes{Herdr: true, Zoxide: true, Git: true, FD: false}
-
 // --- helpers ---
 
 // seedCfg creates a temp root with one subdir per name and returns a Config

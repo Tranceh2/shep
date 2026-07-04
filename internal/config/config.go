@@ -34,7 +34,7 @@ const (
 // Config is the top-level shep configuration document.
 type Config struct {
 	General General           `toml:"general,omitempty"`
-	Herdr   Herdr            `toml:"herdr,omitempty"`
+	Herdr   Herdr             `toml:"herdr,omitempty"`
 	Sources map[string]Source `toml:"sources,omitempty"`
 	Layouts map[string]Layout `toml:"layouts,omitempty"`
 }
@@ -56,9 +56,9 @@ type Herdr struct {
 // Source is one entry in the sources map. kind selects the provider; options
 // carry provider-specific settings (e.g. roots -> {"path": "<dir>"}).
 type Source struct {
-	Kind    Kind               `toml:"kind"`
-	Enabled bool               `toml:"enabled"`
-	Options map[string]string  `toml:"options,omitempty"`
+	Kind    Kind              `toml:"kind"`
+	Enabled bool              `toml:"enabled"`
+	Options map[string]string `toml:"options,omitempty"`
 }
 
 // Layout applies minimal startup behaviour to matching paths by glob.
