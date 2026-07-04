@@ -1,0 +1,84 @@
+# GoReleaser v2 configuration for shep.
+# Docs: https://goreleaser.com
+#
+# Local validation:
+#   goreleaser check
+#   goreleaser build --snapshot --clean --single-target
+#
+# Release (on a pushed tag v*):
+#   the .github/workflows/release.yml workflow runs `goreleaser release`.
+version: 2
+
+project_name: shep
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: shep
+    main: ./cmd/shep
+    binary: shep
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .ShortCommit }}
+
+archives:
+  - id: shep
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - LICENSE*
+      - cables/shep.toml
+
+checksum:
+  name_template: "checksums.txt"
+
+source:
+  enabled: true
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot-{{ .ShortCommit }}"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+# Homebrew tap (Cask). Requires a repository Tranceh2/homebrew-tap to exist
+# before a real `goreleaser release` runs. Cross-repo pushes need a token with
+# write access to the tap repo (HOMEBREW_TAP_GITHUB_TOKEN in the workflow).
+homebrew_casks:
+  - name: shep
+    repository:
+      owner: Tranceh2
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/tranceh2/shep"
+    description: "Herdr-first project/session launcher CLI"
+    # Helps `brew audit` since the homepage domain differs from the download
+    # (GitHub releases) domain.
+    url:
+      verified: github.com/tranceh2/shep
+    # shep is an unsigned CLI binary; strip the macOS quarantine attribute so
+    # it runs without a Gatekeeper prompt after `brew install`.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/shep"]
+          end
