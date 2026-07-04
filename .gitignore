@@ -1,0 +1,20 @@
+# Binaries
+/shep
+/bin/
+/dist/
+
+# Test / coverage
+*.out
+*.test
+coverage.txt
+coverage.html
+
+# Tooling
+.golangci.yml.tmp
+vendor/
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
