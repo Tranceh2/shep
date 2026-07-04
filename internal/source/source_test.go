@@ -21,6 +21,12 @@ func (f fakeDriver) Detect(context.Context) bool { return f.detect }
 func (f fakeDriver) ListWorkspaces(context.Context) ([]Workspace, error) {
 	return f.workspaces, f.listErr
 }
+func (fakeDriver) FocusOrCreate(context.Context, Candidate) (FocusResult, error) {
+	return FocusResult{}, errors.New("fakeDriver does not implement FocusOrCreate")
+}
+func (fakeDriver) RunStartup(context.Context, string, string) error {
+	return errors.New("fakeDriver does not implement RunStartup")
+}
 
 // TestCandidate_Clone ensures Meta is deep-copied so callers cannot mutate a
 // provider's internal map through a returned candidate.

@@ -268,3 +268,9 @@ func (fakeErrDriver) Detect(context.Context) bool { return true }
 func (fakeErrDriver) ListWorkspaces(context.Context) ([]source.Workspace, error) {
 	return nil, errors.New("daemon down")
 }
+func (fakeErrDriver) FocusOrCreate(context.Context, source.Candidate) (source.FocusResult, error) {
+	return source.FocusResult{}, errors.New("fakeErrDriver does not implement FocusOrCreate")
+}
+func (fakeErrDriver) RunStartup(context.Context, string, string) error {
+	return errors.New("fakeErrDriver does not implement RunStartup")
+}

@@ -55,22 +55,56 @@ type Provider interface {
 	List(ctx context.Context) ([]Candidate, error)
 }
 
-// HerdrDriver is the minimal contract shep's herdr source depends on. The
-// real implementation ships in a later commit; a nil driver makes the herdr
-// provider report itself disabled, so source enumeration degrades to the
+// HerdrDriver is the contract shep keeps with the Herdr CLI. The real
+// implementation lives in internal/herdr; tests inject a fake. A nil driver
+// keeps the herdr provider inert so source enumeration degrades to the
 // remaining providers without panicking.
 type HerdrDriver interface {
-	// Detect reports whether Herdr is usable (binary present + daemon up).
+	// Detect reports whether Herdr is usable (binary present). Daemon liveness
+	// is discovered lazily by actual command calls; Detect is a cheap probe.
 	Detect(ctx context.Context) bool
-	// ListWorkspaces returns the current Herdr workspaces.
+	// ListWorkspaces returns the current Herdr workspaces with the CWD
+	// resolved from the workspace's panes (workspaces do not carry a cwd in
+	// the Herdr JSON envelope).
 	ListWorkspaces(ctx context.Context) ([]Workspace, error)
+	// FocusOrCreate focuses an existing workspace whose pane cwd /
+	// foreground_cwd normalises to the candidate's path, or creates a new
+	// focused workspace via `herdr workspace create --cwd --label --focus`. The
+	// returned action lets callers decide whether to run a startup command.
+	FocusOrCreate(ctx context.Context, cand Candidate) (FocusResult, error)
+	// RunStartup runs a command in the first pane of the named workspace via
+	// `herdr pane run`. It is intended to fire only on a freshly created
+	// workspace (HI-4).
+	RunStartup(ctx context.Context, workspaceID, command string) error
 }
 
 // Workspace is a minimal, driver-supplied description of a Herdr workspace.
+// CWD is derived by the driver from the workspace's panes; the Herdr JSON
+// envelope does not attach a cwd directly to a workspace.
 type Workspace struct {
 	ID    string
 	Label string
 	CWD   string
+}
+
+// HerdrAction records what FocusOrCreate did so callers can gate startup.
+type HerdrAction int
+
+const (
+	// HerdrActionNone is the zero value and should never be returned by a
+	// successful FocusOrCreate call; it exists so an unset result is obvious.
+	HerdrActionNone HerdrAction = iota
+	// HerdrActionFocused means an existing workspace was focused.
+	HerdrActionFocused
+	// HerdrActionCreated means a new workspace was created and focused.
+	HerdrActionCreated
+)
+
+// FocusResult is the outcome of FocusOrCreate. WorkspaceID is the id of the
+// focused or freshly created workspace, ready to feed RunStartup.
+type FocusResult struct {
+	WorkspaceID string
+	Action      HerdrAction
 }
 
 // Registry keeps the provider set for a given config/probes snapshot. It is

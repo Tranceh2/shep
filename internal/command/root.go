@@ -13,6 +13,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/tranceh2/shep/internal/config"
+	"github.com/tranceh2/shep/internal/herdr"
+	"github.com/tranceh2/shep/internal/source"
 )
 
 // App wires the shep command tree and holds runtime state shared across
@@ -33,6 +35,13 @@ type App struct {
 	// but may be overridden via WithStreams for tests.
 	out io.Writer
 	err io.Writer
+	// herdrDriver is the Herdr bridge. It is built lazily from cfg+probes in
+	// PersistentPreRunE unless a test injects one via WithHerdrDriver; the
+	// latter keeps tests from shelling out to a real Herdr binary.
+	herdrDriver source.HerdrDriver
+	// herdrDriverInjected guards against PersistentPreRunE overwriting a
+	// test-injected driver.
+	herdrDriverInjected bool
 }
 
 // Config returns the loaded configuration, defaulting to path-agnostic
@@ -70,6 +79,30 @@ func WithStreams(stdout, stderr io.Writer) Option {
 		a.out = stdout
 		a.err = stderr
 	}
+}
+
+// WithHerdrDriver injects a HerdrDriver (intended for tests). When supplied,
+// PersistentPreRunE keeps it instead of building a real exec-backed driver.
+func WithHerdrDriver(d source.HerdrDriver) Option {
+	return func(a *App) {
+		a.herdrDriver = d
+		a.herdrDriverInjected = true
+	}
+}
+
+// Driver returns the active Herdr driver, lazily building a real one from the
+// loaded config when one was not injected. Returns nil when Herdr is not on
+// PATH (the probe failed); callers treat nil as "fall back to path-print".
+func (a *App) Driver() source.HerdrDriver {
+	if a.herdrDriver != nil {
+		return a.herdrDriver
+	}
+	cfg := a.Config()
+	if !a.Probes().Herdr {
+		return nil
+	}
+	a.herdrDriver = herdr.New(cfg.HerdrBinary())
+	return a.herdrDriver
 }
 
 // New constructs a fresh App with sensible defaults. Apply options to inject

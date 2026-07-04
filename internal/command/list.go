@@ -71,9 +71,10 @@ Television, or structured JSON.`,
 func (a *App) runList(cmd *cobra.Command, f format) error {
 	cfg := a.Config()
 	probes := a.Probes()
-	// Herdr driver is wired in a later commit; nil keeps the provider inert
-	// so list still surfaces cwd/zoxide/roots candidates.
-	registry := source.NewRegistry(cfg, probes, nil)
+	// The real Herdr driver powers the herdr source provider; when Herdr is
+	// not installed Driver() returns nil and the provider stays inert, so
+	// list still surfaces cwd/zoxide/roots candidates.
+	registry := source.NewRegistry(cfg, probes, a.Driver())
 
 	candidates, collectErr := registry.Collect(cmd.Context())
 	deduped := resolver.Dedup(candidates)
