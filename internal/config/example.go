@@ -53,5 +53,28 @@ func ExampleTOML() string {
 # the glob. Leave empty in v1 unless you need a startup hook.
 # [layouts."**/*.go"]
 # startup = "go test ./..."
+
+# [preview] configures the workspace preview shown in the "shep open" selector
+# and the "shep preview" command. With no [preview] table shep shows a calm built-in
+# layout: label, path, source, matched template (when present), and a fast git
+# summary. timeout/cache_ttl/max_lines default to 100ms / 5s / 50 lines.
+# [preview]
+# command = "git -C {path} log -n 5"   # escape hatch: {path} is one arg, no sh -c
+# timeout = "100ms"
+# cache_ttl = "5s"
+# max_lines = 50
+
+# [[preview.sections]] override the built-in layout IN DECLARATION ORDER. type
+# is "builtin" (render named candidate fields) or "git" (render a git summary).
+# builtin fields: path, label, source, template. Unknown types/fields fail
+# fast at load so typos surface immediately.
+# [[preview.sections]]
+# name = "Identity"
+# type = "builtin"
+# fields = ["label", "path", "source", "template"]
+#
+# [[preview.sections]]
+# name = "Git"
+# type = "git"
 `
 }

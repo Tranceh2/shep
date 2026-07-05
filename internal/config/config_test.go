@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -51,6 +52,21 @@ func TestLoad_MissingFileFallsBackToDefaults(t *testing.T) {
 	}
 	if len(cfg.Sources) != 0 {
 		t.Errorf("expected empty default sources, got %d", len(cfg.Sources))
+	}
+	if got, want := time.Duration(cfg.Preview.Timeout), 100*time.Millisecond; got != want {
+		t.Errorf("preview timeout: got %v want %v", got, want)
+	}
+	if got, want := time.Duration(cfg.Preview.CacheTTL), 5*time.Second; got != want {
+		t.Errorf("preview cache_ttl: got %v want %v", got, want)
+	}
+	if got, want := cfg.Preview.MaxLines, 50; got != want {
+		t.Errorf("preview max_lines: got %d want %d", got, want)
+	}
+	if cfg.Preview.Command != "" {
+		t.Errorf("expected empty preview command, got %q", cfg.Preview.Command)
+	}
+	if len(cfg.Preview.Sections) != 0 {
+		t.Errorf("expected no preview sections, got %d", len(cfg.Preview.Sections))
 	}
 }
 
@@ -265,5 +281,204 @@ func TestHerdrBinary_Default(t *testing.T) {
 	cfg.Herdr.Binary = "custom-herdr"
 	if got, want := cfg.HerdrBinary(), "custom-herdr"; got != want {
 		t.Errorf("got %q want %q", got, want)
+	}
+}
+
+// TestLoad_ParsesPreview (CD-9) covers [preview] and [[preview.sections]]
+// parsing, duration defaults, and declaration order preservation.
+func TestLoad_ParsesPreview(t *testing.T) {
+	t.Parallel()
+
+	const doc = `
+[preview]
+command = "git -C {path} log -n 5"
+timeout = "250ms"
+cache_ttl = "10s"
+max_lines = 7
+
+[[preview.sections]]
+name = "Identity"
+type = "builtin"
+fields = ["label", "path", "source", "template"]
+
+[[preview.sections]]
+name = "Git"
+type = "git"
+`
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	pv := cfg.Preview
+	if got, want := pv.Command, "git -C {path} log -n 5"; got != want {
+		t.Errorf("preview command: got %q want %q", got, want)
+	}
+	if got, want := time.Duration(pv.Timeout), 250*time.Millisecond; got != want {
+		t.Errorf("preview timeout: got %v want %v", got, want)
+	}
+	if got, want := time.Duration(pv.CacheTTL), 10*time.Second; got != want {
+		t.Errorf("preview cache_ttl: got %v want %v", got, want)
+	}
+	if got, want := pv.MaxLines, 7; got != want {
+		t.Errorf("preview max_lines: got %d want %d", got, want)
+	}
+	if got, want := len(pv.Sections), 2; got != want {
+		t.Fatalf("sections len: got %d want %d", got, want)
+	}
+	if got, want := pv.Sections[0].Name, "Identity"; got != want {
+		t.Errorf("section0 name: got %q want %q", got, want)
+	}
+	if got, want := pv.Sections[0].Type, PreviewSectionBuiltin; got != want {
+		t.Errorf("section0 type: got %q want %q", got, want)
+	}
+	if got, want := len(pv.Sections[0].Fields), 4; got != want {
+		t.Fatalf("section0 fields len: got %d want %d", got, want)
+	}
+	if got, want := pv.Sections[1].Type, PreviewSectionGit; got != want {
+		t.Errorf("section1 type: got %q want %q", got, want)
+	}
+}
+
+// TestLoad_PreviewDefaultsApplied (CD-9) confirms omitted preview durations and
+// max_lines resolve to the documented defaults (100ms / 5s / 50).
+func TestLoad_PreviewDefaultsApplied(t *testing.T) {
+	t.Parallel()
+
+	const doc = `
+[preview]
+command = "echo hi"
+`
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got, want := time.Duration(cfg.Preview.Timeout), 100*time.Millisecond; got != want {
+		t.Errorf("default timeout: got %v want %v", got, want)
+	}
+	if got, want := time.Duration(cfg.Preview.CacheTTL), 5*time.Second; got != want {
+		t.Errorf("default cache_ttl: got %v want %v", got, want)
+	}
+	if got, want := cfg.Preview.MaxLines, 50; got != want {
+		t.Errorf("default max_lines: got %d want %d", got, want)
+	}
+}
+
+// TestLoad_PreviewAbsentUsesDefaultCaps (CD-9) confirms a config without
+// [preview] still leaves no command/sections while normalizing safety defaults.
+func TestLoad_PreviewAbsentUsesDefaultCaps(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(path, []byte("[general]\nselector = \"builtin\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Preview.Command != "" {
+		t.Errorf("expected empty command, got %q", cfg.Preview.Command)
+	}
+	if len(cfg.Preview.Sections) != 0 {
+		t.Errorf("expected no sections, got %d", len(cfg.Preview.Sections))
+	}
+	if got, want := time.Duration(cfg.Preview.Timeout), 100*time.Millisecond; got != want {
+		t.Errorf("default timeout: got %v want %v", got, want)
+	}
+}
+
+// TestLoad_InvalidPreviewRejected (CD-9) confirms invalid section types, invalid
+// builtin fields, and negative max_lines fail fast during Load with substrings
+// that help the user fix the config.
+func TestLoad_InvalidPreviewRejected(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		doc    string
+		errSub string
+	}{
+		{
+			name: "unknown section type",
+			doc: `[preview]
+[[preview.sections]]
+type = "csv"
+`,
+			errSub: "type",
+		},
+		{
+			name: "missing section type",
+			doc: `[preview]
+[[preview.sections]]
+name = "X"
+`,
+			errSub: "type",
+		},
+		{
+			name: "invalid builtin field",
+			doc: `[preview]
+[[preview.sections]]
+type = "builtin"
+fields = ["label", "color"]
+`,
+			errSub: "field",
+		},
+		{
+			name: "negative max_lines",
+			doc: `[preview]
+max_lines = -1
+`,
+			errSub: "max_lines",
+		},
+		{
+			name: "negative timeout",
+			doc: `[preview]
+timeout = "-5s"
+`,
+			errSub: "timeout",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tmp := t.TempDir()
+			path := filepath.Join(tmp, "config.toml")
+			if err := os.WriteFile(path, []byte(tc.doc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(path)
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.errSub) {
+				t.Errorf("error %q must contain %q", err.Error(), tc.errSub)
+			}
+		})
+	}
+}
+
+// TestExampleTOML_IncludesPreview shows `shep init` documents the new preview
+// surface without leaking user paths.
+func TestExampleTOML_IncludesPreview(t *testing.T) {
+	t.Parallel()
+	got := ExampleTOML()
+	for _, want := range []string{"[preview]", "[[preview.sections]]", "command = ", "max_lines ="} {
+		if !strings.Contains(got, want) {
+			t.Errorf("ExampleTOML missing %q", want)
+		}
+	}
+	if strings.Contains(got, "/Users/") || strings.Contains(got, "Proyectos") {
+		t.Errorf("ExampleTOML leaked a developer path:\n%s", got)
 	}
 }

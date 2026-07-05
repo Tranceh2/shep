@@ -11,9 +11,18 @@ import (
 	"testing"
 
 	"github.com/tranceh2/shep/internal/config"
+	"github.com/tranceh2/shep/internal/preview"
 	"github.com/tranceh2/shep/internal/selector"
 	"github.com/tranceh2/shep/internal/source"
 )
+
+// fakePreviewRenderer is a minimal preview.Renderer stub for command-package
+// tests that only need a non-nil renderer identity, not real render output.
+type fakePreviewRenderer struct{}
+
+func (fakePreviewRenderer) Render(context.Context, source.Candidate, preview.RenderOptions) (preview.Result, error) {
+	return preview.Result{}, nil
+}
 
 // --- mocks ---
 
@@ -139,7 +148,7 @@ func TestCascadeFor_RoutesBySelector(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := cascadeFor(tc.sel).Names()
+			got := cascadeFor(tc.sel, nil).Names()
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("selector %q: cascade names got %v want %v", tc.sel, got, tc.want)
 			}
@@ -269,6 +278,35 @@ func TestOpen_AmbiguousNoSelectionPrintsCandidates(t *testing.T) {
 	}
 }
 
+// TestOpen_SelectorErrorFallsBackToAmbiguousList keeps non-interactive or
+// otherwise unavailable selectors deterministic: show the candidate list and
+// exit 1 instead of relying on a TTY-specific failure message only.
+func TestOpen_SelectorErrorFallsBackToAmbiguousList(t *testing.T) {
+	cfg, root := seedCfg(t, "foo", "foobar")
+	foo := resolved(filepath.Join(root, "foo"))
+	foobar := resolved(filepath.Join(root, "foobar"))
+	driver := &openDriver{detect: true}
+	cascade := selector.New(fakeSelector{err: errors.New("not a tty")})
+	out, errOut, err := runOpen(t, cfg, driver, cascade, "foo")
+	if err == nil {
+		t.Fatal("expected exit 1 on selector error")
+	}
+	for _, want := range []string{
+		foo + "\tfoo\n",
+		foobar + "\tfoobar\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout = %q, want candidate line %q", out, want)
+		}
+	}
+	if !strings.Contains(errOut, "ambiguous") {
+		t.Errorf("stderr = %q, want 'ambiguous'", errOut)
+	}
+	if !strings.Contains(errOut, "selector unavailable") {
+		t.Errorf("stderr = %q, want selector unavailable warning", errOut)
+	}
+}
+
 // TestOpen_PathFlagBypassesResolution: --path opens the given path directly.
 func TestOpen_PathFlagBypassesResolution(t *testing.T) {
 	cfg, root := seedCfg(t, "foo")
@@ -361,5 +399,30 @@ func TestOpen_RunStartupErrorIsWarningNotFatal(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "startup failed") {
 		t.Errorf("stderr = %q, want 'startup failed'", errOut.String())
+	}
+}
+
+// TestNewTUISelector_StoresRenderer (PL-11 wiring): the tui selector built by
+// cascadeFor/newTUISelector carries the injected Renderer through, so `shep
+// open`'s Bubble Tea fallback gets the real preview.Renderer instead of
+// silently defaulting to nil.
+func TestNewTUISelector_StoresRenderer(t *testing.T) {
+	r := fakePreviewRenderer{}
+	s := newTUISelector(r)
+	if s.renderer == nil {
+		t.Fatal("expected tuiSelector to carry a non-nil renderer")
+	}
+}
+
+// TestApp_BuildPreviewRenderer_ReturnsNonNil confirms the App wires a usable
+// preview.Renderer from config + probes even with no [preview] customisation,
+// so `shep open`'s TUI selector never falls back to a nil renderer silently.
+func TestApp_BuildPreviewRenderer_ReturnsNonNil(t *testing.T) {
+	app := New()
+	app.cfg = config.Defaults()
+	app.probes = config.Probes{}
+	r := app.buildPreviewRenderer()
+	if r == nil {
+		t.Fatal("expected buildPreviewRenderer to return a non-nil Renderer")
 	}
 }

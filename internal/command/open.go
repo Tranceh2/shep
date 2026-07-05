@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/tranceh2/shep/internal/config"
+	"github.com/tranceh2/shep/internal/preview"
 	"github.com/tranceh2/shep/internal/resolver"
 	"github.com/tranceh2/shep/internal/selector"
 	"github.com/tranceh2/shep/internal/source"
@@ -56,7 +57,24 @@ func (a *App) selectorFactory() *selector.Cascade {
 	if a.selectorBuilder != nil {
 		return a.selectorBuilder()
 	}
-	return cascadeFor(a.Config().General.Selector)
+	return cascadeFor(a.Config().General.Selector, a.buildPreviewRenderer())
+}
+
+// buildPreviewRenderer wires the production preview.Renderer from the loaded
+// config and binary probes so the TUI's preview pane and the future `shep
+// preview <path>` command share identical rendering behaviour (design:
+// "same Renderer backs both views").
+func (a *App) buildPreviewRenderer() preview.Renderer {
+	cfg := a.Config()
+	var git preview.GitProvider
+	if a.Probes().Git {
+		git = preview.NewGitProvider()
+	}
+	var runner preview.CommandRunner
+	if cfg.Preview.Command != "" {
+		runner = preview.NewCommandRunner()
+	}
+	return preview.NewRenderer(cfg.Preview, a.Probes(), git, runner)
 }
 
 // cascadeFor builds the selector cascade for a [general].selector value.
@@ -64,30 +82,41 @@ func (a *App) selectorFactory() *selector.Cascade {
 // (Fzf.Select no-ops when the binary is absent, so both fall back to the TUI).
 // Direct is always first so exact / single matches short-circuit. An unknown
 // or empty value degrades to the builtin shape rather than blocking open.
-func cascadeFor(sel string) *selector.Cascade {
+// renderer backs the TUI selector's async preview pane (nil is valid, e.g. in
+// tests, and degrades to a built-in candidate summary).
+func cascadeFor(sel string, renderer preview.Renderer) *selector.Cascade {
 	direct := selector.Direct{}
-	tui := &tuiSelector{}
+	tuiSel := newTUISelector(renderer)
 	switch sel {
 	case config.SelectorFzf, config.SelectorAuto:
-		return selector.New(direct, selector.NewFzf(), tui)
+		return selector.New(direct, selector.NewFzf(), tuiSel)
 	default: // SelectorBuiltin, empty, or unknown
-		return selector.New(direct, tui)
+		return selector.New(direct, tuiSel)
 	}
 }
 
 // tuiSelector is the universal interactive fallback: it runs the embedded
-// Bubble Tea picker over the candidates. When stdin is not a TTY the program
-// degrades harmlessly and the user can press esc; the cascade never blocks on
-// a permanent hang because Bubble Tea exits on esc/ctrl+c/enter.
-type tuiSelector struct{}
+// Bubble Tea picker over the candidates, threading through the shared
+// preview.Renderer so the picker's preview pane matches `shep preview`
+// output. If the interactive selector cannot run, the open command falls back
+// to printing the ambiguous candidate list and exits 1.
+type tuiSelector struct {
+	renderer preview.Renderer
+}
+
+// newTUISelector builds a tuiSelector carrying the given Renderer (nil is
+// valid in tests and degrades to the picker's built-in candidate summary).
+func newTUISelector(renderer preview.Renderer) *tuiSelector {
+	return &tuiSelector{renderer: renderer}
+}
 
 func (tuiSelector) Name() string { return "tui" }
 
-func (tuiSelector) Select(ctx context.Context, candidates []source.Candidate, query string) (source.Candidate, bool, error) {
+func (s tuiSelector) Select(ctx context.Context, candidates []source.Candidate, query string) (source.Candidate, bool, error) {
 	if len(candidates) == 0 {
 		return source.Candidate{}, false, nil
 	}
-	return tui.Run(ctx, candidates, query)
+	return tui.Run(ctx, candidates, query, s.renderer)
 }
 
 // runOpen is the pipeline so tests can call it directly against a fresh App.
@@ -146,7 +175,9 @@ func (a *App) resolveCandidate(cmd *cobra.Command, query, pathFlag string, out, 
 	}
 	pick, ok, selErr := cascade.Select(cmd.Context(), matches, query)
 	if selErr != nil {
-		fmt.Fprintf(errOut, "selector: %v\n", selErr)
+		printCandidates(out, all)
+		fmt.Fprintf(errOut, "ambiguous: %s (%d matches)\n", query, len(matches))
+		fmt.Fprintf(errOut, "selector unavailable: %v\n", selErr)
 		return source.Candidate{}, false, errExitOne
 	}
 	if ok {

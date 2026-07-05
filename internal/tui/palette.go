@@ -20,23 +20,36 @@ const (
 )
 
 var palette = struct {
-	queryStyle         lipgloss.Style
-	cursorStyle        lipgloss.Style
-	rowStyle           lipgloss.Style
-	mutedStyle         lipgloss.Style
-	previewHeaderStyle lipgloss.Style
-	labelStyle         lipgloss.Style
+	queryStyle          lipgloss.Style
+	cursorStyle         lipgloss.Style
+	rowStyle            lipgloss.Style
+	mutedStyle          lipgloss.Style
+	previewHeaderStyle  lipgloss.Style
+	labelStyle          lipgloss.Style
+	previewWarnStyle    lipgloss.Style
+	previewLoadingStyle lipgloss.Style
 }{
 	// query line: bold accent text so the live filter stands out.
 	queryStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorAccent)).Bold(true),
-	// highlighted (cursor) row: accent background, base text.
-	cursorStyle: lipgloss.NewStyle().Background(lipgloss.Color(colorAccent)).Foreground(lipgloss.Color(colorBase)).Bold(true).Width(40),
-	// normal row: base text on transparent background.
-	rowStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorText)).Width(40),
+	// highlighted (cursor) row: accent background, base text. Width is
+	// applied per-render (see renderList) against the actual split width
+	// rather than hardcoded here, so the list pane never drifts from the
+	// preview pane's computed split.
+	cursorStyle: lipgloss.NewStyle().Background(lipgloss.Color(colorAccent)).Foreground(lipgloss.Color(colorBase)).Bold(true),
+	// normal row: base text on transparent background. Width applied
+	// per-render, same reasoning as cursorStyle above.
+	rowStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorText)),
 	// muted text (help, no-matches).
 	mutedStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted)),
 	// preview header: bold secondary accent.
 	previewHeaderStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorAccent2)).Bold(true),
 	// label prefix in the preview pane.
 	labelStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted)),
+	// transient warning shown when a custom preview.command fell back to the
+	// built-in preview (WP-3): italic secondary accent, distinct from an
+	// error but still noticeable.
+	previewWarnStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorAccent2)).Italic(true),
+	// loading indicator shown while an async preview render is in flight
+	// (PL-11): muted italic so it reads as transient, not an error.
+	previewLoadingStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted)).Italic(true),
 }

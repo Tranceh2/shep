@@ -3,10 +3,12 @@
 // is no exact match and fzf is unavailable.
 //
 // The model renders a left list of filtered candidates and a right preview
-// showing the highlighted candidate's path + source. Filtering is
-// case-insensitive subsequence scoring over label+path. Navigation uses
-// up/down/j/k; enter selects; esc/q/ctrl+c cancels. The palette is Catppuccin
-// Mocha, centralised in palette.go so colors live in one place.
+// showing the highlighted candidate's rendered preview.Result (label/path/
+// source/git or [[preview.sections]] output, via the injected
+// preview.Renderer). Filtering is case-insensitive subsequence scoring over
+// label+path. Navigation uses up/down/j/k; enter selects; esc/q/ctrl+c
+// cancels. The palette is Catppuccin Mocha, centralised in palette.go so
+// colors live in one place.
 package tui
 
 import (
@@ -15,8 +17,13 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/tranceh2/shep/internal/preview"
 	"github.com/tranceh2/shep/internal/source"
 )
+
+// minPreviewWidth is the terminal width (PL-11) below which the preview
+// panel is hidden entirely to avoid breaking the layout.
+const minPreviewWidth = 80
 
 // Model is the Bubble Tea model for the shep picker. It owns the candidate
 // list, the filtered view, the query text, the cursor and the final pick.
@@ -29,21 +36,53 @@ type Model struct {
 	height     int
 	selected   int // -1 until a candidate is chosen
 	cancelled  bool
+
+	// renderer produces the preview pane content asynchronously. nil is valid
+	// (tests, or wiring not yet available) and degrades to a built-in
+	// label/path/source summary with no async requests.
+	renderer  preview.Renderer
+	renderCtx context.Context
+	// previewSeq tags every in-flight preview render. A previewResponseMsg
+	// whose seq no longer matches is stale (the user moved on) and is
+	// discarded (PL-11).
+	previewSeq     int
+	previewText    string
+	previewWarn    string
+	previewLoading bool
+}
+
+// previewResponseMsg carries the result of an async preview render. seq must
+// match the model's current previewSeq or the response is stale and ignored.
+type previewResponseMsg struct {
+	seq    int
+	result preview.Result
+	err    error
 }
 
 // NewModel builds a model over the supplied candidates. The filtered view is
 // initialised to every candidate in order; width/height are populated by the
-// first WindowSizeMsg.
-func NewModel(candidates []source.Candidate) Model {
+// first WindowSizeMsg. renderer may be nil, in which case the preview pane
+// shows a static label/path/source summary instead of an async render.
+func NewModel(candidates []source.Candidate, renderer preview.Renderer) Model {
+	return newModel(candidates, renderer, context.TODO())
+}
+
+func newModel(candidates []source.Candidate, renderer preview.Renderer, renderCtx context.Context) Model {
+	if renderCtx == nil {
+		renderCtx = context.TODO()
+	}
 	m := Model{
 		candidates: make([]source.Candidate, len(candidates)),
 		filtered:   make([]int, len(candidates)),
 		selected:   -1,
+		renderer:   renderer,
+		renderCtx:  renderCtx,
 	}
 	copy(m.candidates, candidates)
 	for i := range candidates {
 		m.filtered[i] = i
 	}
+	m.refreshPreviewLoadingFlag()
 	return m
 }
 
@@ -63,50 +102,181 @@ func (m Model) Selected() (source.Candidate, bool) {
 // Cancelled reports whether the user quit without selecting (esc/q/ctrl+c).
 func (m Model) Cancelled() bool { return m.cancelled }
 
-// Init is a no-op; shep's TUI has no initial command.
-func (m Model) Init() tea.Cmd { return nil }
+// Init kicks off the first async preview render for the initially
+// highlighted candidate (cursor 0) when a Renderer is wired. Its Cmd is
+// tagged with the model's initial previewSeq (0) so the resulting
+// previewResponseMsg is accepted, not treated as stale.
+func (m Model) Init() tea.Cmd {
+	if m.renderer == nil {
+		return nil
+	}
+	cand, ok := m.currentCandidate()
+	if !ok {
+		return nil
+	}
+	return m.previewCmd(m.previewSeq, cand)
+}
 
-// Update handles key presses and window sizing. It mutates a copy of the
-// model and returns it; the Bubble Tea runtime replaces the model with the
-// returned value.
+// Update handles key presses, window sizing and async preview responses. It
+// mutates a copy of the model and returns it; the Bubble Tea runtime
+// replaces the model with the returned value.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		return m, nil
+	case previewResponseMsg:
+		return m.handlePreviewResponse(msg), nil
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "enter":
-			if len(m.filtered) > 0 {
-				m.selected = m.cursor
-				return m, tea.Quit
-			}
-		case "esc", "q", "ctrl+c":
-			m.cancelled = true
-			return m, tea.Quit
-		case "down", "j":
-			if len(m.filtered) > 0 && m.cursor < len(m.filtered)-1 {
-				m.cursor++
-			}
-		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
-		case "backspace":
-			if len(m.query) > 0 {
-				m.query = m.query[:len(m.query)-1]
-				m.applyFilter()
-			}
-		default:
-			// Any other printable rune is appended to the query and re-filters.
-			if isPrintable(msg.String()) {
-				m.query += msg.String()
-				m.applyFilter()
-			}
-		}
+		return m.handleKey(msg)
 	}
 	return m, nil
+}
+
+// handlePreviewResponse applies a completed async render, discarding it as
+// stale when its seq no longer matches the model's current previewSeq (the
+// user has since highlighted a different candidate) — PL-11.
+func (m Model) handlePreviewResponse(msg previewResponseMsg) Model {
+	if msg.seq != m.previewSeq {
+		return m
+	}
+	m.previewLoading = false
+	if msg.err != nil {
+		m.previewWarn = "preview error"
+		m.previewText = ""
+		return m
+	}
+	m.previewText = msg.result.Text
+	m.previewWarn = msg.result.Warning
+	return m
+}
+
+// handleKey applies one key press. Enter/esc/quit exit immediately; the
+// remaining navigation/filter keys mutate cursor/query state and then, if the
+// highlighted candidate changed, enqueue a fresh async preview render so
+// cursor movement never blocks on preview generation (PL-11).
+func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		if len(m.filtered) > 0 {
+			m.selected = m.cursor
+			return m, tea.Quit
+		}
+		return m, nil
+	case "esc", "q", "ctrl+c":
+		m.cancelled = true
+		return m, tea.Quit
+	}
+
+	prevKey := m.currentPreviewKey()
+	switch msg.String() {
+	case "down", "j":
+		if len(m.filtered) > 0 && m.cursor < len(m.filtered)-1 {
+			m.cursor++
+		}
+	case "up", "k":
+		if m.cursor > 0 {
+			m.cursor--
+		}
+	case "backspace":
+		if len(m.query) > 0 {
+			m.query = m.query[:len(m.query)-1]
+			m.applyFilter()
+		}
+	default:
+		// Any other printable rune is appended to the query and re-filters.
+		if isPrintable(msg.String()) {
+			m.query += msg.String()
+			m.applyFilter()
+		}
+	}
+	cmd := m.syncPreviewAfterSelectionChange(prevKey)
+	return m, cmd
+}
+
+// syncPreviewAfterSelectionChange compares the highlighted candidate before
+// and after a key mutated cursor/query state. When the highlight changed, it
+// bumps previewSeq (invalidating any in-flight render for the old
+// candidate), flips on the loading indicator, and returns the Cmd for the new
+// async render. A nil renderer or an unchanged highlight returns a nil Cmd.
+func (m *Model) syncPreviewAfterSelectionChange(prevKey string) tea.Cmd {
+	if m.renderer == nil {
+		return nil
+	}
+	newKey := m.currentPreviewKey()
+	if newKey == prevKey {
+		return nil
+	}
+	m.previewSeq++
+	if newKey == "" {
+		m.previewLoading = false
+		m.previewText = ""
+		m.previewWarn = ""
+		return nil
+	}
+	m.previewLoading = true
+	m.previewWarn = ""
+	cand, _ := m.currentCandidate()
+	return m.previewCmd(m.previewSeq, cand)
+}
+
+// previewCmd builds the async Bubble Tea Cmd that renders cand through the
+// injected Renderer and reports back as previewResponseMsg tagged with seq,
+// so a stale in-flight render (from a since-abandoned cursor position) can be
+// discarded by Update.
+func (m Model) previewCmd(seq int, cand source.Candidate) tea.Cmd {
+	renderer := m.renderer
+	renderCtx := m.renderCtx
+	width := m.width
+	return func() tea.Msg {
+		res, err := renderer.Render(renderCtx, cand, preview.RenderOptions{Width: width})
+		return previewResponseMsg{seq: seq, result: res, err: err}
+	}
+}
+
+// refreshPreviewLoadingFlag sets previewLoading to match whether a renderer
+// is wired and a candidate is currently highlighted. Used at construction and
+// whenever the filtered set is rebuilt outside the normal key-handling path
+// (e.g. Run seeding an initial query).
+func (m *Model) refreshPreviewLoadingFlag() {
+	if m.renderer == nil {
+		m.previewLoading = false
+		return
+	}
+	_, ok := m.currentCandidate()
+	m.previewLoading = ok
+}
+
+// currentCandidate returns the candidate under the cursor in the filtered
+// view, or ok=false when there is nothing to highlight (empty filter result).
+func (m Model) currentCandidate() (source.Candidate, bool) {
+	if len(m.filtered) == 0 {
+		return source.Candidate{}, false
+	}
+	idx := m.cursor
+	if idx < 0 || idx >= len(m.filtered) {
+		idx = 0
+	}
+	ci := m.filtered[idx]
+	if ci < 0 || ci >= len(m.candidates) {
+		return source.Candidate{}, false
+	}
+	return m.candidates[ci], true
+}
+
+// currentPreviewKey identifies the highlighted candidate for before/after
+// comparisons: the normalised path when present, else the raw path, else ""
+// when nothing is highlighted.
+func (m Model) currentPreviewKey() string {
+	cand, ok := m.currentCandidate()
+	if !ok {
+		return ""
+	}
+	if cand.NormalizedPath != "" {
+		return cand.NormalizedPath
+	}
+	return cand.Path
 }
 
 // applyFilter recomputes the filtered indices from the query using
@@ -154,8 +324,13 @@ func isPrintable(s string) bool {
 
 // View renders the two-pane UI: a left candidate list with the cursor and a
 // right preview of the highlighted candidate. Widths auto-balance based on
-// the reported window size (falling back to 60/40 when no size yet).
+// the reported window size (falling back to 60/40 when no size yet). Below
+// minPreviewWidth columns the preview pane is hidden entirely (PL-11) so a
+// narrow terminal never breaks the layout.
 func (m Model) View() string {
+	if m.width > 0 && m.width < minPreviewWidth {
+		return m.renderList(m.width)
+	}
 	listW, prevW := splitWidths(m.width)
 	listPane := m.renderList(listW)
 	previewPane := m.renderPreview(prevW)
@@ -180,14 +355,16 @@ func splitWidths(width int) (int, int) {
 func gap() string { return " " }
 
 // renderList draws the filtered candidates with a cursor marker and the query
-// line at the top. The highlighted row uses the accent palette.
+// line at the top. Every rendered line is explicitly padded to width so the
+// list pane never drifts from the split computed by View (previously rows
+// used a style-level hardcoded width instead of the width passed in here).
 func (m Model) renderList(width int) string {
 	var b strings.Builder
 	styleQuery := palette.queryStyle.Width(width)
 	b.WriteString(styleQuery.Render("> " + m.query))
 	b.WriteString("\n")
 	if len(m.filtered) == 0 {
-		b.WriteString(palette.mutedStyle.Render("  no matches"))
+		b.WriteString(palette.mutedStyle.Width(width).Render("  no matches"))
 		b.WriteString("\n")
 		return b.String()
 	}
@@ -212,34 +389,49 @@ func (m Model) renderList(width int) string {
 		}
 		if i == m.cursor {
 			marker = " >"
-			b.WriteString(palette.cursorStyle.Render(marker + " " + row))
+			b.WriteString(palette.cursorStyle.Width(width).Render(marker + " " + row))
 		} else {
-			b.WriteString(palette.rowStyle.Render(marker + " " + row))
+			b.WriteString(palette.rowStyle.Width(width).Render(marker + " " + row))
 		}
 		b.WriteString("\n")
 	}
 	return b.String()
 }
 
-// renderPreview shows the highlighted candidate's path and source plus a
+// renderPreview shows the highlighted candidate's rendered preview plus a
 // short help line so the user always knows the keybindings.
 func (m Model) renderPreview(width int) string {
 	header := palette.previewHeaderStyle.Width(width).Render("preview")
-	body := palette.mutedStyle.Width(width).Render("(no selection)")
-	if len(m.filtered) > 0 {
-		idx := m.cursor
-		if idx < 0 || idx >= len(m.filtered) {
-			idx = 0
-		}
-		c := m.candidates[m.filtered[idx]]
-		body = lipgloss.NewStyle().Width(width).Render(
-			palette.labelStyle.Render("label  ") + c.Label + "\n" +
-				palette.labelStyle.Render("path   ") + c.Path + "\n" +
-				palette.labelStyle.Render("source ") + c.Source,
-		)
-	}
+	body := m.previewBody(width)
 	help := palette.mutedStyle.Width(width).Render("enter select  esc cancel  j/k move")
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, "", help)
+}
+
+// previewBody renders the preview pane content: "(no selection)" when
+// nothing is highlighted, a built-in label/path/source summary when no
+// Renderer is wired, a loading indicator while an async render is in flight,
+// or the rendered text plus any transient warning (WP-3's safe command
+// fallback surfaces here).
+func (m Model) previewBody(width int) string {
+	if len(m.filtered) == 0 {
+		return palette.mutedStyle.Width(width).Render("(no selection)")
+	}
+	if m.renderer == nil {
+		cand, _ := m.currentCandidate()
+		return lipgloss.NewStyle().Width(width).Render(
+			palette.labelStyle.Render("label  ") + cand.Label + "\n" +
+				palette.labelStyle.Render("path   ") + cand.Path + "\n" +
+				palette.labelStyle.Render("source ") + cand.Source,
+		)
+	}
+	if m.previewLoading {
+		return palette.previewLoadingStyle.Width(width).Render("loading…")
+	}
+	text := m.previewText
+	if m.previewWarn != "" {
+		text += "\n" + palette.previewWarnStyle.Render("warn: "+m.previewWarn)
+	}
+	return lipgloss.NewStyle().Width(width).Render(text)
 }
 
 func clamp(v, lo, hi int) int {
@@ -254,12 +446,14 @@ func clamp(v, lo, hi int) int {
 
 // Run drives the model through a Bubble Tea program and returns the selected
 // candidate. The query seeds the live filter so users get a head-start (the
-// fzf path forwards a query the same way). It is the entry point used by the
-// selector's TUI selector.
-func Run(ctx context.Context, candidates []source.Candidate, query string) (source.Candidate, bool, error) {
-	m := NewModel(candidates)
+// fzf path forwards a query the same way). renderer backs the async preview
+// pane (nil degrades to the built-in summary). It is the entry point used by
+// the selector's TUI selector.
+func Run(ctx context.Context, candidates []source.Candidate, query string, renderer preview.Renderer) (source.Candidate, bool, error) {
+	m := newModel(candidates, renderer, ctx)
 	m.query = query
 	m.applyFilter()
+	m.refreshPreviewLoadingFlag()
 	p := tea.NewProgram(m, tea.WithContext(ctx))
 	final, err := p.Run()
 	if err != nil {
