@@ -178,6 +178,7 @@ func (a *App) rootCmd() *cobra.Command {
 	root.AddCommand(a.initCmd())
 	root.AddCommand(a.listCmd())
 	root.AddCommand(a.openCmd())
+	root.AddCommand(a.previewCmd())
 
 	return root
 }

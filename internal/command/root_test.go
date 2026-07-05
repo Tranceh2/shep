@@ -71,3 +71,20 @@ func TestApp_ExecuteRootStable(t *testing.T) {
 		t.Errorf("expected root Use=%q, got %q", "shep", c.Use)
 	}
 }
+
+// TestApp_HelpListsPreviewCommand (WP-4, task 4.4) confirms `shep preview` is
+// registered on the root command tree and shows up in --help.
+func TestApp_HelpListsPreviewCommand(t *testing.T) {
+	t.Parallel()
+
+	var out, errOut bytes.Buffer
+	app := New(WithStreams(&out, &errOut))
+	cmd := app.rootCmd()
+	cmd.SetArgs([]string{"--help"})
+	if e := cmd.Execute(); e != nil {
+		t.Fatalf("expected nil error for --help, got %v", e)
+	}
+	if !strings.Contains(out.String(), "preview") {
+		t.Errorf("help output missing 'preview' subcommand\ngot:\n%s", out.String())
+	}
+}
