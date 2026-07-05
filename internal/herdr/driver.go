@@ -379,20 +379,90 @@ func (d *Driver) RunStartup(ctx context.Context, workspaceID, command string) er
 }
 
 // ListTabs enumerates the tabs of the named workspace via
-// `herdr tab list --workspace <id>`.
+// `herdr tab list --workspace <id>`. An empty tabs array is a normal
+// nil-slice result, not an error.
 func (d *Driver) ListTabs(ctx context.Context, workspaceID string) ([]source.Tab, error) {
-	return nil, errors.New("herdr ListTabs: not implemented")
+	if workspaceID == "" {
+		return nil, errors.New("herdr tab list: empty workspace id")
+	}
+	out, err := d.run.Run(ctx, d.binary, "tab", "list", "--workspace", workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("herdr tab list --workspace %s: %w", workspaceID, err)
+	}
+	var env tabListEnvelope
+	if err := json.Unmarshal(out, &env); err != nil {
+		return nil, fmt.Errorf("herdr tab list --workspace %s: parse: %w", workspaceID, err)
+	}
+	tabs := make([]source.Tab, 0, len(env.Result.Tabs))
+	for _, t := range env.Result.Tabs {
+		if t.TabID == "" {
+			continue
+		}
+		tabs = append(tabs, source.Tab{
+			ID:          t.TabID,
+			WorkspaceID: t.WorkspaceID,
+			Label:       t.Label,
+			Focused:     t.Focused,
+			Number:      t.Number,
+			PaneCount:   t.PaneCount,
+		})
+	}
+	return tabs, nil
 }
 
 // ListPanes enumerates the panes of the named workspace via
 // `herdr pane list --workspace <id>`.
 func (d *Driver) ListPanes(ctx context.Context, workspaceID string) ([]source.Pane, error) {
-	return nil, errors.New("herdr ListPanes: not implemented")
+	if workspaceID == "" {
+		return nil, errors.New("herdr pane list: empty workspace id")
+	}
+	out, err := d.run.Run(ctx, d.binary, "pane", "list", "--workspace", workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("herdr pane list --workspace %s: %w", workspaceID, err)
+	}
+	var env paneListEnvelope
+	if err := json.Unmarshal(out, &env); err != nil {
+		return nil, fmt.Errorf("herdr pane list --workspace %s: parse: %w", workspaceID, err)
+	}
+	panes := make([]source.Pane, 0, len(env.Result.Panes))
+	for _, p := range env.Result.Panes {
+		if p.PaneID == "" {
+			continue
+		}
+		panes = append(panes, source.Pane{
+			ID:            p.PaneID,
+			WorkspaceID:   p.WorkspaceID,
+			CWD:           p.CWD,
+			ForegroundCWD: p.ForegroundCWD,
+			Focused:       p.Focused,
+		})
+	}
+	return panes, nil
 }
 
-// ListAgents enumerates Herdr agents via `herdr agent list`.
+// ListAgents enumerates Herdr agents via `herdr agent list`. An empty agents
+// array is a normal nil-slice result, not an error.
 func (d *Driver) ListAgents(ctx context.Context) ([]source.Agent, error) {
-	return nil, errors.New("herdr ListAgents: not implemented")
+	out, err := d.run.Run(ctx, d.binary, "agent", "list")
+	if err != nil {
+		return nil, fmt.Errorf("herdr agent list: %w", err)
+	}
+	var env agentListEnvelope
+	if err := json.Unmarshal(out, &env); err != nil {
+		return nil, fmt.Errorf("herdr agent list: parse: %w", err)
+	}
+	agents := make([]source.Agent, 0, len(env.Result.Agents))
+	for _, a := range env.Result.Agents {
+		if a.AgentID == "" {
+			continue
+		}
+		agents = append(agents, source.Agent{
+			ID:     a.AgentID,
+			Label:  a.Label,
+			Status: a.AgentStatus,
+		})
+	}
+	return agents, nil
 }
 
 // ReadPane returns the captured terminal buffer of a pane via

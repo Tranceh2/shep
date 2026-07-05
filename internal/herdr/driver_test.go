@@ -2,10 +2,13 @@ package herdr
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/tranceh2/shep/internal/source"
 )
@@ -322,4 +325,233 @@ func contains(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// tabListJSON builds a tab list envelope for a workspace from rawTab entries.
+func tabListJSON(tabs ...rawTab) []byte {
+	out := `{"id":"cli:tab:list","result":{"type":"tab_list","tabs":[`
+	for i, t := range tabs {
+		if i > 0 {
+			out += ","
+		}
+		out += `{"tab_id":"` + t.TabID + `","workspace_id":"` + t.WorkspaceID +
+			`","label":"` + t.Label + `","focused":` + boolStr(t.Focused) +
+			`,"number":` + strconv.Itoa(t.Number) +
+			`,"pane_count":` + strconv.Itoa(t.PaneCount) + `}`
+	}
+	out += `]}}`
+	return []byte(out)
+}
+
+// agentListJSON builds an agent list envelope from rawAgent entries.
+func agentListJSON(agents ...rawAgent) []byte {
+	out := `{"id":"cli:agent:list","result":{"agents":[`
+	for i, a := range agents {
+		if i > 0 {
+			out += ","
+		}
+		out += `{"agent_id":"` + a.AgentID + `","label":"` + a.Label +
+			`","agent_status":"` + a.AgentStatus + `"}`
+	}
+	out += `]}}`
+	return []byte(out)
+}
+
+// blockingHerdrRunner blocks until ctx is cancelled, mirroring a daemon that
+// never responds. Used to exercise context-cancellation behaviour.
+type blockingHerdrRunner struct{ calls []string }
+
+func (b *blockingHerdrRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	key := name
+	for _, a := range args {
+		key += " " + a
+	}
+	b.calls = append(b.calls, key)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestRawWorkspace_DeserializesCounts (4.1) confirms number, tab_count,
+// pane_count, and agent_status from `herdr workspace list` are now captured by
+// rawWorkspace (previously discarded). White-box: rawWorkspace is unexported.
+func TestRawWorkspace_DeserializesCounts(t *testing.T) {
+	in := []byte(`{"workspace_id":"wA","label":"foo","active_tab_id":"wA:t1",` +
+		`"focused":true,"number":3,"tab_count":2,"pane_count":4,"agent_status":"running"}`)
+	var w rawWorkspace
+	if err := json.Unmarshal(in, &w); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if w.Number != 3 || w.TabCount != 2 || w.PaneCount != 4 || w.AgentStatus != "running" {
+		t.Errorf("counts not deserialised: %+v", w)
+	}
+}
+
+// TestListTabs_ParsesEnvelope (4.2/4.5) parses a tab list envelope into
+// source.Tab values honouring id/label/focused/number/pane_count.
+func TestListTabs_ParsesEnvelope(t *testing.T) {
+	r := &fakeRunner{script: []fakeCall{
+		{
+			match: "herdr tab list --workspace wA",
+			out: tabListJSON(
+				rawTab{TabID: "wA:t1", WorkspaceID: "wA", Label: "edit", Focused: true, Number: 1, PaneCount: 2},
+				rawTab{TabID: "wA:t2", WorkspaceID: "wA", Label: "term", Focused: false, Number: 2, PaneCount: 1},
+			),
+		},
+	}}
+	d := New("herdr", WithRunner(r))
+	got, err := d.ListTabs(context.Background(), "wA")
+	if err != nil {
+		t.Fatalf("ListTabs: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 tabs, got %d: %+v", len(got), got)
+	}
+	want := []source.Tab{
+		{ID: "wA:t1", WorkspaceID: "wA", Label: "edit", Focused: true, Number: 1, PaneCount: 2},
+		{ID: "wA:t2", WorkspaceID: "wA", Label: "term", Focused: false, Number: 2, PaneCount: 1},
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("tab[%d] = %+v, want %+v", i, got[i], w)
+		}
+	}
+}
+
+// TestListTabs_EmptyListIsNotError (4.5): an empty tabs array is a normal
+// nil/empty result, not an error.
+func TestListTabs_EmptyListIsNotError(t *testing.T) {
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr tab list --workspace wA", out: tabListJSON()},
+	}}
+	d := New("herdr", WithRunner(r))
+	got, err := d.ListTabs(context.Background(), "wA")
+	if err != nil {
+		t.Fatalf("ListTabs empty: %v", err)
+	}
+	if got != nil && len(got) != 0 {
+		t.Errorf("expected nil/empty, got %+v", got)
+	}
+}
+
+// TestListTabs_MalformedJSONReturnsError (4.5): a malformed envelope surfaces
+// as an error so the preview layer can degrade gracefully.
+func TestListTabs_MalformedJSONReturnsError(t *testing.T) {
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr tab list --workspace wA", out: []byte(`{not-json`)},
+	}}
+	d := New("herdr", WithRunner(r))
+	if _, err := d.ListTabs(context.Background(), "wA"); err == nil {
+		t.Fatal("expected error on malformed tab JSON")
+	}
+}
+
+// TestListTabs_CommandErrorReturnsError (4.5): a tab-list command failure
+// (daemon down) surfaces as an error.
+func TestListTabs_CommandErrorReturnsError(t *testing.T) {
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr tab list --workspace wA", err: errors.New("exit status 1")},
+	}}
+	d := New("herdr", WithRunner(r))
+	if _, err := d.ListTabs(context.Background(), "wA"); err == nil {
+		t.Fatal("expected error when tab list command fails")
+	}
+}
+
+// TestListPanes_ParsesEnvelope (4.2/4.5) parses a workspace-scoped pane list.
+func TestListPanes_ParsesEnvelope(t *testing.T) {
+	r := &fakeRunner{script: []fakeCall{
+		{
+			match: "herdr pane list --workspace wA",
+			out: paneListJSON(
+				rawPane{PaneID: "wA:p1", WorkspaceID: "wA", CWD: "/x", ForegroundCWD: "/x", Focused: true},
+				rawPane{PaneID: "wA:p2", WorkspaceID: "wA", CWD: "/y", ForegroundCWD: "", Focused: false},
+			),
+		},
+	}}
+	d := New("herdr", WithRunner(r))
+	got, err := d.ListPanes(context.Background(), "wA")
+	if err != nil {
+		t.Fatalf("ListPanes: %v", err)
+	}
+	want := []source.Pane{
+		{ID: "wA:p1", WorkspaceID: "wA", CWD: "/x", ForegroundCWD: "/x", Focused: true},
+		{ID: "wA:p2", WorkspaceID: "wA", CWD: "/y", ForegroundCWD: "", Focused: false},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d panes, got %d: %+v", len(want), len(got), got)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("pane[%d] = %+v, want %+v", i, got[i], w)
+		}
+	}
+}
+
+// TestListPanes_CommandErrorReturnsError (4.5).
+func TestListPanes_CommandErrorReturnsError(t *testing.T) {
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr pane list --workspace wA", err: errors.New("exit status 1")},
+	}}
+	d := New("herdr", WithRunner(r))
+	if _, err := d.ListPanes(context.Background(), "wA"); err == nil {
+		t.Fatal("expected error when pane list command fails")
+	}
+}
+
+// TestListAgents_ParsesEnvelope (4.2/4.5) parses an agent list envelope into
+// source.Agent values honouring id/label/agent_status.
+func TestListAgents_ParsesEnvelope(t *testing.T) {
+	r := &fakeRunner{script: []fakeCall{
+		{
+			match: "herdr agent list",
+			out: agentListJSON(
+				rawAgent{AgentID: "a1", Label: "coder", AgentStatus: "running"},
+				rawAgent{AgentID: "a2", Label: "planner", AgentStatus: "idle"},
+			),
+		},
+	}}
+	d := New("herdr", WithRunner(r))
+	got, err := d.ListAgents(context.Background())
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	want := []source.Agent{
+		{ID: "a1", Label: "coder", Status: "running"},
+		{ID: "a2", Label: "planner", Status: "idle"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d agents, got %d: %+v", len(want), len(got), got)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("agent[%d] = %+v, want %+v", i, got[i], w)
+		}
+	}
+}
+
+// TestListAgents_EmptyListIsNotError (4.5): no agents is normal.
+func TestListAgents_EmptyListIsNotError(t *testing.T) {
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr agent list", out: agentListJSON()},
+	}}
+	d := New("herdr", WithRunner(r))
+	got, err := d.ListAgents(context.Background())
+	if err != nil {
+		t.Fatalf("ListAgents empty: %v", err)
+	}
+	if got != nil && len(got) != 0 {
+		t.Errorf("expected nil/empty, got %+v", got)
+	}
+}
+
+// TestListTabs_ContextDeadlineSurfaces (4.5): a blocked daemon honours a
+// context deadline and returns the underlying ctx error.
+func TestListTabs_ContextDeadlineSurfaces(t *testing.T) {
+	runner := &blockingHerdrRunner{}
+	d := New("herdr", WithRunner(runner))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if _, err := d.ListTabs(ctx, "wA"); err == nil {
+		t.Fatal("expected error when context deadline exceeded")
+	}
 }
