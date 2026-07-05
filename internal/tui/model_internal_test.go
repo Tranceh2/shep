@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -139,6 +140,33 @@ func TestFinalizeRun_SelectedReturnsCandidateNilError(t *testing.T) {
 	}
 	if cand.Label != "a" {
 		t.Errorf("candidate = %+v, want label %q", cand, "a")
+	}
+}
+
+// TestModel_RenderListRowCapAccountsForChromeRows (PR1: TUI borders) proves
+// renderList caps visible candidate rows using height - chromeRows (border
+// top/bottom + query line), not the raw reported terminal height, so the
+// border and query line never push the last row off-screen. Scrolled to the
+// bottom of 50 candidates at height=10, the last candidate must still be
+// reachable within the clamped viewport.
+func TestModel_RenderListRowCapAccountsForChromeRows(t *testing.T) {
+	cands := make([]source.Candidate, 50)
+	for i := range cands {
+		cands[i] = source.Candidate{Path: fmt.Sprintf("/c/%d", i), Label: fmt.Sprintf("c%d", i)}
+	}
+	m := NewModel(cands, nil)
+	m.height = 10
+	m.cursor = len(cands) - 1 // scrolled to the bottom
+
+	out := m.renderList(30)
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	visibleRows := len(lines) - 1 // first line is the query line
+	wantMax := 10 - chromeRows
+	if visibleRows > wantMax {
+		t.Errorf("visible rows = %d, want <= %d (height=10, chromeRows=%d)", visibleRows, wantMax, chromeRows)
+	}
+	if !strings.Contains(out, "c49") {
+		t.Error("expected the last candidate to be reachable when scrolled to bottom")
 	}
 }
 

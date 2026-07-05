@@ -17,6 +17,7 @@ const (
 	colorAccent  = "#89b4fa" // blue accent (cursor / highlight)
 	colorAccent2 = "#f5c2e7" // pink secondary
 	colorGreen   = "#a6e3a1" // green for success
+	colorBorder  = "#585b70" // Surface2 — subtle frame around list/preview panes
 )
 
 var palette = struct {
@@ -28,6 +29,7 @@ var palette = struct {
 	labelStyle          lipgloss.Style
 	previewWarnStyle    lipgloss.Style
 	previewLoadingStyle lipgloss.Style
+	borderStyle         lipgloss.Style
 }{
 	// query line: bold accent text so the live filter stands out.
 	queryStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorAccent)).Bold(true),
@@ -52,4 +54,9 @@ var palette = struct {
 	// loading indicator shown while an async preview render is in flight
 	// (PL-11): muted italic so it reads as transient, not an error.
 	previewLoadingStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted)).Italic(true),
+	// borderStyle frames the list and preview panes: one shared rounded
+	// border + horizontal padding definition (both panes use the exact same
+	// frame dimensions) so width/height chrome math has a single source of
+	// truth instead of drifting between two independently-tuned borders.
+	borderStyle: lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(colorBorder)).Padding(0, 1),
 }

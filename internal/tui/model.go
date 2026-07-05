@@ -26,6 +26,18 @@ import (
 // panel is hidden entirely to avoid breaking the layout.
 const minPreviewWidth = 80
 
+// minPreviewHeight is the terminal height below which the preview panel is
+// hidden entirely, mirroring minPreviewWidth: a very short terminal cannot
+// fit a bordered two-pane layout without clipping either pane.
+const minPreviewHeight = 8
+
+// chromeRows is the fixed vertical overhead of the list pane deducted from
+// the reported terminal height before capping visible candidate rows: the
+// border's top+bottom edges plus the query line above the candidate rows.
+// Without this deduction the last row(s) would render past the bottom
+// border and never be visible even when scrolled all the way down.
+const chromeRows = 4
+
 // ErrCancelled is the quiet cancellation sentinel returned by Run when the
 // user quits without selecting (esc/ctrl+c/ctrl+g). Callers use errors.Is to
 // distinguish an intentional cancel from "no selector available" (ok=false
@@ -331,20 +343,29 @@ func isPrintable(s string) bool {
 }
 
 // View renders the two-pane UI: a left candidate list with the cursor and a
-// right preview of the highlighted candidate. Widths auto-balance based on
-// the reported window size (falling back to 60/40 when no size yet). Below
-// minPreviewWidth columns the preview pane is hidden entirely (PL-11) so a
-// narrow terminal never breaks the layout.
+// right preview of the highlighted candidate, each wrapped in a rounded
+// border (palette.borderStyle). Widths auto-balance based on the reported
+// window size (falling back to 60/40 when no size yet); the border's frame
+// size is subtracted from each pane's allotted width so content never
+// overflows its own border. Below minPreviewWidth columns or
+// minPreviewHeight rows the preview pane is hidden entirely (PL-11) so a
+// narrow or very short terminal never breaks the layout.
 func (m Model) View() string {
-	if m.width > 0 && m.width < minPreviewWidth {
-		return m.renderList(m.width)
+	hidePreview := (m.width > 0 && m.width < minPreviewWidth) ||
+		(m.height > 0 && m.height < minPreviewHeight)
+	if hidePreview {
+		return palette.borderStyle.Render(m.renderList(paneContentWidth(m.width)))
 	}
 	listW, prevW := splitWidths(m.width)
-	listPane := m.renderList(listW)
-	previewPane := m.renderPreview(prevW)
+	listPane := palette.borderStyle.Render(m.renderList(paneContentWidth(listW)))
+	previewPane := palette.borderStyle.Render(m.renderPreview(paneContentWidth(prevW)))
 	return lipgloss.JoinHorizontal(lipgloss.Top, listPane, gap(), previewPane)
 }
 
+// splitWidths divides the total reported width into list/preview pane
+// budgets (outer widths, before border+padding is subtracted). Each budget
+// still needs paneContentWidth to get the actual content width fed to
+// renderList/renderPreview.
 func splitWidths(width int) (int, int) {
 	if width <= 0 {
 		width = 80
@@ -358,6 +379,18 @@ func splitWidths(width int) (int, int) {
 		prev = 10
 	}
 	return list, prev
+}
+
+// paneContentWidth converts a pane's outer width budget into the inner
+// content width available once palette.borderStyle's border+padding are
+// subtracted. Both panes share the same borderStyle, so this is the single
+// site where border chrome is subtracted from width — no per-pane drift.
+func paneContentWidth(outer int) int {
+	inner := outer - palette.borderStyle.GetHorizontalFrameSize()
+	if inner < 1 {
+		inner = 1
+	}
+	return inner
 }
 
 func gap() string { return " " }
@@ -376,9 +409,14 @@ func (m Model) renderList(width int) string {
 		b.WriteString("\n")
 		return b.String()
 	}
-	// Cap visible rows to a sane height when we know it.
+	// Cap visible rows to a sane height when we know it, deducting chromeRows
+	// (border top/bottom + query line) so the border never clips the last
+	// visible candidate.
 	visible := m.filtered
 	maxRows := m.height
+	if maxRows > 0 {
+		maxRows -= chromeRows
+	}
 	if maxRows <= 0 {
 		maxRows = len(visible)
 	}

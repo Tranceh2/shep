@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/exp/teatest"
 	"github.com/tranceh2/shep/internal/preview"
 	"github.com/tranceh2/shep/internal/source"
@@ -283,5 +284,70 @@ func TestModel_ViewShowsPreviewAtMinWidth(t *testing.T) {
 	view := mm.View()
 	if !strings.Contains(view, "preview") {
 		t.Errorf("expected preview pane visible at width 80, got:\n%s", view)
+	}
+}
+
+// TestModel_ViewHidesPreviewBelowMinHeight: a terminal shorter than 8 rows
+// hides the preview panel entirely, mirroring the narrow-width rule, so a
+// very short terminal never breaks the layout.
+func TestModel_ViewHidesPreviewBelowMinHeight(t *testing.T) {
+	m := tui.NewModel(testCandidates(), nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 7})
+	mm, ok := updated.(tui.Model)
+	if !ok {
+		t.Fatalf("expected tui.Model, got %T", updated)
+	}
+	view := mm.View()
+	if strings.Contains(view, "preview") {
+		t.Errorf("expected preview pane hidden at height 7, got:\n%s", view)
+	}
+}
+
+// TestModel_ViewShowsPreviewAtMinHeight: at exactly 8 rows the preview panel
+// remains visible (only heights strictly below 8 hide it).
+func TestModel_ViewShowsPreviewAtMinHeight(t *testing.T) {
+	m := tui.NewModel(testCandidates(), nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 8})
+	mm, ok := updated.(tui.Model)
+	if !ok {
+		t.Fatalf("expected tui.Model, got %T", updated)
+	}
+	view := mm.View()
+	if !strings.Contains(view, "preview") {
+		t.Errorf("expected preview pane visible at height 8, got:\n%s", view)
+	}
+}
+
+// TestModel_ViewRendersRoundedBorders (PR1: TUI borders) proves the list and
+// preview panes are each wrapped in a rounded Lip Gloss border, not plain
+// unframed text blocks.
+func TestModel_ViewRendersRoundedBorders(t *testing.T) {
+	m := tui.NewModel(testCandidates(), nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	mm, ok := updated.(tui.Model)
+	if !ok {
+		t.Fatalf("expected tui.Model, got %T", updated)
+	}
+	view := mm.View()
+	if !strings.Contains(view, "╭") {
+		t.Errorf("expected rounded border corners in view, got:\n%s", view)
+	}
+}
+
+// TestModel_ViewFitsWithinReportedWidth (PR1: TUI borders) proves the
+// border+padding chrome is subtracted from the reported terminal width, so
+// no rendered line overflows the terminal.
+func TestModel_ViewFitsWithinReportedWidth(t *testing.T) {
+	m := tui.NewModel(testCandidates(), nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	mm, ok := updated.(tui.Model)
+	if !ok {
+		t.Fatalf("expected tui.Model, got %T", updated)
+	}
+	view := mm.View()
+	for _, line := range strings.Split(view, "\n") {
+		if w := lipgloss.Width(line); w > 100 {
+			t.Errorf("line width %d exceeds terminal width 100: %q", w, line)
+		}
 	}
 }
