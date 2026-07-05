@@ -369,3 +369,279 @@ func stringSliceEqual(a, b []string) bool {
 	}
 	return true
 }
+
+// --- PR4: herdr-backed workspace / active_pane preview sections ---
+
+// fakePreviewDriver is a controllable source.HerdrDriver for renderer tests. It
+// records the queries and returns scripted tab/pane/agent/read results. The
+// action methods (FocusOrCreate, RunStartup) are irrelevant to previews and
+// return errors so any accidental call fails loudly.
+type fakePreviewDriver struct {
+	detect     bool
+	tabs       []source.Tab
+	panes      []source.Pane
+	agents     []source.Agent
+	readOut    string
+	tabsErr    error
+	panesErr   error
+	readErr    error
+	listCalls  []string
+	readCalls  int
+	lastLines  int
+	lastPaneID string
+	// block switches each herdr query into a ctx-bound blocker that returns
+	// ctx.Err() — used for the timeout tests.
+	block bool
+}
+
+func (f *fakePreviewDriver) Detect(context.Context) bool { return f.detect }
+func (f *fakePreviewDriver) ListWorkspaces(context.Context) ([]source.Workspace, error) {
+	return nil, nil
+}
+func (fakePreviewDriver) FocusOrCreate(context.Context, source.Candidate) (source.FocusResult, error) {
+	return source.FocusResult{}, errors.New("fakePreviewDriver.FocusOrCreate not used in previews")
+}
+func (fakePreviewDriver) RunStartup(context.Context, string, string) error {
+	return errors.New("fakePreviewDriver.RunStartup not used in previews")
+}
+func (f *fakePreviewDriver) ListAgents(context.Context) ([]source.Agent, error) {
+	return f.agents, nil
+}
+
+func (f *fakePreviewDriver) ListTabs(ctx context.Context, workspaceID string) ([]source.Tab, error) {
+	f.listCalls = append(f.listCalls, "tabs:"+workspaceID)
+	if f.block {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return f.tabs, f.tabsErr
+}
+func (f *fakePreviewDriver) ListPanes(ctx context.Context, workspaceID string) ([]source.Pane, error) {
+	f.listCalls = append(f.listCalls, "panes:"+workspaceID)
+	if f.block {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return f.panes, f.panesErr
+}
+func (f *fakePreviewDriver) ReadPane(ctx context.Context, paneID string, lines int) (string, error) {
+	f.readCalls++
+	f.lastPaneID = paneID
+	f.lastLines = lines
+	if f.block {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	return f.readOut, f.readErr
+}
+
+// herdrCandidate builds a candidate carrying a workspace_id meta key, mirroring
+// the herdr source provider's output.
+func herdrCandidate(label, path, workspaceID string) source.Candidate {
+	return source.Candidate{
+		Path:   path,
+		Label:  label,
+		Source: "herdr",
+		Meta:   map[string]string{"workspace_id": workspaceID},
+	}
+}
+
+// TestRender_WorkspaceSection (PR4) renders an indented tabs/panes tree for a
+// candidate that carries a workspace_id meta key.
+func TestRender_WorkspaceSection(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.PreviewConfig{
+		MaxLines: 50,
+		Sections: []config.PreviewSection{
+			{Name: "Workspace", Type: config.PreviewSectionWorkspace},
+		},
+	}
+	driver := &fakePreviewDriver{
+		tabs: []source.Tab{
+			{ID: "wA:t1", WorkspaceID: "wA", Label: "edit", Focused: true, Number: 1, PaneCount: 2},
+			{ID: "wA:t2", WorkspaceID: "wA", Label: "term", Focused: false, Number: 2, PaneCount: 1},
+		},
+		panes: []source.Pane{
+			{ID: "wA:p1", WorkspaceID: "wA", CWD: "/x", Focused: true},
+			{ID: "wA:p2", WorkspaceID: "wA", CWD: "/y", Focused: false},
+		},
+	}
+	r := NewRenderer(cfg, config.Probes{}, nil, nil, WithHerdrDriver(driver))
+	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
+	if !strings.Contains(got, "Workspace") {
+		t.Errorf("missing section heading: %q", got)
+	}
+	if !strings.Contains(got, "edit") || !strings.Contains(got, "term") {
+		t.Errorf("missing tab labels: %q", got)
+	}
+	if !strings.Contains(got, "*") {
+		t.Errorf("missing focused marker for active tab: %q", got)
+	}
+	if !strings.Contains(got, "/x") || !strings.Contains(got, "/y") {
+		t.Errorf("missing pane cwds: %q", got)
+	}
+	if len(driver.listCalls) != 2 {
+		t.Errorf("expected 2 herdr list calls, got %d: %v", len(driver.listCalls), driver.listCalls)
+	}
+}
+
+// TestRender_ActivePaneSection (PR4) renders the focused pane's captured
+// terminal buffer, capped at MaxLines.
+func TestRender_ActivePaneSection(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.PreviewConfig{
+		MaxLines: 42,
+		Sections: []config.PreviewSection{
+			{Name: "ActivePane", Type: config.PreviewSectionActivePane},
+		},
+	}
+	driver := &fakePreviewDriver{
+		panes: []source.Pane{
+			{ID: "wA:p2", WorkspaceID: "wA", CWD: "/y", Focused: false},
+			{ID: "wA:p1", WorkspaceID: "wA", CWD: "/x", Focused: true},
+		},
+		readOut: "$ echo hi\nhi\n$ ",
+	}
+	r := NewRenderer(cfg, config.Probes{}, nil, nil, WithHerdrDriver(driver))
+	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
+	if !strings.Contains(got, "ActivePane") {
+		t.Errorf("missing section heading: %q", got)
+	}
+	if !strings.Contains(got, "$ echo hi") {
+		t.Errorf("missing pane buffer: %q", got)
+	}
+	if driver.lastPaneID != "wA:p1" {
+		t.Errorf("ReadPane called on %q, want the focused pane wA:p1", driver.lastPaneID)
+	}
+	if driver.lastLines != 42 {
+		t.Errorf("ReadPane lines = %d, want cfg.MaxLines=42", driver.lastLines)
+	}
+}
+
+// TestRender_ActivePaneSection_FallsBackToFirstPane (PR4) reads the first pane
+// when none is marked focused.
+func TestRender_ActivePaneSection_FallsBackToFirstPane(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.PreviewConfig{
+		MaxLines: 50,
+		Sections: []config.PreviewSection{
+			{Name: "Pane", Type: config.PreviewSectionActivePane},
+		},
+	}
+	driver := &fakePreviewDriver{
+		panes: []source.Pane{
+			{ID: "wA:p1", WorkspaceID: "wA", CWD: "/x", Focused: false},
+			{ID: "wA:p2", WorkspaceID: "wA", CWD: "/y", Focused: false},
+		},
+		readOut: "buffer",
+	}
+	r := NewRenderer(cfg, config.Probes{}, nil, nil, WithHerdrDriver(driver))
+	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
+	if !strings.Contains(got, "buffer") {
+		t.Errorf("missing buffer: %q", got)
+	}
+	if driver.lastPaneID != "wA:p1" {
+		t.Errorf("ReadPane called on %q, want first pane wA:p1", driver.lastPaneID)
+	}
+}
+
+// TestRender_HerdrSections_SkipOnNonHerdrCandidate (PR4) skips workspace and
+// active_pane sections when the candidate has no workspace_id meta key.
+func TestRender_HerdrSections_SkipOnNonHerdrCandidate(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.PreviewConfig{
+		MaxLines: 50,
+		Sections: []config.PreviewSection{
+			{Name: "Workspace", Type: config.PreviewSectionWorkspace},
+			{Name: "Pane", Type: config.PreviewSectionActivePane},
+			{Name: "Identity", Type: config.PreviewSectionBuiltin, Fields: []string{"label"}},
+		},
+	}
+	driver := &fakePreviewDriver{tabs: []source.Tab{{ID: "wA:t1"}}}
+	r := NewRenderer(cfg, config.Probes{}, nil, nil, WithHerdrDriver(driver))
+	// Plain roots candidate, no workspace_id meta.
+	got := mustRender(t, r, candidate("foo", "/p/foo", "roots", ""))
+	want := "Identity\nlabel: foo"
+	if got != want {
+		t.Errorf("non-herdr preview must skip herdr sections:\n got %q\nwant %q", got, want)
+	}
+	if len(driver.listCalls) != 0 || driver.readCalls != 0 {
+		t.Errorf("herdr driver must not be queried for non-herdr candidate: calls=%v read=%d",
+			driver.listCalls, driver.readCalls)
+	}
+}
+
+// TestRender_WorkspaceSection_TimesOutGracefully (PR4 goal 2) confirms a slow
+// daemon is bounded by the 100ms preview timeout and the section degrades to a
+// muted unavailable note instead of hanging the selector.
+func TestRender_WorkspaceSection_TimesOutGracefully(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.PreviewConfig{
+		MaxLines: 50,
+		Sections: []config.PreviewSection{
+			{Name: "Workspace", Type: config.PreviewSectionWorkspace},
+		},
+	}
+	driver := &fakePreviewDriver{block: true}
+	r := NewRenderer(cfg, config.Probes{}, nil, nil, WithHerdrDriver(driver))
+	start := time.Now()
+	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
+	elapsed := time.Since(start)
+	if elapsed > 300*time.Millisecond {
+		t.Fatalf("workspace preview took %v, want bounded by 100ms herdr timeout", elapsed)
+	}
+	if !strings.Contains(got, "Workspace") {
+		t.Errorf("section heading should still render on timeout: %q", got)
+	}
+	if !strings.Contains(got, "unavailable") {
+		t.Errorf("missing muted unavailable note on timeout: %q", got)
+	}
+}
+
+// TestRender_ActivePaneSection_TimesOutGracefully (PR4 goal 2).
+func TestRender_ActivePaneSection_TimesOutGracefully(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.PreviewConfig{
+		MaxLines: 50,
+		Sections: []config.PreviewSection{
+			{Name: "Pane", Type: config.PreviewSectionActivePane},
+		},
+	}
+	driver := &fakePreviewDriver{block: true}
+	r := NewRenderer(cfg, config.Probes{}, nil, nil, WithHerdrDriver(driver))
+	start := time.Now()
+	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
+	elapsed := time.Since(start)
+	if elapsed > 400*time.Millisecond {
+		t.Fatalf("active_pane preview took %v, want bounded by herdr timeouts", elapsed)
+	}
+	if !strings.Contains(got, "unavailable") {
+		t.Errorf("missing muted unavailable note on timeout: %q", got)
+	}
+}
+
+// TestRender_HerdrSections_WithoutDriver (PR4) degrades gracefully when no
+// driver is wired (e.g. herdr not installed): herdr sections are skipped.
+func TestRender_HerdrSections_WithoutDriver(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.PreviewConfig{
+		MaxLines: 50,
+		Sections: []config.PreviewSection{
+			{Name: "Workspace", Type: config.PreviewSectionWorkspace},
+			{Name: "Identity", Type: config.PreviewSectionBuiltin, Fields: []string{"label"}},
+		},
+	}
+	r := NewRenderer(cfg, config.Probes{}, nil, nil)
+	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
+	want := "Identity\nlabel: foo"
+	if got != want {
+		t.Errorf("no driver must skip herdr sections:\n got %q\nwant %q", got, want)
+	}
+}
