@@ -555,3 +555,72 @@ func TestListTabs_ContextDeadlineSurfaces(t *testing.T) {
 		t.Fatal("expected error when context deadline exceeded")
 	}
 }
+
+// readPaneOut wraps a raw stdout string for ReadPane calls. ReadPane does not
+// parse a JSON envelope; `herdr pane read --format ansi` returns the captured
+// terminal buffer directly.
+func readPaneOut(content string) []byte { return []byte(content) }
+
+// TestReadPane_ReturnsBuffer (4.2/4.5) runs `herdr pane read <pane_id>
+// --lines <n> --format ansi` and returns the raw stdout buffer.
+func TestReadPane_ReturnsBuffer(t *testing.T) {
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr pane read wA:p1 --lines 50 --format ansi", out: readPaneOut("$ ls\nfile.go")},
+	}}
+	d := New("herdr", WithRunner(r))
+	got, err := d.ReadPane(context.Background(), "wA:p1", 50)
+	if err != nil {
+		t.Fatalf("ReadPane: %v", err)
+	}
+	if got != "$ ls\nfile.go" {
+		t.Errorf("ReadPane buffer: got %q want %q", got, "$ ls\\nfile.go")
+	}
+}
+
+// TestReadPane_AnonlinesZeroDefaults (4.5): lines <= 0 omits the flag so the
+// daemon applies its own default cap.
+func TestReadPane_AnonlinesZeroDefaults(t *testing.T) {
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr pane read wA:p1 --format ansi", out: readPaneOut("ok")},
+	}}
+	d := New("herdr", WithRunner(r))
+	got, err := d.ReadPane(context.Background(), "wA:p1", 0)
+	if err != nil {
+		t.Fatalf("ReadPane: %v", err)
+	}
+	if got != "ok" {
+		t.Errorf("ReadPane buffer: got %q want %q", got, "ok")
+	}
+}
+
+// TestReadPane_EmptyPaneIDReturnsError (4.5): an empty pane id is rejected
+// before shelling out.
+func TestReadPane_EmptyPaneIDReturnsError(t *testing.T) {
+	d := New("herdr", WithRunner(&fakeRunner{}))
+	if _, err := d.ReadPane(context.Background(), "", 50); err == nil {
+		t.Fatal("expected error for empty pane id")
+	}
+}
+
+// TestReadPane_CommandErrorReturnsError (4.5): a read command failure
+// surfaces as an error.
+func TestReadPane_CommandErrorReturnsError(t *testing.T) {
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr pane read wA:p1 --lines 10 --format ansi", err: errors.New("exit status 1")},
+	}}
+	d := New("herdr", WithRunner(r))
+	if _, err := d.ReadPane(context.Background(), "wA:p1", 10); err == nil {
+		t.Fatal("expected error when pane read command fails")
+	}
+}
+
+// TestReadPane_ContextDeadlineSurfaces (4.5).
+func TestReadPane_ContextDeadlineSurfaces(t *testing.T) {
+	runner := &blockingHerdrRunner{}
+	d := New("herdr", WithRunner(runner))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if _, err := d.ReadPane(ctx, "wA:p1", 50); err == nil {
+		t.Fatal("expected error when context deadline exceeded")
+	}
+}

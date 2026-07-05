@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/tranceh2/shep/internal/source"
@@ -466,9 +467,24 @@ func (d *Driver) ListAgents(ctx context.Context) ([]source.Agent, error) {
 }
 
 // ReadPane returns the captured terminal buffer of a pane via
-// `herdr pane read <pane_id> --lines <lines> --format ansi`.
+// `herdr pane read <pane_id> --lines <lines> --format ansi`. Unlike the list
+// methods, ReadPane does not parse a JSON envelope: `--format ansi` returns
+// the raw terminal buffer as stdout. lines <= 0 omits the flag so the daemon
+// applies its own default cap.
 func (d *Driver) ReadPane(ctx context.Context, paneID string, lines int) (string, error) {
-	return "", errors.New("herdr ReadPane: not implemented")
+	if paneID == "" {
+		return "", errors.New("herdr pane read: empty pane id")
+	}
+	args := []string{"pane", "read", paneID}
+	if lines > 0 {
+		args = append(args, "--lines", strconv.Itoa(lines))
+	}
+	args = append(args, "--format", "ansi")
+	out, err := d.run.Run(ctx, d.binary, args...)
+	if err != nil {
+		return "", fmt.Errorf("herdr pane read %s: %w", paneID, err)
+	}
+	return string(out), nil
 }
 
 // normalizePath mirrors the resolver's normalisation (expand ~, absolute,
