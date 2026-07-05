@@ -218,6 +218,41 @@ func TestRender_HumanHasColumns(t *testing.T) {
 	}
 }
 
+// TestList_IncludesConfigWorkspaces (PR3 task 3.4) confirms predefined
+// [[workspaces]] entries surface as candidates with Source "config" in `shep
+// list` output across the human, tsv and json formats.
+func TestList_IncludesConfigWorkspaces(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	proj := filepath.Join(tmp, "proj")
+	if err := os.Mkdir(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.Workspaces = []config.WorkspaceConfig{{Name: "proj", Path: proj}}
+
+	for _, format := range []string{"human", "tsv", "json"} {
+		t.Run(format, func(t *testing.T) {
+			t.Parallel()
+			out, _, err := runListFor(t, cfg, format)
+			if err != nil {
+				t.Fatalf("list %s: %v", format, err)
+			}
+			if !strings.Contains(out, "proj") {
+				t.Errorf("list %s missing workspace label 'proj':\n%s", format, out)
+			}
+			// tsv deliberately emits path\tlabel (no source column); human and
+			// json expose the source column where "config" must appear.
+			if format == "tsv" {
+				return
+			}
+			if !strings.Contains(out, "config") {
+				t.Errorf("list %s missing 'config' source:\n%s", format, out)
+			}
+		})
+	}
+}
+
 func TestParseFormat(t *testing.T) {
 	t.Parallel()
 	for _, in := range []string{"", "human"} {

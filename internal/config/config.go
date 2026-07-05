@@ -25,12 +25,14 @@ type Kind string
 
 // Supported source kinds. Built-in providers (cwd, herdr, zoxide) activate by
 // default when their binary is available; the roots kind scans a user-supplied
-// directory and therefore only ever appears in user configuration.
+// directory and therefore only ever appears in user configuration; the config
+// kind references the predefined-workspace provider that reads [[workspaces]].
 const (
 	KindCwd    Kind = "cwd"
 	KindHerdr  Kind = "herdr"
 	KindZoxide Kind = "zoxide"
 	KindRoots  Kind = "roots"
+	KindConfig Kind = "config"
 )
 
 // Selector values for the [general].selector field. They pick the interactive

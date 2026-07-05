@@ -369,3 +369,109 @@ func TestExpandTilde(t *testing.T) {
 		t.Errorf("non-tilde input should pass through, got %q", got)
 	}
 }
+
+// TestConfigProvider_List turns predefined [[workspaces]] entries into
+// candidates labelled by Name, with tilde-expanded paths, under Source
+// "config". Cannot run t.Parallel because it mutates HOME for tilde expansion.
+func TestConfigProvider_List(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	abs := filepath.Join(home, "code", "shep")
+	if err := os.MkdirAll(abs, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	cfg := config.Defaults()
+	cfg.Workspaces = []config.WorkspaceConfig{
+		{Name: "docs", Path: "~/docs"},
+		{Name: "shep", Path: abs},
+	}
+	p := &configProvider{cfg: cfg}
+	cands, err := p.List(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if got, want := len(cands), 2; got != want {
+		t.Fatalf("expected 2 candidates, got %d: %+v", got, cands)
+	}
+	wantDocs := filepath.Join(home, "docs")
+	if cands[0].Path != wantDocs {
+		t.Errorf("docs path: got %q want %q", cands[0].Path, wantDocs)
+	}
+	if cands[0].Label != "docs" {
+		t.Errorf("docs label: got %q want docs", cands[0].Label)
+	}
+	if cands[0].Source != "config" {
+		t.Errorf("docs source: got %q", cands[0].Source)
+	}
+	if cands[1].Path != abs {
+		t.Errorf("shep path: got %q want %q", cands[1].Path, abs)
+	}
+	if cands[1].Label != "shep" {
+		t.Errorf("shep label: got %q", cands[1].Label)
+	}
+}
+
+// TestConfigProvider_Enabled gates on non-empty Workspaces and honours a
+// sources override disabling the provider (parity with herdr/zoxide).
+func TestConfigProvider_Enabled(t *testing.T) {
+	t.Parallel()
+	empty := config.Defaults()
+	if (configProvider{cfg: empty}).enabled(empty, config.Probes{}) {
+		t.Error("configProvider should be disabled when Workspaces is empty")
+	}
+	cfg := config.Defaults()
+	cfg.Workspaces = []config.WorkspaceConfig{{Name: "x", Path: "/x"}}
+	if !(configProvider{cfg: cfg}).enabled(cfg, config.Probes{}) {
+		t.Error("configProvider should be enabled when Workspaces non-empty")
+	}
+	cfg.Sources["config"] = config.Source{Kind: config.KindConfig, Enabled: false}
+	if (configProvider{cfg: cfg}).enabled(cfg, config.Probes{}) {
+		t.Error("configProvider should be disabled by sources override")
+	}
+}
+
+// TestConfigProvider_RegisteredInNewRegistry confirms the config provider is
+// part of the registry's provider set so `shep list`/`shep open` surface
+// configured workspaces.
+func TestConfigProvider_RegisteredInNewRegistry(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.Workspaces = []config.WorkspaceConfig{{Name: "x", Path: "/x"}}
+	r := NewRegistry(cfg, config.Probes{}, nil)
+	names := map[string]bool{}
+	for _, p := range r.Providers() {
+		if p.Name() == "config" {
+			names["config"] = true
+		}
+	}
+	if !names["config"] {
+		t.Fatal("configProvider not registered in NewRegistry")
+	}
+	for _, p := range r.Enabled() {
+		if p.Name() == "config" {
+			return // found and enabled
+		}
+	}
+	t.Error("configProvider should be enabled when Workspaces non-empty")
+}
+
+// TestConfigProvider_ListHonoursContextCancellation ensures the provider
+// aborts when its context is already cancelled.
+func TestConfigProvider_ListHonoursContextCancellation(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.Workspaces = []config.WorkspaceConfig{
+		{Name: "a", Path: "/a"},
+		{Name: "b", Path: "/b"},
+	}
+	p := &configProvider{cfg: cfg}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cands, err := p.List(ctx)
+	if err != context.Canceled {
+		t.Errorf("err: got %v want context.Canceled", err)
+	}
+	if cands != nil {
+		t.Errorf("expected nil candidates on cancelled ctx, got %v", cands)
+	}
+}

@@ -128,6 +128,7 @@ func NewRegistry(cfg *config.Config, probes config.Probes, herdrDriver HerdrDriv
 		providers: []Provider{
 			&cwdProvider{},
 			&rootsProvider{cfg: cfg},
+			&configProvider{cfg: cfg},
 			&herdrProvider{driver: herdrDriver, probes: probes, cfg: cfg},
 			&zoxideProvider{probes: probes, cfg: cfg},
 		},
@@ -306,6 +307,51 @@ func ListRoots(ctx context.Context, cfg *config.Config) ([]Candidate, error) {
 				Source: name,
 			})
 		}
+	}
+	return out, nil
+}
+
+// --- config provider ---
+
+// configProvider surfaces predefined [[workspaces]] entries from the config as
+// selectable candidates. It is the user-curated counterpart to the dynamic
+// providers (cwd, roots, herdr, zoxide): each workspace yields one candidate
+// with Label = workspace Name, Path = tilde-expanded workspace Path, and
+// Source = "config". It activates when cfg.Workspaces is non-empty and the
+// config does not disable it via a sources override (KindConfig + enabled=false).
+type configProvider struct {
+	cfg *config.Config
+}
+
+func (configProvider) Name() string { return "config" }
+
+// enabled: at least one predefined workspace AND not disabled by override.
+// Gating on non-empty Workspaces keeps the default (empty) config from
+// registering an inert provider and keeps `shep list` output minimal on a
+// pristine machine.
+func (configProvider) enabled(cfg *config.Config, _ config.Probes) bool {
+	if cfg == nil {
+		return false
+	}
+	if s, ok := cfg.Sources["config"]; ok && s.Kind == config.KindConfig && !s.Enabled {
+		return false
+	}
+	return len(cfg.Workspaces) > 0
+}
+
+func (p *configProvider) List(ctx context.Context) ([]Candidate, error) {
+	out := make([]Candidate, 0, len(p.cfg.Workspaces))
+	for _, ws := range p.cfg.Workspaces {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		out = append(out, Candidate{
+			Path:   expandTilde(ws.Path),
+			Label:  ws.Name,
+			Source: "config",
+		})
 	}
 	return out, nil
 }
