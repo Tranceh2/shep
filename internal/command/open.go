@@ -2,6 +2,7 @@ package command
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -175,6 +176,12 @@ func (a *App) resolveCandidate(cmd *cobra.Command, query, pathFlag string, out, 
 	}
 	pick, ok, selErr := cascade.Select(cmd.Context(), matches, query)
 	if selErr != nil {
+		if errors.Is(selErr, tui.ErrCancelled) {
+			// The user cancelled interactively (esc/ctrl+c/ctrl+g). This is a
+			// normal, quiet outcome, not an error to surface: no candidate
+			// list, no ambiguous/selector-unavailable noise.
+			return source.Candidate{}, false, errExitOne
+		}
 		printCandidates(out, all)
 		fmt.Fprintf(errOut, "ambiguous: %s (%d matches)\n", query, len(matches))
 		fmt.Fprintf(errOut, "selector unavailable: %v\n", selErr)

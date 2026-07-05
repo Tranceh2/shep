@@ -14,6 +14,7 @@ import (
 	"github.com/tranceh2/shep/internal/preview"
 	"github.com/tranceh2/shep/internal/selector"
 	"github.com/tranceh2/shep/internal/source"
+	"github.com/tranceh2/shep/internal/tui"
 )
 
 // fakePreviewRenderer is a minimal preview.Renderer stub for command-package
@@ -307,6 +308,27 @@ func TestOpen_SelectorErrorFallsBackToAmbiguousList(t *testing.T) {
 	}
 	if !strings.Contains(errOut, "selector unavailable") {
 		t.Errorf("stderr = %q, want selector unavailable warning", errOut)
+	}
+}
+
+// TestOpen_CancelledSelectorExitsQuietly: when the selector cascade returns
+// tui.ErrCancelled (the user pressed esc/ctrl+c/ctrl+g), open must exit 1
+// without printing the candidate list or any ambiguous/selector-unavailable
+// noise to stdout/stderr — cancelling is a normal, quiet outcome, not an
+// error to report.
+func TestOpen_CancelledSelectorExitsQuietly(t *testing.T) {
+	cfg, _ := seedCfg(t, "foo", "foobar")
+	driver := &openDriver{detect: true}
+	cascade := selector.New(fakeSelector{err: tui.ErrCancelled})
+	out, errOut, err := runOpen(t, cfg, driver, cascade, "foo")
+	if err == nil {
+		t.Fatal("expected exit 1 on cancellation")
+	}
+	if strings.TrimSpace(out) != "" {
+		t.Errorf("stdout = %q, want empty on cancellation", out)
+	}
+	if strings.TrimSpace(errOut) != "" {
+		t.Errorf("stderr = %q, want empty on cancellation", errOut)
 	}
 }
 
