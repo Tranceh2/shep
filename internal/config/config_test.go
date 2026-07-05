@@ -562,3 +562,33 @@ func TestExampleTOML_DocumentsWorkspacesAndWildcards(t *testing.T) {
 		t.Errorf("ExampleTOML leaked a developer path:\n%s", got)
 	}
 }
+
+// TestValidatePreview_AcceptsWorkspaceAndActivePaneSections (PR4 goal 3)
+// confirms validatePreview accepts the new "workspace" and "active_pane"
+// section types in addition to the existing "builtin" and "git".
+func TestValidatePreview_AcceptsWorkspaceAndActivePaneSections(t *testing.T) {
+	t.Parallel()
+
+	p := PreviewConfig{
+		Sections: []PreviewSection{
+			{Name: "Workspace", Type: PreviewSectionWorkspace},
+			{Name: "ActivePane", Type: PreviewSectionActivePane},
+		},
+	}
+	if err := validatePreview(p); err != nil {
+		t.Fatalf("validatePreview rejected workspace/active_pane sections: %v", err)
+	}
+}
+
+// TestValidatePreview_RejectsUnknownSectionType guards the schema: an unknown
+// section type still fails fast.
+func TestValidatePreview_RejectsUnknownSectionType(t *testing.T) {
+	t.Parallel()
+
+	p := PreviewConfig{
+		Sections: []PreviewSection{{Name: "X", Type: "nope"}},
+	}
+	if err := validatePreview(p); err == nil {
+		t.Fatal("expected error for unknown section type")
+	}
+}

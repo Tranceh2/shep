@@ -134,10 +134,16 @@ type WildcardConfig struct {
 }
 
 // Preview section type values. A "builtin" section renders the named candidate
-// fields directly; a "git" section renders a fast git summary.
+// fields directly; a "git" section renders a fast git summary; a "workspace"
+// section renders an indented tree of tabs/panes for an active herdr
+// workspace; an "active_pane" section renders the active pane's captured
+// terminal buffer. The two herdr-backed sections degrade to a muted skip when
+// the candidate is not an active herdr workspace.
 const (
-	PreviewSectionBuiltin = "builtin"
-	PreviewSectionGit     = "git"
+	PreviewSectionBuiltin     = "builtin"
+	PreviewSectionGit         = "git"
+	PreviewSectionWorkspace   = "workspace"
+	PreviewSectionActivePane  = "active_pane"
 )
 
 // Valid builtin section field names drawn from the candidate. Unknown field
@@ -400,11 +406,13 @@ func validatePreview(p PreviewConfig) error {
 						i, f, PreviewFieldPath, PreviewFieldLabel, PreviewFieldSource, PreviewFieldTemplate)
 				}
 			}
-		case PreviewSectionGit:
-			// git sections render a fixed summary; fields are ignored.
+		case PreviewSectionGit, PreviewSectionWorkspace, PreviewSectionActivePane:
+			// git sections render a fixed summary; workspace/active_pane
+			// render herdr-backed previews. Fields are ignored for all three.
 		default:
-			return fmt.Errorf("preview.sections[%d]: type %q is invalid (valid: %s, %s)",
-				i, sec.Type, PreviewSectionBuiltin, PreviewSectionGit)
+			return fmt.Errorf("preview.sections[%d]: type %q is invalid (valid: %s, %s, %s, %s)",
+				i, sec.Type, PreviewSectionBuiltin, PreviewSectionGit,
+				PreviewSectionWorkspace, PreviewSectionActivePane)
 		}
 	}
 	return nil
