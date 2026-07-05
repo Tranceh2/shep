@@ -236,8 +236,11 @@ func TestResolveFromSources_PipelineEndToEnd(t *testing.T) {
 	if len(matches) != 1 {
 		t.Fatalf("expected 1 match, got %d (all=%d)", len(matches), len(all))
 	}
-	if matches[0].Label != "alpha" {
-		t.Errorf("match label: got %q", matches[0].Label)
+	// tmp is outside $HOME here, so the roots provider's home-relative Label
+	// is the full path unchanged.
+	wantLabel := filepath.Join(tmp, "alpha")
+	if matches[0].Label != wantLabel {
+		t.Errorf("match label: got %q, want %q", matches[0].Label, wantLabel)
 	}
 }
 

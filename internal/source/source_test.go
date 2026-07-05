@@ -91,8 +91,78 @@ func TestRootsProvider_EnabledAndList(t *testing.T) {
 			t.Errorf("source: got %q", c.Source)
 		}
 	}
-	if !labels["alpha"] || !labels["beta"] {
-		t.Errorf("missing expected labels: %v", labels)
+	// Labels are home-relative display paths (RelativeLabel), not bare base
+	// names; root here is outside $HOME (t.TempDir()) so the full path
+	// passes through unchanged.
+	wantAlpha := filepath.Join(root, "alpha")
+	wantBeta := filepath.Join(root, "beta")
+	if !labels[wantAlpha] || !labels[wantBeta] {
+		t.Errorf("missing expected labels: %v (want %q, %q)", labels, wantAlpha, wantBeta)
+	}
+}
+
+// TestCwdProvider_ListUsesRelativeLabel proves the cwd candidate's Label is
+// home-relative when the process cwd sits under $HOME. Cannot run
+// t.Parallel because it mutates HOME and the process cwd.
+func TestCwdProvider_ListUsesRelativeLabel(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("eval symlinks: %v", err)
+	}
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, "work", "proj")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+
+	cands, err := (cwdProvider{}).List(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(cands) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(cands))
+	}
+	want := "~/work/proj"
+	if cands[0].Label != want {
+		t.Errorf("Label = %q, want %q", cands[0].Label, want)
+	}
+}
+
+// TestRootsProvider_ListUsesRelativeLabel proves roots candidates get a
+// home-relative Label (not a bare base name) when the root sits under $HOME.
+// Cannot run t.Parallel because it mutates HOME.
+func TestRootsProvider_ListUsesRelativeLabel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, "projects")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "gamma"), 0o755); err != nil {
+		t.Fatalf("mkdir gamma: %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.Sources["dev"] = config.Source{Kind: config.KindRoots, Enabled: true, Options: map[string]string{"path": root}}
+	rp := &rootsProvider{cfg: cfg}
+	cands, err := rp.List(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(cands) != 1 {
+		t.Fatalf("expected 1 candidate, got %d: %+v", len(cands), cands)
+	}
+	want := "~/projects/gamma"
+	if cands[0].Label != want {
+		t.Errorf("Label = %q, want %q", cands[0].Label, want)
 	}
 }
 

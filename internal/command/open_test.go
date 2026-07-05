@@ -291,9 +291,12 @@ func TestOpen_SelectorErrorFallsBackToAmbiguousList(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected exit 1 on selector error")
 	}
+	// root is outside $HOME here, so the roots provider's home-relative
+	// Label is the raw (pre-normalization) path unchanged, not the bare
+	// directory name. The path column uses the normalised/resolved path.
 	for _, want := range []string{
-		foo + "\tfoo\n",
-		foobar + "\tfoobar\n",
+		foo + "\t" + filepath.Join(root, "foo") + "\n",
+		foobar + "\t" + filepath.Join(root, "foobar") + "\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("stdout = %q, want candidate line %q", out, want)

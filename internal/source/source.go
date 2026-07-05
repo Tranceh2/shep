@@ -239,7 +239,7 @@ func (cwdProvider) List(ctx context.Context) ([]Candidate, error) {
 		return nil, ctx.Err()
 	default:
 	}
-	return []Candidate{{Path: dir, Label: baseLabel(dir), Source: "cwd"}}, nil
+	return []Candidate{{Path: dir, Label: RelativeLabel(dir), Source: "cwd"}}, nil
 }
 
 // --- roots provider ---
@@ -302,7 +302,7 @@ func ListRoots(ctx context.Context, cfg *config.Config) ([]Candidate, error) {
 			full := filepath.Join(root, e.Name())
 			out = append(out, Candidate{
 				Path:   full,
-				Label:  e.Name(),
+				Label:  RelativeLabel(full),
 				Source: name,
 			})
 		}
@@ -407,7 +407,7 @@ func (zoxideProvider) List(ctx context.Context) ([]Candidate, error) {
 		}
 		cands = append(cands, Candidate{
 			Path:   path,
-			Label:  baseLabel(path),
+			Label:  RelativeLabel(path),
 			Source: "zoxide",
 		})
 	}

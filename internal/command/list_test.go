@@ -139,16 +139,17 @@ func TestList_DedupAcrossSources(t *testing.T) {
 		t.Fatalf("list: %v", err)
 	}
 	// Both the cwd candidate and the dev-roots "proj" candidate normalise to
-	// the same path; dedup must leave exactly one "proj" row.
+	// the same path; dedup must leave exactly one "proj" row. project is
+	// outside $HOME here, so its home-relative Label is the path unchanged.
 	count := 0
 	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
 		parts := strings.SplitN(line, "\t", 2)
-		if len(parts) == 2 && parts[1] == "proj" {
+		if len(parts) == 2 && parts[1] == project {
 			count++
 		}
 	}
 	if count != 1 {
-		t.Errorf("expected exactly one 'proj' row after dedup, got %d:\n%s", count, out)
+		t.Errorf("expected exactly one %q row after dedup, got %d:\n%s", project, count, out)
 	}
 }
 
