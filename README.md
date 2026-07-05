@@ -76,6 +76,7 @@ shep list --format json    # structured output
 shep open                  # pick interactively (exact -> fzf -> TUI)
 shep open foo              # open the single candidate matching "foo"
 shep open --path /abs/path # open the given absolute path directly
+shep preview /abs/path     # render the workspace preview for a path, then exit
 shep init                  # write a path-agnostic example config
 ```
 
@@ -97,21 +98,64 @@ cwd normalises to the candidate path, or to create a new focused workspace
 `herdr pane run` (focused workspaces skip startup). Herdr absent or unavailable
 prints the resolved path and exits 0.
 
+## Workspace previews
+
+The `shep open` picker's right-hand pane and `shep preview <path>` use the
+same underlying preview renderer and configuration. However, because path-only
+candidates shown via `shep preview` are loaded without the full picker
+candidate context, their source field will show as `path`, so some metadata
+may differ from the picker candidates. With no `[preview]` config at all, shep shows a
+built-in default: `label`, `path`, `source`, a matched `[layouts.<glob>]`
+template (when present), and a fast git summary (skipped when git is missing
+or the check takes longer than 50ms).
+
+```sh
+shep preview /abs/path       # plain text (no ANSI) — safe for pipes/Television
+shep preview --color /path   # Lip Gloss styling, only applied when stdout is a terminal
+```
+
+`[[preview.sections]]` replace the default layout with a declarative one,
+rendered in declaration order:
+
+```toml
+[[preview.sections]]
+name = "Identity"
+type = "builtin"
+fields = ["label", "path", "source", "template"]
+
+[[preview.sections]]
+name = "Git"
+type = "git"
+```
+
+`preview.command` is an escape hatch for a custom preview, executed safely:
+argv-parsed (no `sh -c`), run with a timeout (`preview.timeout`, default
+`100ms`), stdout capped to `preview.max_lines` (default `50`) and cached for
+`preview.cache_ttl` (default `5s`). A timeout, non-zero exit, or stderr output
+falls back to the built-in preview plus a transient warning line — a broken
+custom command never breaks the picker or `shep preview`.
+
+```toml
+[preview]
+command = "git -C {path} log -n 5"
+```
+
 ## Television integration
 
 A [Television](https://github.com/alexpasmantier/television) cable ships at
 [`cables/shep.toml`](cables/shep.toml). Copy it into your Television
-cable-channels directory and launch with `tv shep`:
+cable directory and launch with `tv shep`:
 
 ```sh
-mkdir -p ~/.config/television/cable-channels
-cp cables/shep.toml ~/.config/television/cable-channels/shep.toml
+mkdir -p ~/.config/television/cable
+cp cables/shep.toml ~/.config/television/cable/shep.toml
 tv shep
 ```
 
-The cable's source is `shep list --format tsv`; selecting an entry runs
-`shep open --path {path}`, which flows through the same Herdr focus/create
-path as the CLI.
+The cable's source is `shep list --format tsv`; its preview panel runs
+`shep preview '{split:\t:0}'` (using the same preview configuration as the `shep open` picker); selecting an
+entry runs `shep open --path '{split:\t:0}'`, which flows through the same Herdr
+focus/create path as the CLI.
 
 ## Build, test, lint
 
