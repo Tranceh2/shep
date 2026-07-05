@@ -6,13 +6,14 @@
 // showing the highlighted candidate's rendered preview.Result (label/path/
 // source/git or [[preview.sections]] output, via the injected
 // preview.Renderer). Filtering is case-insensitive subsequence scoring over
-// label+path. Navigation uses up/down/j/k; enter selects; esc/q/ctrl+c
-// cancels. The palette is Catppuccin Mocha, centralised in palette.go so
-// colors live in one place.
+// label+path. Navigation uses up/down/j/k; enter selects; esc/q/ctrl+c/ctrl+g
+// cancels (Run then returns ErrCancelled). The palette is Catppuccin Mocha,
+// centralised in palette.go so colors live in one place.
 package tui
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -24,6 +25,12 @@ import (
 // minPreviewWidth is the terminal width (PL-11) below which the preview
 // panel is hidden entirely to avoid breaking the layout.
 const minPreviewWidth = 80
+
+// ErrCancelled is the quiet cancellation sentinel returned by Run when the
+// user quits without selecting (esc/ctrl+c/ctrl+g). Callers use errors.Is to
+// distinguish an intentional cancel from "no selector available" (ok=false
+// with a nil error) so they can exit without printing anything.
+var ErrCancelled = errors.New("cancelled")
 
 // Model is the Bubble Tea model for the shep picker. It owns the candidate
 // list, the filtered view, the query text, the cursor and the final pick.
@@ -99,7 +106,8 @@ func (m Model) Selected() (source.Candidate, bool) {
 	return m.candidates[idx], true
 }
 
-// Cancelled reports whether the user quit without selecting (esc/q/ctrl+c).
+// Cancelled reports whether the user quit without selecting
+// (esc/q/ctrl+c/ctrl+g).
 func (m Model) Cancelled() bool { return m.cancelled }
 
 // Init kicks off the first async preview render for the initially
@@ -164,7 +172,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		return m, nil
-	case "esc", "q", "ctrl+c":
+	case "esc", "q", "ctrl+c", "ctrl+g":
 		m.cancelled = true
 		return m, tea.Quit
 	}
@@ -448,7 +456,9 @@ func clamp(v, lo, hi int) int {
 // candidate. The query seeds the live filter so users get a head-start (the
 // fzf path forwards a query the same way). renderer backs the async preview
 // pane (nil degrades to the built-in summary). It is the entry point used by
-// the selector's TUI selector.
+// the selector's TUI selector. A cancelled run (esc/ctrl+c/ctrl+g) returns
+// ErrCancelled rather than a plain ok=false so callers can exit quietly
+// instead of treating it as "selector unavailable".
 func Run(ctx context.Context, candidates []source.Candidate, query string, renderer preview.Renderer) (source.Candidate, bool, error) {
 	m := newModel(candidates, renderer, ctx)
 	m.query = query
@@ -459,8 +469,18 @@ func Run(ctx context.Context, candidates []source.Candidate, query string, rende
 	if err != nil {
 		return source.Candidate{}, false, err
 	}
-	res, ok := final.(Model).Selected()
-	return res, ok && !final.(Model).Cancelled(), nil
+	return finalizeRun(final.(Model))
+}
+
+// finalizeRun turns a terminated model's end state into Run's return triple.
+// Factored out so cancellation handling is unit-testable without driving a
+// real Bubble Tea program (Run itself always talks to a real tea.Program).
+func finalizeRun(m Model) (source.Candidate, bool, error) {
+	if m.Cancelled() {
+		return source.Candidate{}, false, ErrCancelled
+	}
+	res, ok := m.Selected()
+	return res, ok, nil
 }
 
 func max(a, b int) int {

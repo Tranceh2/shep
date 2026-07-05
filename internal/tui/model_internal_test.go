@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -99,6 +100,45 @@ func TestModel_RenderListRespectsWidth(t *testing.T) {
 		if got := lipgloss.Width(line); got != width {
 			t.Errorf("line %q rendered width = %d, want %d", line, got, width)
 		}
+	}
+}
+
+// TestFinalizeRun_CancelledReturnsErrCancelled proves Run's tail logic
+// returns the quiet ErrCancelled sentinel (not just ok=false) when the final
+// model reports Cancelled(), so callers can distinguish "user cancelled"
+// from "no selector available".
+func TestFinalizeRun_CancelledReturnsErrCancelled(t *testing.T) {
+	m := NewModel(internalTestCands(), nil)
+	m.cancelled = true
+
+	_, ok, err := finalizeRun(m)
+	if ok {
+		t.Error("expected ok=false when cancelled")
+	}
+	if !errors.Is(err, ErrCancelled) {
+		t.Errorf("expected ErrCancelled, got %v", err)
+	}
+}
+
+// TestFinalizeRun_SelectedReturnsCandidateNilError proves a normal enter
+// selection still returns (candidate, true, nil) with finalizeRun in place.
+func TestFinalizeRun_SelectedReturnsCandidateNilError(t *testing.T) {
+	m := NewModel(internalTestCands(), nil)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("expected Model, got %T", updated)
+	}
+
+	cand, ok, err := finalizeRun(m)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if !ok {
+		t.Fatal("expected ok=true for a selected candidate")
+	}
+	if cand.Label != "a" {
+		t.Errorf("candidate = %+v, want label %q", cand, "a")
 	}
 }
 

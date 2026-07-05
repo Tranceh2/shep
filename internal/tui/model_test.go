@@ -167,6 +167,28 @@ func TestTUI_EscCancels(t *testing.T) {
 	}
 }
 
+// TestTUI_CtrlGCancels: pressing ctrl+g cancels just like esc, so users
+// stuck without an Escape key (some terminals/remote sessions) have a
+// working cancel binding.
+func TestTUI_CtrlGCancels(t *testing.T) {
+	cands := testCandidates()
+	tm := startTUI(t, cands, nil)
+
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return strings.Contains(string(out), "shep")
+	}, teatest.WithDuration(2*time.Second), teatest.WithCheckInterval(10*time.Millisecond))
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlG})
+
+	m := finalModel(t, tm)
+	if !m.Cancelled() {
+		t.Error("expected cancelled=true after ctrl+g")
+	}
+	if _, ok := m.Selected(); ok {
+		t.Error("selection should be empty after ctrl+g")
+	}
+}
+
 // TestTUI_KMovesUp and does not underflow the cursor.
 func TestTUI_KMovesUpWithoutUnderflow(t *testing.T) {
 	cands := testCandidates()
