@@ -351,3 +351,206 @@ func TestModel_ViewFitsWithinReportedWidth(t *testing.T) {
 		}
 	}
 }
+
+// TestModel_ViewShowsCtrlJKHelpLine (PR2: ctrl+j/k navigation) proves the
+// preview pane's keybinding help advertises ctrl+j/k (not bare j/k) for
+// cursor movement, so users know the updated navigation binding. A wide
+// terminal is used so the help line renders unwrapped (it wraps at narrow
+// preview widths, which would split "ctrl+j/k" from "move").
+func TestModel_ViewShowsCtrlJKHelpLine(t *testing.T) {
+	m := tui.NewModel(testCandidates(), nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 24})
+	mm, ok := updated.(tui.Model)
+	if !ok {
+		t.Fatalf("expected tui.Model, got %T", updated)
+	}
+	view := mm.View()
+	if !strings.Contains(view, "ctrl+j/k move") {
+		t.Errorf("expected help line to advertise ctrl+j/k move, got:\n%s", view)
+	}
+	if strings.Contains(view, " j/k move") {
+		t.Errorf("help line still advertises bare j/k move, got:\n%s", view)
+	}
+}
+
+// TestTUI_CtrlJMovesCursorDownSelectsSecond (PR2: ctrl+j navigation): Ctrl+j
+// moves the cursor down exactly like arrow-down used to, so enter commits the
+// second candidate instead of the first.
+func TestTUI_CtrlJMovesCursorDownSelectsSecond(t *testing.T) {
+	cands := testCandidates()
+	tm := startTUI(t, cands, nil)
+
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return strings.Contains(string(out), "shep")
+	}, teatest.WithDuration(2*time.Second), teatest.WithCheckInterval(10*time.Millisecond))
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlJ})
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+
+	m := finalModel(t, tm)
+	pick, ok := m.Selected()
+	if !ok {
+		t.Fatal("expected a selection after ctrl+j+enter, got none")
+	}
+	if pick.Label != "shep-docs" {
+		t.Errorf("selected %q, want shep-docs (ctrl+j must move down)", pick.Label)
+	}
+}
+
+// TestTUI_CtrlJAtBottomDoesNotOverflow (PR2: ctrl+j navigation): pressing
+// ctrl+j past the last candidate keeps the cursor clamped at the last entry,
+// so enter still selects the last one rather than skipping off the list.
+func TestTUI_CtrlJAtBottomDoesNotOverflow(t *testing.T) {
+	cands := testCandidates()
+	tm := startTUI(t, cands, nil)
+
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return strings.Contains(string(out), "shep")
+	}, teatest.WithDuration(2*time.Second), teatest.WithCheckInterval(10*time.Millisecond))
+
+	// Three candidates (indices 0,1,2): press ctrl+j four times; the extra
+	// press at the bottom must NOT advance the cursor past zoxide.
+	for i := 0; i < 4; i++ {
+		tm.Send(tea.KeyMsg{Type: tea.KeyCtrlJ})
+	}
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+
+	m := finalModel(t, tm)
+	pick, ok := m.Selected()
+	if !ok {
+		t.Fatal("expected a selection after ctrl+j overflow attempt, got none")
+	}
+	if pick.Label != "zoxide" {
+		t.Errorf("selected %q, want zoxide (ctrl+j must clamp at last)", pick.Label)
+	}
+}
+
+// TestTUI_CtrlKMovesCursorUpSelectsFirst (PR2: ctrl+k navigation): position
+// the cursor on the second candidate using the arrow-down key (which already
+// works), then ctrl+k must move it back up; enter then commits the first
+// candidate. Using arrow-down rather than ctrl+j to position isolates the
+// ctrl+k assertion: if ctrl+k were a no-op, enter would select shep-docs
+// (second), not shep (first).
+func TestTUI_CtrlKMovesCursorUpSelectsFirst(t *testing.T) {
+	cands := testCandidates()
+	tm := startTUI(t, cands, nil)
+
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return strings.Contains(string(out), "shep")
+	}, teatest.WithDuration(2*time.Second), teatest.WithCheckInterval(10*time.Millisecond))
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyDown})  // -> index 1
+	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlK}) // -> index 0 (only if ctrl+k moves up)
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+
+	m := finalModel(t, tm)
+	pick, ok := m.Selected()
+	if !ok {
+		t.Fatal("expected a selection after down/ctrl+k, got none")
+	}
+	if pick.Label != "shep" {
+		t.Errorf("selected %q, want shep (ctrl+k must move up)", pick.Label)
+	}
+}
+
+// TestTUI_CtrlKAtTopDoesNotUnderflow (PR2: ctrl+k navigation): pressing
+// ctrl+k at the top of the list keeps the cursor at index 0, so enter selects
+// the first candidate instead of dropping off.
+func TestTUI_CtrlKAtTopDoesNotUnderflow(t *testing.T) {
+	cands := testCandidates()
+	tm := startTUI(t, cands, nil)
+
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return strings.Contains(string(out), "shep")
+	}, teatest.WithDuration(2*time.Second), teatest.WithCheckInterval(10*time.Millisecond))
+
+	for i := 0; i < 4; i++ {
+		tm.Send(tea.KeyMsg{Type: tea.KeyCtrlK})
+	}
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+
+	m := finalModel(t, tm)
+	pick, ok := m.Selected()
+	if !ok {
+		t.Fatal("expected a selection after ctrl+k underflow attempt, got none")
+	}
+	if pick.Label != "shep" {
+		t.Errorf("selected %q, want shep (ctrl+k must not underflow)", pick.Label)
+	}
+}
+
+// jkCandidates is a candidate set where one label contains "j" and another
+// contains "k", so a query of "j" or "k" filters down to exactly one entry.
+func jkCandidates() []source.Candidate {
+	return []source.Candidate{
+		{Path: "/code/alpha", NormalizedPath: "/code/alpha", Label: "alpha", Source: "herdr"},
+		{Path: "/code/project", NormalizedPath: "/code/project", Label: "project", Source: "herdr"},
+		{Path: "/code/monkey", NormalizedPath: "/code/monkey", Label: "monkey", Source: "zoxide"},
+	}
+}
+
+// TestTUI_TypingJAppendsToQueryFilters (PR2: bare j/k no longer navigate): a
+// plain "j" keystroke is appended to the query and filters the list down to
+// the single candidate whose label contains "j" (project), instead of moving
+// the cursor down.
+func TestTUI_TypingJAppendsToQueryFilters(t *testing.T) {
+	cands := jkCandidates()
+	tm := startTUI(t, cands, nil)
+
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return strings.Contains(string(out), "alpha")
+	}, teatest.WithDuration(2*time.Second), teatest.WithCheckInterval(10*time.Millisecond))
+
+	tm.Type("j")
+
+	// Filter must drop alpha and monkey, leaving only project visible.
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		s := string(out)
+		return strings.Contains(s, "project") &&
+			!strings.Contains(s, "alpha") &&
+			!strings.Contains(s, "monkey")
+	}, teatest.WithDuration(2*time.Second), teatest.WithCheckInterval(10*time.Millisecond))
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+
+	m := finalModel(t, tm)
+	pick, ok := m.Selected()
+	if !ok {
+		t.Fatal("expected a selection after typing j, got none")
+	}
+	if pick.Label != "project" {
+		t.Errorf("selected %q, want project (j must filter, not navigate)", pick.Label)
+	}
+}
+
+// TestTUI_TypingKAppendsToQueryFilters (PR2: bare j/k no longer navigate): a
+// plain "k" keystroke is appended to the query and filters the list down to
+// the single candidate whose label contains "k" (monkey).
+func TestTUI_TypingKAppendsToQueryFilters(t *testing.T) {
+	cands := jkCandidates()
+	tm := startTUI(t, cands, nil)
+
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return strings.Contains(string(out), "alpha")
+	}, teatest.WithDuration(2*time.Second), teatest.WithCheckInterval(10*time.Millisecond))
+
+	tm.Type("k")
+
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		s := string(out)
+		return strings.Contains(s, "monkey") &&
+			!strings.Contains(s, "alpha") &&
+			!strings.Contains(s, "project")
+	}, teatest.WithDuration(2*time.Second), teatest.WithCheckInterval(10*time.Millisecond))
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+
+	m := finalModel(t, tm)
+	pick, ok := m.Selected()
+	if !ok {
+		t.Fatal("expected a selection after typing k, got none")
+	}
+	if pick.Label != "monkey" {
+		t.Errorf("selected %q, want monkey (k must filter, not navigate)", pick.Label)
+	}
+}

@@ -6,9 +6,11 @@
 // showing the highlighted candidate's rendered preview.Result (label/path/
 // source/git or [[preview.sections]] output, via the injected
 // preview.Renderer). Filtering is case-insensitive subsequence scoring over
-// label+path. Navigation uses up/down/j/k; enter selects; esc/q/ctrl+c/ctrl+g
-// cancels (Run then returns ErrCancelled). The palette is Catppuccin Mocha,
-// centralised in palette.go so colors live in one place.
+// label+path. Navigation uses up/down/ctrl+j/ctrl+k; plain "j"/"k" are typed
+// into the query (not bound to movement) so they filter like any other rune;
+// enter selects; esc/q/ctrl+c/ctrl+g cancels (Run then returns ErrCancelled).
+// The palette is Catppuccin Mocha, centralised in palette.go so colors live in
+// one place.
 package tui
 
 import (
@@ -191,11 +193,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	prevKey := m.currentPreviewKey()
 	switch msg.String() {
-	case "down", "j":
+	// ctrl+j/ctrl+k navigate the cursor; plain "j"/"k" are intentionally NOT
+	// listed here so they fall through to the default case and get typed into
+	// the query instead of moving the cursor.
+	case "down", "ctrl+j":
 		if len(m.filtered) > 0 && m.cursor < len(m.filtered)-1 {
 			m.cursor++
 		}
-	case "up", "k":
+	case "up", "ctrl+k":
 		if m.cursor > 0 {
 			m.cursor--
 		}
@@ -449,7 +454,7 @@ func (m Model) renderList(width int) string {
 func (m Model) renderPreview(width int) string {
 	header := palette.previewHeaderStyle.Width(width).Render("preview")
 	body := m.previewBody(width)
-	help := palette.mutedStyle.Width(width).Render("enter select  esc cancel  j/k move")
+	help := palette.mutedStyle.Width(width).Render("enter select  esc cancel  ctrl+j/k move")
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, "", help)
 }
 
