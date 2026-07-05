@@ -584,3 +584,70 @@ func TestApp_BuildPreviewRenderer_ReturnsNonNil(t *testing.T) {
 		t.Fatal("expected buildPreviewRenderer to return a non-nil Renderer")
 	}
 }
+
+// recordingDriver is an open-scoped HerdrDriver that records the preview
+// queries (ListTabs/ListPanes/ReadPane) so the CLI wiring test can prove the
+// injected driver reaches the preview renderer.
+type recordingDriver struct {
+	tabsQueried  int
+	panesQueried int
+	readQueried  int
+}
+
+func (*recordingDriver) Detect(context.Context) bool { return true }
+func (*recordingDriver) ListWorkspaces(context.Context) ([]source.Workspace, error) {
+	return nil, nil
+}
+func (*recordingDriver) FocusOrCreate(context.Context, source.Candidate) (source.FocusResult, error) {
+	return source.FocusResult{}, errors.New("not used")
+}
+func (*recordingDriver) RunStartup(context.Context, string, string) error {
+	return errors.New("not used")
+}
+func (*recordingDriver) ListAgents(context.Context) ([]source.Agent, error) { return nil, nil }
+func (d *recordingDriver) ListTabs(_ context.Context, _ string) ([]source.Tab, error) {
+	d.tabsQueried++
+	return []source.Tab{{ID: "wA:t1", WorkspaceID: "wA", Label: "edit", Focused: true, Number: 1, PaneCount: 2}}, nil
+}
+func (d *recordingDriver) ListPanes(_ context.Context, _ string) ([]source.Pane, error) {
+	d.panesQueried++
+	return []source.Pane{{ID: "wA:p1", WorkspaceID: "wA", CWD: "/x", Focused: true}}, nil
+}
+func (d *recordingDriver) ReadPane(_ context.Context, _ string, _ int) (string, error) {
+	d.readQueried++
+	return "$ echo hi", nil
+}
+
+// TestApp_BuildPreviewRenderer_ThreadsHerdrDriver (4.4) proves an injected
+// HerdrDriver is wired into the preview renderer so workspace/active_pane
+// sections render against it instead of being skipped.
+func TestApp_BuildPreviewRenderer_ThreadsHerdrDriver(t *testing.T) {
+	driver := &recordingDriver{}
+	app := New(WithHerdrDriver(driver))
+	app.cfg = config.Defaults()
+	app.cfg.Preview.Sections = []config.PreviewSection{
+		{Name: "Workspace", Type: config.PreviewSectionWorkspace},
+		{Name: "Pane", Type: config.PreviewSectionActivePane},
+	}
+	app.probes = config.Probes{}
+	r := app.buildPreviewRenderer()
+
+	cand := source.Candidate{
+		Path: "/x", Label: "foo", Source: "herdr",
+		Meta: map[string]string{"workspace_id": "wA"},
+	}
+	res, err := r.Render(context.Background(), cand, preview.RenderOptions{})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if driver.tabsQueried == 0 || driver.panesQueried == 0 || driver.readQueried == 0 {
+		t.Errorf("driver not threaded into renderer: tabs=%d panes=%d read=%d",
+			driver.tabsQueried, driver.panesQueried, driver.readQueried)
+	}
+	if !strings.Contains(res.Text, "edit") {
+		t.Errorf("workspace section did not render tabs from driver: %q", res.Text)
+	}
+	if !strings.Contains(res.Text, "$ echo hi") {
+		t.Errorf("active_pane section did not render buffer from driver: %q", res.Text)
+	}
+}

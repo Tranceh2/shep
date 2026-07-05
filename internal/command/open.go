@@ -62,9 +62,12 @@ func (a *App) selectorFactory() *selector.Cascade {
 }
 
 // buildPreviewRenderer wires the production preview.Renderer from the loaded
-// config and binary probes so the TUI's preview pane and the future `shep
-// preview <path>` command share identical rendering behaviour (design:
-// "same Renderer backs both views").
+// config and binary probes so the TUI's preview pane and the `shep preview`
+// command share identical rendering behaviour (design: "same Renderer backs
+// both views"). The active Herdr driver (if any) is threaded in via
+// WithHerdrDriver so the workspace/active_pane preview sections can enumerate
+// tabs/panes and read the active pane; with no driver those sections degrade
+// to a muted skip.
 func (a *App) buildPreviewRenderer() preview.Renderer {
 	cfg := a.Config()
 	var git preview.GitProvider
@@ -75,7 +78,11 @@ func (a *App) buildPreviewRenderer() preview.Renderer {
 	if cfg.Preview.Command != "" {
 		runner = preview.NewCommandRunner()
 	}
-	return preview.NewRenderer(cfg.Preview, a.Probes(), git, runner)
+	var opts []preview.RendererOption
+	if driver := a.Driver(); driver != nil {
+		opts = append(opts, preview.WithHerdrDriver(driver))
+	}
+	return preview.NewRenderer(cfg.Preview, a.Probes(), git, runner, opts...)
 }
 
 // cascadeFor builds the selector cascade for a [general].selector value.
