@@ -434,6 +434,27 @@ func expandTilde(p string) string {
 	return p
 }
 
+// userHomeDir resolves the current user's home directory. It is a package
+// variable (not called directly as os.UserHomeDir) so tests can simulate an
+// unresolvable home directory for RelativeLabel's fallback path.
+var userHomeDir = os.UserHomeDir
+
+// RelativeLabel formats an absolute path for display. Paths under the
+// current user's home directory render "~/..." style; paths outside home,
+// or any path when the home directory cannot be resolved, fall back to the
+// path unchanged (outside home) or the path's base name (home unresolvable).
+func RelativeLabel(p string) string {
+	home, err := userHomeDir()
+	if err != nil || home == "" {
+		return filepath.Base(p)
+	}
+	rel, err := filepath.Rel(home, p)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return p
+	}
+	return filepath.Join("~", rel)
+}
+
 // baseLabel derives a human label from a path's base; empty paths yield "?".
 func baseLabel(p string) string {
 	if p == "" {

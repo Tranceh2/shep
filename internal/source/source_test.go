@@ -253,6 +253,41 @@ func TestRegistry_CollectPreservesResultsOnPartialError(t *testing.T) {
 	}
 }
 
+// TestRelativeLabel_PathUnderHome converts an absolute path under $HOME to
+// "~/..." form. Cannot run t.Parallel because it mutates HOME.
+func TestRelativeLabel_PathUnderHome(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	got := RelativeLabel("/home/user/projects/foo")
+	want := "~/projects/foo"
+	if got != want {
+		t.Errorf("RelativeLabel = %q, want %q", got, want)
+	}
+}
+
+// TestRelativeLabel_PathOutsideHome leaves a path outside $HOME unchanged.
+func TestRelativeLabel_PathOutsideHome(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	got := RelativeLabel("/opt/bar")
+	want := "/opt/bar"
+	if got != want {
+		t.Errorf("RelativeLabel = %q, want %q", got, want)
+	}
+}
+
+// TestRelativeLabel_HomeUnresolvable falls back to the path's base name when
+// the home directory cannot be resolved.
+func TestRelativeLabel_HomeUnresolvable(t *testing.T) {
+	orig := userHomeDir
+	userHomeDir = func() (string, error) { return "", errors.New("no home") }
+	defer func() { userHomeDir = orig }()
+
+	got := RelativeLabel("/home/user/x")
+	want := "x"
+	if got != want {
+		t.Errorf("RelativeLabel = %q, want %q", got, want)
+	}
+}
+
 // TestExpandTilde covers the developer-shorthand expansion used by roots.
 // Cannot run t.Parallel because it mutates HOME.
 func TestExpandTilde(t *testing.T) {
