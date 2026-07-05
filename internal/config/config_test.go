@@ -22,8 +22,11 @@ func TestDefaults_PathAgnostic(t *testing.T) {
 	if cfg.Sources == nil {
 		t.Fatal("Defaults Sources map must be non-nil")
 	}
-	if cfg.Layouts == nil {
-		t.Fatal("Defaults Layouts map must be non-nil")
+	if cfg.Workspaces == nil {
+		t.Fatal("Defaults Workspaces slice must be non-nil")
+	}
+	if cfg.Wildcards == nil {
+		t.Fatal("Defaults Wildcards slice must be non-nil")
 	}
 	b, err := toml.Marshal(cfg)
 	if err != nil {
@@ -71,7 +74,7 @@ func TestLoad_MissingFileFallsBackToDefaults(t *testing.T) {
 }
 
 // TestLoad_ParsesSchema (CD-3) covers general, herdr, sources (roots +
-// override-disable), and layouts sections.
+// override-disable), defaults, workspaces, and wildcards sections.
 func TestLoad_ParsesSchema(t *testing.T) {
 	t.Parallel()
 
@@ -82,6 +85,23 @@ provider_order = ["herdr", "zoxide", "cwd"]
 [herdr]
 binary = "/usr/local/bin/herdr"
 
+[defaults]
+startup = "make"
+preview = "echo hi"
+
+[[workspaces]]
+name = "docs"
+path = "~/docs"
+startup = "just serve"
+
+[[workspaces]]
+name = "shep"
+path = "~/code/shep"
+
+[[wildcards]]
+pattern = "**/*.go"
+startup = "go test ./..."
+
 [sources.repos]
 kind = "roots"
 enabled = true
@@ -91,9 +111,6 @@ path = "~/code"
 [sources.zoxide]
 kind = "zoxide"
 enabled = false
-
-[layouts."**/*.go"]
-startup = "go test ./..."
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
@@ -109,6 +126,37 @@ startup = "go test ./..."
 	}
 	if got, want := cfg.Herdr.Binary, "/usr/local/bin/herdr"; got != want {
 		t.Errorf("herdr binary: got %q want %q", got, want)
+	}
+	if got, want := cfg.Defaults.Startup, "make"; got != want {
+		t.Errorf("defaults startup: got %q want %q", got, want)
+	}
+	if got, want := cfg.Defaults.Preview, "echo hi"; got != want {
+		t.Errorf("defaults preview: got %q want %q", got, want)
+	}
+	if got, want := len(cfg.Workspaces), 2; got != want {
+		t.Fatalf("workspaces len: got %d want %d", got, want)
+	}
+	if got, want := cfg.Workspaces[0].Name, "docs"; got != want {
+		t.Errorf("workspace0 name: got %q want %q", got, want)
+	}
+	if got, want := cfg.Workspaces[0].Path, "~/docs"; got != want {
+		t.Errorf("workspace0 path: got %q want %q", got, want)
+	}
+	if got, want := cfg.Workspaces[0].Startup, "just serve"; got != want {
+		t.Errorf("workspace0 startup: got %q want %q", got, want)
+	}
+	// Workspace with omitted startup keeps an empty string.
+	if cfg.Workspaces[1].Startup != "" {
+		t.Errorf("workspace1 startup: got %q want empty", cfg.Workspaces[1].Startup)
+	}
+	if got, want := len(cfg.Wildcards), 1; got != want {
+		t.Fatalf("wildcards len: got %d want %d", got, want)
+	}
+	if got, want := cfg.Wildcards[0].Pattern, "**/*.go"; got != want {
+		t.Errorf("wildcard0 pattern: got %q want %q", got, want)
+	}
+	if got, want := cfg.Wildcards[0].Startup, "go test ./..."; got != want {
+		t.Errorf("wildcard0 startup: got %q want %q", got, want)
 	}
 	roots, ok := cfg.Sources["repos"]
 	if !ok {
@@ -127,12 +175,25 @@ startup = "go test ./..."
 	if zox.Enabled {
 		t.Error("zoxide should be disabled by override")
 	}
-	lay, ok := cfg.Layouts["**/*.go"]
-	if !ok {
-		t.Fatal("missing layouts '**/*.go'")
+}
+
+// TestLoad_RejectsLegacyLayoutsTable (cleanup constraint) confirms a
+// [layouts.<glob>] table no longer parses: the legacy Layout struct was removed
+// and the table now produces a TOML decode error so stale configs fail fast
+// instead of silently dropping startup hooks.
+func TestLoad_RejectsLegacyLayoutsTable(t *testing.T) {
+	t.Parallel()
+	const doc = `
+[layouts."**/*.go"]
+startup = "go test ./..."
+`
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if got, want := lay.Startup, "go test ./..."; got != want {
-		t.Errorf("layout startup: got %q want %q", got, want)
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected error parsing legacy [layouts] table, got nil")
 	}
 }
 
@@ -477,6 +538,25 @@ func TestExampleTOML_IncludesPreview(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("ExampleTOML missing %q", want)
 		}
+	}
+	if strings.Contains(got, "/Users/") || strings.Contains(got, "Proyectos") {
+		t.Errorf("ExampleTOML leaked a developer path:\n%s", got)
+	}
+}
+
+// TestExampleTOML_DocumentsWorkspacesAndWildcards (PR3) confirms the example
+// now documents [defaults], [[workspaces]], [[wildcards]] and no longer
+// references the removed [layouts] table.
+func TestExampleTOML_DocumentsWorkspacesAndWildcards(t *testing.T) {
+	t.Parallel()
+	got := ExampleTOML()
+	for _, want := range []string{"[defaults]", "[[workspaces]]", "[[wildcards]]", "startup = ", "pattern = ", "name = ", "path = "} {
+		if !strings.Contains(got, want) {
+			t.Errorf("ExampleTOML missing %q", want)
+		}
+	}
+	if strings.Contains(got, "[layouts") {
+		t.Errorf("ExampleTOML must not reference removed [layouts]:\n%s", got)
 	}
 	if strings.Contains(got, "/Users/") || strings.Contains(got, "Proyectos") {
 		t.Errorf("ExampleTOML leaked a developer path:\n%s", got)

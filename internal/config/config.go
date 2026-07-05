@@ -49,7 +49,17 @@ type Config struct {
 	General General           `toml:"general,omitempty"`
 	Herdr   Herdr             `toml:"herdr,omitempty"`
 	Sources map[string]Source `toml:"sources,omitempty"`
-	Layouts map[string]Layout `toml:"layouts,omitempty"`
+	// Defaults carries the fallback startup/preview commands applied when no
+	// predefined workspace and no wildcard matched the resolved candidate.
+	Defaults DefaultsConfig `toml:"defaults,omitempty"`
+	// Workspaces lists predefined project entries the configProvider surfaces
+	// as candidates (see internal/source). Each entry resolves by name and
+	// (tilde-expanded) path.
+	Workspaces []WorkspaceConfig `toml:"workspaces,omitempty"`
+	// Wildcards is an ordered list of glob -> startup rules scanned in
+	// declaration order by matchWildcard when a workspace's own startup does
+	// not apply. First match wins.
+	Wildcards []WildcardConfig `toml:"wildcards,omitempty"`
 	// Preview configures the workspace preview shown in the selector and by
 	// `shep preview <path>`. Absent [preview] is normalized to safe preview
 	// defaults while keeping command/sections empty, so the renderer falls back to
@@ -83,9 +93,41 @@ type Source struct {
 	Options map[string]string `toml:"options,omitempty"`
 }
 
-// Layout applies minimal startup behaviour to matching paths by glob.
-type Layout struct {
-	// Startup is run via `herdr pane run` after focusing/creating a workspace.
+// DefaultsConfig holds the fallback startup/preview commands used when neither
+// a predefined workspace nor a wildcard supplies one for the resolved
+// candidate. The field on Config is named "Defaults"; the type carries a
+// "Config" suffix to avoid colliding with the package-level Defaults()
+// constructor that 27+ call sites depend on.
+type DefaultsConfig struct {
+	// Startup is run via `herdr pane run` after focusing/creating a workspace
+	// when no wildcard or workspace startup applied.
+	Startup string `toml:"startup,omitempty"`
+	// Preview holds an optional default preview override command used by the
+	// preview renderer when a candidate does not carry its own.
+	Preview string `toml:"preview,omitempty"`
+}
+
+// WorkspaceConfig is one entry in the [[workspaces]] list. Each becomes a
+// candidate emitted by the config source provider; Startup takes precedence
+// over wildcard matches and the [defaults] fallback.
+type WorkspaceConfig struct {
+	// Name is the candidate label shown in the selector.
+	Name string `toml:"name"`
+	// Path is the project path. A leading "~/" is expanded to the user's home
+	// directory by the config provider.
+	Path string `toml:"path"`
+	// Startup, when set, overrides wildcard/defaults startup for this workspace.
+	Startup string `toml:"startup,omitempty"`
+}
+
+// WildcardConfig is one entry in the [[wildcards]] list: a glob pattern with a
+// startup command. The list is scanned in declaration order by matchWildcard;
+// the first pattern matching the candidate's normalised path or base name wins.
+type WildcardConfig struct {
+	// Pattern is a filepath.Match glob (e.g. "**/*.go").
+	Pattern string `toml:"pattern"`
+	// Startup is run via `herdr pane run` after focusing/creating a workspace
+	// whose path matches Pattern.
 	Startup string `toml:"startup,omitempty"`
 }
 
@@ -202,10 +244,11 @@ func ProbesFor(cfg *Config) Probes {
 // pristine machine without leaking developer paths into the shipped defaults.
 func Defaults() *Config {
 	cfg := &Config{
-		General: General{Selector: SelectorBuiltin},
-		Herdr:   Herdr{},
-		Sources: map[string]Source{},
-		Layouts: map[string]Layout{},
+		General:    General{Selector: SelectorBuiltin},
+		Herdr:      Herdr{},
+		Sources:    map[string]Source{},
+		Workspaces: []WorkspaceConfig{},
+		Wildcards:  []WildcardConfig{},
 	}
 	normalizePreview(&cfg.Preview)
 	return cfg
@@ -266,6 +309,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("read config %q: %w", resolved, err)
 	}
 
+	if err := rejectLegacyLayouts(data, resolved); err != nil {
+		return nil, err
+	}
 	cfg := Defaults()
 	if err := toml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse config %q: %w", resolved, err)
@@ -273,8 +319,11 @@ func Load(path string) (*Config, error) {
 	if cfg.Sources == nil {
 		cfg.Sources = map[string]Source{}
 	}
-	if cfg.Layouts == nil {
-		cfg.Layouts = map[string]Layout{}
+	if cfg.Workspaces == nil {
+		cfg.Workspaces = []WorkspaceConfig{}
+	}
+	if cfg.Wildcards == nil {
+		cfg.Wildcards = []WildcardConfig{}
 	}
 	if cfg.General.Selector == "" {
 		cfg.General.Selector = SelectorBuiltin
@@ -287,6 +336,23 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config %q: %w", resolved, err)
 	}
 	return cfg, nil
+}
+
+// rejectLegacyLayouts surfaces a clear error when a config still contains a
+// [layouts] table. The Layout struct was removed (cleanup constraint); old
+// configs must migrate to [[wildcards]]. The peek decode is cheap and only
+// checks for the top-level "layouts" key so a removed feature fails fast with
+// an actionable message instead of silently dropping startup hooks.
+func rejectLegacyLayouts(data []byte, resolved string) error {
+	var peek map[string]any
+	if err := toml.Unmarshal(data, &peek); err != nil {
+		// A malformed doc surfaces a clearer error from the real decode below.
+		return nil
+	}
+	if _, ok := peek["layouts"]; ok {
+		return fmt.Errorf("parse config %q: [layouts] table was removed; use [[wildcards]] with a pattern+startup instead", resolved)
+	}
+	return nil
 }
 
 // normalizePreview fills zero-value durations and max_lines with the documented

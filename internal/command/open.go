@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -216,7 +216,7 @@ func (a *App) launch(ctx context.Context, cand source.Candidate, out, errOut io.
 	}
 
 	if res.Action == source.HerdrActionCreated {
-		if startup := matchLayout(cand, a.Config()); startup != "" {
+		if startup := resolveStartup(cand, a.Config()); startup != "" {
 			if runErr := driver.RunStartup(ctx, res.WorkspaceID, startup); runErr != nil {
 				fmt.Fprintf(errOut, "warning: startup failed: %v\n", runErr)
 			}
@@ -247,29 +247,73 @@ func candidateFromPath(p string) (source.Candidate, error) {
 	}, nil
 }
 
-// matchLayout returns the startup command for the first [layouts.<glob>]
-// whose pattern matches the candidate's normalised path or base name.
-// A nil/empty result means no layout applied (no startup).
-func matchLayout(cand source.Candidate, cfg *config.Config) string {
-	if cfg == nil || len(cfg.Layouts) == 0 {
+// resolveStartup resolves the startup command for a freshly created workspace
+// using the cascading precedence defined by the spec (task 3.5):
+//  1. a predefined workspace (source "config") whose path matches the
+//     candidate and carries an explicit Startup;
+//  2. the first [[wildcards]] entry whose glob matches the candidate's
+//     normalised path or base name (matchWildcard);
+//  3. [defaults].startup as the final fallback.
+//
+// An empty return means no startup should run.
+func resolveStartup(cand source.Candidate, cfg *config.Config) string {
+	if cfg != nil && cand.Source == "config" {
+		np := cand.NormalizedPath
+		if np == "" {
+			np = cand.Path
+		}
+		for _, ws := range cfg.Workspaces {
+			if ws.Startup == "" {
+				continue
+			}
+			if expanded := expandTildePath(ws.Path); expanded != "" && samePath(expanded, np) {
+				return ws.Startup
+			}
+		}
+	}
+	if startup := matchWildcard(cand, cfg); startup != "" {
+		return startup
+	}
+	if cfg != nil {
+		return cfg.Defaults.Startup
+	}
+	return ""
+}
+
+// matchWildcard returns the startup command for the first [[wildcards]] entry
+// whose pattern matches the candidate's normalised path or base name, scanned
+// in declaration order. A nil/empty config or no match yields an empty string
+// (no startup). It replaces the removed matchLayout helper.
+func matchWildcard(cand source.Candidate, cfg *config.Config) string {
+	if cfg == nil || len(cfg.Wildcards) == 0 {
 		return ""
 	}
-	keys := make([]string, 0, len(cfg.Layouts))
-	for k := range cfg.Layouts {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys) // deterministic first-match
 	np := cand.NormalizedPath
 	if np == "" {
 		np = cand.Path
 	}
 	base := filepath.Base(np)
-	for _, k := range keys {
-		if matchGlob(k, np) || matchGlob(k, base) {
-			return cfg.Layouts[k].Startup
+	for _, w := range cfg.Wildcards {
+		if matchGlob(w.Pattern, np) || matchGlob(w.Pattern, base) {
+			return w.Startup
 		}
 	}
 	return ""
+}
+
+// samePath reports whether two paths are equal after symlink resolution. Used
+// by resolveStartup to match a config workspace's expanded path against the
+// candidate's normalised path regardless of how each was canonicalised.
+func samePath(a, b string) bool {
+	if a == b {
+		return true
+	}
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return ra == rb
 }
 
 // matchGlob wraps filepath.Match so a malformed pattern is treated as "no
@@ -280,6 +324,27 @@ func matchGlob(pattern, name string) bool {
 	}
 	ok, err := filepath.Match(pattern, name)
 	return err == nil && ok
+}
+
+// expandTildePath replaces a leading "~" or "~/" with the user's home dir. It
+// mirrors source.expandTilde but lives in the command package to avoid an
+// import cycle (source.expandTilde is unexported). An unresolvable home dir
+// returns the input unchanged so resolveStartup falls back to wildcard/default.
+func expandTildePath(p string) string {
+	if p == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
+		return p
+	}
+	if strings.HasPrefix(p, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return p
+		}
+		return filepath.Join(home, p[2:])
+	}
+	return p
 }
 
 // printCandidates writes the candidate list to stdout so the user can see what

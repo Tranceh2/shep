@@ -360,11 +360,131 @@ func TestOpen_PathFlagEmptyErrors(t *testing.T) {
 }
 
 // startupCfg builds a config whose roots scan a root containing "foo" and
-// attaches a layout matching "foo" with the given startup command.
+// attaches a wildcard matching "foo" with the given startup command.
 func startupCfg(t *testing.T, startup string) (*config.Config, string) {
 	cfg, root := seedCfg(t, "foo")
-	cfg.Layouts["foo"] = config.Layout{Startup: startup}
+	cfg.Wildcards = []config.WildcardConfig{{Pattern: "foo", Startup: startup}}
 	return cfg, root
+}
+
+// TestMatchWildcard matches a candidate's base name or normalised path against
+// cfg.Wildcards in declaration order, returning the first matching startup
+// command. Table-driven over ordering, base vs full-path matching, and the
+// nil/empty fallback.
+func TestMatchWildcard(t *testing.T) {
+	t.Parallel()
+	withBase := func(base string) source.Candidate {
+		return source.Candidate{Path: "/projects/" + base, NormalizedPath: "/projects/" + base}
+	}
+	cases := []struct {
+		name string
+		cand source.Candidate
+		cfg  *config.Config
+		want string
+	}{
+		{
+			name: "base name match returns startup",
+			cand: withBase("foo"),
+			cfg:  &config.Config{Wildcards: []config.WildcardConfig{{Pattern: "foo", Startup: "go test"}}},
+			want: "go test",
+		},
+		{
+			name: "full path match returns startup",
+			cand: source.Candidate{Path: "/projects/bar", NormalizedPath: "/projects/bar"},
+			cfg:  &config.Config{Wildcards: []config.WildcardConfig{{Pattern: "/projects/bar", Startup: "make"}}},
+			want: "make",
+		},
+		{
+			name: "first matching wildcard in declaration order wins",
+			cand: withBase("foo"),
+			cfg: &config.Config{Wildcards: []config.WildcardConfig{
+				{Pattern: "nope", Startup: "a"},
+				{Pattern: "foo", Startup: "b"},
+				{Pattern: "foo", Startup: "c"},
+			}},
+			want: "b",
+		},
+		{
+			name: "no match returns empty",
+			cand: withBase("foo"),
+			cfg:  &config.Config{Wildcards: []config.WildcardConfig{{Pattern: "bar", Startup: "x"}}},
+			want: "",
+		},
+		{
+			name: "nil config returns empty",
+			cand: withBase("foo"),
+			cfg:  nil,
+			want: "",
+		},
+		{
+			name: "empty wildcards returns empty",
+			cand: withBase("foo"),
+			cfg:  config.Defaults(),
+			want: "",
+		},
+		{
+			name: "falls back to raw Path when NormalizedPath empty",
+			cand: source.Candidate{Path: "/projects/foo"},
+			cfg:  &config.Config{Wildcards: []config.WildcardConfig{{Pattern: "foo", Startup: "echo"}}},
+			want: "echo",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := matchWildcard(tc.cand, tc.cfg); got != tc.want {
+				t.Errorf("matchWildcard = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMatchWildcard_MalformedPatternNoMatch confirms a bad glob in the config
+// is treated as "no match" (never crashes open).
+func TestMatchWildcard_MalformedPatternNoMatch(t *testing.T) {
+	t.Parallel()
+	cand := source.Candidate{Path: "/p/foo", NormalizedPath: "/p/foo"}
+	cfg := &config.Config{Wildcards: []config.WildcardConfig{{Pattern: "[", Startup: "boom"}}}
+	if got := matchWildcard(cand, cfg); got != "" {
+		t.Errorf("malformed pattern: got %q, want empty", got)
+	}
+}
+
+// TestResolveStartup_CascadingWorkspaceWildcardDefault verifies the startup
+// resolution order is workspace -> wildcard -> defaults, the resolution used by
+// launch() on a freshly created workspace.
+func TestResolveStartup_CascadingWorkspaceWildcardDefault(t *testing.T) {
+	t.Parallel()
+	dir := "/projects/foo"
+
+	// workspace startup wins over wildcard + defaults.
+	wsCfg := &config.Config{
+		Workspaces: []config.WorkspaceConfig{{Name: "foo", Path: dir, Startup: "ws-cmd"}},
+		Wildcards:  []config.WildcardConfig{{Pattern: "foo", Startup: "wc-cmd"}},
+		Defaults:   config.DefaultsConfig{Startup: "def-cmd"},
+	}
+	cand := source.Candidate{Path: dir, NormalizedPath: dir, Source: "config", Label: "foo"}
+	if got, want := resolveStartup(cand, wsCfg), "ws-cmd"; got != want {
+		t.Errorf("workspace precedence: got %q want %q", got, want)
+	}
+
+	// wildcard wins when the workspace has no startup.
+	wsCfg.Workspaces[0].Startup = ""
+	if got, want := resolveStartup(cand, wsCfg), "wc-cmd"; got != want {
+		t.Errorf("wildcard fallback: got %q want %q", got, want)
+	}
+
+	// defaults win when neither workspace nor wildcard supply a startup.
+	wsCfg.Wildcards = nil
+	if got, want := resolveStartup(cand, wsCfg), "def-cmd"; got != want {
+		t.Errorf("defaults fallback: got %q want %q", got, want)
+	}
+
+	// empty when nothing supplies a startup.
+	wsCfg.Defaults = config.DefaultsConfig{}
+	if got := resolveStartup(cand, wsCfg); got != "" {
+		t.Errorf("no startup anywhere: got %q want empty", got)
+	}
 }
 
 func runOpenStartup(t *testing.T, action source.HerdrAction) (string, string) {

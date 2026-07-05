@@ -29,3 +29,6 @@ vendor/
 *.swp
 .idea/
 .vscode/
+
+# Codegraph local index
+.codegraph/

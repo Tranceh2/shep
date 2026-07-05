@@ -28,6 +28,37 @@ func ExampleTOML() string {
 # [herdr]
 # binary = "herdr"
 
+# [defaults] supplies the fallback startup/preview commands applied when no
+# predefined workspace (see [[workspaces]]) and no wildcard (see [[wildcards]])
+# matched the resolved candidate. Leave unset to skip a default startup.
+# [defaults]
+# startup = "make"
+# preview = "echo hi"
+
+# [[workspaces]] lists predefined projects shep surfaces as selectable
+# candidates (under the "config" source). name is the candidate label; path may
+# use "~/..." which shep expands to your home directory; an optional startup
+# overrides [[wildcards]] and [defaults] for this workspace.
+# [[workspaces]]
+# name = "docs"
+# path = "~/docs"
+# startup = "just serve"
+#
+# [[workspaces]]
+# name = "shep"
+# path = "~/code/shep"
+
+# [[wildcards]] binds a glob pattern to a startup command, scanned in
+# declaration order on the resolved candidate's normalised path or base name.
+# First match wins. [[wildcards]] replaces the legacy per-glob startup table.
+# [[wildcards]]
+# pattern = "**/*.go"
+# startup = "go test ./..."
+#
+# [[wildcards]]
+# pattern = "Cargo.toml"
+# startup = "cargo build"
+
 # [sources.<name>] adds extra project roots to discover beyond the built-in
 # providers (herdr workspaces, zoxide, cwd). kind selects the provider family.
 #
@@ -47,12 +78,6 @@ func ExampleTOML() string {
 # [sources.zoxide]
 # kind = "zoxide"
 # enabled = false
-
-# [layouts.<glob>] runs a startup command in the focused workspace via
-# "herdr pane run" after shep creates/focuses a workspace whose path matches
-# the glob. Leave empty in v1 unless you need a startup hook.
-# [layouts."**/*.go"]
-# startup = "go test ./..."
 
 # [preview] configures the workspace preview shown in the "shep open" selector
 # and the "shep preview" command. With no [preview] table shep shows a calm built-in
