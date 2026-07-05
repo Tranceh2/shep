@@ -28,6 +28,19 @@ func (fakeDriver) RunStartup(context.Context, string, string) error {
 	return errors.New("fakeDriver does not implement RunStartup")
 }
 
+func (fakeDriver) ListTabs(context.Context, string) ([]Tab, error) {
+	return nil, errors.New("fakeDriver does not implement ListTabs")
+}
+func (fakeDriver) ListPanes(context.Context, string) ([]Pane, error) {
+	return nil, errors.New("fakeDriver does not implement ListPanes")
+}
+func (fakeDriver) ListAgents(context.Context) ([]Agent, error) {
+	return nil, errors.New("fakeDriver does not implement ListAgents")
+}
+func (fakeDriver) ReadPane(context.Context, string, int) (string, error) {
+	return "", errors.New("fakeDriver does not implement ReadPane")
+}
+
 // TestCandidate_Clone ensures Meta is deep-copied so callers cannot mutate a
 // provider's internal map through a returned candidate.
 func TestCandidate_Clone(t *testing.T) {

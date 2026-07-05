@@ -61,6 +61,19 @@ func (d *openDriver) RunStartup(_ context.Context, workspaceID, command string) 
 	return d.runErr
 }
 
+func (d *openDriver) ListTabs(context.Context, string) ([]source.Tab, error) {
+	return nil, errors.New("openDriver does not implement ListTabs")
+}
+func (d *openDriver) ListPanes(context.Context, string) ([]source.Pane, error) {
+	return nil, errors.New("openDriver does not implement ListPanes")
+}
+func (d *openDriver) ListAgents(context.Context) ([]source.Agent, error) {
+	return nil, errors.New("openDriver does not implement ListAgents")
+}
+func (d *openDriver) ReadPane(context.Context, string, int) (string, error) {
+	return "", errors.New("openDriver does not implement ReadPane")
+}
+
 // fakeSelector lets open tests script the cascade without invoking fzf.
 type fakeSelector struct {
 	pick source.Candidate

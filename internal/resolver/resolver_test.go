@@ -277,6 +277,18 @@ func (fakeErrDriver) FocusOrCreate(context.Context, source.Candidate) (source.Fo
 func (fakeErrDriver) RunStartup(context.Context, string, string) error {
 	return errors.New("fakeErrDriver does not implement RunStartup")
 }
+func (fakeErrDriver) ListTabs(context.Context, string) ([]source.Tab, error) {
+	return nil, errors.New("fakeErrDriver does not implement ListTabs")
+}
+func (fakeErrDriver) ListPanes(context.Context, string) ([]source.Pane, error) {
+	return nil, errors.New("fakeErrDriver does not implement ListPanes")
+}
+func (fakeErrDriver) ListAgents(context.Context) ([]source.Agent, error) {
+	return nil, errors.New("fakeErrDriver does not implement ListAgents")
+}
+func (fakeErrDriver) ReadPane(context.Context, string, int) (string, error) {
+	return "", errors.New("fakeErrDriver does not implement ReadPane")
+}
 
 // fakeWorkspacesDriver is a HerdrDriver that returns a fixed workspace set, used
 // by the priority-dedup contract test (CD-7 / PL-9).
@@ -293,6 +305,18 @@ func (fakeWorkspacesDriver) FocusOrCreate(context.Context, source.Candidate) (so
 }
 func (fakeWorkspacesDriver) RunStartup(context.Context, string, string) error {
 	return errors.New("fakeWorkspacesDriver does not implement RunStartup")
+}
+func (fakeWorkspacesDriver) ListTabs(context.Context, string) ([]source.Tab, error) {
+	return nil, errors.New("fakeWorkspacesDriver does not implement ListTabs")
+}
+func (fakeWorkspacesDriver) ListPanes(context.Context, string) ([]source.Pane, error) {
+	return nil, errors.New("fakeWorkspacesDriver does not implement ListPanes")
+}
+func (fakeWorkspacesDriver) ListAgents(context.Context) ([]source.Agent, error) {
+	return nil, errors.New("fakeWorkspacesDriver does not implement ListAgents")
+}
+func (fakeWorkspacesDriver) ReadPane(context.Context, string, int) (string, error) {
+	return "", errors.New("fakeWorkspacesDriver does not implement ReadPane")
 }
 
 // TestDedup_PriorityOrderOwnsDuplicatePath (CD-7, PL-9) proves the provider

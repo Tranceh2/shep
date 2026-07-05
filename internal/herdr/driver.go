@@ -114,6 +114,14 @@ type rawWorkspace struct {
 	Label       string `json:"label"`
 	ActiveTabID string `json:"active_tab_id"`
 	Focused     bool   `json:"focused"`
+	// Number, TabCount, PaneCount, and AgentStatus are returned by
+	// `herdr workspace list` but were previously discarded. They are now
+	// deserialised so the preview layer can render richer workspace summaries
+	// without extra round trips.
+	Number      int    `json:"number"`
+	TabCount    int    `json:"tab_count"`
+	PaneCount   int    `json:"pane_count"`
+	AgentStatus string `json:"agent_status"`
 }
 
 type paneListEnvelope struct {
@@ -136,6 +144,44 @@ type paneCurrentEnvelope struct {
 	Result struct {
 		Pane rawPane `json:"pane"`
 	} `json:"result"`
+}
+
+// tabListEnvelope wraps `herdr tab list --workspace <id>`.
+//
+//	{"id":"cli:tab:list","result":{"type":"tab_list","tabs":[
+//	  {tab_id,workspace_id,label,focused,number,pane_count}]}}
+type tabListEnvelope struct {
+	ID     string `json:"id"`
+	Result struct {
+		Type string   `json:"type"`
+		Tabs []rawTab `json:"tabs"`
+	} `json:"result"`
+}
+
+type rawTab struct {
+	TabID       string `json:"tab_id"`
+	WorkspaceID string `json:"workspace_id"`
+	Label       string `json:"label"`
+	Focused     bool   `json:"focused"`
+	Number      int    `json:"number"`
+	PaneCount   int    `json:"pane_count"`
+}
+
+// agentListEnvelope wraps `herdr agent list`.
+//
+//	{"id":"cli:agent:list","result":{"agents":[
+//	  {agent_id,label,agent_status}]}}
+type agentListEnvelope struct {
+	ID     string `json:"id"`
+	Result struct {
+		Agents []rawAgent `json:"agents"`
+	} `json:"result"`
+}
+
+type rawAgent struct {
+	AgentID     string `json:"agent_id"`
+	Label       string `json:"label"`
+	AgentStatus string `json:"agent_status"`
 }
 
 // ListWorkspaces enumerates Herdr workspaces and derives each workspace's CWD
@@ -330,6 +376,29 @@ func (d *Driver) RunStartup(ctx context.Context, workspaceID, command string) er
 		return fmt.Errorf("herdr pane run %s %q: %w", paneID, command, err)
 	}
 	return nil
+}
+
+// ListTabs enumerates the tabs of the named workspace via
+// `herdr tab list --workspace <id>`.
+func (d *Driver) ListTabs(ctx context.Context, workspaceID string) ([]source.Tab, error) {
+	return nil, errors.New("herdr ListTabs: not implemented")
+}
+
+// ListPanes enumerates the panes of the named workspace via
+// `herdr pane list --workspace <id>`.
+func (d *Driver) ListPanes(ctx context.Context, workspaceID string) ([]source.Pane, error) {
+	return nil, errors.New("herdr ListPanes: not implemented")
+}
+
+// ListAgents enumerates Herdr agents via `herdr agent list`.
+func (d *Driver) ListAgents(ctx context.Context) ([]source.Agent, error) {
+	return nil, errors.New("herdr ListAgents: not implemented")
+}
+
+// ReadPane returns the captured terminal buffer of a pane via
+// `herdr pane read <pane_id> --lines <lines> --format ansi`.
+func (d *Driver) ReadPane(ctx context.Context, paneID string, lines int) (string, error) {
+	return "", errors.New("herdr ReadPane: not implemented")
 }
 
 // normalizePath mirrors the resolver's normalisation (expand ~, absolute,

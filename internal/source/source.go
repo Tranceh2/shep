@@ -76,6 +76,18 @@ type HerdrDriver interface {
 	// `herdr pane run`. It is intended to fire only on a freshly created
 	// workspace (HI-4).
 	RunStartup(ctx context.Context, workspaceID, command string) error
+	// ListTabs returns the tabs of the named workspace via
+	// `herdr tab list --workspace <id>`. Used by the workspace preview section.
+	ListTabs(ctx context.Context, workspaceID string) ([]Tab, error)
+	// ListPanes returns the panes of the named workspace via
+	// `herdr pane list --workspace <id>`. Used by the workspace preview section.
+	ListPanes(ctx context.Context, workspaceID string) ([]Pane, error)
+	// ListAgents returns the agents known to Herdr via `herdr agent list`.
+	ListAgents(ctx context.Context) ([]Agent, error)
+	// ReadPane returns the captured terminal buffer of a pane via
+	// `herdr pane read <pane_id> --lines <lines> --format ansi`. lines caps the
+	// number of trailing lines returned; <= 0 means the daemon default.
+	ReadPane(ctx context.Context, paneID string, lines int) (string, error)
 }
 
 // Workspace is a minimal, driver-supplied description of a Herdr workspace.
@@ -85,6 +97,36 @@ type Workspace struct {
 	ID    string
 	Label string
 	CWD   string
+}
+
+// Tab is one tab of a Herdr workspace. PaneCount is the number of panes the
+// tab owns (the Herdr tab-list envelope carries it per tab).
+type Tab struct {
+	ID          string
+	WorkspaceID string
+	Label       string
+	Focused     bool
+	Number      int
+	PaneCount   int
+}
+
+// Pane is one pane of a Herdr workspace. CWD is the pane's working directory;
+// ForegroundCWD is the cwd of the foreground process running in it (Herdr
+// populates this only while a command is active).
+type Pane struct {
+	ID            string
+	WorkspaceID   string
+	CWD           string
+	ForegroundCWD string
+	Focused       bool
+}
+
+// Agent is one Herdr agent. Status mirrors the `agent_status` field of the
+// Herdr agent-list envelope (e.g. "running", "idle", "").
+type Agent struct {
+	ID     string
+	Label  string
+	Status string
 }
 
 // HerdrAction records what FocusOrCreate did so callers can gate startup.
