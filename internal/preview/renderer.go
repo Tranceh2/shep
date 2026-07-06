@@ -3,13 +3,13 @@ package preview
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/tranceh2/shep/internal/config"
+	"github.com/tranceh2/shep/internal/pathutil"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -17,34 +17,22 @@ import (
 // the Bubble Tea selector (async, cached) and `shep preview <path>` (sync,
 // stdout), so the two views never diverge.
 type Renderer interface {
-	Render(ctx context.Context, cand source.Candidate, opts RenderOptions) (Result, error)
-}
-
-// RenderOptions carries presentation hints. The renderer itself never adds
-// ANSI styling — Color is kept as a hint for callers — but some built-in
-// sections may carry real ANSI color codes from the tool they shell out to:
-// "dir" (lsd/eza's own colored listing) and "active_pane" (the pane's real
-// captured terminal appearance) are intentionally colored so the user sees
-// what they'd actually see. "identity", "git", and "workspace" stay plain
-// text. A user-declared [preview.commands.<name>] may or may not emit color
-// depending on the command itself. Width is the target pane width
-// (0 = unknown). Any ANSI-carrying section is safe to truncate: see
-// internal/tui/model.go's truncateToWidth, which is ANSI-aware
-// (charmbracelet/x/ansi.Truncate) and never cuts mid-escape sequence.
-type RenderOptions struct {
-	Color bool
-	Width int
+	Render(ctx context.Context, cand source.Candidate) (Result, error)
 }
 
 // Result is the rendered preview. Text is the body — plain text for
 // "identity"/"git"/"workspace", and possibly ANSI-colored for "dir" and
-// "active_pane" (see RenderOptions doc); Warning is a transient, non-fatal
-// note (reserved for future diagnostics — per-section command failures are
-// hidden from normal preview output and simply omitted); FromCache is true
-// when Text was served from the in-memory cache.
+// "active_pane": some built-in sections carry real ANSI color codes from the
+// tool they shell out to ("dir" runs lsd/eza's own colored listing;
+// "active_pane" is the pane's real captured terminal appearance), so the user
+// sees what they'd actually see. "identity", "git", and "workspace" stay
+// plain text. A user-declared [preview.commands.<name>] may or may not emit
+// color depending on the command itself. FromCache is true when Text was
+// served from the in-memory cache. Any ANSI-carrying section is safe to
+// truncate: see internal/tui/model.go's truncateToWidth, which is ANSI-aware
+// (charmbracelet/x/ansi.Truncate) and never cuts mid-escape sequence.
 type Result struct {
 	Text      string
-	Warning   string
 	FromCache bool
 }
 
@@ -99,7 +87,7 @@ func NewRenderer(cfg *config.Config, probes config.Probes, git GitProvider, runn
 // Render resolves the ordered preview section list for cand and renders each
 // in turn, joining non-empty blocks with a blank line, then caches the
 // result by path and config.
-func (r *defaultRenderer) Render(ctx context.Context, cand source.Candidate, _ RenderOptions) (Result, error) {
+func (r *defaultRenderer) Render(ctx context.Context, cand source.Candidate) (Result, error) {
 	key := PreviewCacheKey(renderPath(cand), r.cfg.Preview)
 	if cached, ok := r.cache.Get(key); ok {
 		return cached, nil
@@ -162,7 +150,10 @@ func resolvePreviewNames(cfg *config.Config, cand source.Candidate) []string {
 	base := filepath.Base(path)
 
 	for _, ws := range cfg.Workspaces {
-		wsPath := expandTildeLocal(ws.Path)
+		wsPath := ws.Path
+		if expanded, err := pathutil.ExpandTilde(ws.Path); err == nil {
+			wsPath = expanded
+		}
 		if wsPath == "" || len(ws.Preview) == 0 {
 			continue
 		}
@@ -440,26 +431,6 @@ func renderPath(cand source.Candidate) string {
 		return cand.NormalizedPath
 	}
 	return cand.Path
-}
-
-// expandTildeLocal replaces a leading ~ with the user's home dir. Local copy
-// (rather than importing internal/source) to avoid a needless dependency;
-// preview only needs it for the workspace-preview path-match precedence tier.
-func expandTildeLocal(p string) string {
-	if p == "~" {
-		if home, err := os.UserHomeDir(); err == nil {
-			return home
-		}
-		return p
-	}
-	if strings.HasPrefix(p, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return p
-		}
-		return filepath.Join(home, p[2:])
-	}
-	return p
 }
 
 // samePath reports whether two paths are equal after symlink resolution.

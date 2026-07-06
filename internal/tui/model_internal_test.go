@@ -18,13 +18,13 @@ import (
 // matters, not its output.
 type stubRenderer struct{}
 
-func (stubRenderer) Render(context.Context, source.Candidate, preview.RenderOptions) (preview.Result, error) {
+func (stubRenderer) Render(context.Context, source.Candidate) (preview.Result, error) {
 	return preview.Result{Text: "x"}, nil
 }
 
 type contextCheckingRenderer struct{}
 
-func (contextCheckingRenderer) Render(ctx context.Context, _ source.Candidate, _ preview.RenderOptions) (preview.Result, error) {
+func (contextCheckingRenderer) Render(ctx context.Context, _ source.Candidate) (preview.Result, error) {
 	return preview.Result{}, ctx.Err()
 }
 
@@ -36,7 +36,7 @@ type ansiStubRenderer struct {
 	text string
 }
 
-func (r ansiStubRenderer) Render(context.Context, source.Candidate, preview.RenderOptions) (preview.Result, error) {
+func (r ansiStubRenderer) Render(context.Context, source.Candidate) (preview.Result, error) {
 	return preview.Result{Text: r.text}, nil
 }
 
@@ -64,6 +64,29 @@ func TestModel_CursorMoveIncrementsPreviewSeq(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatal("expected a non-nil preview request Cmd after cursor move")
+	}
+}
+
+// TestModel_SelectionChangeClearsPreviewText (staleness guard) proves that
+// when the highlighted candidate changes, the previous candidate's
+// previewText is cleared immediately — so a stale candidate's rendered text
+// can never flash even if an in-flight render for it arrives out of order.
+// Before this guard, only the empty-selection branch (newKey == "") cleared
+// previewText; the newKey != prevKey branch left the old candidate's text
+// sitting in the field until the new render landed.
+func TestModel_SelectionChangeClearsPreviewText(t *testing.T) {
+	t.Parallel()
+	m := NewModel(internalTestCands(), stubRenderer{})
+	// Simulate a completed render for the first candidate.
+	m.previewText = "rendered-for-/a"
+	prevKey := m.currentPreviewKey()
+
+	// Move the cursor to the second candidate (different highlight key).
+	m.cursor = 1
+	m.syncPreviewAfterSelectionChange(prevKey)
+
+	if m.previewText != "" {
+		t.Errorf("expected previewText cleared on selection change, got %q", m.previewText)
 	}
 }
 
@@ -100,6 +123,56 @@ func TestModel_StaleResponseIgnored(t *testing.T) {
 	}
 	if m.previewText != "fresh" {
 		t.Errorf("stale response overwrote previewText: got %q, want %q", m.previewText, "fresh")
+	}
+}
+
+// TestModel_HandlePreviewResponse_ErrShowsVisibleIndicator proves the err
+// return path of Renderer.Render — a distinct mechanism from the removed
+// Result.Warning field — still surfaces to the user instead of leaving the
+// preview pane silently blank (indistinguishable from any other empty
+// state). Reachable via context cancellation, or any future Renderer
+// implementation that returns a real error.
+func TestModel_HandlePreviewResponse_ErrShowsVisibleIndicator(t *testing.T) {
+	t.Parallel()
+	m := NewModel(internalTestCands(), stubRenderer{})
+
+	updated, _ := m.Update(previewResponseMsg{seq: m.previewSeq, err: errors.New("boom")})
+	mm, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("expected Model, got %T", updated)
+	}
+
+	body := mm.previewBody(40)
+	if !strings.Contains(body, "preview error") {
+		t.Errorf("expected previewBody to show a visible error indicator, got %q", body)
+	}
+}
+
+// TestModel_HandlePreviewResponse_SuccessClearsPriorError proves a normal
+// successful render clears any previously shown error indicator — no stale
+// error should linger after recovery.
+func TestModel_HandlePreviewResponse_SuccessClearsPriorError(t *testing.T) {
+	t.Parallel()
+	m := NewModel(internalTestCands(), stubRenderer{})
+
+	updated, _ := m.Update(previewResponseMsg{seq: m.previewSeq, err: errors.New("boom")})
+	m, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("expected Model, got %T", updated)
+	}
+
+	updated, _ = m.Update(previewResponseMsg{seq: m.previewSeq, result: preview.Result{Text: "fresh"}})
+	m, ok = updated.(Model)
+	if !ok {
+		t.Fatalf("expected Model, got %T", updated)
+	}
+
+	body := m.previewBody(40)
+	if strings.Contains(body, "preview error") {
+		t.Errorf("expected error indicator cleared after successful render, got %q", body)
+	}
+	if !strings.Contains(body, "fresh") {
+		t.Errorf("expected fresh preview text rendered, got %q", body)
 	}
 }
 
@@ -683,36 +756,6 @@ func assertNoUnterminatedANSI(t *testing.T, line string) {
 		}
 		idx = start + 2 + end + 1
 	}
-}
-
-// TestPreviewBody_LongWarning_StyledLineNeverOverflowsAtNarrowWidth is the
-// warn-line counterpart of the same bug: previewBody appended
-// palette.previewWarnStyle.Render("warn: "+m.previewWarn) to the text BEFORE
-// the final truncateLinesToWidth pass, so the injected ANSI bytes were
-// counted against the raw rune budget and truncation could cut mid-escape
-// sequence, leaving an unterminated/malformed ANSI code and a wrong visible
-// width.
-func TestPreviewBody_LongWarning_StyledLineNeverOverflowsAtNarrowWidth(t *testing.T) {
-	prev := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	defer lipgloss.SetColorProfile(prev)
-
-	m := newModel(internalTestCands(), stubRenderer{}, context.TODO())
-	m.previewLoading = false
-	m.previewText = "ok"
-	m.previewWarn = strings.Repeat("something went wrong ", 10)
-
-	const narrowWidth = 20
-	body := m.previewBody(narrowWidth)
-	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("previewBody with warning produced %d lines, want 2 (text + warn):\n%q", len(lines), body)
-	}
-	warnLine := lines[1]
-	if w := lipgloss.Width(warnLine); w != narrowWidth {
-		t.Errorf("warn line visible width = %d, want %d (ANSI-aware truncation broke): %q", w, narrowWidth, warnLine)
-	}
-	assertNoUnterminatedANSI(t, warnLine)
 }
 
 // TestTruncateToWidth_ANSIStyledInput_StaysVisibleWidthAndWellFormed is the

@@ -3,6 +3,8 @@ package preview
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -56,7 +58,7 @@ func candidate(label, path, src, template string) source.Candidate {
 
 func mustRender(t *testing.T, r Renderer, cand source.Candidate) string {
 	t.Helper()
-	res, err := r.Render(context.Background(), cand, RenderOptions{})
+	res, err := r.Render(context.Background(), cand)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -232,6 +234,29 @@ func TestResolvePreviewNames_Precedence(t *testing.T) {
 			t.Errorf("got %v want [identity]", got)
 		}
 	})
+}
+
+// TestResolvePreviewNames_TildeWorkspacePathExpands is a characterization
+// test locking down the workspace-preview path-match tier's tilde
+// expansion after resolvePreviewNames was switched from a package-local
+// expandTildeLocal duplicate to pathutil.ExpandTilde. A workspace configured
+// with a leading "~/" must still match a candidate whose path was already
+// resolved to the real home directory.
+func TestResolvePreviewNames_TildeWorkspacePathExpands(t *testing.T) {
+	t.Parallel()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("no resolvable home dir: %v", err)
+	}
+	cfg := config.Defaults()
+	cfg.Workspaces = []config.WorkspaceConfig{{Name: "tilde", Path: "~/shep-tilde-test", Preview: []string{"custom"}}}
+	cand := source.Candidate{Path: filepath.Join(home, "shep-tilde-test"), Source: config.SourceZoxide}
+
+	got := resolvePreviewNames(cfg, cand)
+
+	if len(got) != 1 || got[0] != "custom" {
+		t.Errorf("got %v, want [custom] (tilde-prefixed workspace path should expand and match)", got)
+	}
 }
 
 // fakePreviewDriver is a controllable HerdrDriver for workspace/active_pane
@@ -635,12 +660,9 @@ func TestRender_CustomCommand_FailureHiddenFromNormalOutput(t *testing.T) {
 	}
 	runner := &fakeRunner{err: map[string]error{"git": errors.New("exit 1")}}
 	r := NewRenderer(cfg, config.Probes{}, nil, runner)
-	res, err := r.Render(context.Background(), candidate("foo", "/p/foo", "workspaces", ""), RenderOptions{})
+	res, err := r.Render(context.Background(), candidate("foo", "/p/foo", "workspaces", ""))
 	if err != nil {
 		t.Fatalf("render: %v", err)
-	}
-	if res.Warning != "" {
-		t.Errorf("expected no warning surfaced, got %q", res.Warning)
 	}
 	want := "foo\npath: /p/foo\nsource: workspaces"
 	if res.Text != want {
@@ -670,14 +692,14 @@ func TestRender_CachesResult(t *testing.T) {
 	git := &fakeGit{summary: GitSummary{Branch: "main"}}
 	r := NewRenderer(cfgWithDefault(config.PreviewGit), config.Probes{Git: true}, git, nil)
 	cand := candidate("foo", "/p/foo", "workspaces", "")
-	first, err := r.Render(context.Background(), cand, RenderOptions{})
+	first, err := r.Render(context.Background(), cand)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	if first.FromCache {
 		t.Error("first render should not be from cache")
 	}
-	second, err := r.Render(context.Background(), cand, RenderOptions{})
+	second, err := r.Render(context.Background(), cand)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}

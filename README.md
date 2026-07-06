@@ -229,7 +229,7 @@ hardcoded and always available by name — no declaration needed:
 
 ```sh
 shep preview /abs/path       # plain text (no ANSI) — safe for pipes/Television
-shep preview --color /path   # Lip Gloss styling, only applied when stdout is a terminal
+shep preview --color /path   # passes through real renderer colors (lsd/eza/pane), only when stdout is a terminal
 ```
 
 `[preview].default` picks which sections render when nothing more specific

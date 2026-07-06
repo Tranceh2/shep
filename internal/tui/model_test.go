@@ -42,7 +42,7 @@ func startTUI(t *testing.T, cands []source.Candidate, renderer preview.Renderer)
 // requested (and displayed) a preview for a specific candidate.
 type labelRenderer struct{}
 
-func (labelRenderer) Render(_ context.Context, cand source.Candidate, _ preview.RenderOptions) (preview.Result, error) {
+func (labelRenderer) Render(_ context.Context, cand source.Candidate) (preview.Result, error) {
 	return preview.Result{Text: "preview-for-" + cand.Label}, nil
 }
 
@@ -52,7 +52,7 @@ type gatedRenderer struct {
 	release chan struct{}
 }
 
-func (g *gatedRenderer) Render(_ context.Context, cand source.Candidate, _ preview.RenderOptions) (preview.Result, error) {
+func (g *gatedRenderer) Render(_ context.Context, cand source.Candidate) (preview.Result, error) {
 	<-g.release
 	return preview.Result{Text: "rendered:" + cand.Label}, nil
 }

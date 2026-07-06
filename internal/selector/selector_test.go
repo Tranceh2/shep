@@ -3,6 +3,7 @@ package selector
 import (
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 
 	"github.com/tranceh2/shep/internal/source"
@@ -156,27 +157,5 @@ func (s stubRunner) Run(_ context.Context, _ string, args []string, _ string) (s
 // errors.As check in Fzf.Select.
 type exitError struct{ code int }
 
-func (e *exitError) Error() string { return "exit status " + itoa(e.code) }
+func (e *exitError) Error() string { return "exit status " + strconv.Itoa(e.code) }
 func (e *exitError) ExitCode() int { return e.code }
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var b [20]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		b[i] = '-'
-	}
-	return string(b[i:])
-}

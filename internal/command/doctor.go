@@ -5,6 +5,8 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/tranceh2/shep/internal/pathutil"
 )
 
 // doctorCmd builds `shep doctor`, a read-only diagnostic that reports
@@ -38,7 +40,12 @@ func (a *App) runDoctor(cmd *cobra.Command) error {
 	}
 	missing := 0
 	for _, ws := range cfg.Workspaces {
-		path := expandTildeDoctor(ws.Path)
+		// Fall back to the raw path on an unresolvable HOME so os.Stat reports
+		// the bad path instead of crashing on expansion.
+		path := ws.Path
+		if expanded, err := pathutil.ExpandTilde(ws.Path); err == nil {
+			path = expanded
+		}
 		if _, err := os.Stat(path); err != nil {
 			fmt.Fprintf(out, "MISSING %s: %s (configured path does not exist)\n", ws.Name, path)
 			missing++
@@ -50,24 +57,4 @@ func (a *App) runDoctor(cmd *cobra.Command) error {
 		fmt.Fprintf(out, "\n%d of %d configured workspace path(s) missing\n", missing, len(cfg.Workspaces))
 	}
 	return nil
-}
-
-// expandTildeDoctor mirrors source's expandTilde without importing it
-// directly (kept local to avoid a needless command->source coupling beyond
-// what open.go already needs for candidates).
-func expandTildeDoctor(p string) string {
-	if p == "~" {
-		if home, err := os.UserHomeDir(); err == nil {
-			return home
-		}
-		return p
-	}
-	if len(p) >= 2 && p[:2] == "~/" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return p
-		}
-		return home + p[1:]
-	}
-	return p
 }

@@ -27,8 +27,8 @@ var palette = struct {
 	mutedStyle          lipgloss.Style
 	previewHeaderStyle  lipgloss.Style
 	labelStyle          lipgloss.Style
-	previewWarnStyle    lipgloss.Style
 	previewLoadingStyle lipgloss.Style
+	previewErrStyle     lipgloss.Style
 	borderStyle         lipgloss.Style
 }{
 	// query line: bold accent text so the live filter stands out.
@@ -47,13 +47,14 @@ var palette = struct {
 	previewHeaderStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorAccent2)).Bold(true),
 	// label prefix in the preview pane.
 	labelStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted)),
-	// transient warning shown when a custom preview.command fell back to the
-	// built-in preview (WP-3): italic secondary accent, distinct from an
-	// error but still noticeable.
-	previewWarnStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorAccent2)).Italic(true),
 	// loading indicator shown while an async preview render is in flight
 	// (PL-11): muted italic so it reads as transient, not an error.
 	previewLoadingStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted)).Italic(true),
+	// shown when Renderer.Render itself returns a real error (context
+	// cancellation, or any future Renderer implementation) — distinct from
+	// the loading indicator so a genuine failure never reads as "still
+	// working" or silently blank.
+	previewErrStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorAccent2)).Italic(true),
 	// borderStyle frames the list and preview panes: one shared rounded
 	// border + horizontal padding definition (both panes use the exact same
 	// frame dimensions) so width/height chrome math has a single source of

@@ -21,7 +21,7 @@ import (
 // tests that only need a non-nil renderer identity, not real render output.
 type fakePreviewRenderer struct{}
 
-func (fakePreviewRenderer) Render(context.Context, source.Candidate, preview.RenderOptions) (preview.Result, error) {
+func (fakePreviewRenderer) Render(context.Context, source.Candidate) (preview.Result, error) {
 	return preview.Result{}, nil
 }
 
@@ -819,7 +819,7 @@ func TestApp_BuildPreviewRenderer_ThreadsHerdrDriver(t *testing.T) {
 		Path: "/x", Label: "foo", Source: "herdr",
 		Meta: map[string]string{"workspace_id": "wA"},
 	}
-	res, err := r.Render(context.Background(), cand, preview.RenderOptions{})
+	res, err := r.Render(context.Background(), cand)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}

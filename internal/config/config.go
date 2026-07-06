@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
+	"github.com/tranceh2/shep/internal/pathutil"
 )
 
 // Built-in source names. general.sources lists which of these are enabled
@@ -316,7 +317,6 @@ type Probes struct {
 	Herdr  bool
 	Zoxide bool
 	Git    bool
-	FD     bool
 }
 
 // Probe reports whether name resolves on PATH. It never returns an error:
@@ -340,7 +340,6 @@ func ProbesFor(cfg *Config) Probes {
 		Herdr:  Probe(herdrBin),
 		Zoxide: Probe("zoxide"),
 		Git:    Probe("git"),
-		FD:     Probe("fd"),
 	}
 }
 
@@ -820,8 +819,8 @@ func validateTUI(t TUIConfig) error {
 	if err := validateWidthField("tui.preview_width", t.PreviewWidth); err != nil {
 		return err
 	}
-	listFrac, listOK := percentOrZero(t.ListWidth)
-	prevFrac, prevOK := percentOrZero(t.PreviewWidth)
+	listFrac, listOK := PercentOrAuto(t.ListWidth)
+	prevFrac, prevOK := PercentOrAuto(t.PreviewWidth)
 	if listOK && prevOK && listFrac+prevFrac > 1 {
 		return fmt.Errorf("tui.list_width (%s) + tui.preview_width (%s) must not exceed 100%%",
 			t.ListWidth, t.PreviewWidth)
@@ -839,11 +838,12 @@ func validateWidthField(field, value string) error {
 	return nil
 }
 
-// percentOrZero returns the fraction for a configured percentage width, or
+// PercentOrAuto returns the fraction for a configured percentage width, or
 // ok=false for "" / "auto" (not a percentage). Reuses ParsePercent so an
 // already-invalid value (rejected by validateWidthField above) never reaches
-// here as ok=true.
-func percentOrZero(s string) (float64, bool) {
+// here as ok=true. Shared with internal/tui, which applies the same
+// "" / "auto"-means-unconfigured rule when splitting pane widths.
+func PercentOrAuto(s string) (float64, bool) {
 	if s == "" || s == "auto" {
 		return 0, false
 	}
@@ -877,7 +877,12 @@ func MatchWildcard(pattern, path string) bool {
 	if pattern == "" || path == "" {
 		return false
 	}
-	pattern = expandTildeConfig(pattern)
+	// Expand a leading "~" once, here, via the shared leaf helper. A malformed
+	// pattern later degrades to "no match"; an unresolvable HOME is treated the
+	// same way (pattern left untouched) so resolution never crashes.
+	if expanded, err := pathutil.ExpandTilde(pattern); err == nil {
+		pattern = expanded
+	}
 	patSegs := strings.Split(filepath.ToSlash(pattern), "/")
 	pathSegs := strings.Split(filepath.ToSlash(path), "/")
 	return matchWildcardSegments(patSegs, pathSegs)
@@ -907,27 +912,6 @@ func matchWildcardSegments(pat, path []string) bool {
 		return false
 	}
 	return matchWildcardSegments(pat[1:], path[1:])
-}
-
-// expandTildeConfig replaces a leading "~" in a wildcard pattern with the
-// user's home directory. A local copy (rather than importing internal/source
-// or internal/preview's identical helpers) avoids a dependency cycle back
-// into config from either package.
-func expandTildeConfig(p string) string {
-	if p == "~" {
-		if home, err := os.UserHomeDir(); err == nil {
-			return home
-		}
-		return p
-	}
-	if strings.HasPrefix(p, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return p
-		}
-		return filepath.Join(home, p[2:])
-	}
-	return p
 }
 
 // isValidSelector reports whether s is one of the supported selector values.

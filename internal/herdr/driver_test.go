@@ -2,11 +2,11 @@ package herdr
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -171,7 +171,7 @@ func TestFocusOrCreate_FocusesExistingByCWDMatch(t *testing.T) {
 	}
 	// ensure no create was scripted
 	for _, c := range r.calls {
-		if contains(c, "create") {
+		if strings.Contains(c, "create") {
 			t.Errorf("unexpected create call: %s", c)
 		}
 	}
@@ -467,15 +467,6 @@ func TestListWorkspaces_DaemonDownReturnsError(t *testing.T) {
 	}
 }
 
-func contains(s, substr string) bool {
-	for i := 0; i+len(substr) <= len(s); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
-
 // tabListJSON builds a tab list envelope for a workspace from rawTab entries.
 func tabListJSON(tabs ...rawTab) []byte {
 	out := `{"id":"cli:tab:list","result":{"type":"tab_list","tabs":[`
@@ -518,21 +509,6 @@ func (b *blockingHerdrRunner) Run(ctx context.Context, name string, args ...stri
 	b.calls = append(b.calls, key)
 	<-ctx.Done()
 	return nil, ctx.Err()
-}
-
-// TestRawWorkspace_DeserializesCounts (4.1) confirms number, tab_count,
-// pane_count, and agent_status from `herdr workspace list` are now captured by
-// rawWorkspace (previously discarded). White-box: rawWorkspace is unexported.
-func TestRawWorkspace_DeserializesCounts(t *testing.T) {
-	in := []byte(`{"workspace_id":"wA","label":"foo","active_tab_id":"wA:t1",` +
-		`"focused":true,"number":3,"tab_count":2,"pane_count":4,"agent_status":"running"}`)
-	var w rawWorkspace
-	if err := json.Unmarshal(in, &w); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if w.Number != 3 || w.TabCount != 2 || w.PaneCount != 4 || w.AgentStatus != "running" {
-		t.Errorf("counts not deserialised: %+v", w)
-	}
 }
 
 // TestListTabs_ParsesEnvelope (4.2/4.5) parses a tab list envelope into

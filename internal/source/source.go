@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/tranceh2/shep/internal/config"
+	"github.com/tranceh2/shep/internal/pathutil"
 )
 
 // Candidate is one project discovered by a provider. Path is the raw path as
@@ -234,7 +235,14 @@ func NewScopedRegistry(cfg *config.Config, probes config.Probes, herdrDriver Her
 			config.SourceHerdr:      &herdrProvider{driver: herdrDriver, probes: probes, cfg: scoped},
 			config.SourceWorkspaces: &workspacesProvider{cfg: scoped},
 			config.SourceZoxide:     &zoxideProvider{probes: probes, cfg: scoped, root: root},
-			config.SourceProjects:   &projectsProvider{cfg: cfg, root: root},
+			// Intentional asymmetry: projectsProvider reads the full cfg, not
+			// scoped. projects only consults cfg.Sources.Projects (markers,
+			// ignore list, MaxDepth...), which is shared verbatim by scoped
+			// (scoped aliases cfg.Sources). Reading cfg directly means a future
+			// scoped-only field could never accidentally silence the projects
+			// scan inside a group picker. Do not "fix" this to scoped without
+			// re-checking that invariant.
+			config.SourceProjects: &projectsProvider{cfg: cfg, root: root},
 		},
 		cfg:    scoped,
 		probes: probes,
@@ -362,7 +370,12 @@ func (p *workspacesProvider) List(ctx context.Context) ([]Candidate, error) {
 			return nil, ctx.Err()
 		default:
 		}
-		path := expandTilde(ws.Path)
+		// Fall back to the raw path on an unresolvable HOME so os.Stat below
+		// reports the bad path instead of crashing on expansion.
+		path := ws.Path
+		if expanded, err := pathutil.ExpandTilde(ws.Path); err == nil {
+			path = expanded
+		}
 		cand := Candidate{
 			Path:   path,
 			Label:  ws.Name,
@@ -515,7 +528,9 @@ func parseZoxideOutput(out, root string) []Candidate {
 // is tilde-expanded before comparison. An unresolvable relative path (e.g.
 // different volumes on Windows) is treated as "not within root".
 func isWithinRoot(root, path string) bool {
-	root = expandTilde(root)
+	if expanded, err := pathutil.ExpandTilde(root); err == nil {
+		root = expanded
+	}
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
 		return false
@@ -555,7 +570,9 @@ func ListProjects(ctx context.Context, cfg config.ProjectsSourceConfig, root str
 	if root == "" {
 		return nil, nil
 	}
-	root = expandTilde(root)
+	if expanded, err := pathutil.ExpandTilde(root); err == nil {
+		root = expanded
+	}
 	maxDepth := cfg.MaxDepth
 	if !cfg.Recursive || maxDepth <= 0 {
 		maxDepth = 1
@@ -629,26 +646,6 @@ func ListProjects(ctx context.Context, cfg config.ProjectsSourceConfig, root str
 		}
 	}
 	return out, nil
-}
-
-// expandTilde replaces a leading ~ with the user's home dir. Unresolvable
-// home dirs return the input untouched so the scan fails later at ReadDir
-// rather than crashing here.
-func expandTilde(p string) string {
-	if p == "~" {
-		if home, err := os.UserHomeDir(); err == nil {
-			return home
-		}
-		return p
-	}
-	if strings.HasPrefix(p, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return p
-		}
-		return filepath.Join(home, p[2:])
-	}
-	return p
 }
 
 // userHomeDir resolves the current user's home directory. It is a package

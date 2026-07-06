@@ -5,22 +5,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
-	"github.com/muesli/termenv"
 	"github.com/spf13/cobra"
 	"github.com/tranceh2/shep/internal/preview"
 )
-
-// previewWarnColorHex is a standalone color inspired by the Catppuccin Mocha
-// theme used in the TUI picker. It styles shep's own synthetic warning line
-// in `shep preview --color` output; the rendered preview body itself is
-// never flattened to a single color (see writePreview), so no equivalent
-// constant exists for the body text.
-const previewWarnColorHex = "#f5c2e7"
 
 // previewCmd builds `shep preview <path>` (WP-4): a stable, non-interactive
 // way to render the same preview shown in the `shep open` picker's preview
@@ -73,7 +64,7 @@ func (a *App) runPreview(cmd *cobra.Command, path string, color bool) error {
 	}
 
 	renderer := a.buildPreviewRenderer()
-	res, renderErr := renderer.Render(cmd.Context(), cand, preview.RenderOptions{Color: color})
+	res, renderErr := renderer.Render(cmd.Context(), cand)
 	if renderErr != nil {
 		fmt.Fprintln(errOut, "preview: render failed")
 		return errExitOne
@@ -108,17 +99,18 @@ func validatePreviewPath(p string) error {
 	return nil
 }
 
-// ansiRegex matches ANSI/control sequences (CSI, OSC, etc.).
-var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]`)
-
-// stripANSI removes ANSI and control sequences from a string.
+// stripANSI removes ANSI and control sequences (CSI, OSC, DCS, and the rest
+// of the C1/CTL escape set) from a string. Delegates to
+// charmbracelet/x/ansi.Strip — the same package truncateToWidth (internal/tui)
+// already trusts for ANSI-aware truncation — rather than a hand-rolled regex,
+// so the full escape set is covered (a regex only matching CSI would leave
+// OSC/DCS sequences in Television-facing default output).
 func stripANSI(s string) string {
-	return ansiRegex.ReplaceAllString(s, "")
+	return ansi.Strip(s)
 }
 
-// writePreview writes the rendered preview text and any transient warning
-// (WP-3's safe command fallback) to out. Precedence between the two output
-// modes:
+// writePreview writes the rendered preview text to out. Precedence between
+// the two output modes:
 //
 //   - styled == false (the default, or --color passed but stdout is not a
 //     terminal): res.Text is always run through stripANSI. This keeps the
@@ -135,29 +127,12 @@ func stripANSI(s string) string {
 //     simply render as plain text here too, since they had none to begin
 //     with — this function no longer flattens everything to one accent
 //     color.
-//
-// The warning line is always shep's own synthetic text, never
-// renderer-sourced, so it is always stripped first and — only when
-// styled — given shep's own warn color on top.
 func writePreview(out io.Writer, res preview.Result, styled bool) {
 	text := res.Text
-	warn := ""
-	if res.Warning != "" {
-		warn = "warning: " + stripANSI(res.Warning)
-	}
-	if styled {
-		if warn != "" {
-			r := lipgloss.NewRenderer(out)
-			r.SetColorProfile(termenv.TrueColor)
-			warn = r.NewStyle().Foreground(lipgloss.Color(previewWarnColorHex)).Italic(true).Render(warn)
-		}
-	} else {
+	if !styled {
 		text = stripANSI(text)
 	}
 	fmt.Fprintln(out, text)
-	if warn != "" {
-		fmt.Fprintln(out, warn)
-	}
 }
 
 // isTerminalWriter reports whether w is an *os.File connected to a terminal.

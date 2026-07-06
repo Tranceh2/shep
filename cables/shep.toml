@@ -22,7 +22,7 @@ command = "shep list --format tsv"
 # `shep preview '{split:\t:0}'` renders the same label/path/source/git (or a
 # declared [preview.commands.<name>]) preview shown in the `shep open`
 # picker's preview pane, so the Television preview panel always matches.
-# Output is plain text (no ANSI) so it renders safely inside any picker.
+# Plain text by default (no --color), so it embeds safely inside any picker.
 [preview]
 command = "shep preview '{split:\t:0}'"
 

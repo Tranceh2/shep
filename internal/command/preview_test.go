@@ -152,6 +152,75 @@ func TestPreviewCmd_ColorFlagRegistered(t *testing.T) {
 	}
 }
 
+// TestStripANSI_RemovesCSIOSCAndDCS is the regression test for the
+// hand-rolled stripANSI: the previous regex (\x1b\[[0-9;?]*[a-zA-Z]) only
+// matched CSI sequences, leaving OSC (window/title) and DCS (sixel/SLS)
+// escape sequences in the output. This is a Television-safety contract —
+// `shep preview` (default, no --color) must emit zero escape codes so it
+// embeds safely inside any picker — so stripANSI must handle the full
+// ANSI/CTL set, not just CSI. Delegates to charmbracelet/x/ansi.Strip, the
+// same package truncateToWidth already trusts for ANSI-aware truncation.
+func TestStripANSI_RemovesCSIOSCAndDCS(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "csi sgr color",
+			input: "\x1b[31mRed\x1b[0m text",
+			want:  "Red text",
+		},
+		{
+			name:  "csi true color",
+			input: "\x1b[38;2;137;180;250mREADME\x1b[0m",
+			want:  "README",
+		},
+		{
+			name:  "osc terminated by BEL",
+			input: "a\x1b]0;window title\x07b",
+			want:  "ab",
+		},
+		{
+			name:  "osc terminated by ST",
+			input: "a\x1b]2;title\x1b\\b",
+			want:  "ab",
+		},
+		{
+			name:  "dcs sixel",
+			input: "x\x1bPq\"1;2;3\x1b\\x",
+			want:  "xx",
+		},
+		{
+			name:  "plain text unchanged",
+			input: "no escapes here",
+			want:  "no escapes here",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := stripANSI(tt.input); got != tt.want {
+				t.Errorf("stripANSI(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestStripANSI_LeavesZeroEscapeBytes guarantees the Television-safe
+// contract from the other direction: whatever escapes a renderer or a
+// captured pane can produce, the default preview output path must contain
+// zero ESC (\x1b) bytes after stripping.
+func TestStripANSI_LeavesZeroEscapeBytes(t *testing.T) {
+	t.Parallel()
+	input := "\x1b[31mCSI\x1b[0m \x1b]0;OSC\x07 \x1bPDCS\x1b\\"
+	got := stripANSI(input)
+	if strings.ContainsAny(got, "\x1b") {
+		t.Errorf("stripANSI left escape bytes in output: %q", got)
+	}
+}
+
 // TestWritePreview_StyledPlainTextStaysPlain and TestWritePreview_PlainNoANSI
 // cover the CLI-layer color decision directly (isTerminalWriter itself is
 // exercised separately), keeping the ANSI on/off contract unit-testable
@@ -182,15 +251,6 @@ func TestWritePreview_PlainNoANSI(t *testing.T) {
 	}
 }
 
-func TestWritePreview_WarningLineIncluded(t *testing.T) {
-	t.Parallel()
-	var out bytes.Buffer
-	writePreview(&out, preview.Result{Text: "hello", Warning: "command failed"}, false)
-	if !strings.Contains(out.String(), "warning: command failed") {
-		t.Errorf("expected warning line, got: %q", out.String())
-	}
-}
-
 // TestIsTerminalWriter_FalseForBuffer and TestIsTerminalWriter_FalseForRegularFile
 // confirm the TTY gate degrades safely for non-terminal writers.
 func TestIsTerminalWriter_FalseForBuffer(t *testing.T) {
@@ -216,9 +276,11 @@ func TestIsTerminalWriter_FalseForRegularFile(t *testing.T) {
 func TestWritePreview_SanitizesANSIInDefaultOutput(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
+	// CSI (SGR), OSC (window title), and DCS in the body: the default
+	// (non-styled) path must strip the full ANSI/CTL set, not just CSI —
+	// Television and other pickers expect zero escape bytes.
 	res := preview.Result{
-		Text:    "\x1b[31mRed Text\x1b[0m and \x1b[1;34mBlue Text\x1b[0m",
-		Warning: "\x1b[33mWarning text\x1b[0m",
+		Text: "\x1b[31mRed Text\x1b[0m and \x1b[1;34mBlue Text\x1b[0m\x1b]0;t\x07\x1bPq\x1b\\",
 	}
 	writePreview(&out, res, false)
 	output := out.String()
@@ -227,9 +289,6 @@ func TestWritePreview_SanitizesANSIInDefaultOutput(t *testing.T) {
 	}
 	if !strings.Contains(output, "Red Text and Blue Text") {
 		t.Errorf("expected clean text, got: %q", output)
-	}
-	if !strings.Contains(output, "warning: Warning text") {
-		t.Errorf("expected warning to be sanitized, got: %q", output)
 	}
 }
 
@@ -244,8 +303,7 @@ func TestWritePreview_DefaultStripsRealRendererANSI(t *testing.T) {
 	// A true-color 24-bit escape, matching what lsd/eza --color=always or a
 	// captured pane buffer would actually emit (not just basic 8-color codes).
 	res := preview.Result{
-		Text:    "\x1b[38;2;137;180;250mREADME.md\x1b[0m\n\x1b[1;34msrc\x1b[0m",
-		Warning: "\x1b[33mWarning text\x1b[0m",
+		Text: "\x1b[38;2;137;180;250mREADME.md\x1b[0m\n\x1b[1;34msrc\x1b[0m",
 	}
 	writePreview(&out, res, false)
 	output := out.String()
@@ -254,9 +312,6 @@ func TestWritePreview_DefaultStripsRealRendererANSI(t *testing.T) {
 	}
 	if !strings.Contains(output, "README.md") || !strings.Contains(output, "src") {
 		t.Errorf("expected clean text content preserved, got: %q", output)
-	}
-	if !strings.Contains(output, "warning: Warning text") {
-		t.Errorf("expected warning to be sanitized, got: %q", output)
 	}
 }
 
@@ -270,20 +325,11 @@ func TestWritePreview_StyledPreservesRealRendererANSI(t *testing.T) {
 	var out bytes.Buffer
 	rendererText := "\x1b[38;2;137;180;250mREADME.md\x1b[0m\n\x1b[1;34msrc\x1b[0m"
 	res := preview.Result{
-		Text:    rendererText,
-		Warning: "\x1b[33mWarning text\x1b[0m",
+		Text: rendererText,
 	}
 	writePreview(&out, res, true)
 	output := out.String()
 	if !strings.Contains(output, rendererText) {
 		t.Errorf("expected renderer ANSI preserved byte-for-byte, got: %q", output)
-	}
-	// The warning line is always shep's own synthetic text: its raw escape
-	// must still be stripped before shep applies its own warn styling.
-	if strings.Contains(output, "\x1b[33m") {
-		t.Errorf("expected raw warning ANSI to be stripped before restyling, got: %q", output)
-	}
-	if !strings.Contains(output, "Warning text") {
-		t.Errorf("expected warning text content preserved, got: %q", output)
 	}
 }

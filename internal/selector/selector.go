@@ -1,8 +1,13 @@
 // Package selector implements the candidate-picking cascade used by
 // `shep open`: an exact (direct) match short-circuits, fzf accelerates when
-// installed, and the Bubble Tea TUI is the universal interactive fallback
-// (wired in a later commit). Each selector implements the same small
-// interface so the open command can chain them and tests can stub any link.
+// installed, and the Bubble Tea TUI is the universal interactive fallback.
+// Each selector implements the same small interface so the open command can
+// chain them and tests can stub any link.
+//
+// The cascade itself is assembled per invocation in
+// internal/command/open.go's cascadeFor (via New(direct, fzf, tui...) based on
+// the configured selector); this package only supplies the building blocks,
+// there is no package-level "default cascade" constructor.
 package selector
 
 import (
@@ -34,8 +39,9 @@ type Cascade struct {
 	selectors []Selector
 }
 
-// New builds a Cascade from the supplied selectors (tried in order). The
-// default cascade shep uses is DefaultCascade().
+// New builds a Cascade from the supplied selectors (tried in order). shep's
+// cascade is composed inline in internal/command/open.go's cascadeFor via
+// New(direct, ...) (there is no DefaultCascade() helper here).
 func New(selectors ...Selector) *Cascade {
 	return &Cascade{selectors: selectors}
 }

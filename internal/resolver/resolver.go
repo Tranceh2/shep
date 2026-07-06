@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/tranceh2/shep/internal/pathutil"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -35,7 +36,7 @@ func Normalize(input string) (string, error) {
 	if input == "" {
 		return "", errors.New("normalize: empty path")
 	}
-	expanded, err := expandTilde(input)
+	expanded, err := pathutil.ExpandTilde(input)
 	if err != nil {
 		return "", fmt.Errorf("normalize %q: %w", input, err)
 	}
@@ -146,27 +147,6 @@ func ResolveFromSources(ctx context.Context, registry *source.Registry, query st
 		return all, matches, collectErr
 	}
 	return all, matches, nil
-}
-
-// expandTilde replaces a leading ~ with the user's home directory. A missing
-// HOME is an error rather than a silent pass-through, because normalisation
-// must be deterministic to keep dedup correct.
-func expandTilde(p string) (string, error) {
-	if p == "~" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		return home, nil
-	}
-	if strings.HasPrefix(p, "~/") || strings.HasPrefix(p, "~"+string(filepath.Separator)) {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		return filepath.Join(home, p[2:]), nil
-	}
-	return p, nil
 }
 
 // absPath makes a path absolute. Relative paths are anchored at the process

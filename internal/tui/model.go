@@ -79,8 +79,12 @@ type Model struct {
 	// discarded (PL-11).
 	previewSeq     int
 	previewText    string
-	previewWarn    string
 	previewLoading bool
+	// previewErr holds a short user-visible message when Render itself
+	// returned a real error (context cancellation, or any future Renderer
+	// implementation) — a mechanism distinct from the removed Result.Warning
+	// field. Empty after any successful render or on selection change.
+	previewErr string
 }
 
 // previewResponseMsg carries the result of an async preview render. seq must
@@ -181,12 +185,12 @@ func (m Model) handlePreviewResponse(msg previewResponseMsg) Model {
 	}
 	m.previewLoading = false
 	if msg.err != nil {
-		m.previewWarn = "preview error"
+		m.previewErr = "preview error"
 		m.previewText = ""
 		return m
 	}
+	m.previewErr = ""
 	m.previewText = msg.result.Text
-	m.previewWarn = msg.result.Warning
 	return m
 }
 
@@ -238,9 +242,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // syncPreviewAfterSelectionChange compares the highlighted candidate before
 // and after a key mutated cursor/query state. When the highlight changed, it
-// bumps previewSeq (invalidating any in-flight render for the old
-// candidate), flips on the loading indicator, and returns the Cmd for the new
-// async render. A nil renderer or an unchanged highlight returns a nil Cmd.
+// clears the previous candidate's previewText (so a stale render arriving
+// out of order can never flash the wrong candidate's text), bumps
+// previewSeq (invalidating any in-flight render for the old candidate),
+// flips on the loading indicator, and returns the Cmd for the new async
+// render. A nil renderer or an unchanged highlight returns a nil Cmd.
 func (m *Model) syncPreviewAfterSelectionChange(prevKey string) tea.Cmd {
 	if m.renderer == nil {
 		return nil
@@ -250,14 +256,13 @@ func (m *Model) syncPreviewAfterSelectionChange(prevKey string) tea.Cmd {
 		return nil
 	}
 	m.previewSeq++
+	m.previewText = ""
+	m.previewErr = ""
 	if newKey == "" {
 		m.previewLoading = false
-		m.previewText = ""
-		m.previewWarn = ""
 		return nil
 	}
 	m.previewLoading = true
-	m.previewWarn = ""
 	cand, _ := m.currentCandidate()
 	return m.previewCmd(m.previewSeq, cand)
 }
@@ -269,17 +274,16 @@ func (m *Model) syncPreviewAfterSelectionChange(prevKey string) tea.Cmd {
 func (m Model) previewCmd(seq int, cand source.Candidate) tea.Cmd {
 	renderer := m.renderer
 	renderCtx := m.renderCtx
-	width := m.width
 	return func() tea.Msg {
-		res, err := renderer.Render(renderCtx, cand, preview.RenderOptions{Width: width})
+		res, err := renderer.Render(renderCtx, cand)
 		return previewResponseMsg{seq: seq, result: res, err: err}
 	}
 }
 
 // refreshPreviewLoadingFlag sets previewLoading to match whether a renderer
-// is wired and a candidate is currently highlighted. Used at construction and
-// whenever the filtered set is rebuilt outside the normal key-handling path
-// (e.g. Run seeding an initial query).
+// is wired and a candidate is currently highlighted. Used at construction so
+// the first frame shows the loading indicator immediately when an async
+// render for the initial cursor is in flight.
 func (m *Model) refreshPreviewLoadingFlag() {
 	if m.renderer == nil {
 		m.previewLoading = false
@@ -335,7 +339,6 @@ func (m *Model) applyFilter() {
 	if m.cursor >= len(m.filtered) {
 		m.cursor = max(len(m.filtered)-1, 0)
 	}
-	// scoring: stable order preserved; subsequence match is enough for v1.
 }
 
 // subsequence reports whether every rune of needle appears in haystack in
@@ -400,8 +403,8 @@ func splitWidths(width int, layout Layout) (int, int) {
 	if width <= 0 {
 		width = 80
 	}
-	listFrac, listOK := parsePercentOrAuto(layout.ListWidth)
-	prevFrac, prevOK := parsePercentOrAuto(layout.PreviewWidth)
+	listFrac, listOK := config.PercentOrAuto(layout.ListWidth)
+	prevFrac, prevOK := config.PercentOrAuto(layout.PreviewWidth)
 
 	var list, prev int
 	switch {
@@ -474,15 +477,6 @@ func splitBothPercent(width int, listFrac, prevFrac float64) (int, int) {
 	list := int(float64(width) * listFrac)
 	prev := width - list - 1
 	return list, prev
-}
-
-// parsePercentOrAuto treats "" and "auto" as "not configured" (ok=false);
-// anything else is parsed as a percentage via config.ParsePercent.
-func parsePercentOrAuto(s string) (float64, bool) {
-	if s == "" || s == "auto" {
-		return 0, false
-	}
-	return config.ParsePercent(s)
 }
 
 // paneContentWidth converts a pane's outer width budget into the inner
@@ -635,8 +629,8 @@ func capPreviewBodyLines(body string, height int) string {
 // previewBody renders the preview pane content: "(no selection)" when
 // nothing is highlighted, a built-in label/path/source summary when no
 // Renderer is wired, a loading indicator while an async render is in flight,
-// or the rendered text plus any transient warning (WP-3's safe command
-// fallback surfaces here).
+// a short error indicator when Render returned a real error, or the
+// rendered text.
 func (m Model) previewBody(width int) string {
 	if len(m.filtered) == 0 {
 		return palette.mutedStyle.Width(width).Render(truncateToWidth("(no selection)", width))
@@ -653,10 +647,10 @@ func (m Model) previewBody(width int) string {
 	if m.previewLoading {
 		return palette.previewLoadingStyle.Width(width).Render(truncateToWidth("loading…", width))
 	}
-	text := truncateLinesToWidth(m.previewText, width)
-	if m.previewWarn != "" {
-		text += "\n" + palette.previewWarnStyle.Render(truncateToWidth("warn: "+m.previewWarn, width))
+	if m.previewErr != "" {
+		return palette.previewErrStyle.Width(width).Render(truncateToWidth(m.previewErr, width))
 	}
+	text := truncateLinesToWidth(m.previewText, width)
 	return lipgloss.NewStyle().Width(width).Render(text)
 }
 
@@ -715,7 +709,12 @@ func Run(ctx context.Context, candidates []source.Candidate, query string, rende
 	m := newModelWithLayout(candidates, renderer, ctx, l)
 	m.query = query
 	m.applyFilter()
-	m.refreshPreviewLoadingFlag()
+	// refreshPreviewLoadingFlag is not re-called here: newModelWithLayout
+	// already set it from the full candidate list, and the only thing that
+	// could change it (applyFilter emptying the filtered set) is
+	// unobservable — previewBody short-circuits on len(filtered)==0 before
+	// reading previewLoading, and Init returns a nil Cmd when no candidate
+	// is highlighted.
 	// WithAltScreen is required: without it, Bubble Tea renders inline and
 	// repaints by moving the cursor up N lines on every update. Any render
 	// taller than the previous one (e.g. a long query trimming the match
@@ -745,11 +744,4 @@ func finalizeRun(m Model) (source.Candidate, bool, error) {
 	}
 	res, ok := m.Selected()
 	return res, ok, nil
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

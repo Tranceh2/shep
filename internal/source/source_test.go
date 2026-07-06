@@ -369,18 +369,6 @@ func TestRelativeLabel_HomeUnresolvable(t *testing.T) {
 	}
 }
 
-// TestExpandTilde covers the developer-shorthand expansion used by
-// workspaces/projects. Cannot run t.Parallel because it mutates HOME.
-func TestExpandTilde(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	if got := expandTilde("~/code"); !filepath.IsAbs(got) {
-		t.Errorf("expected absolute expansion, got %q", got)
-	}
-	if got := expandTilde("relative"); got != "relative" {
-		t.Errorf("non-tilde input should pass through, got %q", got)
-	}
-}
-
 // TestWorkspacesProvider_List turns predefined [[workspaces]] entries into
 // candidates labelled by Name, with tilde-expanded paths, under Source
 // "workspaces". Cannot run t.Parallel because it mutates HOME for tilde
@@ -420,6 +408,38 @@ func TestWorkspacesProvider_List(t *testing.T) {
 	}
 	if cands[1].Missing {
 		t.Error("shep path exists on disk and should not be Missing")
+	}
+}
+
+// TestWorkspacesProvider_StalePathMarkedMissing (requirement: a candidate
+// whose path no longer exists on disk must fail clearly on selection, never
+// fall back to "/", $HOME, or cwd) confirms a predefined [[workspaces]] path,
+// which can point at a directory deleted after the config was written, is
+// stat'd so launch()'s existing Missing check actually has something to
+// reject instead of silently printing the path.
+func TestWorkspacesProvider_StalePathMarkedMissing(t *testing.T) {
+	t.Parallel()
+	live := t.TempDir()
+	stale := filepath.Join(t.TempDir(), "deleted-workspace")
+	cfg := config.Defaults()
+	cfg.Workspaces = []config.WorkspaceConfig{
+		{Name: "live", Path: live},
+		{Name: "stale", Path: stale},
+	}
+	p := &workspacesProvider{cfg: cfg}
+	cands, err := p.List(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	byPath := map[string]Candidate{}
+	for _, c := range cands {
+		byPath[c.Path] = c
+	}
+	if byPath[live].Missing {
+		t.Errorf("live workspace %q must not be marked Missing", live)
+	}
+	if !byPath[stale].Missing {
+		t.Errorf("stale workspace %q must be marked Missing", stale)
 	}
 }
 

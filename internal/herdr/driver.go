@@ -115,14 +115,6 @@ type rawWorkspace struct {
 	Label       string `json:"label"`
 	ActiveTabID string `json:"active_tab_id"`
 	Focused     bool   `json:"focused"`
-	// Number, TabCount, PaneCount, and AgentStatus are returned by
-	// `herdr workspace list` but were previously discarded. They are now
-	// deserialised so the preview layer can render richer workspace summaries
-	// without extra round trips.
-	Number      int    `json:"number"`
-	TabCount    int    `json:"tab_count"`
-	PaneCount   int    `json:"pane_count"`
-	AgentStatus string `json:"agent_status"`
 }
 
 type paneListEnvelope struct {
