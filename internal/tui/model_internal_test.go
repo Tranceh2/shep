@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -869,4 +870,220 @@ func TestModel_RenderListNoMatches_NeverWrapsEvenBelowMinList(t *testing.T) {
 	if w := lipgloss.Width(noMatches); w != width {
 		t.Errorf("no-matches line width = %d, want %d: %q", w, width, noMatches)
 	}
+}
+
+// filteredLabels maps the model's filtered indices to their labels, in display
+// order. Used by ranking/order assertions that need to assert which candidate
+// lands where without depending on rendering.
+func filteredLabels(m Model) []string {
+	out := make([]string, 0, len(m.filtered))
+	for _, idx := range m.filtered {
+		out = append(out, m.candidates[idx].Label)
+	}
+	return out
+}
+
+// TestApplyFilter_RanksBetterSubsequenceMatchFirst is the core contract test
+// for replacing the boolean subsequence matcher with scored fuzzy matching
+// (sahilm/fuzzy). Both candidates below contain the query "abc" as a
+// subsequence, but "abc-service" matches it as a contiguous prefix (each
+// letter adjacent, plus a first-character bonus) while "banana-fabric-doc"
+// only matches it with the letters scattered far apart and NOT aligned to any
+// "-" separator boundary (a@1, b@9, c@12 — none of them immediately follow a
+// "-"). The contiguous match must sort first. Under the old boolean matcher
+// the result order was just the providers' input order (meaningless);
+// sahilm/fuzzy must reorder strong -> weak. Candidates are listed weakest-first
+// so a non-ranking matcher would keep them in the (wrong) input order and this
+// test would fail.
+//
+// NOTE: an earlier version of this fixture used "alpha-beta-cache" as the weak
+// candidate. That accidentally matched "abc" right after each "-" separator
+// (alpha-BETA-CAche), which sahilm/fuzzy rewards with a
+// matchFollowingSeparatorBonus per letter — a real and correct scoring rule
+// (it is how "abc" fuzzy-matches "Alpha Beta Cache"-style initials), but it
+// made "alpha-beta-cache" outscore the contiguous "abc-service" match,
+// contradicting the test's intent. "banana-fabric-doc" was chosen to keep the
+// letters scattered without landing on any separator boundary, verified
+// directly against the library (score -19) versus the contiguous match's
+// score (22).
+func TestApplyFilter_RanksBetterSubsequenceMatchFirst(t *testing.T) {
+	t.Parallel()
+	cands := []source.Candidate{
+		{Path: "/b/banana-fabric-doc", Label: "banana-fabric-doc"}, // weak: "abc" scattered, no separator alignment
+		{Path: "/a/abc-service", Label: "abc-service"},             // strong: "abc" contiguous prefix
+	}
+	m := NewModel(cands, nil)
+	m.query = "abc"
+	m.applyFilter()
+
+	got := filteredLabels(m)
+	want := []string{"abc-service", "banana-fabric-doc"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("applyFilter ranking (best match must be first):\n  got:  %v\n  want: %v\n"+
+			"both candidates match %q as a subsequence, but the contiguous prefix match must rank above the scattered one",
+			got, want, "abc")
+	}
+}
+
+// TestApplyFilter_EmptyQueryKeepsOriginalOrder locks the unchanged empty-query
+// behavior: ranking is meaningless when there is no query, so every candidate
+// must stay in the original (provider) order exactly as NewModel produced them.
+// This is depended on by existing UX and tests, so it is an explicit contract.
+func TestApplyFilter_EmptyQueryKeepsOriginalOrder(t *testing.T) {
+	t.Parallel()
+	cands := []source.Candidate{
+		{Path: "/c/charlie", Label: "charlie"},
+		{Path: "/a/alpha", Label: "alpha"},
+		{Path: "/b/bravo", Label: "bravo"},
+	}
+	m := NewModel(cands, nil)
+	m.query = ""
+	m.applyFilter()
+
+	got := filteredLabels(m)
+	want := []string{"charlie", "alpha", "bravo"} // input order, deliberately NOT sorted
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("empty query must preserve original provider order:\n  got:  %v\n  want: %v", got, want)
+	}
+}
+
+// TestApplyFilter_CaseInsensitive confirms the move to sahilm/fuzzy preserves
+// the existing case-insensitive UX. sahilm/fuzzy matches via equalFold (see its
+// fuzzy.go), so an upper-case query still matches lower-case labels. We must
+// NOT lowercase the haystack ourselves, or we would destroy sahilm/fuzzy's
+// camelCase-boundary scoring (one of the main reasons for adopting it). "zebra"
+// is chosen as the non-matching control because it contains no 'c', so it can
+// never spuriously satisfy the "abc" subsequence under any matcher.
+func TestApplyFilter_CaseInsensitive(t *testing.T) {
+	t.Parallel()
+	cands := []source.Candidate{
+		{Path: "/a/abc-service", Label: "abc-service"},
+		{Path: "/z/zebra", Label: "zebra"},
+	}
+	m := NewModel(cands, nil)
+	m.query = "ABC" // upper-case query against lower-case labels
+	m.applyFilter()
+
+	got := filteredLabels(m)
+	want := []string{"abc-service"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("case-insensitive match broke (upper query must match lower labels):\n  got:  %v\n  want: %v", got, want)
+	}
+}
+
+// TestApplyFilter_RanksCaseVariantsEqually documents a deliberate consequence
+// of NOT lowercasing the haystack: an upper-case query and the equivalent
+// lower-case query must produce the same candidate set and the same ordering,
+// because equalFold treats them identically. If anyone later re-introduces a
+// manual strings.ToLower, this guards that the result stays consistent.
+func TestApplyFilter_RanksCaseVariantsEqually(t *testing.T) {
+	t.Parallel()
+	cands := []source.Candidate{
+		{Path: "/b/alpha-beta-cache", Label: "alpha-beta-cache"},
+		{Path: "/a/abc-service", Label: "abc-service"},
+	}
+	lower := NewModel(cloneCandidates(cands), nil)
+	lower.query = "abc"
+	lower.applyFilter()
+
+	upper := NewModel(cloneCandidates(cands), nil)
+	upper.query = "ABC"
+	upper.applyFilter()
+
+	if got := filteredLabels(lower); !reflect.DeepEqual(got, filteredLabels(upper)) {
+		t.Errorf("query case must not change ranking:\n  lower: %v\n  upper: %v", filteredLabels(lower), filteredLabels(upper))
+	}
+}
+
+// TestApplyFilter_CursorClampsAfterMovingThenNarrowing guards the cursor-clamp
+// branch in applyFilter (model.go) for the case where the cursor has already
+// moved away from 0 *before* a query narrows the result set below the
+// cursor's position — the scenario every other applyFilter test above skips,
+// since they all filter while the cursor sits at its zero-value.
+//
+// Five candidates start in provider order with no query. The cursor is moved
+// down twice (via real "down" key messages, exactly like production input)
+// to land on index 2 ("gadget-charlie"). Typing "widget" then narrows
+// m.filtered to just the two candidates whose label contains "widget"
+// ("widget-alpha" and "widget-echo") — neither of which is the candidate the
+// cursor was previously on, and both indices land below cursor position 2.
+// applyFilter's clamp (`if m.cursor >= len(m.filtered) { ... }`) must pull the
+// cursor back into range, and currentCandidate() must then resolve to one of
+// the two surviving "widget" candidates — never "gadget-charlie" (which fell
+// out of the filtered set) and never a zero-value/invalid candidate.
+func TestApplyFilter_CursorClampsAfterMovingThenNarrowing(t *testing.T) {
+	t.Parallel()
+	cands := []source.Candidate{
+		{Path: "/w/widget-alpha", Label: "widget-alpha"},
+		{Path: "/o/orange-fruit", Label: "orange-fruit"},
+		{Path: "/g/gadget-charlie", Label: "gadget-charlie"},
+		{Path: "/g/gizmo-delta", Label: "gizmo-delta"},
+		{Path: "/w/widget-echo", Label: "widget-echo"},
+	}
+	m := NewModel(cands, nil)
+
+	// Move the cursor down twice with real key messages, same as production
+	// input, landing on index 2 ("gadget-charlie") while the query is still
+	// empty and all 5 candidates are shown.
+	for i := 0; i < 2; i++ {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		mm, ok := updated.(Model)
+		if !ok {
+			t.Fatalf("expected Model, got %T", updated)
+		}
+		m = mm
+	}
+	if m.cursor != 2 {
+		t.Fatalf("setup failed: cursor = %d after two down presses, want 2", m.cursor)
+	}
+	if cand, ok := m.currentCandidate(); !ok || cand.Label != "gadget-charlie" {
+		t.Fatalf("setup failed: cursor is on %+v (ok=%v), want gadget-charlie", cand, ok)
+	}
+
+	// Narrow the filtered set to 2 candidates, both of which sort below the
+	// prior cursor position (2) and neither of which is the candidate the
+	// cursor was previously on.
+	m.query = "widget"
+	m.applyFilter()
+
+	if got := filteredLabels(m); len(got) != 2 {
+		t.Fatalf("setup failed: query %q filtered to %v, want exactly 2 candidates", m.query, got)
+	}
+
+	if m.cursor < 0 || m.cursor >= len(m.filtered) {
+		t.Fatalf("cursor not clamped into range: cursor = %d, len(filtered) = %d", m.cursor, len(m.filtered))
+	}
+
+	cand, ok := m.currentCandidate()
+	if !ok {
+		t.Fatal("currentCandidate() ok = false after narrowing; want a valid highlighted candidate")
+	}
+	if cand.Label != "widget-alpha" && cand.Label != "widget-echo" {
+		t.Errorf("currentCandidate() after clamp = %q, want one of {widget-alpha, widget-echo} (must not point at the removed gadget-charlie or a stale/invalid candidate)", cand.Label)
+	}
+
+	// Selecting now (enter) must resolve through the same clamped cursor to
+	// the same valid candidate, proving the clamp isn't only correct for
+	// currentCandidate()'s own defensive re-clamp but for the real selection
+	// path too.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	mm, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("expected Model, got %T", updated)
+	}
+	selected, ok := mm.Selected()
+	if !ok {
+		t.Fatal("Selected() ok = false after enter; want the clamped candidate to be selectable")
+	}
+	if selected.Label != cand.Label {
+		t.Errorf("Selected() = %q, want it to match the clamped currentCandidate() = %q", selected.Label, cand.Label)
+	}
+}
+
+// cloneCandidates returns a shallow copy so two models built from the same
+// fixture cannot alias each other's candidate slice.
+func cloneCandidates(in []source.Candidate) []source.Candidate {
+	out := make([]source.Candidate, len(in))
+	copy(out, in)
+	return out
 }

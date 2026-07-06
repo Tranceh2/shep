@@ -1,16 +1,20 @@
 // Package tui is shep's embedded Bubble Tea fuzzy picker. It is the universal
-// interactive fallback in the `shep open` selector cascade, used when there
-// is no exact match and fzf is unavailable.
+// interactive fallback in the `shep open` selector cascade, used when there is
+// no exact match and fzf is unavailable.
 //
 // The model renders a left list of filtered candidates and a right preview
 // showing the highlighted candidate's rendered preview.Result (label/path/
 // source/git, or a declared [preview.commands.<name>], via the injected
-// preview.Renderer). Filtering is case-insensitive subsequence scoring over
-// label+path. Navigation uses up/down/ctrl+j/ctrl+k; plain "j"/"k" are typed
-// into the query (not bound to movement) so they filter like any other rune;
-// enter selects; esc/q/ctrl+c/ctrl+g cancels (Run then returns ErrCancelled).
-// The palette is Catppuccin Mocha, centralised in palette.go so colors live in
-// one place.
+// preview.Renderer). Filtering uses github.com/sahilm/fuzzy, the same scored
+// matcher bubbles/list and gum use (Sublime Text/VSCode style): each candidate
+// is searched over its "label path", matches are returned best-match-first
+// (first-character, camelCase and separator boundaries, and adjacency all score
+// higher), and an empty query lists every candidate in original provider order.
+// Navigation uses up/down/ctrl+j/ctrl+k; plain "j"/"k" are typed into the
+// query (not bound to movement) so they filter like any other rune; enter
+// selects; esc/q/ctrl+c/ctrl+g cancels (Run then returns ErrCancelled). The
+// palette is Catppuccin Mocha, centralised in palette.go so colors live in one
+// place.
 package tui
 
 import (
@@ -21,6 +25,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/sahilm/fuzzy"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/preview"
 	"github.com/tranceh2/shep/internal/source"
@@ -324,16 +329,37 @@ func (m Model) currentPreviewKey() string {
 	return cand.Path
 }
 
-// applyFilter recomputes the filtered indices from the query using
-// case-insensitive subsequence matching over "label path". The cursor is
-// clamped back into range so an empty result never leaves a dangling cursor.
+// applyFilter recomputes the filtered indices from the query.
+//
+// With no query every candidate is kept in its original (provider) order:
+// ranking is meaningless when nothing was typed, and existing UX/tests depend on
+// the un-ranked order.
+//
+// With a query, candidates are ranked by github.com/sahilm/fuzzy — the same
+// scored matcher bubbles/list and gum use (Sublime Text/VSCode style). Each
+// candidate is searched over its "label path" haystack (via candidateSource, so
+// no intermediate []string is allocated per keystroke) and fuzzy.FindFrom
+// returns matches already sorted best-match-first (first-character,
+// camelCase-boundary, separator-boundary and adjacency matches all score
+// higher, with penalties for unmatched and leading characters). We do NOT
+// re-sort: the library order is the contract.
+//
+// sahilm/fuzzy matches case-insensitively via equalFold (see its fuzzy.go) while
+// still using the haystack's real case for camelCase scoring, so we intentionally
+// do NOT strings.ToLower anything — lowercasing would erase the camelCase signal
+// that is the main reason for adopting this matcher.
+//
+// The cursor is clamped back into range at the end so an empty result never
+// leaves a dangling cursor.
 func (m *Model) applyFilter() {
 	m.filtered = m.filtered[:0]
-	needle := strings.ToLower(m.query)
-	for i, c := range m.candidates {
-		hay := strings.ToLower(c.Label + " " + c.Path)
-		if needle == "" || subsequence(needle, hay) {
+	if m.query == "" {
+		for i := range m.candidates {
 			m.filtered = append(m.filtered, i)
+		}
+	} else {
+		for _, mt := range fuzzy.FindFrom(m.query, candidateSource(m.candidates)) {
+			m.filtered = append(m.filtered, mt.Index)
 		}
 	}
 	if m.cursor >= len(m.filtered) {
@@ -341,20 +367,23 @@ func (m *Model) applyFilter() {
 	}
 }
 
-// subsequence reports whether every rune of needle appears in haystack in
-// order (case already normalised by the caller). Used for fuzzy filtering.
-func subsequence(needle, haystack string) bool {
-	if needle == "" {
-		return true
-	}
-	ni := 0
-	for hi := 0; hi < len(haystack) && ni < len(needle); hi++ {
-		if haystack[hi] == needle[ni] {
-			ni++
-		}
-	}
-	return ni == len(needle)
+// candidateSource adapts []source.Candidate to fuzzy.Source so applyFilter can
+// match directly against each candidate's "label path" haystack without
+// allocating an intermediate []string on every keystroke. It preserves the
+// exact same haystack the previous boolean matcher used (label + " " + path),
+// so the UX of matching against either field is unchanged.
+type candidateSource []source.Candidate
+
+// String returns the searchable haystack for candidate i: its label and path
+// joined by a space. The original (mixed) case is kept on purpose so
+// sahilm/fuzzy can award camelCase-boundary bonuses.
+func (cs candidateSource) String(i int) string {
+	c := cs[i]
+	return c.Label + " " + c.Path
 }
+
+// Len reports the number of candidates, satisfying fuzzy.Source.
+func (cs candidateSource) Len() int { return len(cs) }
 
 // isPrintable returns true for single-rune printable input that should extend
 // the query. We avoid pulling in unicode classes for the v1 picker.
