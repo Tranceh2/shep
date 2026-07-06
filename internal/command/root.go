@@ -167,7 +167,14 @@ func (a *App) rootCmd() *cobra.Command {
 		if a.cfg == nil {
 			cfg, err := config.Load(a.configPath)
 			if err != nil {
-				return err
+				// root has SilenceErrors:true (subcommands print their own
+				// user-facing messages and return errExitOne so main.go's
+				// blanket os.Exit(1) never double-prints). PersistentPreRunE
+				// runs before any subcommand body, so nothing else ever
+				// prints this specific failure — without this line a bad
+				// config silently exits 1 with zero output.
+				fmt.Fprintf(cmd.ErrOrStderr(), "config error: %v\n", err)
+				return errExitOne
 			}
 			a.cfg = cfg
 			a.probes = config.ProbesFor(cfg)

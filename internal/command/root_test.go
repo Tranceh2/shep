@@ -2,6 +2,8 @@ package command
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -24,6 +26,55 @@ func TestApp_HelpOutput(t *testing.T) {
 	const long = "shep enumerates project workspaces from Herdr, predefined workspaces,"
 	if !strings.Contains(help, long) {
 		t.Errorf("help output missing long description\ngot:\n%s", help)
+	}
+}
+
+// TestApp_PersistentPreRunE_PrintsConfigLoadError (regression): a config that
+// fails to Load (e.g. a strict-validation rejection) must print the failure
+// to stderr before exiting 1. root has SilenceErrors:true so cobra itself
+// never prints PersistentPreRunE's returned error, and main.go's
+// `if err := app.Execute(); err != nil { os.Exit(1) }` never prints anything
+// either — every subcommand body is expected to print its own message before
+// returning errExitOne, but PersistentPreRunE runs before any subcommand
+// body even starts. Before this fix, an invalid --config silently exited 1
+// with zero output on either stream, which is indistinguishable from the
+// process never having started at all.
+func TestApp_PersistentPreRunE_PrintsConfigLoadError(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	badConfig := filepath.Join(dir, "config.toml")
+	// close_on_exit on a leaf node with an empty command can never trigger,
+	// so config.Load rejects it at parse time (any other Load-time rejection
+	// would exercise the same PersistentPreRunE path just as well).
+	const contents = `version = 1
+[templates.dev]
+description = "test"
+[[templates.dev.tabs]]
+name = "code"
+root = "main"
+  [[templates.dev.tabs.nodes]]
+  id = "main"
+  command = ""
+  close_on_exit = true
+`
+	if err := os.WriteFile(badConfig, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write temp config: %v", err)
+	}
+
+	var out, errOut bytes.Buffer
+	app := New(WithStreams(&out, &errOut))
+	cmd := app.rootCmd()
+	cmd.SetArgs([]string{"--config", badConfig, "list"})
+
+	if e := cmd.Execute(); e == nil {
+		t.Fatal("expected a non-nil error from a rejected config, got nil")
+	}
+	if errOut.Len() == 0 {
+		t.Fatal("expected the config load failure to be printed to stderr, got nothing")
+	}
+	if !strings.Contains(errOut.String(), "close_on_exit") {
+		t.Errorf("stderr should name the actual validation failure, got: %q", errOut.String())
 	}
 }
 
