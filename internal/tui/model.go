@@ -12,9 +12,12 @@
 // higher), and an empty query lists every candidate in original provider order.
 // Navigation uses up/down/ctrl+j/ctrl+k; plain "j"/"k" are typed into the
 // query (not bound to movement) so they filter like any other rune; enter
-// selects; esc/q/ctrl+c/ctrl+g cancels (Run then returns ErrCancelled). The
-// palette is Catppuccin Mocha, centralised in palette.go so colors live in one
-// place.
+// selects; esc/q/ctrl+c/ctrl+g cancels (Run then returns ErrCancelled);
+// ctrl+l toggles the landscape/portrait layout for the current session only
+// (never persisted). Below both panes, a full-width footer line always
+// shows the highlighted candidate's complete text, even when the list
+// column truncates its own row. The palette is Catppuccin Mocha,
+// centralised in palette.go so colors live in one place.
 package tui
 
 import (
@@ -31,13 +34,25 @@ import (
 	"github.com/tranceh2/shep/internal/source"
 )
 
-// Layout configures the picker's list/preview pane widths (config.TUIConfig).
-// Each field is "auto" (or empty) or a percentage string like "60%"; see
-// config.ParsePercent. The zero value behaves like {"auto", "auto"}.
+// Layout configures the picker's list/preview pane widths and orientation
+// (config.TUIConfig). ListWidth/PreviewWidth are each "auto" (or empty) or a
+// percentage string like "60%"; see config.ParsePercent. Orientation is
+// LayoutLandscape (default, the zero value) or LayoutPortrait — Television's
+// own naming for the same side-by-side vs stacked concept, kept consistent
+// since shep already integrates with Television.
 type Layout struct {
 	ListWidth    string
 	PreviewWidth string
+	Orientation  string
 }
+
+// Orientation values for Layout.Orientation. LayoutLandscape (the zero
+// value) is the side-by-side split; LayoutPortrait stacks the list pane
+// above the preview pane, both spanning the full terminal width.
+const (
+	LayoutLandscape = "landscape"
+	LayoutPortrait  = "portrait"
+)
 
 // minPreviewWidth is the terminal width (PL-11) below which the preview
 // panel is hidden entirely to avoid breaking the layout.
@@ -47,6 +62,42 @@ const minPreviewWidth = 80
 // hidden entirely, mirroring minPreviewWidth: a very short terminal cannot
 // fit a bordered two-pane layout without clipping either pane.
 const minPreviewHeight = 8
+
+// minListH and minPrevH are the height-axis minimum floors used when
+// splitting a portrait layout's vertical share, analogous to minList/
+// minPrev on the width axis but sized for ROWS instead of terminal COLUMNS.
+// Reusing minList/minPrev (20/10) unchanged for the height axis was the
+// root cause of the portrait-overflow bug: those floors were tuned so a
+// landscape pane keeps enough columns for readable text, not enough rows —
+// any terminal height in [8, 29] hit them and rendered a fixed ~29-line
+// block regardless of the actual reported height.
+//
+// minListH covers the list pane's own chrome (border top/bottom + query
+// line — chromeRows) plus 3 candidate rows. It must stay above chromeRows+2:
+// renderList's scroll-window logic only activates when maxRows (= listH -
+// chromeRows) is > 2 — at maxRows <= 2 it falls through to rendering every
+// candidate unbounded instead of capping — so minListH = chromeRows+3 keeps
+// maxRows at 3, just above that edge case, while still leaving room for a
+// few visible candidate rows.
+const minListH = chromeRows + 3
+
+// minPrevH reuses minPreviewHeight: it is already the terminal's own real
+// minimum height for a preview pane to render sensibly (border+header+
+// blank+help chrome plus 1 body line — see capPreviewBodyLines' height-
+// chromeRows-3 accounting), independent of whether that height budget comes
+// from the full terminal (landscape, where both panes share m.height) or a
+// height-axis split share (portrait, where the preview only gets prevH).
+const minPrevH = minPreviewHeight
+
+// minPortraitHeight is the raw terminal height (m.height, before View's
+// footer-line subtraction) below which portrait mode falls back to the
+// list-only single-pane layout — the same fallback landscape already uses
+// via minPreviewHeight — instead of attempting a stacked split that cannot
+// honour minListH+minPrevH without overflowing. Derived as minListH+
+// minPrevH+1 (mirroring clampWidths'/clampSizes' own list+prev+1 overflow
+// invariant) applied to the budget portrait actually receives (m.height-1,
+// one row reserved for the footer), so +1 again for that reserved row.
+const minPortraitHeight = minListH + minPrevH + 2
 
 // chromeRows is the fixed vertical overhead of the list pane deducted from
 // the reported terminal height before capping visible candidate rows: the
@@ -108,6 +159,16 @@ func NewModel(candidates []source.Candidate, renderer preview.Renderer) Model {
 	return newModel(candidates, renderer, context.TODO())
 }
 
+// NewModelWithLayout builds a model like NewModel but with an explicit
+// Layout (list/preview widths and orientation) — e.g. the caller's loaded
+// config.TUIConfig threaded through layoutFromConfig. This lets a caller
+// construct and drive a Model (Update/View) directly, without going through
+// the full Run bubbletea program loop, when it only needs to seed the
+// picker's session-only starting orientation.
+func NewModelWithLayout(candidates []source.Candidate, renderer preview.Renderer, layout Layout) Model {
+	return newModelWithLayout(candidates, renderer, context.TODO(), layout)
+}
+
 func newModel(candidates []source.Candidate, renderer preview.Renderer, renderCtx context.Context) Model {
 	return newModelWithLayout(candidates, renderer, renderCtx, Layout{})
 }
@@ -148,6 +209,12 @@ func (m Model) Selected() (source.Candidate, bool) {
 // Cancelled reports whether the user quit without selecting
 // (esc/q/ctrl+c/ctrl+g).
 func (m Model) Cancelled() bool { return m.cancelled }
+
+// Layout returns the model's current session-only Layout (list/preview
+// widths and orientation), reflecting any live ctrl+l toggle. It never
+// reads back from — or writes to — the config.TUIConfig the caller may have
+// built it from; see toggleLayoutOrientation.
+func (m Model) Layout() Layout { return m.layout }
 
 // Init kicks off the first async preview render for the initially
 // highlighted candidate (cursor 0) when a Renderer is wired. Its Cmd is
@@ -214,6 +281,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc", "q", "ctrl+c", "ctrl+g":
 		m.cancelled = true
 		return m, tea.Quit
+	case "ctrl+l":
+		m.toggleLayoutOrientation()
+		return m, nil
 	}
 
 	prevKey := m.currentPreviewKey()
@@ -243,6 +313,18 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	cmd := m.syncPreviewAfterSelectionChange(prevKey)
 	return m, cmd
+}
+
+// toggleLayoutOrientation flips m.layout.Orientation between landscape and
+// portrait for the current session only (ctrl+l). This never touches the
+// loaded config.TUIConfig — Model only ever holds the Layout value it was
+// constructed with, so there is nothing here to persist back to disk.
+func (m *Model) toggleLayoutOrientation() {
+	if m.layout.Orientation == LayoutPortrait {
+		m.layout.Orientation = LayoutLandscape
+		return
+	}
+	m.layout.Orientation = LayoutPortrait
 }
 
 // syncPreviewAfterSelectionChange compares the highlighted candidate before
@@ -395,24 +477,88 @@ func isPrintable(s string) bool {
 	return r >= 0x20 && r != 0x7f
 }
 
-// View renders the two-pane UI: a left candidate list with the cursor and a
-// right preview of the highlighted candidate, each wrapped in a rounded
-// border (palette.borderStyle). Widths auto-balance based on the reported
-// window size (falling back to 60/40 when no size yet); the border's frame
-// size is subtracted from each pane's allotted width so content never
-// overflows its own border. Below minPreviewWidth columns or
+// View renders the two-pane UI plus a full-width footer line: a left
+// candidate list with the cursor and a right preview of the highlighted
+// candidate, each wrapped in a rounded border (palette.borderStyle), and
+// below both a single footer line spanning the FULL terminal width showing
+// the currently highlighted candidate's full, untruncated icon+label/path
+// (footerText) — inspired by Atuin's "always show the full command"
+// pattern, useful because the list column can be narrow and truncate rows.
+// Widths auto-balance based on the reported window size (falling back to
+// 60/40 when no size yet); the border's frame size is subtracted from each
+// pane's allotted width so content never overflows its own border. The
+// footer reserves exactly 1 line: the pane budget fed to renderList/
+// renderPreview (paneHeight, via a shallow copy so chromeRows/
+// capPreviewBodyLines accounting is unaffected otherwise) is m.height-1, not
+// m.height, so the panes shrink to make room rather than the footer
+// overflowing the reported terminal height. Below minPreviewWidth columns or
 // minPreviewHeight rows the preview pane is hidden entirely (PL-11) so a
-// narrow or very short terminal never breaks the layout.
+// narrow or very short terminal never breaks the layout. Portrait mode uses
+// its own, higher threshold (minPortraitHeight) instead of minPreviewHeight:
+// stacking list+preview needs room for BOTH panes' own minimum floors
+// (minListH+minPrevH), which landscape's side-by-side share of the full
+// m.height does not.
 func (m Model) View() string {
-	hidePreview := (m.width > 0 && m.width < minPreviewWidth) ||
-		(m.height > 0 && m.height < minPreviewHeight)
-	if hidePreview {
-		return palette.borderStyle.Render(m.renderList(paneContentWidth(m.width)))
+	paneHeight := m.height
+	if paneHeight > 0 {
+		paneHeight--
 	}
-	listW, prevW := splitWidths(m.width, m.layout)
-	listPane := palette.borderStyle.Render(m.renderList(paneContentWidth(listW)))
-	previewPane := palette.borderStyle.Render(m.renderPreview(paneContentWidth(prevW)))
-	return lipgloss.JoinHorizontal(lipgloss.Top, listPane, gap(), previewPane)
+	paneModel := m
+	paneModel.height = paneHeight
+
+	minHeightForPreview := minPreviewHeight
+	if m.layout.Orientation == LayoutPortrait {
+		minHeightForPreview = minPortraitHeight
+	}
+	hidePreview := (m.width > 0 && m.width < minPreviewWidth) ||
+		(m.height > 0 && m.height < minHeightForPreview)
+
+	footer := m.renderFooter()
+
+	var body string
+	switch {
+	case hidePreview:
+		body = palette.borderStyle.Render(paneModel.renderList(paneContentWidth(m.width)))
+	case m.layout.Orientation == LayoutPortrait:
+		body = paneModel.renderPortrait()
+	default:
+		listW, prevW := splitWidths(m.width, m.layout)
+		listPane := palette.borderStyle.Render(paneModel.renderList(paneContentWidth(listW)))
+		previewPane := palette.borderStyle.Render(paneModel.renderPreview(paneContentWidth(prevW)))
+		body = lipgloss.JoinHorizontal(lipgloss.Top, listPane, gap(), previewPane)
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, body, footer)
+}
+
+// renderFooter builds the full-width footer line: the currently highlighted
+// candidate's full text (footerText), defensively truncated to m.width via
+// the same ANSI-safe truncateToWidth used everywhere else in this file, for
+// the rare narrow-terminal case where even the full candidate line does not
+// fit.
+func (m Model) renderFooter() string {
+	return palette.mutedStyle.Width(m.width).Render(truncateToWidth(m.footerText(), m.width))
+}
+
+// renderPortrait stacks the list pane above the preview pane, each spanning
+// the full terminal width — Television's "portrait" layout naming. list_
+// width/preview_width are reinterpreted as the size share along the height
+// (split) axis: the percent-parsing/overflow-reconciliation core (splitSizes)
+// is genuinely axis-agnostic (it only ever operates on an opaque "total" int
+// and returns two shares summing to total-1), so it is reused unchanged here
+// fed m.height instead of m.width — no new percent-parsing code. It IS fed
+// its own height-axis minimum floors (minListH/minPrevH) instead of
+// splitWidths' minList/minPrev: those are column-width floors and produced a
+// fixed, overflowing pane split when reused unchanged for rows (see
+// minListH's doc comment).
+func (m Model) renderPortrait() string {
+	listH, prevH := splitSizes(m.height, m.layout, minListH, minPrevH)
+	listModel := m
+	listModel.height = listH
+	prevModel := m
+	prevModel.height = prevH
+	listPane := palette.borderStyle.Render(listModel.renderList(paneContentWidth(m.width)))
+	previewPane := palette.borderStyle.Render(prevModel.renderPreview(paneContentWidth(m.width)))
+	return lipgloss.JoinVertical(lipgloss.Left, listPane, previewPane)
 }
 
 // splitWidths divides the total reported width into list/preview pane
@@ -428,29 +574,53 @@ func (m Model) View() string {
 // path (e.g. constructed directly in tests or future callers). Each budget
 // still needs paneContentWidth to get the actual content width fed to
 // renderList/renderPreview.
+//
+// This function is axis-agnostic in principle (it only ever operates on an
+// opaque "total" int and returns two shares summing to total-1); splitSizes
+// below is the actual axis-agnostic core, parameterized on the minimum floor
+// pair so a caller splitting a HEIGHT (portrait) is never forced through
+// splitWidths' width-tuned minList/minPrev floors — see minListH's doc
+// comment for why that reuse-unchanged used to overflow.
 func splitWidths(width int, layout Layout) (int, int) {
-	if width <= 0 {
-		width = 80
+	return splitSizes(width, layout, minList, minPrev)
+}
+
+// splitSizes is the axis-agnostic core: it computes list/preview shares of
+// total from layout's percent config, then clamps to whichever minimum
+// floor pair the caller supplies via clampSizes — minList/minPrev (width
+// axis, splitWidths) or minListH/minPrevH (height axis, renderPortrait).
+// Column-width floors and row-height floors are NOT interchangeable (their
+// confusion was the portrait-overflow bug this parameterization fixes), so
+// every caller must supply floors tuned for its own axis.
+func splitSizes(total int, layout Layout, minA, minB int) (int, int) {
+	if total <= 0 {
+		total = 80
 	}
 	listFrac, listOK := config.PercentOrAuto(layout.ListWidth)
 	prevFrac, prevOK := config.PercentOrAuto(layout.PreviewWidth)
 
-	var list, prev int
+	var a, b int
 	switch {
 	case listOK && prevOK:
-		list, prev = splitBothPercent(width, listFrac, prevFrac)
+		a, b = splitBothPercent(total, listFrac, prevFrac)
 	case listOK:
-		list = int(float64(width) * listFrac)
-		prev = width - list - 1
+		a = int(float64(total) * listFrac)
+		b = total - a - 1
 	case prevOK:
-		prev = int(float64(width) * prevFrac)
-		list = width - prev - 1
+		b = int(float64(total) * prevFrac)
+		a = total - b - 1
 	default:
-		list = width * 3 / 5
-		prev = width - list - 1
+		a = total * 3 / 5
+		b = total - a - 1
 	}
-	return clampWidths(width, list, prev)
+	return clampSizes(total, a, b, minA, minB)
 }
+
+// minList and minPrev are the width-axis minimum pane floors (columns),
+// used by splitWidths/clampWidths for landscape splits. See minListH/
+// minPrevH for the height-axis equivalents used by portrait.
+const minList = 20
+const minPrev = 10
 
 // clampWidths enforces the 20/10 minimum pane widths and the invariant that
 // list+gap+prev never exceeds the reported terminal width. A one-sided
@@ -463,34 +633,46 @@ func splitWidths(width int, layout Layout) (int, int) {
 // the result may overflow — an unavoidable floor case on a very narrow
 // terminal, not a regression from this reconciliation.
 func clampWidths(width, list, prev int) (int, int) {
-	const minList = 20
-	const minPrev = 10
-	if list < minList {
-		list = minList
+	return clampSizes(width, list, prev, minList, minPrev)
+}
+
+// clampSizes is the axis-agnostic core previously hardcoded inside
+// clampWidths as minList/minPrev: it enforces the supplied minA/minB
+// minimum floors and the invariant that a+gap+b never exceeds total,
+// reconciling any overflow by shrinking whichever share is still above its
+// own floor (a first, then b) to make room. When total itself is too small
+// to fit both floors plus the gap, the floors still win and the result may
+// overflow — an unavoidable floor case on a very narrow terminal/height,
+// not a regression from this reconciliation. Callers pick the floor pair
+// for their axis: minList/minPrev (columns, clampWidths) or minListH/
+// minPrevH (rows, renderPortrait via splitSizes).
+func clampSizes(total, a, b, minA, minB int) (int, int) {
+	if a < minA {
+		a = minA
 	}
-	if prev < minPrev {
-		prev = minPrev
+	if b < minB {
+		b = minB
 	}
-	if overflow := list + prev + 1 - width; overflow > 0 {
-		if room := list - minList; room > 0 {
+	if overflow := a + b + 1 - total; overflow > 0 {
+		if room := a - minA; room > 0 {
 			shrink := room
 			if shrink > overflow {
 				shrink = overflow
 			}
-			list -= shrink
+			a -= shrink
 			overflow -= shrink
 		}
 		if overflow > 0 {
-			if room := prev - minPrev; room > 0 {
+			if room := b - minB; room > 0 {
 				shrink := room
 				if shrink > overflow {
 					shrink = overflow
 				}
-				prev -= shrink
+				b -= shrink
 			}
 		}
 	}
-	return list, prev
+	return a, b
 }
 
 // splitBothPercent computes list/preview widths when both list_width and
@@ -564,16 +746,7 @@ func (m Model) renderList(width int) string {
 	for i, candIdx := range visible {
 		c := m.candidates[candIdx]
 		marker := "  "
-		row := c.Label
-		if row == "" {
-			row = c.Path
-		}
-		if c.Icon != "" {
-			row = c.Icon + " " + row
-		}
-		if c.Missing {
-			row += " (missing)"
-		}
+		row := candidateDisplayText(c)
 		if i+offset == m.cursor {
 			marker = " >"
 		}
@@ -593,6 +766,37 @@ func (m Model) renderList(width int) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// candidateDisplayText builds the full, untruncated "icon label-or-path
+// (missing)" text for one candidate — the same construction renderList uses
+// for each row, factored out so the footer (which must show the currently
+// highlighted candidate's FULL text, not a width-truncated row) can reuse it
+// without duplicating the icon/label-or-path/missing-suffix logic.
+func candidateDisplayText(c source.Candidate) string {
+	row := c.Label
+	if row == "" {
+		row = c.Path
+	}
+	if c.Icon != "" {
+		row = c.Icon + " " + row
+	}
+	if c.Missing {
+		row += " (missing)"
+	}
+	return row
+}
+
+// footerText returns the full, untruncated display text for the currently
+// highlighted candidate (icon+label-or-path+missing-suffix, via
+// candidateDisplayText), or a muted "(no selection)" placeholder when the
+// filtered set is empty — matching previewBody's own empty-state text.
+func (m Model) footerText() string {
+	cand, ok := m.currentCandidate()
+	if !ok {
+		return "(no selection)"
+	}
+	return candidateDisplayText(cand)
 }
 
 // truncateToWidth trims s so it never exceeds maxW cells of visible width,
@@ -623,7 +827,7 @@ func (m Model) renderPreview(width int) string {
 	header := palette.previewHeaderStyle.Width(width).Render(truncateToWidth("preview", width))
 	body := m.previewBody(width)
 	body = capPreviewBodyLines(body, m.height)
-	help := palette.mutedStyle.Width(width).Render(truncateToWidth("enter select  esc cancel  ctrl+j/k move", width))
+	help := palette.mutedStyle.Width(width).Render(truncateToWidth("enter select  esc cancel  ctrl+j/k move  ctrl+l layout", width))
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, "", help)
 }
 

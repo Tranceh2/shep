@@ -61,8 +61,20 @@ func (a *App) selectorFactory() *selector.Cascade {
 		return a.selectorBuilder()
 	}
 	cfg := a.Config()
-	layout := tui.Layout{ListWidth: cfg.TUI.ListWidth, PreviewWidth: cfg.TUI.PreviewWidth}
-	return cascadeFor(cfg.General.Selector, a.buildPreviewRenderer(), layout)
+	return cascadeFor(cfg.General.Selector, a.buildPreviewRenderer(), layoutFromConfig(cfg.TUI))
+}
+
+// layoutFromConfig builds the tui.Layout consumed by the picker from the
+// loaded [tui] config, threading list_width/preview_width and the layout
+// orientation through the same way. This is the user's configured DEFAULT
+// orientation for the session — the live ctrl+l keybinding may flip it
+// in-memory afterwards without ever writing back to cfg.
+func layoutFromConfig(t config.TUIConfig) tui.Layout {
+	return tui.Layout{
+		ListWidth:    t.ListWidth,
+		PreviewWidth: t.PreviewWidth,
+		Orientation:  t.Layout,
+	}
 }
 
 // buildPreviewRenderer wires the production preview.Renderer from the loaded

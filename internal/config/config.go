@@ -135,12 +135,26 @@ type DefaultsConfig struct {
 	Template string `toml:"template,omitempty"`
 }
 
-// TUIConfig configures the Bubble Tea picker's pane sizing. Values are
-// either "auto" or a percentage string like "60%"; see ParsePercent.
+// TUIConfig configures the Bubble Tea picker's pane sizing and orientation.
+// ListWidth/PreviewWidth are either "auto" or a percentage string like
+// "60%"; see ParsePercent. Layout is TUILayoutLandscape (default when empty)
+// or TUILayoutPortrait — in both orientations ListWidth/PreviewWidth mean
+// "share of the split axis" (width in landscape, height in portrait).
 type TUIConfig struct {
 	ListWidth    string `toml:"list_width,omitempty"`
 	PreviewWidth string `toml:"preview_width,omitempty"`
+	Layout       string `toml:"layout,omitempty"`
 }
+
+// TUI layout orientation values for [tui].layout. TUILayoutLandscape (empty/
+// default) splits the list/preview panes side by side; TUILayoutPortrait
+// stacks the list pane above the preview pane. Named after Television's own
+// landscape/portrait convention for the same concept, since shep already
+// integrates with Television.
+const (
+	TUILayoutLandscape = "landscape"
+	TUILayoutPortrait  = "portrait"
+)
 
 // SourcesConfig configures the four built-in source providers. Only these
 // four tables are recognised; there is no support for arbitrary
@@ -825,7 +839,22 @@ func validateTUI(t TUIConfig) error {
 		return fmt.Errorf("tui.list_width (%s) + tui.preview_width (%s) must not exceed 100%%",
 			t.ListWidth, t.PreviewWidth)
 	}
+	if err := validateTUILayout(t.Layout); err != nil {
+		return err
+	}
 	return nil
+}
+
+// validateTUILayout enforces that [tui].layout is empty (defaults to
+// landscape) or one of the documented orientation values, failing Load fast
+// with the bad value named in the error — consistent with validateWidthField
+// above.
+func validateTUILayout(layout string) error {
+	switch layout {
+	case "", TUILayoutLandscape, TUILayoutPortrait:
+		return nil
+	}
+	return fmt.Errorf("tui.layout: %q must be %q or %q", layout, TUILayoutLandscape, TUILayoutPortrait)
 }
 
 func validateWidthField(field, value string) error {

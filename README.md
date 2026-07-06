@@ -199,7 +199,10 @@ shep init                   # write a path-agnostic example config
 3. **TUI** — the embedded Bubble Tea fuzzy picker (subsequence filter over
    label + path, preview pane, Catppuccin Mocha palette) is the universal
    fallback. Keys: arrows or `ctrl+j`/`ctrl+k` to move, `enter` to select,
-   `esc`/`q`/`ctrl+c`/`ctrl+g` to cancel.
+   `esc`/`q`/`ctrl+c`/`ctrl+g` to cancel, `ctrl+l` to toggle landscape/
+   portrait layout for the current session. Below both panes, a full-width
+   footer line always shows the highlighted candidate's complete icon+label/
+   path, even when the list column is too narrow to show it in full.
 
 After selecting, `shep` asks Herdr to focus an existing workspace whose pane
 cwd normalises to the candidate path, or to create a new focused workspace
@@ -207,13 +210,20 @@ cwd normalises to the candidate path, or to create a new focused workspace
 workspace also has its resolved template applied (focused workspaces skip
 templates). Herdr absent or unavailable prints the resolved path and exits 0.
 
-### `[tui]` pane sizing
+### `[tui]` pane sizing and layout
 
 ```toml
 [tui]
 list_width = "auto"     # "auto" or a percentage like "60%"
 preview_width = "60%"
+layout = "landscape"     # "landscape" (side-by-side, default) or "portrait" (stacked)
 ```
+
+`list_width`/`preview_width` mean "share of the split axis" in both
+orientations: width in `landscape`, height in `portrait` (list on top,
+preview below, both full terminal width). Press `ctrl+l` while the picker is
+open to toggle between `landscape` and `portrait` for the current session
+only — it never writes back to `config.toml`.
 
 ## Workspace previews
 

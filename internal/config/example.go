@@ -34,11 +34,16 @@ selector = "builtin"
 type = "shell"
 template = "default"
 
-# [tui] configures the picker's pane sizing. Values are "auto" or a
-# percentage like "60%".
+# [tui] configures the picker's pane sizing and orientation. list_width/
+# preview_width are "auto" or a percentage like "60%" and, in both
+# orientations, mean "share of the split axis" (width in landscape, height
+# in portrait). layout is "landscape" (side-by-side, default) or "portrait"
+# (list stacked above preview); toggle it live for the current session with
+# ctrl+l while the picker is open (does not persist to this file).
 [tui]
 list_width = "auto"
 preview_width = "60%"
+layout = "landscape"
 
 # [preview] configures the workspace preview shown in the "shep open" selector
 # and the "shep preview" command. Built-in sections (identity, path/label/

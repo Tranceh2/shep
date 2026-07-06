@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/preview"
 	"github.com/tranceh2/shep/internal/selector"
@@ -738,6 +739,30 @@ func TestOpen_TemplateSkippedOnFocused(t *testing.T) {
 	}
 }
 
+// TestLayoutFromConfig_ThreadsOrientationAndWidths (pure function) proves
+// layoutFromConfig carries cfg.TUI.Layout into tui.Layout.Orientation
+// alongside the existing ListWidth/PreviewWidth wiring, so `shep open`'s
+// live ctrl+l toggle starts from the user's configured default orientation.
+func TestLayoutFromConfig_ThreadsOrientationAndWidths(t *testing.T) {
+	t.Parallel()
+	got := layoutFromConfig(config.TUIConfig{ListWidth: "70%", PreviewWidth: "auto", Layout: config.TUILayoutPortrait})
+	want := tui.Layout{ListWidth: "70%", PreviewWidth: "auto", Orientation: tui.LayoutPortrait}
+	if got != want {
+		t.Errorf("layoutFromConfig = %+v, want %+v", got, want)
+	}
+}
+
+// TestLayoutFromConfig_EmptyLayoutDefaultsToZeroOrientation triangulates the
+// unset case: an empty cfg.TUI.Layout must produce a zero-value Orientation
+// (landscape default), not an arbitrary string.
+func TestLayoutFromConfig_EmptyLayoutDefaultsToZeroOrientation(t *testing.T) {
+	t.Parallel()
+	got := layoutFromConfig(config.TUIConfig{})
+	if got.Orientation != "" {
+		t.Errorf("layoutFromConfig empty layout: Orientation = %q, want empty", got.Orientation)
+	}
+}
+
 // TestNewTUISelector_StoresRenderer: the tui selector built by
 // cascadeFor/newTUISelector carries the injected Renderer through, so `shep
 // open`'s Bubble Tea fallback gets the real preview.Renderer instead of
@@ -832,5 +857,44 @@ func TestApp_BuildPreviewRenderer_ThreadsHerdrDriver(t *testing.T) {
 	}
 	if !strings.Contains(res.Text, "$ echo hi") {
 		t.Errorf("active_pane section did not render buffer from driver: %q", res.Text)
+	}
+}
+
+// TestOpenLayoutToggle_ConfigUnchangedAfterCtrlL is an integration test
+// proving the FULL production chain end-to-end — a config.Config with a
+// [tui] layout set, run through layoutFromConfig, feeding a constructed
+// tui.Model, driven through the live ctrl+l toggle — never mutates the
+// original config.Config/config.TUIConfig value the config was loaded into.
+// model.go's toggleLayoutOrientation only flips Model's own in-memory Layout
+// copy (unit-tested in isolation by TestHandleKey_CtrlL_TogglesLandscapePortrait
+// and TestLayoutFromConfig_ThreadsOrientationAndWidths), but neither of those
+// proves the two links actually compose correctly in the real wiring
+// `shep open` uses; this test proves that "session-only, never persisted"
+// guarantee holds across the whole chain, not just at each unit-tested link.
+func TestOpenLayoutToggle_ConfigUnchangedAfterCtrlL(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.TUI = config.TUIConfig{ListWidth: "70%", PreviewWidth: "auto", Layout: config.TUILayoutLandscape}
+	originalTUI := cfg.TUI
+
+	layout := layoutFromConfig(cfg.TUI)
+	cands := []source.Candidate{{Path: "/a", Label: "a"}}
+	m := tui.NewModelWithLayout(cands, nil, layout)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlL})
+	mm, ok := updated.(tui.Model)
+	if !ok {
+		t.Fatalf("expected tui.Model from Update, got %T", updated)
+	}
+
+	// Sanity: the toggle DID flip the model's own session-only orientation
+	// (proving this test actually exercises the mutation path), while...
+	toggled := layoutFromConfig(config.TUIConfig{Layout: config.TUILayoutPortrait})
+	if mm.Layout().Orientation != toggled.Orientation {
+		t.Fatalf("setup: expected ctrl+l to flip Model's orientation to portrait, got %+v", mm.Layout())
+	}
+	// ...the original config.TUIConfig value stays completely unchanged.
+	if cfg.TUI != originalTUI {
+		t.Errorf("cfg.TUI mutated by ctrl+l toggle: got %+v, want unchanged %+v", cfg.TUI, originalTUI)
 	}
 }

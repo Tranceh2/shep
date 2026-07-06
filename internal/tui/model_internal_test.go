@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 	"github.com/tranceh2/shep/internal/preview"
 	"github.com/tranceh2/shep/internal/source"
@@ -869,6 +870,383 @@ func TestModel_RenderListNoMatches_NeverWrapsEvenBelowMinList(t *testing.T) {
 	noMatches := lines[1]
 	if w := lipgloss.Width(noMatches); w != width {
 		t.Errorf("no-matches line width = %d, want %d: %q", w, width, noMatches)
+	}
+}
+
+// TestCandidateDisplayText_IconLabelAndMissing (footer/list shared helper)
+// proves candidateDisplayText builds "icon label" and appends the
+// "(missing)" suffix, matching renderList's existing per-row construction
+// exactly so the footer (which reuses this helper) shows the identical text.
+func TestCandidateDisplayText_IconLabelAndMissing(t *testing.T) {
+	t.Parallel()
+	got := candidateDisplayText(source.Candidate{Path: "/a", Label: "alpha", Icon: "★", Missing: true})
+	want := "★ alpha (missing)"
+	if got != want {
+		t.Errorf("candidateDisplayText = %q, want %q", got, want)
+	}
+}
+
+// TestCandidateDisplayText_FallsBackToPath_NoIconNoMissing triangulates the
+// happy path with no icon and no Missing flag, and Label empty so Path is
+// used instead — a different code path than the icon+missing case above.
+func TestCandidateDisplayText_FallsBackToPath_NoIconNoMissing(t *testing.T) {
+	t.Parallel()
+	got := candidateDisplayText(source.Candidate{Path: "/b/bravo"})
+	want := "/b/bravo"
+	if got != want {
+		t.Errorf("candidateDisplayText = %q, want %q", got, want)
+	}
+}
+
+// TestModel_FooterText_ShowsCurrentCandidateFullText (footer line) proves
+// footerText returns the full, untruncated icon+label-or-path(+missing) text
+// for the currently highlighted candidate, reusing candidateDisplayText.
+func TestModel_FooterText_ShowsCurrentCandidateFullText(t *testing.T) {
+	t.Parallel()
+	m := NewModel([]source.Candidate{
+		{Path: "/a", Label: "alpha", Icon: "★"},
+		{Path: "/b", Label: "bravo"},
+	}, nil)
+	m.cursor = 1
+	got := m.footerText()
+	want := "bravo"
+	if got != want {
+		t.Errorf("footerText = %q, want %q", got, want)
+	}
+}
+
+// TestModel_FooterText_EmptyFilteredSet triangulates the no-candidates case:
+// footerText must degrade to a muted placeholder instead of panicking or
+// returning a stale candidate's text.
+func TestModel_FooterText_EmptyFilteredSet(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil, nil)
+	got := m.footerText()
+	want := "(no selection)"
+	if got != want {
+		t.Errorf("footerText (empty) = %q, want %q", got, want)
+	}
+}
+
+// TestModel_ViewFooter_ShowsFullTextEvenWhenListRowTruncated (footer line)
+// proves the footer, which spans the FULL terminal width below both panes,
+// shows a highlighted candidate's complete label even when the same
+// candidate's row is truncated inside the (narrower) list pane column —
+// the whole point of the footer per the Atuin-inspired "always show the
+// full command" pattern.
+func TestModel_ViewFooter_ShowsFullTextEvenWhenListRowTruncated(t *testing.T) {
+	t.Parallel()
+	longLabel := "a-fairly-long-candidate-label-that-does-not-fit-the-narrow-list-column"
+	m := newModelWithLayout([]source.Candidate{
+		{Path: "/x/" + longLabel, Label: longLabel},
+	}, nil, context.TODO(), Layout{ListWidth: "20%", PreviewWidth: "auto"})
+	m.width = 100
+	m.height = 24
+
+	view := m.View()
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+	footer := lines[len(lines)-1]
+	if !strings.Contains(footer, longLabel) {
+		t.Errorf("footer must show the FULL label at a wide terminal, got footer line: %q", footer)
+	}
+
+	// Directly assert on the rendered LIST-PANE portion of this SAME view
+	// string — not a separate pre-existing test plus a width-math sanity
+	// check as indirect evidence. Isolate just the list pane's own outer
+	// width (listW) on each physical line via ansi.Cut (ANSI-aware, no
+	// ellipsis inserted, unlike truncateToWidth) so the check cannot be
+	// contaminated by the preview pane's own (wider) rendering on the same
+	// joined line, then locate the candidate's row within that isolated
+	// portion by its label prefix (distinct from the empty query line,
+	// which also starts with the cursor-marker-shaped "> " but carries no
+	// label text at all).
+	listW, _ := splitWidths(m.width, m.layout)
+	labelPrefix := longLabel[:10]
+	var listRow string
+	found := false
+	for _, line := range lines {
+		portion := ansi.Cut(line, 0, listW)
+		if strings.Contains(portion, labelPrefix) {
+			listRow = portion
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("could not locate the candidate's row within the list-pane portion of the rendered view:\n%s", view)
+	}
+	if strings.Contains(listRow, longLabel) {
+		t.Errorf("list-pane portion must NOT contain the full label (expected truncation), got: %q", listRow)
+	}
+	if !strings.Contains(listRow, "…") {
+		t.Errorf("list-pane portion must show a truncation ellipsis, got: %q", listRow)
+	}
+	// Sanity: at list_width=20% of 100, the list pane's content width is far
+	// narrower than the label — the row inside the list pane must be
+	// truncated (this is the contrast the footer exists to fix).
+	if paneContentWidth(listW) >= len(longLabel) {
+		t.Fatalf("test setup invalid: list pane content width %d must be narrower than the label (%d chars)",
+			paneContentWidth(listW), len(longLabel))
+	}
+}
+
+// TestModel_ViewFooter_EmptyCandidates_DegradesGracefully proves the footer
+// shows the muted placeholder (not a panic, not stale text) when there are
+// zero candidates to highlight.
+func TestModel_ViewFooter_EmptyCandidates_DegradesGracefully(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil, nil)
+	m.width = 100
+	m.height = 24
+
+	view := m.View()
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+	footer := lines[len(lines)-1]
+	if !strings.Contains(footer, "no selection") {
+		t.Errorf("expected footer placeholder for zero candidates, got: %q", footer)
+	}
+}
+
+// TestModel_ViewFooter_DefensivelyTruncatedAtExtremelyNarrowWidth proves the
+// footer goes through the same ANSI-safe truncateToWidth as every other line
+// in this file: at an extremely narrow terminal width, the footer line must
+// still fit within m.width (never corrupting the layout) even though the
+// full candidate text does not fit.
+func TestModel_ViewFooter_DefensivelyTruncatedAtExtremelyNarrowWidth(t *testing.T) {
+	t.Parallel()
+	longLabel := strings.Repeat("x", 200)
+	m := NewModel([]source.Candidate{{Path: "/y", Label: longLabel}}, nil)
+	const narrowWidth = 12
+	m.width = narrowWidth
+	m.height = 24
+
+	view := m.View()
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+	footer := lines[len(lines)-1]
+	if w := lipgloss.Width(footer); w > narrowWidth {
+		t.Errorf("footer width = %d, must not exceed terminal width %d: %q", w, narrowWidth, footer)
+	}
+	if !strings.Contains(footer, "…") {
+		t.Errorf("expected footer truncated with ellipsis at narrow width, got: %q", footer)
+	}
+}
+
+// TestModel_ViewReservesFooterLine_HeightBudgetIntact proves View() reserves
+// exactly 1 line for the footer by shrinking the pane height budget (height-1
+// fed to renderList's chromeRows accounting), so a tall candidate list still
+// fits within m.height total lines including the footer, instead of
+// overflowing by one row.
+func TestModel_ViewReservesFooterLine_HeightBudgetIntact(t *testing.T) {
+	t.Parallel()
+	cands := make([]source.Candidate, 50)
+	for i := range cands {
+		cands[i] = source.Candidate{Path: fmt.Sprintf("/c/%d", i), Label: fmt.Sprintf("c%d", i)}
+	}
+	m := NewModel(cands, nil)
+	m.width = 100
+	m.height = 20
+	m.cursor = len(cands) - 1
+
+	view := m.View()
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+	if len(lines) > m.height {
+		t.Errorf("View() produced %d lines, want <= %d (height=%d, 1 reserved for footer):\n%s",
+			len(lines), m.height, m.height, view)
+	}
+	footer := lines[len(lines)-1]
+	if !strings.Contains(footer, "c49") {
+		t.Errorf("expected footer to show the highlighted last candidate 'c49', got: %q", footer)
+	}
+}
+
+// TestSplitWidths_AppliedToHeightAxis_MirrorsWidthAxis (portrait layout)
+// mirrors TestSplitWidths_HonoursPercentageConfig along the height axis:
+// splitWidths is genuinely axis-agnostic (it only operates on an opaque
+// "total" int), so feeding it a terminal height instead of width must split
+// list_width/preview_width percentages exactly the same way portrait mode
+// needs, with zero new percent-parsing code.
+func TestSplitWidths_AppliedToHeightAxis_MirrorsWidthAxis(t *testing.T) {
+	t.Parallel()
+	listH, prevH := splitWidths(40, Layout{ListWidth: "auto", PreviewWidth: "30%"})
+	if prevH != 12 {
+		t.Errorf("preview height share = %d, want 12 (30%% of 40)", prevH)
+	}
+	if listH != 27 {
+		t.Errorf("list height share = %d, want 27 (40 - 12 - 1 gap)", listH)
+	}
+}
+
+// TestView_PortraitLayout_StacksListAbovePreview_FullWidth proves that when
+// Layout.Orientation is LayoutPortrait, View() stacks the list pane above
+// the preview pane (JoinVertical), each spanning the full reported terminal
+// width — the opposite of landscape's JoinHorizontal side-by-side split.
+func TestView_PortraitLayout_StacksListAbovePreview_FullWidth(t *testing.T) {
+	t.Parallel()
+	m := newModelWithLayout(internalTestCands(), nil, context.TODO(), Layout{Orientation: LayoutPortrait})
+	m.width = 100
+	m.height = 30
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+	// Locate the list pane's top border and the preview header "preview" —
+	// in portrait, the preview header line must appear strictly AFTER the
+	// list pane's own bottom border (i.e. below it, not beside it).
+	listBottomIdx := -1
+	previewHeaderIdx := -1
+	for i, line := range lines {
+		if strings.Contains(line, "╰") && listBottomIdx == -1 {
+			listBottomIdx = i
+		}
+		if strings.Contains(line, "preview") && previewHeaderIdx == -1 {
+			previewHeaderIdx = i
+		}
+	}
+	if listBottomIdx == -1 || previewHeaderIdx == -1 {
+		t.Fatalf("could not locate list bottom border or preview header in output:\n%s", view)
+	}
+	if previewHeaderIdx <= listBottomIdx {
+		t.Errorf("expected preview header (line %d) below list pane bottom border (line %d) in portrait mode:\n%s",
+			previewHeaderIdx, listBottomIdx, view)
+	}
+	// Every non-footer bordered line should span the full reported width
+	// (both panes span the FULL terminal width in portrait).
+	for i, line := range lines[:listBottomIdx+1] {
+		if w := lipgloss.Width(line); w != m.width {
+			t.Errorf("portrait list pane line %d width = %d, want %d (full terminal width): %q", i, w, m.width, line)
+		}
+	}
+}
+
+// TestView_LandscapeLayout_StillJoinsHorizontally is the approval test
+// locking existing landscape behavior unchanged: the zero-value Orientation
+// (LayoutLandscape) must still split panes side by side via JoinHorizontal,
+// never triggering the new portrait branch.
+func TestView_LandscapeLayout_StillJoinsHorizontally(t *testing.T) {
+	t.Parallel()
+	m := newModelWithLayout(internalTestCands(), nil, context.TODO(), Layout{})
+	m.width = 100
+	m.height = 30
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+	// The first content row (after the top border) must contain both the
+	// list's query line ">" and, side by side on the SAME line, the preview
+	// pane's border — proof the two panes sit horizontally, not stacked.
+	found := false
+	for _, line := range lines {
+		if strings.Contains(line, ">") && strings.Count(line, "│") >= 2 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected list and preview panes side by side on the same line in landscape mode:\n%s", view)
+	}
+}
+
+// TestHandleKey_CtrlL_TogglesLandscapePortrait proves ctrl+l flips
+// m.layout.Orientation between landscape and portrait for the current
+// session, and flips back on a second press — a live, in-memory toggle, not
+// a config mutation (config.TUIConfig is not reachable from Model at all,
+// so there is nothing here that could write back to disk).
+func TestHandleKey_CtrlL_TogglesLandscapePortrait(t *testing.T) {
+	t.Parallel()
+	m := newModelWithLayout(internalTestCands(), nil, context.TODO(), Layout{})
+	if m.layout.Orientation != "" && m.layout.Orientation != LayoutLandscape {
+		t.Fatalf("setup: expected initial orientation to be landscape/empty, got %q", m.layout.Orientation)
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlL})
+	mm, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("expected Model, got %T", updated)
+	}
+	if mm.layout.Orientation != LayoutPortrait {
+		t.Errorf("after first ctrl+l, orientation = %q, want %q", mm.layout.Orientation, LayoutPortrait)
+	}
+
+	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyCtrlL})
+	mm2, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("expected Model, got %T", updated)
+	}
+	if mm2.layout.Orientation != LayoutLandscape {
+		t.Errorf("after second ctrl+l, orientation = %q, want %q", mm2.layout.Orientation, LayoutLandscape)
+	}
+}
+
+// TestView_PortraitLayout_Height24_NeverOverflowsBudget is a regression test
+// for the CRITICAL portrait-overflow bug: renderPortrait fed m.height
+// through splitWidths, which floors both shares via clampWidths'
+// minList=20/minPrev=10 — column-WIDTH floors, tuned for the width axis,
+// reused unchanged for the height axis. Any terminal height in [8, 29]
+// (including 24, a very common default terminal/tmux pane height) hit those
+// floors and rendered a fixed ~29-line block regardless of the actual
+// reported height. This proves View()'s total rendered output for height=24
+// fits within the 24-line budget.
+func TestView_PortraitLayout_Height24_NeverOverflowsBudget(t *testing.T) {
+	t.Parallel()
+	cands := make([]source.Candidate, 50)
+	for i := range cands {
+		cands[i] = source.Candidate{Path: fmt.Sprintf("/c/%d", i), Label: fmt.Sprintf("c%d", i)}
+	}
+	m := newModelWithLayout(cands, nil, context.TODO(), Layout{Orientation: LayoutPortrait})
+	m.width = 100
+	m.height = 24
+
+	view := m.View()
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+	if len(lines) > m.height {
+		t.Errorf("portrait View() at height=24 produced %d lines, want <= %d:\n%s", len(lines), m.height, view)
+	}
+}
+
+// TestView_PortraitLayout_AcrossShortHeights_NeverOverflowsBudget sweeps the
+// previously-uncovered [8, 29] height range. The pre-existing portrait test
+// (TestView_PortraitLayout_StacksListAbovePreview_FullWidth) only exercised
+// height=30, exactly the boundary where the width-tuned floors happen to
+// stop dominating the split — it never caught the overflow. This proves the
+// "never breaks layout" guarantee holds continuously across the range, not
+// just at height=30+.
+func TestView_PortraitLayout_AcrossShortHeights_NeverOverflowsBudget(t *testing.T) {
+	t.Parallel()
+	cands := make([]source.Candidate, 50)
+	for i := range cands {
+		cands[i] = source.Candidate{Path: fmt.Sprintf("/c/%d", i), Label: fmt.Sprintf("c%d", i)}
+	}
+
+	for _, h := range []int{8, 9, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 29} {
+		t.Run(fmt.Sprintf("height=%d", h), func(t *testing.T) {
+			t.Parallel()
+			m := newModelWithLayout(cands, nil, context.TODO(), Layout{Orientation: LayoutPortrait})
+			m.width = 100
+			m.height = h
+
+			view := m.View()
+			lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+			if len(lines) > h {
+				t.Errorf("portrait View() at height=%d produced %d lines, want <= %d:\n%s", h, len(lines), h, view)
+			}
+		})
+	}
+}
+
+// TestView_PortraitLayout_BelowMinPortraitHeight_FallsBackToListOnly proves
+// that below portrait's own real minimum height (minPortraitHeight — the
+// smallest height at which its height-axis floors, minListH/minPrevH, can
+// both be honoured without overflow) View() falls back to the single
+// list-only pane, the same fallback mechanism minPreviewHeight already uses
+// for landscape, instead of attempting a dual-pane split that cannot fit.
+func TestView_PortraitLayout_BelowMinPortraitHeight_FallsBackToListOnly(t *testing.T) {
+	t.Parallel()
+	m := newModelWithLayout(internalTestCands(), nil, context.TODO(), Layout{Orientation: LayoutPortrait})
+	m.width = 100
+	m.height = minPortraitHeight - 1
+
+	view := m.View()
+	if strings.Contains(view, "preview") {
+		t.Errorf("expected preview pane hidden below minPortraitHeight (%d), but found a preview header at height=%d:\n%s",
+			minPortraitHeight, m.height, view)
 	}
 }
 

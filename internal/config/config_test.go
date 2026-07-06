@@ -866,7 +866,7 @@ func TestExampleTOML_MatchesCanonicalModel(t *testing.T) {
 	got := ExampleTOML()
 	for _, want := range []string{
 		"version = 1", "[general]", "sources = [", "[defaults]", "type = ",
-		"template = ", "[tui]", "list_width", "preview_width", "[preview]",
+		"template = ", "[tui]", "list_width", "preview_width", `layout = "landscape"`, "[preview]",
 		"[preview.commands.", "[sources.herdr]", "[sources.projects]",
 		"markers = ", "[templates.default]", "[templates.k8s]",
 	} {
@@ -1094,6 +1094,70 @@ func TestLoad_AcceptsTUIWidthSumAtOrBelow100Percent(t *testing.T) {
 		if _, err := Load(path); err != nil {
 			t.Errorf("doc:\n%s\nunexpected error: %v", doc, err)
 		}
+	}
+}
+
+// TestLoad_TUILayout_DefaultsEmptyAndAccepted confirms an absent
+// [tui].layout parses to the empty string (Model.View treats empty the same
+// as "landscape", the default) without failing validation.
+func TestLoad_TUILayout_DefaultsEmptyAndAccepted(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(path, []byte("[tui]\nlist_width = \"auto\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := cfg.TUI.Layout; got != "" {
+		t.Errorf("tui.layout default: got %q, want empty", got)
+	}
+}
+
+// TestLoad_AcceptsValidTUILayoutValues confirms both documented layout
+// values parse and load without error.
+func TestLoad_AcceptsValidTUILayoutValues(t *testing.T) {
+	t.Parallel()
+	for _, val := range []string{"landscape", "portrait"} {
+		t.Run(val, func(t *testing.T) {
+			t.Parallel()
+			tmp := t.TempDir()
+			path := filepath.Join(tmp, "config.toml")
+			doc := "[tui]\nlayout = \"" + val + "\"\n"
+			if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("load %q: %v", val, err)
+			}
+			if got := cfg.TUI.Layout; got != val {
+				t.Errorf("tui.layout: got %q want %q", got, val)
+			}
+		})
+	}
+}
+
+// TestLoad_RejectsInvalidTUILayoutValue confirms an unknown [tui].layout
+// value fails Load fast with an error naming the bad value, consistent with
+// this project's established fail-fast convention (mirrors
+// TestLoad_RejectsInvalidTUIWidth).
+func TestLoad_RejectsInvalidTUILayoutValue(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.toml")
+	const doc = "[tui]\nlayout = \"diagonal\"\n"
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for invalid tui.layout value")
+	}
+	if !strings.Contains(err.Error(), "diagonal") {
+		t.Errorf("error must name the bad value %q, got: %v", "diagonal", err)
 	}
 }
 
