@@ -45,18 +45,69 @@ func TestPreview_PlainTextDefaultOutput(t *testing.T) {
 	}
 }
 
-// TestPreview_ColorFlagIgnoredWithoutTTY (WP-4) confirms --color has no
-// effect when stdout is not a terminal (as in this test's bytes.Buffer),
-// keeping the default contract stable for piped consumers like Television.
-func TestPreview_ColorFlagIgnoredWithoutTTY(t *testing.T) {
+// TestPreview_ColorFlagIgnoredWithoutTTY (WP-4) confirmed --color had no
+// effect when stdout was not a terminal. That gate defeated the entire
+// embedding use case (Television and any tool running `shep preview` as a
+// subprocess sees a pipe, never a tty), so the semantics changed to match
+// `lsd/eza/bat --color=always`: --color is now FORCED when passed,
+// regardless of whether stdout is a terminal. The two tests below lock the
+// new contract; TestPreview_DefaultStripsANSIWhenPiped keeps the default
+// (no --color) plain-text contract Television relies on.
+
+// previewANSICfg builds a config whose default preview is a single custom
+// command that emits real ANSI (a true-color escape), so the renderer's
+// output deterministically contains escape codes a piped consumer can be
+// tested against — without depending on lsd/eza being installed.
+func previewANSICfg(t *testing.T) *config.Config {
+	t.Helper()
+	cfg := config.Defaults()
+	cfg.Preview.Default = []string{"ansi"}
+	cfg.Preview.Commands = map[string]config.PreviewCommand{
+		// printf is a real binary already used by the preview command tests;
+		// the arg carries literal ESC bytes (no shell escapes, the runner
+		// never invokes sh -c).
+		"ansi": {Command: "printf '\x1b[38;2;137;180;250mREADME.md\x1b[0m'"},
+	}
+	return cfg
+}
+
+// TestPreview_ColorFlagPreservesANSIWhenPiped is the core regression for the
+// Television use case: `shep preview --color <path>` invoked as a subprocess
+// (stdout is a pipe, here a bytes.Buffer — NOT a terminal) must still pass
+// the renderer's real ANSI color through unmodified. Under the old
+// isTerminalWriter gate this produced plain text, defeating the flag.
+func TestPreview_ColorFlagPreservesANSIWhenPiped(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	out, _, err := runPreviewFor(t, nil, "--color", dir)
+	cfg := previewANSICfg(t)
+	out, _, err := runPreviewFor(t, cfg, "--color", dir)
 	if err != nil {
 		t.Fatalf("preview --color: %v", err)
 	}
+	want := "\x1b[38;2;137;180;250mREADME.md\x1b[0m"
+	if !strings.Contains(out, want) {
+		t.Errorf("expected real renderer ANSI preserved when --color is passed to a pipe, got: %q", out)
+	}
+}
+
+// TestPreview_DefaultStripsANSIWhenPiped keeps the Television-safe default
+// contract: WITHOUT --color, the same renderer output must be stripped to
+// plain text (zero ESC bytes) even though stdout is a non-terminal pipe.
+// This is what makes the default safe for any consumer that does not expect
+// ANSI.
+func TestPreview_DefaultStripsANSIWhenPiped(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfg := previewANSICfg(t)
+	out, _, err := runPreviewFor(t, cfg, dir)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
 	if strings.ContainsAny(out, "\x1b") {
-		t.Errorf("expected plain text when stdout is not a terminal, got: %q", out)
+		t.Errorf("expected plain text (no ANSI) by default, got: %q", out)
+	}
+	if !strings.Contains(out, "README.md") {
+		t.Errorf("expected clean text content preserved, got: %q", out)
 	}
 }
 
@@ -222,11 +273,11 @@ func TestStripANSI_LeavesZeroEscapeBytes(t *testing.T) {
 }
 
 // TestWritePreview_StyledPlainTextStaysPlain and TestWritePreview_PlainNoANSI
-// cover the CLI-layer color decision directly (isTerminalWriter itself is
-// exercised separately), keeping the ANSI on/off contract unit-testable
-// without a real pty. writePreview no longer flattens the body to a single
-// accent color, so plain (never-colored) renderer text — like the built-in
-// identity/git/workspace sections — must stay plain even when styled=true.
+// cover the CLI-layer color decision directly, keeping the ANSI on/off
+// contract unit-testable without a real pty. writePreview no longer flattens
+// the body to a single accent color, so plain (never-colored) renderer text —
+// like the built-in identity/git/workspace sections — must stay plain even
+// when styled=true.
 func TestWritePreview_StyledPlainTextStaysPlain(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
@@ -248,28 +299,6 @@ func TestWritePreview_PlainNoANSI(t *testing.T) {
 	}
 	if strings.TrimSpace(out.String()) != "hello" {
 		t.Errorf("expected exact text passthrough, got: %q", out.String())
-	}
-}
-
-// TestIsTerminalWriter_FalseForBuffer and TestIsTerminalWriter_FalseForRegularFile
-// confirm the TTY gate degrades safely for non-terminal writers.
-func TestIsTerminalWriter_FalseForBuffer(t *testing.T) {
-	t.Parallel()
-	var buf bytes.Buffer
-	if isTerminalWriter(&buf) {
-		t.Error("expected false for a bytes.Buffer")
-	}
-}
-
-func TestIsTerminalWriter_FalseForRegularFile(t *testing.T) {
-	t.Parallel()
-	f, err := os.CreateTemp(t.TempDir(), "not-a-tty")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	if isTerminalWriter(f) {
-		t.Error("expected false for a regular file")
 	}
 }
 

@@ -178,8 +178,8 @@ shep doctor   # report configured workspace paths that don't exist
 
 ```sh
 shep list                  # table of every discovered candidate (default)
-shep list --format tsv     # path<TAB>label lines, for Television / scripts
-shep list --format json    # structured output
+shep list --format tsv     # path<TAB>label<TAB>icon lines, for Television / scripts
+shep list --format json    # structured output (icon included as a field)
 shep doctor                 # check configured workspace paths
 
 shep open                  # pick interactively (exact -> fzf -> TUI)
@@ -229,7 +229,7 @@ hardcoded and always available by name — no declaration needed:
 
 ```sh
 shep preview /abs/path       # plain text (no ANSI) — safe for pipes/Television
-shep preview --color /path   # passes through real renderer colors (lsd/eza/pane), only when stdout is a terminal
+shep preview --color /path   # force real renderer colors (lsd/eza/pane) through, even when piped
 ```
 
 `[preview].default` picks which sections render when nothing more specific
@@ -266,10 +266,17 @@ cp cables/shep.toml ~/.config/television/cable/shep.toml
 tv shep
 ```
 
-The cable's source is `shep list --format tsv`; its preview panel runs
-`shep preview '{split:\t:0}'` (using the same preview configuration as the `shep open` picker); selecting an
-entry runs `shep open --path '{split:\t:0}'`, which flows through the same Herdr
-focus/create path as the CLI.
+The cable's source is `shep list --format tsv`, which prints one
+`path<TAB>label<TAB>icon` line per candidate (the icon is the source's
+configured Nerd Font glyph). Television's `{split:\t:N}` templates extract
+those fields: `[source].display` renders each results-list entry as
+`<icon> <label>` (instead of the raw TSV line) and `[source].output` forwards
+just the path. The preview panel runs `shep preview --color '{split:\t:0}'`,
+which forces the renderer's real ANSI color through even though Television
+runs it as a subprocess — so the picker's preview pane shows actual color for
+`dir` (lsd/eza) and `active_pane` (captured pane) sections, matching the
+`shep open` picker. Selecting an entry runs `shep open --path '{split:\t:0}'`,
+which flows through the same Herdr focus/create path as the CLI.
 
 ## Build, test, lint
 

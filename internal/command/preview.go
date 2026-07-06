@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
-	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 	"github.com/tranceh2/shep/internal/preview"
 )
@@ -16,11 +15,15 @@ import (
 // previewCmd builds `shep preview <path>` (WP-4): a stable, non-interactive
 // way to render the same preview shown in the `shep open` picker's preview
 // pane, so Television and other external tools can reuse it as a preview
-// command. Output defaults to plain text (no ANSI escape codes); --color
-// opts into passing through any real ANSI color the renderer already
-// produced (e.g. lsd/eza coloring for "dir", a captured pane's colors for
-// "active_pane"), applied only when stdout is a terminal, so the CLI output
-// matches what the picker shows.
+// command. Output defaults to plain text (no ANSI escape codes) so it is
+// safe for any consumer; --color opts into passing through any real ANSI
+// color the renderer already produced (e.g. lsd/eza coloring for "dir", a
+// captured pane's colors for "active_pane"). --color is FORCED when passed —
+// matching `lsd --color=always`/`eza --color=always`/`bat --color=always` —
+// regardless of whether stdout is a terminal, because the whole point of the
+// flag is the embedding use case: Television (or any tool piping this as a
+// subprocess) sees a pipe, never a tty, so a tty gate would defeat it. The
+// default (no --color) always strips ANSI.
 func (a *App) previewCmd() *cobra.Command {
 	var color bool
 	cmd := &cobra.Command{
@@ -31,17 +34,19 @@ preview pane for a single path, then exits. Output is plain text by default
 (no ANSI escape codes) so Television and other external tools can safely
 embed it as a preview command. Pass --color to keep any real ANSI color the
 renderer already produced (e.g. a directory listing's own colors, or a
-captured pane's real terminal colors), so the output matches the picker; it
-only takes effect when stdout is a terminal, so piped/captured output always
-stays plain. An invalid or missing path reports a clean error on stderr and
-exits non-zero.`,
+captured pane's real terminal colors), so the output matches the picker.
+Unlike a tty auto-detect, --color takes effect even when stdout is a pipe —
+matching ` + "`lsd --color=always`" + `/` + "`eza --color=always`" + `/` + "`bat --color=always`" + ` — because the
+common caller is Television running ` + "`shep preview`" + ` as a subprocess (whose stdout
+is never a terminal). An invalid or missing path reports a clean error on
+stderr and exits non-zero.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.runPreview(cmd, args[0], color)
 		},
 	}
 	cmd.Flags().BoolVar(&color, "color", false,
-		"keep real ANSI color from the renderer when stdout is a terminal (default: plain text)")
+		"force real ANSI color from the renderer through to stdout (like --color=always); default is plain text")
 	return cmd
 }
 
@@ -70,7 +75,12 @@ func (a *App) runPreview(cmd *cobra.Command, path string, color bool) error {
 		return errExitOne
 	}
 
-	writePreview(out, res, color && isTerminalWriter(out))
+	// color is honored verbatim: when --color is passed the renderer's real
+	// ANSI is passed through unmodified regardless of whether stdout is a
+	// terminal (Television pipes this command, so a tty gate would strip the
+	// very color the flag exists to surface). The default (color == false)
+	// always strips ANSI, keeping the plain-text contract for any consumer.
+	writePreview(out, res, color)
 	return nil
 }
 
@@ -112,36 +122,26 @@ func stripANSI(s string) string {
 // writePreview writes the rendered preview text to out. Precedence between
 // the two output modes:
 //
-//   - styled == false (the default, or --color passed but stdout is not a
-//     terminal): res.Text is always run through stripANSI. This keeps the
-//     Television-safe contract — plain text, no escape codes — so piped or
-//     captured output never surprises a script consumer.
-//   - styled == true (--color passed AND stdout is a real terminal, decided
-//     by the caller via isTerminalWriter before calling this function):
-//     res.Text is written through UNMODIFIED. The renderer may have already
-//     produced real ANSI color for some sections (e.g. lsd/eza's own
-//     coloring for "dir", or a captured pane's real terminal colors for
+//   - styled == false (the default, i.e. --color not passed): res.Text is
+//     always run through stripANSI. This keeps the Television-safe contract —
+//     plain text, no escape codes — so any piped or captured output never
+//     surprises a script consumer.
+//   - styled == true (--color passed): res.Text is written through
+//     UNMODIFIED, regardless of whether out is a terminal. The renderer may
+//     have already produced real ANSI color for some sections (e.g. lsd/eza's
+//     own coloring for "dir", or a captured pane's real terminal colors for
 //     "active_pane"); passing it through verbatim is what makes `shep
-//     preview --color` actually match what the interactive picker shows.
-//     Sections that never carried color ("identity", "git", "workspace")
-//     simply render as plain text here too, since they had none to begin
-//     with — this function no longer flattens everything to one accent
-//     color.
+//     preview --color` actually match what the interactive picker shows — and
+//     what lets Television's preview panel render real color when it runs
+//     this command as a subprocess (stdout is a pipe, never a tty). Sections
+//     that never carried color ("identity", "git", "workspace") simply render
+//     as plain text here too, since they had none to begin with — this
+//     function never synthesizes color, it only decides whether to keep or
+//     strip what the renderer already emitted.
 func writePreview(out io.Writer, res preview.Result, styled bool) {
 	text := res.Text
 	if !styled {
 		text = stripANSI(text)
 	}
 	fmt.Fprintln(out, text)
-}
-
-// isTerminalWriter reports whether w is an *os.File connected to a terminal.
-// Forcing ANSI onto a pipe would break Television/fzf consumers that expect
-// the default plain-text contract (WP-4), so --color only takes effect here.
-func isTerminalWriter(w io.Writer) bool {
-	f, ok := w.(*os.File)
-	if !ok {
-		return false
-	}
-	return term.IsTerminal(f.Fd())
 }

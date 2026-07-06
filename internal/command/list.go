@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -39,6 +40,7 @@ type listCandidate struct {
 	Path           string `json:"path"`
 	NormalizedPath string `json:"normalized_path"`
 	Label          string `json:"label"`
+	Icon           string `json:"icon"`
 	Source         string `json:"source"`
 	Missing        bool   `json:"missing"`
 }
@@ -53,10 +55,10 @@ func (a *App) listCmd() *cobra.Command {
 		Long: `shep list enumerates candidates from Herdr workspaces, predefined
 [[workspaces]], zoxide, and marker-based project discovery beneath a
 type=group workspace's path, deduplicates by normalised path, and prints
-them as a table (human), tab-separated
-path	label lines (tsv) for Television, or structured JSON. A configured
-workspace whose path does not exist on disk is included but clearly marked
-missing.`,
+them as a table (human), tab-separated path	label	icon lines (tsv) for
+Television — the icon is column 3 so {split:\t:2} reads it — or structured
+JSON. A configured workspace whose path does not exist on disk is included
+but clearly marked missing.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			f, err := parseFormat(outFormat)
@@ -137,10 +139,38 @@ func missingMark(missing bool) string {
 
 func renderTSV(out io.Writer, cands []source.Candidate) error {
 	for _, c := range cands {
-		// PL-5: each line is path\tlabel\n, no ANSI, no source column.
-		fmt.Fprintf(out, "%s\t%s\n", c.NormalizedPath, c.Label)
+		// PL-5: each line is path\tlabel\ticon\n, no ANSI, no source column.
+		// Icon is the 3rd column (index 2) so Television's {split:\t:2}
+		// template reads it for the [source].display label. A candidate whose
+		// source has no configured icon still emits the trailing empty field
+		// (path\tlabel\t) so column position stays stable for any parser
+		// indexing by N — never collapse a missing icon into two columns.
+		//
+		// NormalizedPath, Label and Icon are sanitized (sanitizeTSVField)
+		// before being written: Label comes from workspace/pane/directory
+		// names and Icon is raw user-configured TOML ([sources.<name>].icon),
+		// neither of which is guaranteed free of embedded tabs or newlines.
+		// An unsanitized delimiter would silently shift or split every
+		// subsequent field for that line for any TSV consumer, Television's
+		// {split:\t:N} included — this is the column order both this
+		// renderer and cables/shep.toml's {split:\t:0/1/2} templates rely on
+		// (see TestCable_MatchesRenderTSVColumnOrder in cable_test.go).
+		fmt.Fprintf(out, "%s\t%s\t%s\n",
+			sanitizeTSVField(c.NormalizedPath),
+			sanitizeTSVField(c.Label),
+			sanitizeTSVField(c.Icon))
 	}
 	return nil
+}
+
+// sanitizeTSVField replaces embedded tab and newline bytes with a single
+// space so a field can never inject an extra column or line into TSV output.
+// TSV consumers here (Television's {split:\t:N}) just split on tab, so this
+// simple replacement is sufficient — no CSV-style quoting/escaping needed.
+func sanitizeTSVField(s string) string {
+	s = strings.ReplaceAll(s, "\t", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return s
 }
 
 func renderJSON(out io.Writer, cands []source.Candidate) error {
@@ -150,6 +180,7 @@ func renderJSON(out io.Writer, cands []source.Candidate) error {
 			Path:           c.Path,
 			NormalizedPath: c.NormalizedPath,
 			Label:          c.Label,
+			Icon:           c.Icon,
 			Source:         c.Source,
 			Missing:        c.Missing,
 		})

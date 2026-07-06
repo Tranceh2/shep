@@ -14,17 +14,34 @@ name = "shep"
 description = "Browse shep project candidates and open them with Herdr"
 requirements = ["shep", "herdr"]
 
-# `shep list --format tsv` prints one "path<TAB>label" line per candidate. The
-# path is the first field and is what Television forwards to '{split:\t:0}' below.
+# `shep list --format tsv` prints one "path<TAB>label<TAB>icon" line per
+# candidate (3 columns). Television's {split:\t:N} extracts fields by index:
+#   {split:\t:0} -> path   (what open/preview act on, and the default output)
+#   {split:\t:1} -> label  (the project's human name)
+#   {split:\t:2} -> icon   (the source's configured icon, e.g. a Nerd Font glyph)
+# In TOML basic strings "\t" decodes to a real TAB byte, matching the TSV's
+# tab separator — the same convention the command fields below already rely on.
+#
+# display renders each results-list entry as "<icon> <label>" instead of the
+# raw TSV line, so the picker shows a clean, icon-prefixed name. output
+# forwards just the path when an entry is selected by any default/non-custom
+# action, matching what [actions.open] extracts manually.
 [source]
 command = "shep list --format tsv"
+display = "{split:\t:2} {split:\t:1}"
+output = "{split:\t:0}"
 
-# `shep preview '{split:\t:0}'` renders the same label/path/source/git (or a
-# declared [preview.commands.<name>]) preview shown in the `shep open`
+# `shep preview --color '{split:\t:0}'` renders the same label/path/source/git
+# (or a declared [preview.commands.<name>]) preview shown in the `shep open`
 # picker's preview pane, so the Television preview panel always matches.
-# Plain text by default (no --color), so it embeds safely inside any picker.
+# --color is FORCED (like `lsd/eza/bat --color=always`): it passes the
+# renderer's real ANSI color through verbatim even though Television runs this
+# as a subprocess whose stdout is a pipe, never a terminal. That is what lets
+# the preview panel show real color for "dir" (lsd/eza) and "active_pane"
+# (captured pane) sections — Television's own preview panel renders the ANSI,
+# not the child process's terminal. (The default, no --color, stays plain.)
 [preview]
-command = "shep preview '{split:\t:0}'"
+command = "shep preview --color '{split:\t:0}'"
 
 # Open the selected project: focus-or-create a Herdr workspace for its path,
 # or print the resolved absolute path when Herdr is absent (HI-5/HI-6). `mode =
@@ -36,6 +53,15 @@ mode = "execute"
 
 [keybindings]
 enter = "actions:open"
+
+# landscape matches shep's own default side-by-side feel; a 50% preview panel
+# gives the now-colored preview (dir/active_pane) a little more room than
+# Television's own default. Kept intentionally minimal.
+[ui]
+layout = "landscape"
+
+[ui.preview_panel]
+size = 50
 
 # Additional projects can be mixed in at the shep level via a type = "group"
 # [[workspaces]] entry (with sources = ["projects", ...]) in shep's own

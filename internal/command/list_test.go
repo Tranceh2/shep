@@ -64,8 +64,11 @@ func TestList_HumanFormatHasHeader(t *testing.T) {
 	}
 }
 
-// TestList_TSVFormat asserts each non-header line is path\tlabel\n with
-// exactly one tab and no ANSI escapes, parseable by Television.
+// TestList_TSVFormat asserts each non-header line is path\tlabel\ticon with
+// exactly two tabs and no ANSI escapes, parseable by Television's
+// {split:\t:N} templates. The icon is the 3rd column (index 2); a candidate
+// whose source has no configured icon renders an empty 3rd column so the
+// column position stays stable for parsers ( Television reads index 0/1/2).
 func TestList_TSVFormat(t *testing.T) {
 	t.Parallel()
 	cfg, _ := workspacesCfg(t, "proj")
@@ -79,8 +82,8 @@ func TestList_TSVFormat(t *testing.T) {
 	}
 	for _, line := range lines {
 		tabCount := strings.Count(line, "\t")
-		if tabCount != 1 {
-			t.Errorf("tsv line must have exactly one tab, got %d: %q", tabCount, line)
+		if tabCount != 2 {
+			t.Errorf("tsv line must have exactly two tabs (path\tlabel\ticon), got %d: %q", tabCount, line)
 		}
 		if strings.ContainsAny(line, "\x1b[") {
 			t.Errorf("tsv line must not contain ANSI escapes: %q", line)
@@ -108,6 +111,42 @@ func TestList_JSONFormat(t *testing.T) {
 		if c.Label == "" || c.Path == "" || c.Source == "" {
 			t.Errorf("candidate has empty core field: %+v", c)
 		}
+	}
+}
+
+// TestRender_JSONIncludesIconField proves the JSON projection carries the
+// candidate's Icon as a top-level "icon" field, for API/tooling parity with
+// the TSV icon column. The field is always present (empty string when the
+// source has no configured icon), matching the TSV's stable-column contract.
+func TestRender_JSONIncludesIconField(t *testing.T) {
+	t.Parallel()
+	cands := []source.Candidate{
+		{Path: "/a", NormalizedPath: "/a", Label: "aa", Source: "herdr", Icon: "\uf07c"},
+		{Path: "/b", NormalizedPath: "/b", Label: "bb", Source: "zoxide"}, // empty Icon
+	}
+	var out bytes.Buffer
+	if err := renderJSON(&out, cands); err != nil {
+		t.Fatal(err)
+	}
+	var got []listCandidate
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 candidates, got %d: %+v", len(got), got)
+	}
+	if got[0].Icon != "\uf07c" {
+		t.Errorf("candidate 0 icon: got %q want %q", got[0].Icon, "\uf07c")
+	}
+	// Empty Icon must serialize as "" (present key), not be omitted.
+	if got[1].Icon != "" {
+		t.Errorf("candidate 1 icon: expected empty string, got %q", got[1].Icon)
+	}
+	// The raw JSON must contain the "icon" key for both entries so external
+	// parsers can rely on the schema.
+	raw := out.String()
+	if strings.Count(raw, `"icon"`) != 2 {
+		t.Errorf("expected 'icon' key for both candidates, raw json:\n%s", raw)
 	}
 }
 
@@ -200,9 +239,97 @@ func TestRender_TSVNoTrailingNewlineDup(t *testing.T) {
 	if err := renderTSV(&out, cands); err != nil {
 		t.Fatal(err)
 	}
-	want := "/a\taa\n/b\tbb\n"
+	// Empty Icon still occupies the 3rd column as an empty field so column
+	// position stays stable for parsers like Television's {split:\t:N}.
+	want := "/a\taa\t\n/b\tbb\t\n"
 	if out.String() != want {
 		t.Errorf("tsv mismatch: got %q want %q", out.String(), want)
+	}
+}
+
+// TestRender_TSVIncludesIconColumn proves a candidate with a non-empty Icon
+// renders it as the 3rd TSV column: path\tlabel\ticon\n. This is the field
+// Television's {split:\t:2} reads for the [source].display template.
+func TestRender_TSVIncludesIconColumn(t *testing.T) {
+	t.Parallel()
+	cands := []source.Candidate{
+		{Path: "/a", NormalizedPath: "/a", Label: "aa", Source: "herdr", Icon: "\uf07c"},
+		{Path: "/b", NormalizedPath: "/b", Label: "bb", Source: "zoxide", Icon: "\uf07b"},
+	}
+	var out bytes.Buffer
+	if err := renderTSV(&out, cands); err != nil {
+		t.Fatal(err)
+	}
+	want := "/a\taa\t\uf07c\n/b\tbb\t\uf07b\n"
+	if out.String() != want {
+		t.Errorf("tsv icon column mismatch: got %q want %q", out.String(), want)
+	}
+}
+
+// TestRender_TSVIconColumnStableWhenEmpty guards the parser-stability
+// contract: a candidate with an empty Icon must still emit the trailing
+// tab+empty-field, never collapse to two columns. Television indexes columns
+// by position ({split:\t:2}), so a missing column would shift the icon off
+// the expected index for every following line.
+func TestRender_TSVIconColumnStableWhenEmpty(t *testing.T) {
+	t.Parallel()
+	cands := []source.Candidate{
+		{Path: "/a", NormalizedPath: "/a", Label: "aa", Source: "s", Icon: "X"},
+		{Path: "/b", NormalizedPath: "/b", Label: "bb", Source: "s"}, // empty Icon
+	}
+	var out bytes.Buffer
+	if err := renderTSV(&out, cands); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %q", len(lines), out.String())
+	}
+	for i, line := range lines {
+		fields := strings.Split(line, "\t")
+		if len(fields) != 3 {
+			t.Errorf("line %d: expected 3 fields (path,label,icon), got %d: %q", i, len(fields), line)
+		}
+	}
+	// The empty-Icon line's icon field is exactly "".
+	emptyFields := strings.Split(lines[1], "\t")
+	if emptyFields[2] != "" {
+		t.Errorf("expected empty 3rd column for empty Icon, got %q in line %q", emptyFields[2], lines[1])
+	}
+}
+
+// TestRender_TSVSanitizesEmbeddedDelimiters guards the column-stability
+// contract against delimiter injection: Label (workspace/pane/dir names) and
+// Icon (raw user-configured TOML string, [sources.<name>].icon) are not
+// guaranteed free of embedded tabs or newlines. If either leaked a literal
+// \t or \n into renderTSV's output, it would silently shift or split every
+// subsequent field for that line for any TSV consumer, including
+// Television's {split:\t:N}. Both characters must be replaced with a single
+// space before writing the line.
+func TestRender_TSVSanitizesEmbeddedDelimiters(t *testing.T) {
+	t.Parallel()
+	cands := []source.Candidate{
+		{Path: "/a", NormalizedPath: "/a", Label: "a\tb\nc", Source: "s", Icon: "ic\ton\n1"},
+		{Path: "/b", NormalizedPath: "/b", Label: "plain", Source: "s", Icon: "plain-icon"},
+	}
+	var out bytes.Buffer
+	if err := renderTSV(&out, cands); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	if len(lines) != len(cands) {
+		t.Fatalf("expected %d lines (one per candidate, no embedded newlines splitting a record), got %d: %q", len(cands), len(lines), out.String())
+	}
+	for i, line := range lines {
+		if got := strings.Count(line, "\t"); got != 2 {
+			t.Errorf("line %d: expected exactly 2 tabs (path\\tlabel\\ticon), got %d: %q", i, got, line)
+		}
+		if strings.ContainsAny(line, "\n") {
+			t.Errorf("line %d: raw newline survived in output: %q", i, line)
+		}
+	}
+	if strings.Contains(lines[0], "a\tb\nc") || strings.Contains(out.String(), "\tb\nc\t") {
+		t.Errorf("expected embedded delimiters in Label to be sanitized, got: %q", lines[0])
 	}
 }
 
