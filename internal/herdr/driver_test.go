@@ -74,13 +74,6 @@ func boolStr(b bool) string {
 	return "false"
 }
 
-// paneCurrentJSON builds the pane current envelope used to discover the
-// focused workspace after a create.
-func paneCurrentJSON(workspaceID string) []byte {
-	return []byte(`{"id":"cli:pane:current","result":{"pane":{"pane_id":"` + workspaceID +
-		`:p1","workspace_id":"` + workspaceID + `","cwd":"/x","foreground_cwd":"/x","focused":true}}}`)
-}
-
 func TestDetect_BinaryPresent(t *testing.T) {
 	d := New("herdr",
 		WithLookPath(func(string) (string, error) { return "/usr/local/bin/herdr", nil }))
@@ -197,8 +190,7 @@ func TestFocusOrCreate_CreatesWhenNoMatch(t *testing.T) {
 			match: "herdr pane list",
 			out:   paneListJSON(rawPane{PaneID: "wA:p1", WorkspaceID: "wA", CWD: mismatch, ForegroundCWD: mismatch, Focused: true}),
 		},
-		{match: "herdr workspace create --cwd " + matching + " --label bar --focus", out: []byte(`{"id":"cli:workspace:create","result":{}}`)},
-		{match: "herdr pane current", out: paneCurrentJSON("wNEW")},
+		{match: "herdr workspace create --cwd " + matching + " --label bar --focus", out: workspaceCreatedJSON("wNEW", "wNEW:t1", "wNEW:p1")},
 	}}
 	d := New("herdr", WithRunner(r))
 	res, err := d.FocusOrCreate(context.Background(), source.Candidate{
@@ -213,7 +205,199 @@ func TestFocusOrCreate_CreatesWhenNoMatch(t *testing.T) {
 	if res.WorkspaceID != "wNEW" {
 		t.Errorf("WorkspaceID = %q, want wNEW", res.WorkspaceID)
 	}
+	if res.RootTabID != "wNEW:t1" {
+		t.Errorf("RootTabID = %q, want wNEW:t1", res.RootTabID)
+	}
+	if res.RootPaneID != "wNEW:p1" {
+		t.Errorf("RootPaneID = %q, want wNEW:p1", res.RootPaneID)
+	}
 }
+
+// workspaceCreatedJSON builds the `herdr workspace create` result envelope
+// (type=workspace_created) with workspace/tab/root_pane, matching the real
+// Herdr CLI response shape.
+func workspaceCreatedJSON(workspaceID, tabID, paneID string) []byte {
+	return []byte(`{"id":"cli:workspace:create","result":{"type":"workspace_created",` +
+		`"workspace":{"workspace_id":"` + workspaceID + `","label":"x","active_tab_id":"` + tabID +
+		`","focused":true,"number":1,"tab_count":1,"pane_count":1,"agent_status":"unknown"},` +
+		`"tab":{"tab_id":"` + tabID + `","workspace_id":"` + workspaceID + `","label":"1","focused":true,"number":1,"pane_count":1,"agent_status":"unknown"},` +
+		`"root_pane":{"pane_id":"` + paneID + `","workspace_id":"` + workspaceID + `","tab_id":"` + tabID + `","focused":true,"agent_status":"unknown"}}}`)
+}
+
+// tabCreatedJSON builds the `herdr tab create` result envelope
+// (type=tab_created) with tab/root_pane.
+func tabCreatedJSON(workspaceID, tabID, paneID string) []byte {
+	return []byte(`{"id":"cli:tab:create","result":{"type":"tab_created",` +
+		`"tab":{"tab_id":"` + tabID + `","workspace_id":"` + workspaceID + `","label":"2","focused":true,"number":2,"pane_count":1,"agent_status":"unknown"},` +
+		`"root_pane":{"pane_id":"` + paneID + `","workspace_id":"` + workspaceID + `","tab_id":"` + tabID + `","focused":true,"agent_status":"unknown"}}}`)
+}
+
+// paneInfoJSON builds a `herdr pane split` result envelope (type=pane_info).
+func paneInfoJSON(workspaceID, tabID, paneID string) []byte {
+	return []byte(`{"id":"cli:pane:split","result":{"type":"pane_info",` +
+		`"pane":{"pane_id":"` + paneID + `","workspace_id":"` + workspaceID + `","tab_id":"` + tabID + `","focused":false,"agent_status":"unknown"}}}`)
+}
+
+// TestCreateTab_ParsesEnvelope confirms CreateTab issues
+// `herdr tab create --workspace <id> --cwd <cwd> --label <label> --focus`
+// and returns the new tab + root pane from the tab_created envelope.
+func TestCreateTab_ParsesEnvelope(t *testing.T) {
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr tab create --workspace wA --cwd /x --label server --focus", out: tabCreatedJSON("wA", "wA:t2", "wA:p2")},
+	}}
+	d := New("herdr", WithRunner(r))
+	tab, pane, err := d.CreateTab(context.Background(), "wA", "/x", "server", true)
+	if err != nil {
+		t.Fatalf("CreateTab: %v", err)
+	}
+	if tab.ID != "wA:t2" || tab.WorkspaceID != "wA" {
+		t.Errorf("tab = %+v", tab)
+	}
+	if pane.ID != "wA:p2" || pane.TabID != "wA:t2" {
+		t.Errorf("pane = %+v", pane)
+	}
+}
+
+// TestCreateTab_EmptyWorkspaceIDReturnsError rejects the call before shelling
+// out.
+func TestCreateTab_EmptyWorkspaceIDReturnsError(t *testing.T) {
+	d := New("herdr", WithRunner(&fakeRunner{}))
+	if _, _, err := d.CreateTab(context.Background(), "", "/x", "label", false); err == nil {
+		t.Fatal("expected error for empty workspace id")
+	}
+}
+
+// TestRenameTab_Success confirms the exact `herdr tab rename <id> <label>`
+// invocation.
+func TestRenameTab_Success(t *testing.T) {
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr tab rename wA:t1 code", out: []byte(`{"id":"cli:tab:rename","result":{"type":"tab_info","tab":{}}}`)},
+	}}
+	d := New("herdr", WithRunner(r))
+	if err := d.RenameTab(context.Background(), "wA:t1", "code"); err != nil {
+		t.Fatalf("RenameTab: %v", err)
+	}
+}
+
+// TestRenameTab_EmptyTabIDReturnsError rejects the call before shelling out.
+func TestRenameTab_EmptyTabIDReturnsError(t *testing.T) {
+	d := New("herdr", WithRunner(&fakeRunner{}))
+	if err := d.RenameTab(context.Background(), "", "x"); err == nil {
+		t.Fatal("expected error for empty tab id")
+	}
+}
+
+// TestSplitPane_ParsesEnvelope confirms the exact split invocation (direction,
+// ratio, cwd) and that the new pane is parsed from the pane_info envelope.
+func TestSplitPane_ParsesEnvelope(t *testing.T) {
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr pane split wA:p1 --direction down --ratio 0.8 --cwd /x --focus", out: paneInfoJSON("wA", "wA:t1", "wA:p2")},
+	}}
+	d := New("herdr", WithRunner(r))
+	pane, err := d.SplitPane(context.Background(), "wA:p1", "down", 0.8, "/x", true)
+	if err != nil {
+		t.Fatalf("SplitPane: %v", err)
+	}
+	if pane.ID != "wA:p2" {
+		t.Errorf("pane id = %q, want wA:p2", pane.ID)
+	}
+}
+
+// TestSplitPane_EmptyPaneIDReturnsError rejects the call before shelling out.
+func TestSplitPane_EmptyPaneIDReturnsError(t *testing.T) {
+	d := New("herdr", WithRunner(&fakeRunner{}))
+	if _, err := d.SplitPane(context.Background(), "", "down", 0.5, "", false); err == nil {
+		t.Fatal("expected error for empty pane id")
+	}
+}
+
+// TestCreateTab_NoFocusPassesNoFocus confirms focus=false issues --no-focus
+// (not --focus, and not omitting the flag), so herdr deterministically keeps
+// focus on the existing tab/pane instead of its own default.
+func TestCreateTab_NoFocusPassesNoFocus(t *testing.T) {
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr tab create --workspace wA --cwd /x --label server --no-focus", out: tabCreatedJSON("wA", "wA:t2", "wA:p2")},
+	}}
+	d := New("herdr", WithRunner(r))
+	if _, _, err := d.CreateTab(context.Background(), "wA", "/x", "server", false); err != nil {
+		t.Fatalf("CreateTab focus=false: %v", err)
+	}
+}
+
+// TestSplitPane_NoFocusPassesNoFocus confirms focus=false issues --no-focus on
+// a pane split, so the kept pane retains focus instead of the new pane.
+func TestSplitPane_NoFocusPassesNoFocus(t *testing.T) {
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr pane split wA:p1 --direction down --ratio 0.5 --cwd /x --no-focus", out: paneInfoJSON("wA", "wA:t1", "wA:p2")},
+	}}
+	d := New("herdr", WithRunner(r))
+	if _, err := d.SplitPane(context.Background(), "wA:p1", "down", 0.5, "/x", false); err != nil {
+		t.Fatalf("SplitPane focus=false: %v", err)
+	}
+}
+
+// TestRunPane_RunsCommand confirms `herdr pane run <pane_id> <command>`.
+func TestRunPane_RunsCommand(t *testing.T) {
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr pane run wA:p1 echo hi", out: []byte(`{}`)},
+	}}
+	d := New("herdr", WithRunner(r))
+	if err := d.RunPane(context.Background(), "wA:p1", "echo hi"); err != nil {
+		t.Fatalf("RunPane: %v", err)
+	}
+}
+
+// TestRunPane_EmptyCommandIsNoOp: a plain-shell leaf never shells out.
+func TestRunPane_EmptyCommandIsNoOp(t *testing.T) {
+	d := New("herdr", WithRunner(&fakeRunner{}))
+	if err := d.RunPane(context.Background(), "wA:p1", "   "); err != nil {
+		t.Fatalf("RunPane empty: %v", err)
+	}
+}
+
+// TestRunPane_EmptyPaneIDReturnsError rejects the call before shelling out.
+func TestRunPane_EmptyPaneIDReturnsError(t *testing.T) {
+	d := New("herdr", WithRunner(&fakeRunner{}))
+	if err := d.RunPane(context.Background(), "", "echo hi"); err == nil {
+		t.Fatal("expected error for empty pane id")
+	}
+}
+
+// TestFocusTab_RunsCommand confirms `herdr tab focus <id>`.
+func TestFocusTab_RunsCommand(t *testing.T) {
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr tab focus wA:t1", out: []byte(`{}`)},
+	}}
+	d := New("herdr", WithRunner(r))
+	if err := d.FocusTab(context.Background(), "wA:t1"); err != nil {
+		t.Fatalf("FocusTab: %v", err)
+	}
+}
+
+// TestFocusTab_EmptyTabIDReturnsError rejects the call before shelling out.
+func TestFocusTab_EmptyTabIDReturnsError(t *testing.T) {
+	d := New("herdr", WithRunner(&fakeRunner{}))
+	if err := d.FocusTab(context.Background(), ""); err == nil {
+		t.Fatal("expected error for empty tab id")
+	}
+}
+
+// TestFocusTab_CommandErrorReturnsError surfaces a daemon failure.
+func TestFocusTab_CommandErrorReturnsError(t *testing.T) {
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr tab focus wA:t1", err: errors.New("exit status 1")},
+	}}
+	d := New("herdr", WithRunner(r))
+	if err := d.FocusTab(context.Background(), "wA:t1"); err == nil {
+		t.Fatal("expected error when tab focus command fails")
+	}
+}
+
+// NOTE: There is intentionally no FocusPane method on the Driver. Herdr's
+// `pane focus` command only supports --direction (left/right/up/down), NOT a
+// positional pane id, so `herdr pane focus <pane_id>` is an invalid CLI form
+// that always fails. Pane focus is instead controlled at split creation time
+// via the --focus/--no-focus flag on SplitPane. See driver.SplitPane.
 
 // The candidate normalises its own path when NormalizedPath is empty (defensive
 // against callers that skip the resolver).
@@ -280,41 +464,6 @@ func TestListWorkspaces_DaemonDownReturnsError(t *testing.T) {
 	d := New("herdr", WithRunner(r))
 	if _, err := d.ListWorkspaces(context.Background()); err == nil {
 		t.Fatal("expected error when workspace list command fails")
-	}
-}
-
-// HI-4: RunStartup lists the workspace's panes and runs the command in the
-// first pane.
-func TestRunStartup_RunsInFirstPane(t *testing.T) {
-	r := &fakeRunner{script: []fakeCall{
-		{
-			match: "herdr pane list --workspace wA",
-			out:   paneListJSON(rawPane{PaneID: "wA:p1", WorkspaceID: "wA", CWD: "/x", ForegroundCWD: "/x", Focused: true}),
-		},
-		{match: "herdr pane run wA:p1 echo hi", out: []byte(`{}`)},
-	}}
-	d := New("herdr", WithRunner(r))
-	if err := d.RunStartup(context.Background(), "wA", "echo hi"); err != nil {
-		t.Fatalf("RunStartup: %v", err)
-	}
-}
-
-// HI-4: an empty command is a no-op (callers may have no startup configured).
-func TestRunStartup_EmptyCommandIsNoOp(t *testing.T) {
-	d := New("herdr", WithRunner(&fakeRunner{}))
-	if err := d.RunStartup(context.Background(), "wA", "   "); err != nil {
-		t.Fatalf("RunStartup empty: %v", err)
-	}
-}
-
-// HI-4: a workspace with no panes is a startup error, surfaced not swallowed.
-func TestRunStartup_NoPanesReturnsError(t *testing.T) {
-	r := &fakeRunner{script: []fakeCall{
-		{match: "herdr pane list --workspace wA", out: paneListJSON()},
-	}}
-	d := New("herdr", WithRunner(r))
-	if err := d.RunStartup(context.Background(), "wA", "echo hi"); err == nil {
-		t.Fatal("expected error for empty workspace")
 	}
 }
 
@@ -428,7 +577,7 @@ func TestListTabs_EmptyListIsNotError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTabs empty: %v", err)
 	}
-	if got != nil && len(got) != 0 {
+	if len(got) != 0 {
 		t.Errorf("expected nil/empty, got %+v", got)
 	}
 }
@@ -539,7 +688,7 @@ func TestListAgents_EmptyListIsNotError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListAgents empty: %v", err)
 	}
-	if got != nil && len(got) != 0 {
+	if len(got) != 0 {
 		t.Errorf("expected nil/empty, got %+v", got)
 	}
 }
@@ -557,8 +706,9 @@ func TestListTabs_ContextDeadlineSurfaces(t *testing.T) {
 }
 
 // readPaneOut wraps a raw stdout string for ReadPane calls. ReadPane does not
-// parse a JSON envelope; `herdr pane read --format ansi` returns the captured
-// terminal buffer directly.
+// parse a JSON envelope; `herdr pane read --format ansi` returns the
+// captured terminal buffer directly, preserving the pane's real ANSI color
+// codes so the active_pane preview section shows what the user actually saw.
 func readPaneOut(content string) []byte { return []byte(content) }
 
 // TestReadPane_ReturnsBuffer (4.2/4.5) runs `herdr pane read <pane_id>
@@ -590,6 +740,26 @@ func TestReadPane_AnonlinesZeroDefaults(t *testing.T) {
 	}
 	if got != "ok" {
 		t.Errorf("ReadPane buffer: got %q want %q", got, "ok")
+	}
+}
+
+// TestReadPane_UsesAnsiFormat confirms ReadPane requests --format ansi, not
+// --format text: the herdr CLI's ansi format preserves the pane's real
+// terminal colors so the active_pane preview shows what the user actually
+// saw. This is safe downstream because internal/tui/model.go's
+// truncateToWidth is ANSI-aware (charmbracelet/x/ansi.Truncate) and never
+// cuts mid-escape sequence.
+func TestReadPane_UsesAnsiFormat(t *testing.T) {
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr pane read wA:p1 --lines 10 --format ansi", out: readPaneOut("colored")},
+	}}
+	d := New("herdr", WithRunner(r))
+	got, err := d.ReadPane(context.Background(), "wA:p1", 10)
+	if err != nil {
+		t.Fatalf("ReadPane: %v", err)
+	}
+	if got != "colored" {
+		t.Errorf("ReadPane buffer: got %q want %q", got, "colored")
 	}
 }
 

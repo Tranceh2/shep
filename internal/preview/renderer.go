@@ -2,8 +2,10 @@ package preview
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -18,30 +20,40 @@ type Renderer interface {
 	Render(ctx context.Context, cand source.Candidate, opts RenderOptions) (Result, error)
 }
 
-// RenderOptions carries presentation hints. The renderer always returns plain text
-// and does not apply ANSI styling internally. Color is kept as a hint so that callers
-// can decide how they wish to style the returned Result; styling is handled externally
-// by the CLI and TUI layers. Width is the target pane width (0 = unknown); the TUI layer
-// adapts further.
+// RenderOptions carries presentation hints. The renderer itself never adds
+// ANSI styling — Color is kept as a hint for callers — but some built-in
+// sections may carry real ANSI color codes from the tool they shell out to:
+// "dir" (lsd/eza's own colored listing) and "active_pane" (the pane's real
+// captured terminal appearance) are intentionally colored so the user sees
+// what they'd actually see. "identity", "git", and "workspace" stay plain
+// text. A user-declared [preview.commands.<name>] may or may not emit color
+// depending on the command itself. Width is the target pane width
+// (0 = unknown). Any ANSI-carrying section is safe to truncate: see
+// internal/tui/model.go's truncateToWidth, which is ANSI-aware
+// (charmbracelet/x/ansi.Truncate) and never cuts mid-escape sequence.
 type RenderOptions struct {
 	Color bool
 	Width int
 }
 
-// Result is the rendered preview. Text is the plain-text body; Warning is a
-// transient, non-fatal note (e.g. a custom command failed and the built-in
-// preview was shown instead); FromCache is true when Text was served from the
-// in-memory cache rather than freshly computed.
+// Result is the rendered preview. Text is the body — plain text for
+// "identity"/"git"/"workspace", and possibly ANSI-colored for "dir" and
+// "active_pane" (see RenderOptions doc); Warning is a transient, non-fatal
+// note (reserved for future diagnostics — per-section command failures are
+// hidden from normal preview output and simply omitted); FromCache is true
+// when Text was served from the in-memory cache.
 type Result struct {
 	Text      string
 	Warning   string
 	FromCache bool
 }
 
-// defaultRenderer renders the built-in/default layout or declarative sections,
-// or delegates to a custom command when configured, with TTL caching.
+// defaultRenderer resolves the ordered section list per candidate (workspace
+// > wildcard > source > global default > built-in fallback) and renders each
+// named section — hardcoded built-ins (identity, git, workspace, active_pane,
+// dir) or a declared [preview.commands.<name>] — with TTL caching.
 type defaultRenderer struct {
-	cfg    config.PreviewConfig
+	cfg    *config.Config
 	probes config.Probes
 	git    GitProvider
 	runner CommandRunner
@@ -55,25 +67,28 @@ type RendererOption func(*defaultRenderer)
 
 // WithHerdrDriver injects a HerdrDriver so the workspace and active_pane
 // preview sections can enumerate tabs/panes and read the active pane buffer.
-// Without a driver those sections degrade to a muted skip. Intended for
-// production wiring; tests inject a fake.
+// Without a driver those sections degrade to a skip. Intended for production
+// wiring; tests inject a fake.
 func WithHerdrDriver(d source.HerdrDriver) RendererOption {
 	return func(r *defaultRenderer) { r.driver = d }
 }
 
-// NewRenderer wires the production renderer from a preview config, a binary
-// probes snapshot, an optional GitProvider, and an optional CommandRunner. When
-// preview.Command is set the runner path is used; otherwise the built-in or
-// declarative-section layout is rendered. A TTL cache (preview.cache_ttl)
-// keeps cursor revisits responsive. RendererOption values (e.g.
-// WithHerdrDriver) extend the renderer for herdr-backed preview sections.
-func NewRenderer(cfg config.PreviewConfig, probes config.Probes, git GitProvider, runner CommandRunner, opts ...RendererOption) Renderer {
+// NewRenderer wires the production renderer from the full config (Workspaces
+// and Wildcards feed the preview-name precedence chain; Preview carries the
+// caps/commands/default), a binary probes snapshot, an optional GitProvider,
+// and an optional CommandRunner (used for both the "dir" built-in and any
+// declared preview.commands). A TTL cache (preview.cache_ttl) keeps cursor
+// revisits responsive.
+func NewRenderer(cfg *config.Config, probes config.Probes, git GitProvider, runner CommandRunner, opts ...RendererOption) Renderer {
+	if cfg == nil {
+		cfg = config.Defaults()
+	}
 	r := &defaultRenderer{
 		cfg:    cfg,
 		probes: probes,
 		git:    git,
 		runner: runner,
-		cache:  NewCache(time.Duration(cfg.CacheTTL)),
+		cache:  NewCache(time.Duration(cfg.Preview.CacheTTL)),
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -81,161 +96,142 @@ func NewRenderer(cfg config.PreviewConfig, probes config.Probes, git GitProvider
 	return r
 }
 
-// Render resolves the preview for one candidate, honouring the command escape
-// hatch (with fallback + warning), declarative sections, and the built-in
-// default, then caches the result by path and config.
+// Render resolves the ordered preview section list for cand and renders each
+// in turn, joining non-empty blocks with a blank line, then caches the
+// result by path and config.
 func (r *defaultRenderer) Render(ctx context.Context, cand source.Candidate, _ RenderOptions) (Result, error) {
-	key := PreviewCacheKey(renderPath(cand), r.cfg)
+	key := PreviewCacheKey(renderPath(cand), r.cfg.Preview)
 	if cached, ok := r.cache.Get(key); ok {
 		return cached, nil
 	}
 
-	if r.cfg.Command != "" {
-		return r.renderCommand(ctx, cand, key)
+	names := resolvePreviewNames(r.cfg, cand)
+	var blocks []string
+	for _, name := range names {
+		if block, ok := r.renderSection(ctx, cand, name); ok {
+			blocks = append(blocks, block)
+		}
 	}
-
-	text := r.renderLayout(ctx, cand)
-	res := Result{Text: text}
+	// Every configured section can legitimately contribute nothing (a
+	// command failed, a herdr query timed out, a section is not applicable
+	// to this candidate). A normal preview must never come back blank in
+	// that case: fall back to the built-in identity section so there is
+	// always clean, useful output instead of a silent empty success.
+	if len(blocks) == 0 {
+		blocks = append(blocks, renderIdentity(cand))
+	}
+	res := Result{Text: strings.Join(blocks, "\n\n")}
 	r.cache.Put(key, res)
 	return res, nil
 }
 
-// renderCommand executes the configured command and falls back to the built-in
-// preview with a transient warning on any failure (parse error, timeout,
-// non-zero exit, stderr).
-func (r *defaultRenderer) renderCommand(ctx context.Context, cand source.Candidate, key string) (Result, error) {
-	argv, err := ParseCommand(r.cfg.Command, renderPath(cand))
-	if err != nil {
-		return r.commandFallback(ctx, cand, err)
+// renderSection dispatches a single named section to its renderer. ok=false
+// means the section contributed nothing (unavailable dependency, unknown
+// name, or empty output) and is omitted entirely from normal preview output.
+func (r *defaultRenderer) renderSection(ctx context.Context, cand source.Candidate, name string) (string, bool) {
+	switch name {
+	case config.PreviewIdentity:
+		return renderIdentity(cand), true
+	case config.PreviewGit:
+		if line, ok := r.gitLine(ctx, cand); ok {
+			return "git: " + line, true
+		}
+		return "", false
+	case config.PreviewWorkspace:
+		return r.renderWorkspaceSection(ctx, cand)
+	case config.PreviewActivePane:
+		return r.renderActivePaneSection(ctx, cand)
+	case config.PreviewDir:
+		return r.renderDirSection(ctx, cand)
+	default:
+		cmd, ok := r.cfg.Preview.Commands[name]
+		if !ok {
+			return "", false
+		}
+		return r.renderCustomCommand(ctx, cmd, cand)
 	}
-	if r.runner == nil {
-		return r.commandFallback(ctx, cand, errNoRunner)
-	}
-	runCtx := ctx
-	cancel := func() {}
-	if r.cfg.Timeout > 0 {
-		runCtx, cancel = context.WithTimeout(ctx, time.Duration(r.cfg.Timeout))
-	}
-	defer cancel()
-	out, runErr := r.runner.Run(runCtx, argv, cand.Path, r.cfg.MaxLines)
-	if runErr != nil {
-		return r.commandFallback(ctx, cand, runErr)
-	}
-	res := Result{Text: out}
-	r.cache.Put(key, res)
-	return res, nil
 }
 
-// commandFallback renders the built-in preview and records a warning describing
-// why the custom command did not run.
-func (r *defaultRenderer) commandFallback(ctx context.Context, cand source.Candidate, cause error) (Result, error) {
-	res := Result{
-		Text:    r.renderDefault(ctx, cand),
-		Warning: safeCommandWarning(cause),
+// resolvePreviewNames implements the documented precedence: an exact
+// [[workspaces]] path match with its own preview list wins; else the first
+// matching [[wildcards]] entry with a non-empty preview list; else the
+// candidate's source-level preview list; else [preview].default; else a
+// single built-in "identity" fallback so the preview is never blank.
+func resolvePreviewNames(cfg *config.Config, cand source.Candidate) []string {
+	path := renderPath(cand)
+	base := filepath.Base(path)
+
+	for _, ws := range cfg.Workspaces {
+		wsPath := expandTildeLocal(ws.Path)
+		if wsPath == "" || len(ws.Preview) == 0 {
+			continue
+		}
+		if samePath(wsPath, path) {
+			return ws.Preview
+		}
 	}
-	return res, nil
+	for _, w := range cfg.Wildcards {
+		if config.MatchWildcard(w.Pattern, path) || config.MatchWildcard(w.Pattern, base) {
+			if len(w.Preview) > 0 {
+				return w.Preview
+			}
+			break
+		}
+	}
+	if names := sourcePreview(cfg, cand.Source); len(names) > 0 {
+		return names
+	}
+	if len(cfg.Preview.Default) > 0 {
+		return cfg.Preview.Default
+	}
+	return []string{config.PreviewIdentity}
 }
 
-func safeCommandWarning(cause error) string {
-	if errors.Is(cause, context.DeadlineExceeded) {
-		return "preview command timed out"
+// sourcePreview returns the configured [sources.<name>].preview list for the
+// candidate's source, or nil when unset/unknown.
+func sourcePreview(cfg *config.Config, sourceName string) []string {
+	switch sourceName {
+	case config.SourceHerdr:
+		return cfg.Sources.Herdr.Preview
+	case config.SourceWorkspaces:
+		return cfg.Sources.Workspaces.Preview
+	case config.SourceZoxide:
+		return cfg.Sources.Zoxide.Preview
+	case config.SourceProjects:
+		return cfg.Sources.Projects.Preview
 	}
-	if errors.Is(cause, errNoRunner) {
-		return "preview command unavailable"
-	}
-	return "preview command failed"
+	return nil
 }
 
-// renderLayout picks declarative sections when configured, otherwise the
-// built-in default layout.
-func (r *defaultRenderer) renderLayout(ctx context.Context, cand source.Candidate) string {
-	if len(r.cfg.Sections) == 0 {
-		return r.renderDefault(ctx, cand)
+// renderIdentity shows label, path, source, and a matched template (when
+// present in Meta) — the built-in "identity" section.
+func renderIdentity(cand source.Candidate) string {
+	lines := []string{
+		cand.Label,
+		"path: " + renderPath(cand),
+		"source: " + cand.Source,
 	}
-	return r.renderSections(ctx, cand)
-}
-
-// renderDefault (WP-1) shows label, path, source, a matched template when
-// present, and a fast git summary when available.
-func (r *defaultRenderer) renderDefault(ctx context.Context, cand source.Candidate) string {
-	var lines []string
-	lines = append(lines, cand.Label)
-	lines = append(lines, "path: "+renderPath(cand))
-	lines = append(lines, "source: "+cand.Source)
 	if t := cand.Meta["template"]; t != "" {
 		lines = append(lines, "template: "+t)
-	}
-	if gline, ok := r.gitLine(ctx, cand); ok {
-		lines = append(lines, "git: "+gline)
 	}
 	return strings.Join(lines, "\n")
 }
 
 // herdrPreviewTimeout bounds every herdr query made while rendering a preview
-// so a slow daemon never freezes the selector (PR4 goal 2). Each herdr call
-// gets its own deadline; a timeout degrades the section to a muted note.
+// so a slow daemon never freezes the selector. Each herdr call gets its own
+// deadline; a timeout degrades the section to an unavailable note.
 const herdrPreviewTimeout = 100 * time.Millisecond
 
-// renderSections (WP-2) renders [[preview.sections]] in declaration order using
-// the declared field names (builtin) or a git summary (git). The herdr-backed
-// workspace and active_pane sections are skipped entirely when the candidate
-// is not an active herdr workspace (no workspace_id meta key) or when no
-// driver is wired; on query failure/timeout they degrade to a muted
-// unavailable note under the section heading.
-func (r *defaultRenderer) renderSections(ctx context.Context, cand source.Candidate) string {
-	blocks := make([]string, 0, len(r.cfg.Sections))
-	for _, sec := range r.cfg.Sections {
-		switch sec.Type {
-		case config.PreviewSectionWorkspace:
-			if block, ok := r.renderWorkspaceSection(ctx, cand, sec); ok {
-				blocks = append(blocks, block)
-			}
-		case config.PreviewSectionActivePane:
-			if block, ok := r.renderActivePaneSection(ctx, cand, sec); ok {
-				blocks = append(blocks, block)
-			}
-		default:
-			blocks = append(blocks, r.renderStaticSection(ctx, cand, sec))
-		}
-	}
-	return strings.Join(blocks, "\n\n")
-}
-
-// renderStaticSection renders builtin and git sections (the WP-2 layout that
-// does not depend on a herdr driver). Heading is always included when set.
-func (r *defaultRenderer) renderStaticSection(ctx context.Context, cand source.Candidate, sec config.PreviewSection) string {
-	var lines []string
-	if sec.Name != "" {
-		lines = append(lines, sec.Name)
-	}
-	switch sec.Type {
-	case config.PreviewSectionBuiltin:
-		for _, f := range sec.Fields {
-			lines = append(lines, f+": "+fieldValue(cand, f))
-		}
-	case config.PreviewSectionGit:
-		if gline, ok := r.gitLine(ctx, cand); ok {
-			lines = append(lines, gline)
-		} else {
-			lines = append(lines, "(git unavailable)")
-		}
-	}
-	return strings.Join(lines, "\n")
-}
-
 // renderWorkspaceSection renders an indented tree of the workspace's tabs and
-// panes. ok=false means the section is skipped entirely (no block): the
-// candidate is not an active herdr workspace, or no driver is wired. A query
-// failure or timeout degrades to a muted unavailable note under the heading.
-func (r *defaultRenderer) renderWorkspaceSection(ctx context.Context, cand source.Candidate, sec config.PreviewSection) (string, bool) {
+// panes. ok=false means the section is skipped entirely: the candidate is
+// not an active herdr workspace, or no driver is wired. A query failure or
+// timeout degrades to an unavailable note under the heading.
+func (r *defaultRenderer) renderWorkspaceSection(ctx context.Context, cand source.Candidate) (string, bool) {
 	workspaceID := cand.Meta["workspace_id"]
 	if workspaceID == "" || r.driver == nil {
 		return "", false
 	}
-	var lines []string
-	if sec.Name != "" {
-		lines = append(lines, sec.Name)
-	}
+	lines := []string{"workspace"}
 	tabs, panes, err := r.loadWorkspacePreview(ctx, workspaceID)
 	if err != nil {
 		lines = append(lines, "(workspace unavailable)")
@@ -258,20 +254,15 @@ func (r *defaultRenderer) renderWorkspaceSection(ctx context.Context, cand sourc
 	return strings.Join(lines, "\n"), true
 }
 
-// renderActivePaneSection renders the active pane's captured terminal buffer,
-// capped at cfg.MaxLines. The active pane is the focused one, falling back to
-// the first pane when none is focused. ok=false means the section is skipped
-// (non-herdr candidate or no driver). A query failure/timeout or a workspace
-// with no panes degrades to a muted unavailable note under the heading.
-func (r *defaultRenderer) renderActivePaneSection(ctx context.Context, cand source.Candidate, sec config.PreviewSection) (string, bool) {
+// renderActivePaneSection renders the active pane's captured terminal
+// buffer, capped at cfg.Preview.MaxLines. ok=false means the section is
+// skipped (non-herdr candidate or no driver).
+func (r *defaultRenderer) renderActivePaneSection(ctx context.Context, cand source.Candidate) (string, bool) {
 	workspaceID := cand.Meta["workspace_id"]
 	if workspaceID == "" || r.driver == nil {
 		return "", false
 	}
-	var lines []string
-	if sec.Name != "" {
-		lines = append(lines, sec.Name)
-	}
+	lines := []string{"active pane"}
 	panes, err := r.listPanesPreview(ctx, workspaceID)
 	if err != nil {
 		lines = append(lines, "(active pane unavailable)")
@@ -282,20 +273,93 @@ func (r *defaultRenderer) renderActivePaneSection(ctx context.Context, cand sour
 		lines = append(lines, "(no active pane)")
 		return strings.Join(lines, "\n"), true
 	}
-	buf, err := r.readPanePreview(ctx, paneID, r.cfg.MaxLines)
+	buf, err := r.readPanePreview(ctx, paneID, r.cfg.Preview.MaxLines)
 	if err != nil {
 		lines = append(lines, "(active pane unavailable)")
 		return strings.Join(lines, "\n"), true
 	}
 	if buf != "" {
-		lines = append(lines, capLines(buf, r.cfg.MaxLines))
+		lines = append(lines, capLines(buf, r.cfg.Preview.MaxLines))
 	}
 	return strings.Join(lines, "\n"), true
 }
 
+// renderDirSection runs the first available of lsd/eza/ls against the
+// candidate's path. ok=false means no runner is wired or the command
+// produced no output; command failures are hidden from normal preview
+// output (they are simply omitted), never shown as an error to the user.
+func (r *defaultRenderer) renderDirSection(ctx context.Context, cand source.Candidate) (string, bool) {
+	if r.runner == nil {
+		return "", false
+	}
+	argv := dirArgv(renderPath(cand))
+	runCtx, cancel := boundedContext(ctx, r.cfg.Preview.Timeout)
+	defer cancel()
+	out, err := r.runner.Run(runCtx, argv, "", r.cfg.Preview.MaxLines)
+	if err != nil || out == "" {
+		return "", false
+	}
+	return out, true
+}
+
+// renderCustomCommand executes a declared [preview.commands.<name>] entry.
+// ok=false (empty output or any failure) hides the section entirely per the
+// "hide command errors from normal preview output" rule.
+func (r *defaultRenderer) renderCustomCommand(ctx context.Context, cmd config.PreviewCommand, cand source.Candidate) (string, bool) {
+	if r.runner == nil {
+		return "", false
+	}
+	argv, err := ParseCommand(cmd.Command, renderPath(cand))
+	if err != nil {
+		return "", false
+	}
+	runCtx, cancel := boundedContext(ctx, r.cfg.Preview.Timeout)
+	defer cancel()
+	out, err := r.runner.Run(runCtx, argv, cand.Path, r.cfg.Preview.MaxLines)
+	if err != nil || out == "" {
+		return "", false
+	}
+	return out, true
+}
+
+// boundedContext applies timeout to ctx when positive, mirroring the escape
+// hatch commands' safety bound.
+func boundedContext(ctx context.Context, timeout config.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, time.Duration(timeout))
+}
+
+// dirLookPath is the exec.LookPath seam so tests can control which of
+// lsd/eza is "available" without touching the real PATH.
+var dirLookPath = exec.LookPath
+
+// dirArgv picks the first available of lsd, eza, else falls back to ls, per
+// the documented "dir" built-in. lsd and eza are forced to --color=always so
+// the "dir" section shows their real colored listing — the reason to prefer
+// them over plain ls in the first place. Forcing color also keeps the
+// output deterministic regardless of the invoking process's $TERM/color-
+// profile detection (which would otherwise vary whether lsd/eza auto-detect
+// a color-capable terminal), so this built-in section's TTL-cached result
+// stays stable for the same input. internal/tui/model.go's truncateToWidth
+// is ANSI-aware (it delegates to charmbracelet/x/ansi.Truncate), which is
+// what makes it safe to carry real color codes through this section without
+// corrupting truncation at narrow widths. ls has no such flag and stays
+// plain. Icons are kept — they're plain glyphs, not escape sequences.
+func dirArgv(path string) []string {
+	if _, err := dirLookPath("lsd"); err == nil {
+		return []string{"lsd", "-la", "--icon=always", "--color=always", path}
+	}
+	if _, err := dirLookPath("eza"); err == nil {
+		return []string{"eza", "--all", "--git", "--icons", "--color=always", path}
+	}
+	return []string{"ls", "-la", path}
+}
+
 // loadWorkspacePreview fetches tabs and panes for a workspace, each query
 // bounded by herdrPreviewTimeout. Either query failing yields an error so the
-// caller can degrade to a muted note.
+// caller can degrade to an unavailable note.
 func (r *defaultRenderer) loadWorkspacePreview(ctx context.Context, workspaceID string) ([]source.Tab, []source.Pane, error) {
 	tabs, err := r.listTabsPreview(ctx, workspaceID)
 	if err != nil {
@@ -357,8 +421,7 @@ func capLines(buf string, max int) string {
 }
 
 // gitLine returns the rendered git summary for the candidate path, or false when
-// git is unavailable (probe off, provider nil), slow, or missing — WP-1's
-// bypass contract.
+// git is unavailable (probe off, provider nil), slow, or missing.
 func (r *defaultRenderer) gitLine(ctx context.Context, cand source.Candidate) (string, bool) {
 	if r.git == nil || !r.probes.Git {
 		return "", false
@@ -370,23 +433,8 @@ func (r *defaultRenderer) gitLine(ctx context.Context, cand source.Candidate) (s
 	return sum.String(), true
 }
 
-// fieldValue maps a declared builtin field name to the candidate value.
-func fieldValue(cand source.Candidate, field string) string {
-	switch field {
-	case config.PreviewFieldPath:
-		return renderPath(cand)
-	case config.PreviewFieldLabel:
-		return cand.Label
-	case config.PreviewFieldSource:
-		return cand.Source
-	case config.PreviewFieldTemplate:
-		return cand.Meta["template"]
-	}
-	return ""
-}
-
-// renderPath prefers the post-dedup/post-symlink normalised path and falls back
-// to the raw path so output is never empty.
+// renderPath prefers the post-dedup/post-symlink normalised path and falls
+// back to the raw path so output is never empty.
 func renderPath(cand source.Candidate) string {
 	if cand.NormalizedPath != "" {
 		return cand.NormalizedPath
@@ -394,10 +442,35 @@ func renderPath(cand source.Candidate) string {
 	return cand.Path
 }
 
-// errNoRunner is the warning cause when a command is configured but no runner
-// was injected (e.g. wiring incomplete).
-var errNoRunner = errCommand("no command runner wired")
+// expandTildeLocal replaces a leading ~ with the user's home dir. Local copy
+// (rather than importing internal/source) to avoid a needless dependency;
+// preview only needs it for the workspace-preview path-match precedence tier.
+func expandTildeLocal(p string) string {
+	if p == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
+		return p
+	}
+	if strings.HasPrefix(p, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return p
+		}
+		return filepath.Join(home, p[2:])
+	}
+	return p
+}
 
-type errCommand string
-
-func (e errCommand) Error() string { return string(e) }
+// samePath reports whether two paths are equal after symlink resolution.
+func samePath(a, b string) bool {
+	if a == b {
+		return true
+	}
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return ra == rb
+}

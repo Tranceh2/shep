@@ -4,80 +4,118 @@
 // Configuration lives at $XDG_CONFIG_HOME/shep/config.toml (falling back to
 // ~/.config/shep/config.toml when XDG_CONFIG_HOME is unset), so shep uses the
 // same location across Linux and macOS. A missing config is not an error:
-// callers fall back to
-// Defaults(), which enables Herdr workspaces, zoxide (if installed) and the
-// current working directory without any hardcoded user-specific paths.
+// callers fall back to Defaults(), which enables every built-in source
+// (herdr, workspaces, zoxide, projects) without any hardcoded user-specific
+// paths.
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
 )
 
-// Kind is the discriminator for Source entries.
-type Kind string
-
-// Supported source kinds. Built-in providers (cwd, herdr, zoxide) activate by
-// default when their binary is available; the roots kind scans a user-supplied
-// directory and therefore only ever appears in user configuration; the config
-// kind references the predefined-workspace provider that reads [[workspaces]].
+// Built-in source names. general.sources lists which of these are enabled
+// and in what merge/display order; unknown names fail Load fast. shep does
+// not support arbitrary user-defined source providers — only these four.
 const (
-	KindCwd    Kind = "cwd"
-	KindHerdr  Kind = "herdr"
-	KindZoxide Kind = "zoxide"
-	KindRoots  Kind = "roots"
-	KindConfig Kind = "config"
+	SourceHerdr      = "herdr"
+	SourceWorkspaces = "workspaces"
+	SourceZoxide     = "zoxide"
+	SourceProjects   = "projects"
 )
+
+// defaultSourceOrder is used when general.sources is empty/absent.
+var defaultSourceOrder = []string{SourceHerdr, SourceWorkspaces, SourceZoxide, SourceProjects}
+
+var validSourceNames = map[string]bool{
+	SourceHerdr: true, SourceWorkspaces: true, SourceZoxide: true, SourceProjects: true,
+}
 
 // Selector values for the [general].selector field. They pick the interactive
 // candidate picker used by `shep open` after the direct (exact/single) match.
-// SelectorBuiltin skips fzf and always uses the Bubble Tea TUI; SelectorFzf
-// prefers fzf and falls back to the TUI when the binary is missing; SelectorAuto
-// preserves the v1 cascade (fzf if present else Bubble Tea).
 const (
 	SelectorBuiltin = "builtin"
 	SelectorFzf     = "fzf"
 	SelectorAuto    = "auto"
 )
 
-// Config is the top-level shep configuration document.
-type Config struct {
-	General General           `toml:"general,omitempty"`
-	Herdr   Herdr             `toml:"herdr,omitempty"`
-	Sources map[string]Source `toml:"sources,omitempty"`
-	// Defaults carries the fallback startup/preview commands applied when no
-	// predefined workspace and no wildcard matched the resolved candidate.
-	Defaults DefaultsConfig `toml:"defaults,omitempty"`
-	// Workspaces lists predefined project entries the configProvider surfaces
-	// as candidates (see internal/source). Each entry resolves by name and
-	// (tilde-expanded) path.
-	Workspaces []WorkspaceConfig `toml:"workspaces,omitempty"`
-	// Wildcards is an ordered list of glob -> startup rules scanned in
-	// declaration order by matchWildcard when a workspace's own startup does
-	// not apply. First match wins.
-	Wildcards []WildcardConfig `toml:"wildcards,omitempty"`
-	// Preview configures the workspace preview shown in the selector and by
-	// `shep preview <path>`. Absent [preview] is normalized to safe preview
-	// defaults while keeping command/sections empty, so the renderer falls back to
-	// its built-in default layout.
-	Preview PreviewConfig `toml:"preview,omitempty"`
+// Workspace entry types. Empty (WorkspaceTypeShell) is a single project
+// workspace; WorkspaceTypeGroup turns the entry into a picker source at its
+// own path, drawing candidates from its own Sources list.
+const (
+	WorkspaceTypeShell = "shell"
+	WorkspaceTypeGroup = "group"
+)
+
+// Split directions for template layout nodes. "rows" stacks children
+// top/bottom; "cols" places them side by side.
+const (
+	SplitRows = "rows"
+	SplitCols = "cols"
+)
+
+// Built-in preview section names. These render hardcoded logic in the
+// preview renderer and require no declaration in config; they are simply
+// valid names wherever a `preview = [...]` list is accepted.
+const (
+	PreviewIdentity   = "identity"
+	PreviewGit        = "git"
+	PreviewWorkspace  = "workspace"
+	PreviewActivePane = "active_pane"
+	PreviewDir        = "dir"
+)
+
+var builtinPreviewNames = map[string]bool{
+	PreviewIdentity: true, PreviewGit: true, PreviewWorkspace: true,
+	PreviewActivePane: true, PreviewDir: true,
 }
 
-// General holds global tweaks; provider order is optional.
+// Default preview durations and output cap. They apply when the user omits
+// the field (zero-value) so a custom preview command still gets a safe
+// timeout, cache, and line cap without explicit config.
+const (
+	defaultPreviewTimeout  = 150 * time.Millisecond
+	defaultPreviewCacheTTL = 5 * time.Second
+	defaultPreviewMaxLines = 50
+)
+
+// Config is the top-level shep configuration document.
+type Config struct {
+	Version  int            `toml:"version,omitempty"`
+	General  General        `toml:"general,omitempty"`
+	Herdr    Herdr          `toml:"herdr,omitempty"`
+	Defaults DefaultsConfig `toml:"defaults,omitempty"`
+	TUI      TUIConfig      `toml:"tui,omitempty"`
+	Preview  PreviewConfig  `toml:"preview,omitempty"`
+	Sources  SourcesConfig  `toml:"sources,omitempty"`
+	// Workspaces lists predefined project (or group) entries the workspaces
+	// source provider surfaces as candidates.
+	Workspaces []WorkspaceConfig `toml:"workspaces,omitempty"`
+	// Templates describes what opens after Enter for a freshly created
+	// workspace: tabs, panes, splits, sizes and commands. Keyed by name and
+	// referenced from [defaults], [[workspaces]] and [[wildcards]].
+	Templates map[string]TemplateConfig `toml:"templates,omitempty"`
+	// Wildcards is an ordered list of glob -> template/preview rules scanned
+	// in declaration order; the first pattern matching the candidate's
+	// normalised path or base name wins.
+	Wildcards []WildcardConfig `toml:"wildcards,omitempty"`
+}
+
+// General holds global tweaks. Sources lists the enabled built-in source
+// names and their merge/display order; Selector picks the interactive
+// picker for `shep open` after the direct match.
 type General struct {
-	// ProviderOrder overrides the order in which providers are queried. When
-	// empty, the registry uses a fixed default order.
-	ProviderOrder []string `toml:"provider_order,omitempty"`
-	// Selector picks the interactive picker for `shep open` after the direct
-	// match. Valid values are builtin, fzf, auto (see the Selector* constants).
-	// Absent or empty defaults to builtin (Bubble Tea TUI).
-	Selector string `toml:"selector,omitempty"`
+	Sources  []string `toml:"sources,omitempty"`
+	Selector string   `toml:"selector,omitempty"`
 }
 
 // Herdr configures how the shep<->Herdr bridge locates the binary.
@@ -87,87 +125,103 @@ type Herdr struct {
 	Binary string `toml:"binary,omitempty"`
 }
 
-// Source is one entry in the sources map. kind selects the provider; options
-// carry provider-specific settings (e.g. roots -> {"path": "<dir>"}).
-type Source struct {
-	Kind    Kind              `toml:"kind"`
-	Enabled bool              `toml:"enabled"`
-	Options map[string]string `toml:"options,omitempty"`
-}
-
-// DefaultsConfig holds the fallback startup/preview commands used when neither
-// a predefined workspace nor a wildcard supplies one for the resolved
-// candidate. The field on Config is named "Defaults"; the type carries a
-// "Config" suffix to avoid colliding with the package-level Defaults()
-// constructor that 27+ call sites depend on.
+// DefaultsConfig holds the small set of fallback values applied when a
+// resolved candidate carries none of its own: Type is informational
+// candidate metadata (e.g. "shell"); Template names the [templates.<name>]
+// applied when no workspace/wildcard template matched.
 type DefaultsConfig struct {
-	// Startup is run via `herdr pane run` after focusing/creating a workspace
-	// when no wildcard or workspace startup applied.
-	Startup string `toml:"startup,omitempty"`
-	// Preview holds an optional default preview override command used by the
-	// preview renderer when a candidate does not carry its own.
-	Preview string `toml:"preview,omitempty"`
+	Type     string `toml:"type,omitempty"`
+	Template string `toml:"template,omitempty"`
 }
 
-// WorkspaceConfig is one entry in the [[workspaces]] list. Each becomes a
-// candidate emitted by the config source provider; Startup takes precedence
-// over wildcard matches and the [defaults] fallback.
+// TUIConfig configures the Bubble Tea picker's pane sizing. Values are
+// either "auto" or a percentage string like "60%"; see ParsePercent.
+type TUIConfig struct {
+	ListWidth    string `toml:"list_width,omitempty"`
+	PreviewWidth string `toml:"preview_width,omitempty"`
+}
+
+// SourcesConfig configures the four built-in source providers. Only these
+// four tables are recognised; there is no support for arbitrary
+// user-defined provider kinds.
+type SourcesConfig struct {
+	Herdr      HerdrSourceConfig      `toml:"herdr,omitempty"`
+	Workspaces WorkspacesSourceConfig `toml:"workspaces,omitempty"`
+	Zoxide     ZoxideSourceConfig     `toml:"zoxide,omitempty"`
+	Projects   ProjectsSourceConfig   `toml:"projects,omitempty"`
+}
+
+// HerdrSourceConfig configures the herdr workspaces source's presentation.
+type HerdrSourceConfig struct {
+	Icon    string   `toml:"icon,omitempty"`
+	Preview []string `toml:"preview,omitempty"`
+}
+
+// WorkspacesSourceConfig configures the predefined-[[workspaces]] source's
+// presentation.
+type WorkspacesSourceConfig struct {
+	Icon    string   `toml:"icon,omitempty"`
+	Preview []string `toml:"preview,omitempty"`
+}
+
+// ZoxideSourceConfig configures the zoxide source's presentation.
+type ZoxideSourceConfig struct {
+	Icon    string   `toml:"icon,omitempty"`
+	Preview []string `toml:"preview,omitempty"`
+}
+
+// ProjectsSourceConfig configures the projects source: directories detected
+// because they contain any configured marker (a file OR a directory name),
+// discovered recursively up to MaxDepth beneath a [[workspaces]] type="group"
+// entry's own path, when that entry lists "projects" in its Sources. The
+// projects source never runs at the top level: it only contributes
+// candidates once scoped to a group workspace's nested picker.
+type ProjectsSourceConfig struct {
+	Icon      string   `toml:"icon,omitempty"`
+	Recursive bool     `toml:"recursive,omitempty"`
+	MaxDepth  int      `toml:"max_depth,omitempty"`
+	Markers   []string `toml:"markers,omitempty"`
+	Ignore    []string `toml:"ignore,omitempty"`
+	Preview   []string `toml:"preview,omitempty"`
+}
+
+// WorkspaceConfig is one entry in the [[workspaces]] list. A plain entry
+// (Type empty or "shell") is a single project candidate; Type "group" turns
+// the entry into a nested picker source rooted at Path, drawing candidates
+// from Sources.
 type WorkspaceConfig struct {
-	// Name is the candidate label shown in the selector.
 	Name string `toml:"name"`
-	// Path is the project path. A leading "~/" is expanded to the user's home
-	// directory by the config provider.
-	Path string `toml:"path"`
-	// Startup, when set, overrides wildcard/defaults startup for this workspace.
-	Startup string `toml:"startup,omitempty"`
+	// Path is the project (or group root) path. A leading "~/" is expanded
+	// to the user's home directory by the source provider.
+	Path string `toml:"path,omitempty"`
+	// Type is "" / "shell" for a single workspace, or "group" for a nested
+	// picker source.
+	Type string `toml:"type,omitempty"`
+	// Sources lists the built-in source names a group entry draws from.
+	// Only meaningful when Type == "group".
+	Sources []string `toml:"sources,omitempty"`
+	// Template names a [templates.<name>] applied when this workspace is
+	// freshly created. Takes precedence over wildcards and [defaults].
+	Template string `toml:"template,omitempty"`
+	// Command, when set (and Template is not), runs directly in the root
+	// pane of a freshly created workspace for this entry.
+	Command string   `toml:"command,omitempty"`
+	Preview []string `toml:"preview,omitempty"`
 }
 
-// WildcardConfig is one entry in the [[wildcards]] list: a glob pattern with a
-// startup command. The list is scanned in declaration order by matchWildcard;
-// the first pattern matching the candidate's normalised path or base name wins.
+// WildcardConfig is one entry in the [[wildcards]] list: a glob pattern with
+// an optional template and preview override. The list is scanned in
+// declaration order; the first pattern matching the candidate's normalised
+// path or base name wins.
 type WildcardConfig struct {
-	// Pattern is a filepath.Match glob (e.g. "**/*.go").
-	Pattern string `toml:"pattern"`
-	// Startup is run via `herdr pane run` after focusing/creating a workspace
-	// whose path matches Pattern.
-	Startup string `toml:"startup,omitempty"`
+	Pattern  string   `toml:"pattern"`
+	Template string   `toml:"template,omitempty"`
+	Preview  []string `toml:"preview,omitempty"`
 }
 
-// Preview section type values. A "builtin" section renders the named candidate
-// fields directly; a "git" section renders a fast git summary; a "workspace"
-// section renders an indented tree of tabs/panes for an active herdr
-// workspace; an "active_pane" section renders the active pane's captured
-// terminal buffer. The two herdr-backed sections degrade to a muted skip when
-// the candidate is not an active herdr workspace.
-const (
-	PreviewSectionBuiltin     = "builtin"
-	PreviewSectionGit         = "git"
-	PreviewSectionWorkspace   = "workspace"
-	PreviewSectionActivePane  = "active_pane"
-)
-
-// Valid builtin section field names drawn from the candidate. Unknown field
-// names are rejected at Load so a typo fails fast instead of silently dropping a
-// line.
-const (
-	PreviewFieldPath     = "path"
-	PreviewFieldLabel    = "label"
-	PreviewFieldSource   = "source"
-	PreviewFieldTemplate = "template"
-)
-
-// Default preview durations and output cap. They apply when the user omits the
-// field (zero-value) so a custom preview.command still gets a safe timeout,
-// cache, and line cap without explicit config.
-const (
-	defaultPreviewTimeout  = 100 * time.Millisecond
-	defaultPreviewCacheTTL = 5 * time.Second
-	defaultPreviewMaxLines = 50
-)
-
-// Duration wraps time.Duration so TOML string values ("100ms", "5s") parse via
-// time.ParseDuration. time.Duration itself has no UnmarshalText, so go-toml v2
-// cannot decode into it directly.
+// Duration wraps time.Duration so TOML string values ("150ms", "5s") parse
+// via time.ParseDuration. time.Duration itself has no UnmarshalText, so
+// go-toml v2 cannot decode into it directly.
 type Duration time.Duration
 
 // UnmarshalText parses a TOML duration string into a Duration.
@@ -181,40 +235,83 @@ func (d *Duration) UnmarshalText(text []byte) error {
 }
 
 // PreviewConfig configures the workspace preview rendered in the Bubble Tea
-// selector and `shep preview <path>`. The built-in default (no [preview] table)
-// shows label, path, source, a matched template (when present), and a fast git
-// summary; [[preview.sections]] override the layout in declaration order; and
-// preview.command is an escape hatch executed safely with timeout and output
-// caps, falling back to the built-in preview on any failure.
+// selector and `shep preview <path>`. Default lists the section names shown
+// when nothing more specific (workspace > wildcard > source > default)
+// applies; Commands declares custom preview commands referenced by name from
+// any `preview = [...]` list alongside the hardcoded built-ins.
 type PreviewConfig struct {
-	// Command is a shell-style command with a {path} placeholder. When set, the
-	// renderer executes it (argv-parsed, no sh -c) and shows its stdout, capped
-	// to MaxLines and cached for CacheTTL.
-	Command string `toml:"command,omitempty"`
-	// Timeout bounds a custom command's execution. Defaults to 100ms.
-	Timeout Duration `toml:"timeout,omitempty"`
-	// CacheTTL is the in-memory cache lifetime for a command's stdout.
-	// Defaults to 5s.
-	CacheTTL Duration `toml:"cache_ttl,omitempty"`
-	// MaxLines caps the number of stdout lines kept from a custom command.
-	// Defaults to 50.
-	MaxLines int `toml:"max_lines,omitempty"`
-	// Sections is the ordered declarative preview layout. Empty means the
-	// built-in default layout.
-	Sections []PreviewSection `toml:"sections,omitempty"`
+	Timeout  Duration                  `toml:"timeout,omitempty"`
+	CacheTTL Duration                  `toml:"cache_ttl,omitempty"`
+	MaxLines int                       `toml:"max_lines,omitempty"`
+	Default  []string                  `toml:"default,omitempty"`
+	Commands map[string]PreviewCommand `toml:"commands,omitempty"`
 }
 
-// PreviewSection is one entry in the [[preview.sections]] list. Name is a
-// section heading; Type selects the render engine ("builtin" or "git"); Fields
-// lists candidate fields for builtin sections (path, label, source, template).
-type PreviewSection struct {
-	Name   string   `toml:"name,omitempty"`
-	Type   string   `toml:"type"`
-	Fields []string `toml:"fields,omitempty"`
+// PreviewCommand is one [preview.commands.<name>] entry: a shell-style
+// command with a {path} placeholder, executed safely (argv-parsed, no
+// `sh -c`, timeout + line cap from the surrounding PreviewConfig).
+type PreviewCommand struct {
+	Command string `toml:"command"`
 }
 
-// Probes records which optional binaries are available at startup. The source
-// registry consults this to skip providers whose binary is missing.
+// TemplateFocus names which tab (and optionally which pane within it) should
+// end up with keyboard focus after the template is fully applied. Tab refers
+// to a [[templates.<name>.tabs]].name; Node refers to a TemplateNode.ID
+// scoped to that same tab. Node may be empty (focus just the tab's root
+// pane). The whole struct may be nil (apply the default: the first tab stays
+// focused). Focus is resolved entirely at tab/pane creation time via the
+// --focus/--no-focus flags; there is no post-hoc focus command.
+type TemplateFocus struct {
+	Tab  string `toml:"tab,omitempty"`
+	Node string `toml:"node,omitempty"`
+}
+
+// TemplateConfig describes what opens after Enter for a freshly created
+// workspace. A template uses either Command (a single command run directly
+// in the root pane, empty string means a plain shell) or Tabs (a structured
+// multi-tab/pane layout) — never both. Focus, when non-nil, names the tab
+// (and optionally a pane within it) that receives keyboard focus after the
+// layout is applied.
+type TemplateConfig struct {
+	Command     string         `toml:"command,omitempty"`
+	Description string         `toml:"description,omitempty"`
+	Tabs        []TemplateTab  `toml:"tabs,omitempty"`
+	Focus       *TemplateFocus `toml:"focus,omitempty"`
+}
+
+// TemplateTab is one tab in a template, in creation order. Name is the tab's
+// label (not the root node's id). Root names the TemplateNode that anchors
+// this tab's layout tree; Nodes are scoped to this tab only. A tab with no
+// Nodes is a plain single empty-shell tab. Which tab receives focus is
+// declared once at the template level via TemplateConfig.Focus, not here.
+type TemplateTab struct {
+	Name  string         `toml:"name"`
+	Root  string         `toml:"root,omitempty"`
+	Nodes []TemplateNode `toml:"nodes,omitempty"`
+}
+
+// TemplateNode is one node in a tab's layout tree, identified by ID (unique
+// within its tab). A branch node sets Split + Children (and optionally
+// Sizes, parallel to Children); a leaf node sets Command instead (empty
+// string means a plain shell pane) and leaves Split/Children/Sizes empty.
+// CloseOnExit, when true on a leaf with a non-empty Command, wraps the
+// command so the pane closes itself once the command's shell returns control
+// (achieved via shell chaining because Herdr's pane run types into an
+// already-live shell rather than spawning the command as the pane process).
+type TemplateNode struct {
+	ID          string   `toml:"id"`
+	Split       string   `toml:"split,omitempty"`
+	Children    []string `toml:"children,omitempty"`
+	Sizes       []int    `toml:"sizes,omitempty"`
+	Command     string   `toml:"command,omitempty"`
+	CloseOnExit bool     `toml:"close_on_exit,omitempty"`
+}
+
+// IsBranch reports whether the node is a layout-only branch (Split set).
+func (n TemplateNode) IsBranch() bool { return n.Split != "" }
+
+// Probes records which optional binaries are available at startup. The
+// source registry consults this to skip providers whose binary is missing.
 type Probes struct {
 	Herdr  bool
 	Zoxide bool
@@ -247,15 +344,18 @@ func ProbesFor(cfg *Config) Probes {
 	}
 }
 
-// Defaults returns a path-agnostic Config with built-in providers enabled and
-// no user-specific roots. Absent config maps to this so shep works on a
+// Defaults returns a path-agnostic Config with every built-in source enabled
+// and no user-specific roots. Absent config maps to this so shep works on a
 // pristine machine without leaking developer paths into the shipped defaults.
 func Defaults() *Config {
 	cfg := &Config{
-		General:    General{Selector: SelectorBuiltin},
+		Version:    1,
+		General:    General{Sources: append([]string(nil), defaultSourceOrder...), Selector: SelectorBuiltin},
 		Herdr:      Herdr{},
-		Sources:    map[string]Source{},
+		Defaults:   DefaultsConfig{Type: WorkspaceTypeShell, Template: "default"},
+		Sources:    SourcesConfig{},
 		Workspaces: []WorkspaceConfig{},
+		Templates:  map[string]TemplateConfig{"default": {Command: ""}},
 		Wildcards:  []WildcardConfig{},
 	}
 	normalizePreview(&cfg.Preview)
@@ -294,7 +394,7 @@ func configHome() string {
 
 // Load reads and parses the config at path. When path is empty, DiscoverPath
 // is used. A missing file is not an error and yields Defaults; all other
-// read/parse failures are wrapped with their originating step.
+// read/parse/validation failures are wrapped with their originating step.
 func Load(path string) (*Config, error) {
 	resolved := path
 	if resolved == "" {
@@ -308,64 +408,46 @@ func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(resolved)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			cfg := Defaults()
-			if err := validatePreview(cfg.Preview); err != nil {
-				return nil, fmt.Errorf("parse config %q: %w", resolved, err)
-			}
-			return cfg, nil
+			return Defaults(), nil
 		}
 		return nil, fmt.Errorf("read config %q: %w", resolved, err)
 	}
 
-	if err := rejectLegacyLayouts(data, resolved); err != nil {
-		return nil, err
-	}
 	cfg := Defaults()
-	if err := toml.Unmarshal(data, cfg); err != nil {
+	// DisallowUnknownFields makes an unrecognised or legacy/removed key (a
+	// typo'd field, a stale top-level table, an arbitrary [sources.<name>])
+	// fail Load fast instead of silently ignoring it.
+	dec := toml.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(cfg); err != nil {
 		return nil, fmt.Errorf("parse config %q: %w", resolved, err)
-	}
-	if cfg.Sources == nil {
-		cfg.Sources = map[string]Source{}
 	}
 	if cfg.Workspaces == nil {
 		cfg.Workspaces = []WorkspaceConfig{}
 	}
+	if cfg.Templates == nil {
+		cfg.Templates = map[string]TemplateConfig{}
+	}
 	if cfg.Wildcards == nil {
 		cfg.Wildcards = []WildcardConfig{}
+	}
+	if len(cfg.General.Sources) == 0 {
+		cfg.General.Sources = append([]string(nil), defaultSourceOrder...)
 	}
 	if cfg.General.Selector == "" {
 		cfg.General.Selector = SelectorBuiltin
 	}
-	if !isValidSelector(cfg.General.Selector) {
-		return nil, fmt.Errorf("invalid general.selector %q (valid: builtin, fzf, auto)", cfg.General.Selector)
-	}
 	normalizePreview(&cfg.Preview)
-	if err := validatePreview(cfg.Preview); err != nil {
+
+	if err := validate(cfg); err != nil {
 		return nil, fmt.Errorf("parse config %q: %w", resolved, err)
 	}
 	return cfg, nil
 }
 
-// rejectLegacyLayouts surfaces a clear error when a config still contains a
-// [layouts] table. The Layout struct was removed (cleanup constraint); old
-// configs must migrate to [[wildcards]]. The peek decode is cheap and only
-// checks for the top-level "layouts" key so a removed feature fails fast with
-// an actionable message instead of silently dropping startup hooks.
-func rejectLegacyLayouts(data []byte, resolved string) error {
-	var peek map[string]any
-	if err := toml.Unmarshal(data, &peek); err != nil {
-		// A malformed doc surfaces a clearer error from the real decode below.
-		return nil
-	}
-	if _, ok := peek["layouts"]; ok {
-		return fmt.Errorf("parse config %q: [layouts] table was removed; use [[wildcards]] with a pattern+startup instead", resolved)
-	}
-	return nil
-}
-
-// normalizePreview fills zero-value durations and max_lines with the documented
-// defaults. It runs even when [preview] is absent because those defaults are
-// only meaningful once a custom command is configured.
+// normalizePreview fills zero-value durations and max_lines with the
+// documented defaults. It runs even when [preview] is absent because those
+// defaults are only meaningful once a custom command is configured.
 func normalizePreview(p *PreviewConfig) {
 	if p.Timeout == 0 {
 		p.Timeout = Duration(defaultPreviewTimeout)
@@ -378,15 +460,313 @@ func normalizePreview(p *PreviewConfig) {
 	}
 }
 
-// validBuiltinFields is the set of candidate fields a builtin section may name.
-var validBuiltinFields = map[string]bool{
-	PreviewFieldPath: true, PreviewFieldLabel: true,
-	PreviewFieldSource: true, PreviewFieldTemplate: true,
+// validate enforces every schema invariant that must fail Load fast rather
+// than surface as a confusing runtime error later.
+func validate(cfg *Config) error {
+	if err := validateSources(cfg.General.Sources); err != nil {
+		return err
+	}
+	if !isValidSelector(cfg.General.Selector) {
+		return fmt.Errorf("invalid general.selector %q (valid: builtin, fzf, auto)", cfg.General.Selector)
+	}
+	if err := validateTemplates(cfg.Templates); err != nil {
+		return err
+	}
+	if err := validateWorkspaces(cfg.Workspaces, cfg.Templates); err != nil {
+		return err
+	}
+	if err := validateWildcards(cfg.Wildcards, cfg.Templates); err != nil {
+		return err
+	}
+	if cfg.Defaults.Template != "" {
+		if _, ok := cfg.Templates[cfg.Defaults.Template]; !ok {
+			return fmt.Errorf("defaults.template %q: no such [templates.%s]", cfg.Defaults.Template, cfg.Defaults.Template)
+		}
+	}
+	if err := validatePreview(cfg.Preview); err != nil {
+		return err
+	}
+	if err := validateAllPreviewLists(cfg); err != nil {
+		return err
+	}
+	if err := validateTUI(cfg.TUI); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateAllPreviewLists validates every `preview = [...]` list found
+// outside [preview] itself (sources, workspaces, wildcards) against the
+// built-ins plus cfg.Preview.Commands, so a typo'd preview name fails Load
+// fast no matter where it is declared.
+func validateAllPreviewLists(cfg *Config) error {
+	checks := []struct {
+		label string
+		names []string
+	}{
+		{"sources.herdr.preview", cfg.Sources.Herdr.Preview},
+		{"sources.workspaces.preview", cfg.Sources.Workspaces.Preview},
+		{"sources.zoxide.preview", cfg.Sources.Zoxide.Preview},
+		{"sources.projects.preview", cfg.Sources.Projects.Preview},
+	}
+	for _, c := range checks {
+		if err := ValidatePreviewNames(c.names, cfg.Preview.Commands); err != nil {
+			return fmt.Errorf("%s: %w", c.label, err)
+		}
+	}
+	for i, ws := range cfg.Workspaces {
+		if err := ValidatePreviewNames(ws.Preview, cfg.Preview.Commands); err != nil {
+			return fmt.Errorf("workspaces[%d] (%q).preview: %w", i, ws.Name, err)
+		}
+	}
+	for i, w := range cfg.Wildcards {
+		if err := ValidatePreviewNames(w.Preview, cfg.Preview.Commands); err != nil {
+			return fmt.Errorf("wildcards[%d] (%q).preview: %w", i, w.Pattern, err)
+		}
+	}
+	return nil
+}
+
+// validateSources rejects any name not in validSourceNames so a typo fails
+// fast instead of silently disabling a source.
+func validateSources(names []string) error {
+	for _, n := range names {
+		if !validSourceNames[n] {
+			return fmt.Errorf("invalid general.sources entry %q (valid: %s, %s, %s, %s)",
+				n, SourceHerdr, SourceWorkspaces, SourceZoxide, SourceProjects)
+		}
+	}
+	return nil
+}
+
+// validateTemplates enforces that a template uses either Command or Tabs
+// (never both), that every tab/node is internally consistent, and that the
+// top-level Focus (when set) refers to a real tab name and (when Node is
+// set) a real node id within that specific tab.
+func validateTemplates(templates map[string]TemplateConfig) error {
+	for name, tpl := range templates {
+		if tpl.Command != "" && len(tpl.Tabs) > 0 {
+			return fmt.Errorf("templates.%s: sets both command and tabs; use one or the other", name)
+		}
+		for i, tab := range tpl.Tabs {
+			if err := validateTemplateTab(name, i, tab); err != nil {
+				return err
+			}
+		}
+		if tpl.Focus != nil {
+			if err := validateTemplateFocus(name, tpl); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// validateTemplateFocus resolves the top-level Focus against the template's
+// declared tabs/nodes: Focus.Tab must match a [[templates.<name>.tabs]].name,
+// and when Focus.Node is set it must match a node id within that exact tab
+// (node ids are scoped per-tab, so a node id from a different tab is not a
+// match). Both mismatches fail Load fast with a clear error so a typo in the
+// focus target surfaces immediately instead of silently focusing the wrong
+// (or no) tab/pane at apply time.
+func validateTemplateFocus(name string, tpl TemplateConfig) error {
+	focusTab := tpl.Focus.Tab
+	if focusTab == "" {
+		// Tab omitted but Focus non-nil: treat as "focus the first tab". We
+		// only validate Node references when Tab is set, because Node is
+		// scoped to a tab. An empty Tab with a Node is ambiguous and treated
+		// as a config error.
+		if tpl.Focus.Node != "" {
+			return fmt.Errorf("templates.%s: focus.node %q set but focus.tab is empty", name, tpl.Focus.Node)
+		}
+		return nil
+	}
+	tabIdx := -1
+	for i, tab := range tpl.Tabs {
+		if tab.Name == focusTab {
+			tabIdx = i
+			break
+		}
+	}
+	if tabIdx == -1 {
+		return fmt.Errorf("templates.%s: focus.tab %q does not match any tab name", name, focusTab)
+	}
+	if tpl.Focus.Node != "" {
+		tab := tpl.Tabs[tabIdx]
+		found := false
+		for _, n := range tab.Nodes {
+			if n.ID == tpl.Focus.Node {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("templates.%s: focus.node %q does not match any node id in tab %q",
+				name, tpl.Focus.Node, focusTab)
+		}
+	}
+	return nil
+}
+
+// validateTemplateTab checks one tab: a name is required; node ids are
+// unique within the tab; root (if the tab has nodes) must reference a real
+// node; every branch node's children must exist and match sizes length when
+// given; every leaf node must not carry split/children/sizes.
+func validateTemplateTab(templateName string, idx int, tab TemplateTab) error {
+	prefix := fmt.Sprintf("templates.%s.tabs[%d]", templateName, idx)
+	if strings.TrimSpace(tab.Name) == "" {
+		return fmt.Errorf("%s: name is required", prefix)
+	}
+	if len(tab.Nodes) == 0 {
+		return nil
+	}
+	byID := make(map[string]TemplateNode, len(tab.Nodes))
+	for _, n := range tab.Nodes {
+		if strings.TrimSpace(n.ID) == "" {
+			return fmt.Errorf("%s: node with empty id", prefix)
+		}
+		if _, dup := byID[n.ID]; dup {
+			return fmt.Errorf("%s: duplicate node id %q", prefix, n.ID)
+		}
+		byID[n.ID] = n
+	}
+	if tab.Root == "" {
+		return fmt.Errorf("%s (%q): root is required when nodes are declared", prefix, tab.Name)
+	}
+	if _, ok := byID[tab.Root]; !ok {
+		return fmt.Errorf("%s (%q): root %q does not match any node id", prefix, tab.Name, tab.Root)
+	}
+	for _, n := range tab.Nodes {
+		if err := validateTemplateNode(prefix, tab.Name, n, byID); err != nil {
+			return err
+		}
+	}
+	return detectTemplateCycle(prefix, tab.Name, tab.Root, byID)
+}
+
+// detectTemplateCycle walks the branch/children graph reachable from root
+// and fails if any node is reachable from itself. Without this check a
+// cyclic template would recurse forever in templates.Apply, repeatedly
+// splitting/creating Herdr panes until the daemon or process resources are
+// exhausted.
+func detectTemplateCycle(prefix, tabName, root string, byID map[string]TemplateNode) error {
+	const (
+		unvisited = iota
+		inProgress
+		done
+	)
+	state := make(map[string]int, len(byID))
+	var visit func(id string) error
+	visit = func(id string) error {
+		switch state[id] {
+		case inProgress:
+			return fmt.Errorf("%s (%q): node %q is part of a cycle", prefix, tabName, id)
+		case done:
+			return nil
+		}
+		state[id] = inProgress
+		for _, childID := range byID[id].Children {
+			if _, ok := byID[childID]; !ok {
+				continue // unknown child already reported by validateTemplateNode
+			}
+			if err := visit(childID); err != nil {
+				return err
+			}
+		}
+		state[id] = done
+		return nil
+	}
+	return visit(root)
+}
+
+func validateTemplateNode(prefix, tabName string, n TemplateNode, byID map[string]TemplateNode) error {
+	if n.IsBranch() {
+		if n.Split != SplitRows && n.Split != SplitCols {
+			return fmt.Errorf("%s (%q): node %q split %q must be %q or %q", prefix, tabName, n.ID, n.Split, SplitRows, SplitCols)
+		}
+		if len(n.Children) < 2 {
+			return fmt.Errorf("%s (%q): node %q needs at least 2 children", prefix, tabName, n.ID)
+		}
+		if len(n.Sizes) > 0 && len(n.Sizes) != len(n.Children) {
+			return fmt.Errorf("%s (%q): node %q has %d sizes for %d children", prefix, tabName, n.ID, len(n.Sizes), len(n.Children))
+		}
+		for _, sz := range n.Sizes {
+			if sz <= 0 {
+				return fmt.Errorf("%s (%q): node %q sizes must be positive, got %d", prefix, tabName, n.ID, sz)
+			}
+		}
+		for _, childID := range n.Children {
+			if _, ok := byID[childID]; !ok {
+				return fmt.Errorf("%s (%q): node %q references unknown child %q", prefix, tabName, n.ID, childID)
+			}
+		}
+		if n.Command != "" {
+			return fmt.Errorf("%s (%q): node %q is a branch (split set) and cannot also set command", prefix, tabName, n.ID)
+		}
+		if n.CloseOnExit {
+			return fmt.Errorf("%s (%q): node %q is a branch (split set) and cannot also set close_on_exit", prefix, tabName, n.ID)
+		}
+		return nil
+	}
+	if len(n.Children) > 0 || len(n.Sizes) > 0 {
+		return fmt.Errorf("%s (%q): node %q is a leaf (no split) and cannot set children/sizes", prefix, tabName, n.ID)
+	}
+	if n.CloseOnExit && n.Command == "" {
+		return fmt.Errorf("%s (%q): node %q sets close_on_exit but has no command; it would never trigger", prefix, tabName, n.ID)
+	}
+	return nil
+}
+
+// validateWorkspaces enforces per-entry invariants: a name is required;
+// group entries validate their Sources list; a template reference (if set)
+// must exist.
+func validateWorkspaces(workspaces []WorkspaceConfig, templates map[string]TemplateConfig) error {
+	for i, ws := range workspaces {
+		if strings.TrimSpace(ws.Name) == "" {
+			return fmt.Errorf("workspaces[%d]: name is required", i)
+		}
+		switch ws.Type {
+		case "", WorkspaceTypeShell, WorkspaceTypeGroup:
+		default:
+			return fmt.Errorf("workspaces[%d] (%q): invalid type %q (valid: %s, %s)", i, ws.Name, ws.Type, WorkspaceTypeShell, WorkspaceTypeGroup)
+		}
+		if ws.Type == WorkspaceTypeGroup {
+			if err := validateSources(ws.Sources); err != nil {
+				return fmt.Errorf("workspaces[%d] (%q): %w", i, ws.Name, err)
+			}
+		}
+		if ws.Template != "" {
+			if _, ok := templates[ws.Template]; !ok {
+				return fmt.Errorf("workspaces[%d] (%q): template %q: no such [templates.%s]", i, ws.Name, ws.Template, ws.Template)
+			}
+		}
+		if ws.Template != "" && ws.Command != "" {
+			return fmt.Errorf("workspaces[%d] (%q): sets both template and command; use one or the other", i, ws.Name)
+		}
+	}
+	return nil
+}
+
+// validateWildcards enforces that Pattern is set and any Template reference
+// exists.
+func validateWildcards(wildcards []WildcardConfig, templates map[string]TemplateConfig) error {
+	for i, w := range wildcards {
+		if strings.TrimSpace(w.Pattern) == "" {
+			return fmt.Errorf("wildcards[%d]: pattern is required", i)
+		}
+		if w.Template != "" {
+			if _, ok := templates[w.Template]; !ok {
+				return fmt.Errorf("wildcards[%d] (%q): template %q: no such [templates.%s]", i, w.Pattern, w.Template, w.Template)
+			}
+		}
+	}
+	return nil
 }
 
 // validatePreview enforces the preview schema invariants the renderer relies
-// on: each section has a known type, builtin fields come from the supported
-// set, and numeric caps are non-negative. It runs after the strict TOML parse.
+// on: max_lines/timeout/cache_ttl are non-negative, and every name in
+// default (or in a workspace/source/wildcard preview list, validated by
+// their own callers) is a built-in or a declared command.
 func validatePreview(p PreviewConfig) error {
 	if p.MaxLines < 0 {
 		return fmt.Errorf("preview.max_lines must be >= 0, got %d", p.MaxLines)
@@ -397,25 +777,157 @@ func validatePreview(p PreviewConfig) error {
 	if p.CacheTTL < 0 {
 		return fmt.Errorf("preview.cache_ttl must be >= 0, got %v", time.Duration(p.CacheTTL))
 	}
-	for i, sec := range p.Sections {
-		switch sec.Type {
-		case PreviewSectionBuiltin:
-			for _, f := range sec.Fields {
-				if !validBuiltinFields[f] {
-					return fmt.Errorf("preview.sections[%d]: field %q is invalid (valid: %s, %s, %s, %s)",
-						i, f, PreviewFieldPath, PreviewFieldLabel, PreviewFieldSource, PreviewFieldTemplate)
-				}
-			}
-		case PreviewSectionGit, PreviewSectionWorkspace, PreviewSectionActivePane:
-			// git sections render a fixed summary; workspace/active_pane
-			// render herdr-backed previews. Fields are ignored for all three.
-		default:
-			return fmt.Errorf("preview.sections[%d]: type %q is invalid (valid: %s, %s, %s, %s)",
-				i, sec.Type, PreviewSectionBuiltin, PreviewSectionGit,
-				PreviewSectionWorkspace, PreviewSectionActivePane)
+	for _, name := range p.Default {
+		if !isValidPreviewName(name, p.Commands) {
+			return fmt.Errorf("preview.default: %q is not a built-in preview or a declared preview.commands entry", name)
 		}
 	}
 	return nil
+}
+
+// isValidPreviewName reports whether name is a hardcoded built-in or a key
+// in the commands map. Used to validate every `preview = [...]` list found
+// throughout the config (global default, sources, workspaces, wildcards).
+func isValidPreviewName(name string, commands map[string]PreviewCommand) bool {
+	if builtinPreviewNames[name] {
+		return true
+	}
+	_, ok := commands[name]
+	return ok
+}
+
+// ValidatePreviewNames validates an arbitrary `preview = [...]` list (from a
+// source, workspace or wildcard) against the built-ins plus cfg's declared
+// commands. Exported so callers assembling ad-hoc PreviewConfig-less checks
+// (e.g. tests) can reuse the same rule.
+func ValidatePreviewNames(names []string, commands map[string]PreviewCommand) error {
+	for _, n := range names {
+		if !isValidPreviewName(n, commands) {
+			return fmt.Errorf("%q is not a built-in preview or a declared preview.commands entry", n)
+		}
+	}
+	return nil
+}
+
+// validateTUI enforces that list_width/preview_width are "auto" or a valid
+// percentage string, and that configuring both as percentages never sums
+// past 100% — a picker pane split wider than the terminal, which would
+// overflow the rendered layout.
+func validateTUI(t TUIConfig) error {
+	if err := validateWidthField("tui.list_width", t.ListWidth); err != nil {
+		return err
+	}
+	if err := validateWidthField("tui.preview_width", t.PreviewWidth); err != nil {
+		return err
+	}
+	listFrac, listOK := percentOrZero(t.ListWidth)
+	prevFrac, prevOK := percentOrZero(t.PreviewWidth)
+	if listOK && prevOK && listFrac+prevFrac > 1 {
+		return fmt.Errorf("tui.list_width (%s) + tui.preview_width (%s) must not exceed 100%%",
+			t.ListWidth, t.PreviewWidth)
+	}
+	return nil
+}
+
+func validateWidthField(field, value string) error {
+	if value == "" || value == "auto" {
+		return nil
+	}
+	if _, ok := ParsePercent(value); !ok {
+		return fmt.Errorf("%s: %q must be \"auto\" or a percentage like \"60%%\"", field, value)
+	}
+	return nil
+}
+
+// percentOrZero returns the fraction for a configured percentage width, or
+// ok=false for "" / "auto" (not a percentage). Reuses ParsePercent so an
+// already-invalid value (rejected by validateWidthField above) never reaches
+// here as ok=true.
+func percentOrZero(s string) (float64, bool) {
+	if s == "" || s == "auto" {
+		return 0, false
+	}
+	return ParsePercent(s)
+}
+
+// ParsePercent parses a percentage string like "60%" into a 0..1 fraction.
+// ok is false when s is not a valid percentage (missing "%" suffix,
+// unparseable number, or out of the [0, 100] range).
+func ParsePercent(s string) (float64, bool) {
+	if !strings.HasSuffix(s, "%") {
+		return 0, false
+	}
+	numStr := strings.TrimSuffix(s, "%")
+	n, err := strconv.ParseFloat(numStr, 64)
+	if err != nil || n < 0 || n > 100 {
+		return 0, false
+	}
+	return n / 100, true
+}
+
+// MatchWildcard reports whether path matches a [[wildcards]] pattern. A
+// leading "~" in pattern expands to the user's home directory so documented
+// patterns like "~/projects/kubernetes/**" compare correctly against
+// resolved candidate paths; "**" matches zero or more whole path segments
+// (recursive descent) the way it is documented, while any other segment
+// keeps filepath.Match semantics (single-segment globbing). A malformed
+// pattern is treated as "no match" rather than an error, so a bad glob in
+// config never crashes resolution.
+func MatchWildcard(pattern, path string) bool {
+	if pattern == "" || path == "" {
+		return false
+	}
+	pattern = expandTildeConfig(pattern)
+	patSegs := strings.Split(filepath.ToSlash(pattern), "/")
+	pathSegs := strings.Split(filepath.ToSlash(path), "/")
+	return matchWildcardSegments(patSegs, pathSegs)
+}
+
+// matchWildcardSegments recursively matches pattern segments against path
+// segments. "**" may match zero or more segments; any other pattern segment
+// matches exactly one path segment via filepath.Match.
+func matchWildcardSegments(pat, path []string) bool {
+	if len(pat) == 0 {
+		return len(path) == 0
+	}
+	if pat[0] == "**" {
+		if matchWildcardSegments(pat[1:], path) {
+			return true
+		}
+		if len(path) == 0 {
+			return false
+		}
+		return matchWildcardSegments(pat, path[1:])
+	}
+	if len(path) == 0 {
+		return false
+	}
+	ok, err := filepath.Match(pat[0], path[0])
+	if err != nil || !ok {
+		return false
+	}
+	return matchWildcardSegments(pat[1:], path[1:])
+}
+
+// expandTildeConfig replaces a leading "~" in a wildcard pattern with the
+// user's home directory. A local copy (rather than importing internal/source
+// or internal/preview's identical helpers) avoids a dependency cycle back
+// into config from either package.
+func expandTildeConfig(p string) string {
+	if p == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
+		return p
+	}
+	if strings.HasPrefix(p, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return p
+		}
+		return filepath.Join(home, p[2:])
+	}
+	return p
 }
 
 // isValidSelector reports whether s is one of the supported selector values.

@@ -3,11 +3,11 @@
 # Copy this file into the cable directory your Television build reads
 # (commonly ~/.config/television/cable/shep.toml) and launch it with
 # `tv shep`. The cable uses `shep list --format tsv` as its source, so every
-# candidate from Herdr workspaces, zoxide, the current directory and any
-# configured roots appears in the picker. Selecting an entry opens it through
-# `shep open --path`, which focuses an existing Herdr workspace for that path
-# or creates one and falls back to printing the normalised path when Herdr is
-# unavailable.
+# candidate from Herdr workspaces, predefined [[workspaces]], zoxide, and
+# discovered projects appears in the picker. Selecting an entry opens it
+# through `shep open --path`, which focuses an existing Herdr workspace for
+# that path (or creates one and applies its template) and falls back to
+# printing the normalised path when Herdr is unavailable.
 
 [metadata]
 name = "shep"
@@ -19,8 +19,8 @@ requirements = ["shep", "herdr"]
 [source]
 command = "shep list --format tsv"
 
-# `shep preview '{split:\t:0}'` renders the same label/path/source/git (or custom
-# [[preview.sections]] / preview.command) preview shown in the `shep open`
+# `shep preview '{split:\t:0}'` renders the same label/path/source/git (or a
+# declared [preview.commands.<name>]) preview shown in the `shep open`
 # picker's preview pane, so the Television preview panel always matches.
 # Output is plain text (no ANSI) so it renders safely inside any picker.
 [preview]
@@ -37,6 +37,7 @@ mode = "execute"
 [keybindings]
 enter = "actions:open"
 
-# Example roots can also be mixed in at the shep level by pointing a
-# [sources.repos] entry in shep's own config.toml at a projects directory; the
-# cable itself stays path-agnostic and safe to share across machines.
+# Additional projects can be mixed in at the shep level via a type = "group"
+# [[workspaces]] entry (with sources = ["projects", ...]) in shep's own
+# config.toml; the cable itself stays path-agnostic and safe to share across
+# machines.

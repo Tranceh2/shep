@@ -4,7 +4,7 @@
 //
 // The model renders a left list of filtered candidates and a right preview
 // showing the highlighted candidate's rendered preview.Result (label/path/
-// source/git or [[preview.sections]] output, via the injected
+// source/git, or a declared [preview.commands.<name>], via the injected
 // preview.Renderer). Filtering is case-insensitive subsequence scoring over
 // label+path. Navigation uses up/down/ctrl+j/ctrl+k; plain "j"/"k" are typed
 // into the query (not bound to movement) so they filter like any other rune;
@@ -20,9 +20,19 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/preview"
 	"github.com/tranceh2/shep/internal/source"
 )
+
+// Layout configures the picker's list/preview pane widths (config.TUIConfig).
+// Each field is "auto" (or empty) or a percentage string like "60%"; see
+// config.ParsePercent. The zero value behaves like {"auto", "auto"}.
+type Layout struct {
+	ListWidth    string
+	PreviewWidth string
+}
 
 // minPreviewWidth is the terminal width (PL-11) below which the preview
 // panel is hidden entirely to avoid breaking the layout.
@@ -57,6 +67,7 @@ type Model struct {
 	height     int
 	selected   int // -1 until a candidate is chosen
 	cancelled  bool
+	layout     Layout
 
 	// renderer produces the preview pane content asynchronously. nil is valid
 	// (tests, or wiring not yet available) and degrades to a built-in
@@ -89,6 +100,10 @@ func NewModel(candidates []source.Candidate, renderer preview.Renderer) Model {
 }
 
 func newModel(candidates []source.Candidate, renderer preview.Renderer, renderCtx context.Context) Model {
+	return newModelWithLayout(candidates, renderer, renderCtx, Layout{})
+}
+
+func newModelWithLayout(candidates []source.Candidate, renderer preview.Renderer, renderCtx context.Context, layout Layout) Model {
 	if renderCtx == nil {
 		renderCtx = context.TODO()
 	}
@@ -98,6 +113,7 @@ func newModel(candidates []source.Candidate, renderer preview.Renderer, renderCt
 		selected:   -1,
 		renderer:   renderer,
 		renderCtx:  renderCtx,
+		layout:     layout,
 	}
 	copy(m.candidates, candidates)
 	for i := range candidates {
@@ -361,29 +377,112 @@ func (m Model) View() string {
 	if hidePreview {
 		return palette.borderStyle.Render(m.renderList(paneContentWidth(m.width)))
 	}
-	listW, prevW := splitWidths(m.width)
+	listW, prevW := splitWidths(m.width, m.layout)
 	listPane := palette.borderStyle.Render(m.renderList(paneContentWidth(listW)))
 	previewPane := palette.borderStyle.Render(m.renderPreview(paneContentWidth(prevW)))
 	return lipgloss.JoinHorizontal(lipgloss.Top, listPane, gap(), previewPane)
 }
 
 // splitWidths divides the total reported width into list/preview pane
-// budgets (outer widths, before border+padding is subtracted). Each budget
+// budgets (outer widths, before border+padding is subtracted), honouring
+// layout.ListWidth/PreviewWidth when set to a percentage (config.ParsePercent).
+// With only one set as a percentage, that field is authoritative and the
+// other gets the remainder (width minus the 1-column gap between panes) so
+// the two panes always sum to exactly width-1. With neither set (both
+// "auto"/empty, the zero value), the original 3/5 heuristic applies
+// unchanged. With both set, config.Load's validateTUI already rejects a
+// combination that would overflow the terminal; splitBothPercent still
+// reconciles defensively here for a Layout built outside that validated
+// path (e.g. constructed directly in tests or future callers). Each budget
 // still needs paneContentWidth to get the actual content width fed to
 // renderList/renderPreview.
-func splitWidths(width int) (int, int) {
+func splitWidths(width int, layout Layout) (int, int) {
 	if width <= 0 {
 		width = 80
 	}
-	list := width * 3 / 5
-	if list < 20 {
-		list = 20
+	listFrac, listOK := parsePercentOrAuto(layout.ListWidth)
+	prevFrac, prevOK := parsePercentOrAuto(layout.PreviewWidth)
+
+	var list, prev int
+	switch {
+	case listOK && prevOK:
+		list, prev = splitBothPercent(width, listFrac, prevFrac)
+	case listOK:
+		list = int(float64(width) * listFrac)
+		prev = width - list - 1
+	case prevOK:
+		prev = int(float64(width) * prevFrac)
+		list = width - prev - 1
+	default:
+		list = width * 3 / 5
+		prev = width - list - 1
 	}
-	prev := width - list - 1
-	if prev < 10 {
-		prev = 10
+	return clampWidths(width, list, prev)
+}
+
+// clampWidths enforces the 20/10 minimum pane widths and the invariant that
+// list+gap+prev never exceeds the reported terminal width. A one-sided
+// extreme percentage (e.g. list_width=95%) leaves almost nothing for the
+// derived remainder, which the naive minimum floor would then bump up
+// without shrinking the oversized side back down, overflowing the
+// terminal; this reconciles the two by shrinking whichever pane is above
+// its own floor first (list, then preview) to make room. When width itself
+// is too small to fit both floors plus the gap, the floors still win and
+// the result may overflow — an unavoidable floor case on a very narrow
+// terminal, not a regression from this reconciliation.
+func clampWidths(width, list, prev int) (int, int) {
+	const minList = 20
+	const minPrev = 10
+	if list < minList {
+		list = minList
+	}
+	if prev < minPrev {
+		prev = minPrev
+	}
+	if overflow := list + prev + 1 - width; overflow > 0 {
+		if room := list - minList; room > 0 {
+			shrink := room
+			if shrink > overflow {
+				shrink = overflow
+			}
+			list -= shrink
+			overflow -= shrink
+		}
+		if overflow > 0 {
+			if room := prev - minPrev; room > 0 {
+				shrink := room
+				if shrink > overflow {
+					shrink = overflow
+				}
+				prev -= shrink
+			}
+		}
 	}
 	return list, prev
+}
+
+// splitBothPercent computes list/preview widths when both list_width and
+// preview_width are configured percentages. listFrac is scaled down
+// proportionally whenever the two fractions would sum past 1 (100%); prev
+// is then always derived as the remainder (width-list-1), so the two
+// bordered panes plus the 1-column gap between them never exceed the
+// reported terminal width.
+func splitBothPercent(width int, listFrac, prevFrac float64) (int, int) {
+	if total := listFrac + prevFrac; total > 1 {
+		listFrac /= total
+	}
+	list := int(float64(width) * listFrac)
+	prev := width - list - 1
+	return list, prev
+}
+
+// parsePercentOrAuto treats "" and "auto" as "not configured" (ok=false);
+// anything else is parsed as a percentage via config.ParsePercent.
+func parsePercentOrAuto(s string) (float64, bool) {
+	if s == "" || s == "auto" {
+		return 0, false
+	}
+	return config.ParsePercent(s)
 }
 
 // paneContentWidth converts a pane's outer width budget into the inner
@@ -407,26 +506,34 @@ func gap() string { return " " }
 func (m Model) renderList(width int) string {
 	var b strings.Builder
 	styleQuery := palette.queryStyle.Width(width)
-	b.WriteString(styleQuery.Render("> " + m.query))
+	queryLine := truncateToWidth("> "+m.query, width)
+	b.WriteString(styleQuery.Render(queryLine))
 	b.WriteString("\n")
 	if len(m.filtered) == 0 {
-		b.WriteString(palette.mutedStyle.Width(width).Render("  no matches"))
+		b.WriteString(palette.mutedStyle.Width(width).Render(truncateToWidth("  no matches", width)))
 		b.WriteString("\n")
 		return b.String()
 	}
 	// Cap visible rows to a sane height when we know it, deducting chromeRows
 	// (border top/bottom + query line) so the border never clips the last
 	// visible candidate.
-	visible := m.filtered
+	full := m.filtered
 	maxRows := m.height
 	if maxRows > 0 {
 		maxRows -= chromeRows
 	}
 	if maxRows <= 0 {
-		maxRows = len(visible)
+		maxRows = len(full)
 	}
-	if len(visible) > maxRows && maxRows > 2 {
-		visible = visible[clamp(m.cursor-maxRows/2, 0, len(visible)-maxRows):]
+	// offset is the absolute index (into m.filtered) of the first visible
+	// row. Tracking it here lets the cursor check below compare the correct
+	// absolute index instead of the slice-relative index, which previously
+	// made the cursor disappear whenever the list scrolled.
+	offset := 0
+	visible := full
+	if len(full) > maxRows && maxRows > 2 {
+		offset = clamp(m.cursor-maxRows/2, 0, len(full)-maxRows)
+		visible = full[offset:]
 		if len(visible) > maxRows {
 			visible = visible[:maxRows]
 		}
@@ -438,24 +545,91 @@ func (m Model) renderList(width int) string {
 		if row == "" {
 			row = c.Path
 		}
-		if i == m.cursor {
+		if c.Icon != "" {
+			row = c.Icon + " " + row
+		}
+		if c.Missing {
+			row += " (missing)"
+		}
+		if i+offset == m.cursor {
 			marker = " >"
-			b.WriteString(palette.cursorStyle.Width(width).Render(marker + " " + row))
+		}
+		// Truncate the full rendered text to width before styling: lipgloss's
+		// Width() word-wraps rather than truncates, so a candidate whose
+		// icon+label/path exceeds the pane's content width would otherwise
+		// wrap into 2+ physical terminal lines that the height budget above
+		// never accounts for (only counting logical candidates), silently
+		// pushing content past m.height and scrolling the top of the TUI off
+		// screen.
+		line := truncateToWidth(marker+" "+row, width)
+		if i+offset == m.cursor {
+			b.WriteString(palette.cursorStyle.Width(width).Render(line))
 		} else {
-			b.WriteString(palette.rowStyle.Width(width).Render(marker + " " + row))
+			b.WriteString(palette.rowStyle.Width(width).Render(line))
 		}
 		b.WriteString("\n")
 	}
 	return b.String()
 }
 
+// truncateToWidth trims s so it never exceeds maxW cells of visible width,
+// appending an ellipsis ("…") when truncation occurs. A non-positive maxW
+// returns s unchanged. Delegates to ansi.Truncate (charmbracelet/x/ansi),
+// which is ANSI-escape-aware (never severs a color/style code mid-sequence)
+// and measures wide characters (nerd font icons, emoji, East-Asian glyphs)
+// as their real cell width instead of naively counting runes. This matters
+// even though every shep built-in preview section returns plain text: a
+// user-declared [preview.commands.<name>] custom command is outside shep's
+// control and can still emit ANSI color codes, which naive rune counting
+// would miscount and potentially cut mid-escape-sequence. Used to keep the
+// query line — and any preview line — on a single row instead of wrapping
+// and pushing the list off screen.
+func truncateToWidth(s string, maxW int) string {
+	if maxW <= 0 {
+		return s
+	}
+	return ansi.Truncate(s, maxW, "…")
+}
+
 // renderPreview shows the highlighted candidate's rendered preview plus a
-// short help line so the user always knows the keybindings.
+// short help line so the user always knows the keybindings. When the terminal
+// height is known, the body is capped to m.height - chromeRows lines so a long
+// output (e.g. dir or active pane content) never expands infinitely and
+// breaks JoinHorizontal / pushes the search box off screen.
 func (m Model) renderPreview(width int) string {
-	header := palette.previewHeaderStyle.Width(width).Render("preview")
+	header := palette.previewHeaderStyle.Width(width).Render(truncateToWidth("preview", width))
 	body := m.previewBody(width)
-	help := palette.mutedStyle.Width(width).Render("enter select  esc cancel  ctrl+j/k move")
+	body = capPreviewBodyLines(body, m.height)
+	help := palette.mutedStyle.Width(width).Render(truncateToWidth("enter select  esc cancel  ctrl+j/k move", width))
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, "", help)
+}
+
+// capPreviewBodyLines truncates body to at most height-chromeRows content
+// lines when height is positive, appending an ellipsis line when truncation
+// occurs. A non-positive height (unknown) returns body unchanged so previews
+// still render fully in headless/test contexts.
+func capPreviewBodyLines(body string, height int) string {
+	if height <= 0 {
+		return body
+	}
+	maxLines := height - chromeRows
+	if maxLines <= 0 {
+		maxLines = 1
+	}
+	// lipgloss.JoinVertical adds the header, blank, and help lines around
+	// the body; subtract those (3) plus the border (2) so the total pane
+	// height stays within `height`. chromeRows already covers border+query
+	// for the list pane; the preview adds header+blank+help (3 extra).
+	maxLines -= 3
+	if maxLines <= 0 {
+		maxLines = 1
+	}
+	lines := strings.Split(body, "\n")
+	if len(lines) <= maxLines {
+		return body
+	}
+	truncated := append(lines[:maxLines], "…")
+	return strings.Join(truncated, "\n")
 }
 
 // previewBody renders the preview pane content: "(no selection)" when
@@ -465,24 +639,55 @@ func (m Model) renderPreview(width int) string {
 // fallback surfaces here).
 func (m Model) previewBody(width int) string {
 	if len(m.filtered) == 0 {
-		return palette.mutedStyle.Width(width).Render("(no selection)")
+		return palette.mutedStyle.Width(width).Render(truncateToWidth("(no selection)", width))
 	}
 	if m.renderer == nil {
 		cand, _ := m.currentCandidate()
-		return lipgloss.NewStyle().Width(width).Render(
-			palette.labelStyle.Render("label  ") + cand.Label + "\n" +
-				palette.labelStyle.Render("path   ") + cand.Path + "\n" +
-				palette.labelStyle.Render("source ") + cand.Source,
-		)
+		lines := []string{
+			styleLinePrefix("label  ", cand.Label, width, palette.labelStyle),
+			styleLinePrefix("path   ", cand.Path, width, palette.labelStyle),
+			styleLinePrefix("source ", cand.Source, width, palette.labelStyle),
+		}
+		return lipgloss.NewStyle().Width(width).Render(strings.Join(lines, "\n"))
 	}
 	if m.previewLoading {
-		return palette.previewLoadingStyle.Width(width).Render("loading…")
+		return palette.previewLoadingStyle.Width(width).Render(truncateToWidth("loading…", width))
 	}
-	text := m.previewText
+	text := truncateLinesToWidth(m.previewText, width)
 	if m.previewWarn != "" {
-		text += "\n" + palette.previewWarnStyle.Render("warn: "+m.previewWarn)
+		text += "\n" + palette.previewWarnStyle.Render(truncateToWidth("warn: "+m.previewWarn, width))
 	}
 	return lipgloss.NewStyle().Width(width).Render(text)
+}
+
+// truncateLinesToWidth splits text on "\n" and truncates each individual
+// line to width via truncateToWidth before rejoining. Used before any
+// lipgloss.NewStyle().Width(width).Render(text) call so that call can only
+// ever pad, never word-wrap: every logical line is already guaranteed to
+// fit within width, keeping capPreviewBodyLines' logical-line-count cap
+// accurate for the actual rendered height.
+func truncateLinesToWidth(text string, width int) string {
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		lines[i] = truncateToWidth(line, width)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// styleLinePrefix builds a "<prefix><value>" line, truncates it to width as
+// RAW text first (so the rune budget is never eaten by ANSI escape bytes),
+// then applies style to whatever portion of prefix survived the truncation.
+// Truncating before styling — rather than styling the prefix and truncating
+// the already-styled result — keeps the visible width exact and guarantees
+// no ANSI escape sequence is ever cut in half.
+func styleLinePrefix(prefix, value string, width int, style lipgloss.Style) string {
+	line := truncateToWidth(prefix+value, width)
+	runes := []rune(line)
+	prefixLen := len([]rune(prefix))
+	if prefixLen > len(runes) {
+		prefixLen = len(runes)
+	}
+	return style.Render(string(runes[:prefixLen])) + string(runes[prefixLen:])
 }
 
 func clamp(v, lo, hi int) int {
@@ -502,12 +707,28 @@ func clamp(v, lo, hi int) int {
 // the selector's TUI selector. A cancelled run (esc/ctrl+c/ctrl+g) returns
 // ErrCancelled rather than a plain ok=false so callers can exit quietly
 // instead of treating it as "selector unavailable".
-func Run(ctx context.Context, candidates []source.Candidate, query string, renderer preview.Renderer) (source.Candidate, bool, error) {
-	m := newModel(candidates, renderer, ctx)
+func Run(ctx context.Context, candidates []source.Candidate, query string, renderer preview.Renderer, layout ...Layout) (source.Candidate, bool, error) {
+	var l Layout
+	if len(layout) > 0 {
+		l = layout[0]
+	}
+	m := newModelWithLayout(candidates, renderer, ctx, l)
 	m.query = query
 	m.applyFilter()
 	m.refreshPreviewLoadingFlag()
-	p := tea.NewProgram(m, tea.WithContext(ctx))
+	// WithAltScreen is required: without it, Bubble Tea renders inline and
+	// repaints by moving the cursor up N lines on every update. Any render
+	// taller than the previous one (e.g. a long query trimming the match
+	// list, or a tall preview) desyncs that cursor math, which looks like
+	// the top of the screen scrolling away / content getting pushed off the
+	// terminal. The alt screen gives Bubble Tea an isolated full-screen
+	// buffer so it can always redraw the whole frame instead of patching
+	// deltas against terminal scrollback. This is not unit-testable: Bubble
+	// Tea's tea.ProgramOption values close over unexported Program fields
+	// with no exported inspector, so there is no way to assert this from
+	// outside the tea package. Verified manually: scrolling, long queries,
+	// and normal navigation no longer corrupt the visible frame.
+	p := tea.NewProgram(m, tea.WithContext(ctx), tea.WithAltScreen())
 	final, err := p.Run()
 	if err != nil {
 		return source.Candidate{}, false, err

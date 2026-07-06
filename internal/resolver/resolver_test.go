@@ -75,8 +75,11 @@ func TestNormalize_HomeUnresolvable(t *testing.T) {
 	}
 }
 
-// TestDedup_SymlinkCollapse (PL-4 S4) verifies two candidates pointing at the
-// same path (one via symlink, one direct) collapse into a single entry.
+// TestDedup_SymlinkCollapse verifies two candidates pointing at the same
+// path (one via symlink, one direct) with the same label collapse into a
+// single entry. Dedup uses a composite norm+label key so explicitly named
+// workspaces targeting the same path are preserved; the label must match for
+// a path-only collapse.
 func TestDedup_SymlinkCollapse(t *testing.T) {
 	tmp := t.TempDir()
 	real := filepath.Join(tmp, "real")
@@ -85,8 +88,8 @@ func TestDedup_SymlinkCollapse(t *testing.T) {
 	_ = os.Symlink(real, link)
 
 	cands := []source.Candidate{
-		{Path: link, Label: "via-link", Source: "a"},
-		{Path: real, Label: "direct", Source: "b"},
+		{Path: link, Label: "same", Source: "a"},
+		{Path: real, Label: "same", Source: "b"},
 	}
 	out := Dedup(cands)
 	if len(out) != 1 {
@@ -103,13 +106,37 @@ func TestDedup_SymlinkCollapse(t *testing.T) {
 	}
 }
 
+// TestDedup_SamePathDifferentLabelPreserved (requirement: explicitly named
+// workspaces targeting the same path must survive as distinct candidates)
+// confirms two candidates with the SAME normalised path but DIFFERENT labels
+// are both kept, so defining "ECORP" and "k8s-ecorp" at the same path does
+// not drop the second entry.
+func TestDedup_SamePathDifferentLabelPreserved(t *testing.T) {
+	cands := []source.Candidate{
+		{Path: "/srv/ecorp", Label: "ECORP", Source: "workspaces"},
+		{Path: "/srv/ecorp", Label: "k8s-ecorp", Source: "workspaces"},
+	}
+	out := Dedup(cands)
+	if len(out) != 2 {
+		t.Fatalf("expected 2 distinct candidates (same path, different labels), got %d: %+v", len(out), out)
+	}
+	labels := map[string]bool{}
+	for _, c := range out {
+		labels[c.Label] = true
+	}
+	if !labels["ECORP"] || !labels["k8s-ecorp"] {
+		t.Errorf("expected both labels preserved, got %v", labels)
+	}
+}
+
 // TestDedup_OrderPreserved keeps the first-seen candidate so provider order
-// from the registry is the visible tiebreaker.
+// from the registry is the visible tiebreaker. A true duplicate (same path
+// AND same label) is collapsed; the first-seen survivor wins.
 func TestDedup_OrderPreserved(t *testing.T) {
 	cands := []source.Candidate{
 		{Path: "/a", Label: "first", Source: "herdr"},
 		{Path: "/b", Label: "second", Source: "zoxide"},
-		{Path: "/a", Label: "dup", Source: "cwd"},
+		{Path: "/a", Label: "first", Source: "workspaces"},
 	}
 	out := Dedup(cands)
 	if len(out) != 2 {
@@ -171,7 +198,7 @@ func TestMatch_CaseInsensitiveSubstring(t *testing.T) {
 	}
 }
 
-// Test_resolveCases drives Resolve's ambiguity/none/exact contract.
+// TestResolve drives Resolve's ambiguity/none/exact contract.
 func TestResolve(t *testing.T) {
 	cands := []source.Candidate{
 		{Path: "/a/foo", NormalizedPath: "/a/foo", Label: "foo"},
@@ -218,16 +245,20 @@ func TestResolve_NilRegistry(t *testing.T) {
 	}
 }
 
-// TestResolveFromSources_PipelineEndToEnd wires a tiny registry and confirms
-// collect -> dedup -> match produces the expected single match.
+// TestResolveFromSources_PipelineEndToEnd wires a tiny registry (a
+// workspaces source) and confirms collect -> dedup -> match produces the
+// expected single match.
 func TestResolveFromSources_PipelineEndToEnd(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
-	_ = os.Mkdir(filepath.Join(tmp, "alpha"), 0o755)
+	alpha := filepath.Join(tmp, "alpha")
+	if err := os.Mkdir(alpha, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	cfg := config.Defaults()
-	cfg.Sources["dev"] = config.Source{Kind: config.KindRoots, Enabled: true, Options: map[string]string{"path": tmp}}
+	cfg.General.Sources = []string{config.SourceWorkspaces}
+	cfg.Workspaces = []config.WorkspaceConfig{{Name: "alpha-ws", Path: alpha}}
 
-	// cwd provider will also fire; that is fine, dedup handles it.
 	r := source.NewRegistry(cfg, config.Probes{}, nil)
 	all, matches, err := ResolveFromSources(context.Background(), r, "alpha")
 	if err != nil {
@@ -236,11 +267,8 @@ func TestResolveFromSources_PipelineEndToEnd(t *testing.T) {
 	if len(matches) != 1 {
 		t.Fatalf("expected 1 match, got %d (all=%d)", len(matches), len(all))
 	}
-	// tmp is outside $HOME here, so the roots provider's home-relative Label
-	// is the full path unchanged.
-	wantLabel := filepath.Join(tmp, "alpha")
-	if matches[0].Label != wantLabel {
-		t.Errorf("match label: got %q, want %q", matches[0].Label, wantLabel)
+	if matches[0].Label != "alpha-ws" {
+		t.Errorf("match label: got %q, want %q", matches[0].Label, "alpha-ws")
 	}
 }
 
@@ -248,12 +276,11 @@ func TestResolveFromSources_PipelineEndToEnd(t *testing.T) {
 // surfaced while still returning the candidates other providers produced.
 func TestResolveFromSources_PreservePartialError(t *testing.T) {
 	t.Parallel()
-	tmp := t.TempDir()
-	_ = os.Mkdir(filepath.Join(tmp, "alpha"), 0o755)
 	cfg := config.Defaults()
-	cfg.Sources["dev"] = config.Source{Kind: config.KindRoots, Enabled: true, Options: map[string]string{"path": tmp}}
+	cfg.General.Sources = []string{config.SourceHerdr, config.SourceWorkspaces}
+	cfg.Workspaces = []config.WorkspaceConfig{{Name: "ok", Path: t.TempDir()}}
 
-	// herdr driver errors but is gated on; cwd + roots must still come through.
+	// herdr driver errors but is gated on; workspaces must still come through.
 	driver := fakeErrDriver{}
 	r := source.NewRegistry(cfg, config.Probes{Herdr: true}, driver)
 	all, _, err := ResolveFromSources(context.Background(), r, "")
@@ -274,9 +301,6 @@ func (fakeErrDriver) ListWorkspaces(context.Context) ([]source.Workspace, error)
 func (fakeErrDriver) FocusOrCreate(context.Context, source.Candidate) (source.FocusResult, error) {
 	return source.FocusResult{}, errors.New("fakeErrDriver does not implement FocusOrCreate")
 }
-func (fakeErrDriver) RunStartup(context.Context, string, string) error {
-	return errors.New("fakeErrDriver does not implement RunStartup")
-}
 func (fakeErrDriver) ListTabs(context.Context, string) ([]source.Tab, error) {
 	return nil, errors.New("fakeErrDriver does not implement ListTabs")
 }
@@ -289,9 +313,24 @@ func (fakeErrDriver) ListAgents(context.Context) ([]source.Agent, error) {
 func (fakeErrDriver) ReadPane(context.Context, string, int) (string, error) {
 	return "", errors.New("fakeErrDriver does not implement ReadPane")
 }
+func (fakeErrDriver) CreateTab(context.Context, string, string, string, bool) (source.Tab, source.Pane, error) {
+	return source.Tab{}, source.Pane{}, errors.New("fakeErrDriver does not implement CreateTab")
+}
+func (fakeErrDriver) RenameTab(context.Context, string, string) error {
+	return errors.New("fakeErrDriver does not implement RenameTab")
+}
+func (fakeErrDriver) SplitPane(context.Context, string, string, float64, string, bool) (source.Pane, error) {
+	return source.Pane{}, errors.New("fakeErrDriver does not implement SplitPane")
+}
+func (fakeErrDriver) RunPane(context.Context, string, string) error {
+	return errors.New("fakeErrDriver does not implement RunPane")
+}
+func (fakeErrDriver) FocusTab(context.Context, string) error {
+	return errors.New("fakeErrDriver does not implement FocusTab")
+}
 
-// fakeWorkspacesDriver is a HerdrDriver that returns a fixed workspace set, used
-// by the priority-dedup contract test (CD-7 / PL-9).
+// fakeWorkspacesDriver is a HerdrDriver that returns a fixed workspace set,
+// used by the priority-dedup contract test.
 type fakeWorkspacesDriver struct {
 	workspaces []source.Workspace
 }
@@ -302,9 +341,6 @@ func (d fakeWorkspacesDriver) ListWorkspaces(context.Context) ([]source.Workspac
 }
 func (fakeWorkspacesDriver) FocusOrCreate(context.Context, source.Candidate) (source.FocusResult, error) {
 	return source.FocusResult{}, errors.New("fakeWorkspacesDriver does not implement FocusOrCreate")
-}
-func (fakeWorkspacesDriver) RunStartup(context.Context, string, string) error {
-	return errors.New("fakeWorkspacesDriver does not implement RunStartup")
 }
 func (fakeWorkspacesDriver) ListTabs(context.Context, string) ([]source.Tab, error) {
 	return nil, errors.New("fakeWorkspacesDriver does not implement ListTabs")
@@ -318,14 +354,27 @@ func (fakeWorkspacesDriver) ListAgents(context.Context) ([]source.Agent, error) 
 func (fakeWorkspacesDriver) ReadPane(context.Context, string, int) (string, error) {
 	return "", errors.New("fakeWorkspacesDriver does not implement ReadPane")
 }
+func (fakeWorkspacesDriver) CreateTab(context.Context, string, string, string, bool) (source.Tab, source.Pane, error) {
+	return source.Tab{}, source.Pane{}, errors.New("fakeWorkspacesDriver does not implement CreateTab")
+}
+func (fakeWorkspacesDriver) RenameTab(context.Context, string, string) error {
+	return errors.New("fakeWorkspacesDriver does not implement RenameTab")
+}
+func (fakeWorkspacesDriver) SplitPane(context.Context, string, string, float64, string, bool) (source.Pane, error) {
+	return source.Pane{}, errors.New("fakeWorkspacesDriver does not implement SplitPane")
+}
+func (fakeWorkspacesDriver) RunPane(context.Context, string, string) error {
+	return errors.New("fakeWorkspacesDriver does not implement RunPane")
+}
+func (fakeWorkspacesDriver) FocusTab(context.Context, string) error {
+	return errors.New("fakeWorkspacesDriver does not implement FocusTab")
+}
 
-// TestDedup_PriorityOrderOwnsDuplicatePath (CD-7, PL-9) proves the provider
-// order owns duplicate paths: when two providers return the same normalised
-// path, the candidate from the highest-priority provider (earliest in
-// provider_order) survives and the lower-priority duplicate is dropped. This is
-// a contract test over the existing Registry.Collect -> Dedup pipeline; no
-// production change is expected because Enabled() honours provider_order and
-// Dedup keeps the first-seen candidate.
+// TestDedup_PriorityOrderOwnsDuplicatePath proves general.sources order owns
+// duplicate paths when both providers produce candidates with the same label:
+// when two providers return the same normalised path + label, the candidate
+// from the highest-priority provider (earliest in general.sources) survives
+// and the lower-priority duplicate is dropped.
 func TestDedup_PriorityOrderOwnsDuplicatePath(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
@@ -337,7 +386,8 @@ func TestDedup_PriorityOrderOwnsDuplicatePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve foo: %v", err)
 	}
-	// herdr provider (fake) and the "dev" roots source both emit foo.
+	// Both providers surface the path with the same label "foo" so the
+	// composite norm+label key matches and priority dedup applies.
 	herdrCand := source.Workspace{ID: "wfoo", Label: "foo", CWD: foo}
 
 	cases := []struct {
@@ -345,18 +395,15 @@ func TestDedup_PriorityOrderOwnsDuplicatePath(t *testing.T) {
 		order     []string
 		wantOwner string
 	}{
-		{name: "herdr first owns duplicate", order: []string{"herdr", "roots"}, wantOwner: "herdr"},
-		{name: "roots first owns duplicate", order: []string{"roots", "herdr"}, wantOwner: "dev"},
+		{name: "herdr first owns duplicate", order: []string{config.SourceHerdr, config.SourceWorkspaces}, wantOwner: config.SourceHerdr},
+		{name: "workspaces first owns duplicate", order: []string{config.SourceWorkspaces, config.SourceHerdr}, wantOwner: config.SourceWorkspaces},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := config.Defaults()
-			cfg.General.ProviderOrder = tc.order
-			cfg.Sources["dev"] = config.Source{
-				Kind: config.KindRoots, Enabled: true,
-				Options: map[string]string{"path": tmp},
-			}
+			cfg.General.Sources = tc.order
+			cfg.Workspaces = []config.WorkspaceConfig{{Name: "foo", Path: foo}}
 			r := source.NewRegistry(cfg, config.Probes{Herdr: true},
 				fakeWorkspacesDriver{workspaces: []source.Workspace{herdrCand}})
 			raw, err := r.Collect(context.Background())

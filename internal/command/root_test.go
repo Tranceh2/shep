@@ -21,7 +21,7 @@ func TestApp_HelpOutput(t *testing.T) {
 	}
 
 	help := out.String()
-	const long = "shep enumerates project workspaces from Herdr, zoxide and the"
+	const long = "shep enumerates project workspaces from Herdr, predefined workspaces,"
 	if !strings.Contains(help, long) {
 		t.Errorf("help output missing long description\ngot:\n%s", help)
 	}
@@ -37,6 +37,30 @@ func TestApp_ConfigFlagRegistered(t *testing.T) {
 	cmd := app.rootCmd()
 	if f := cmd.PersistentFlags().Lookup("config"); f == nil {
 		t.Fatal("expected persistent --config flag on root command")
+	}
+}
+
+// TestApp_ConfigFlagHelpMatchesDiscoveryOrder (requirement: public docs/help
+// must match the actual config discovery order). DiscoverPath prefers
+// $XDG_CONFIG_HOME (or ~/.config when that is unset) on every platform,
+// including macOS; os.UserConfigDir is only a last-resort fallback when no
+// home directory can be resolved. The --config default description must reflect
+// that order so macOS users are not misled into ~/Library/Application Support.
+func TestApp_ConfigFlagHelpMatchesDiscoveryOrder(t *testing.T) {
+	t.Parallel()
+
+	app := New()
+	cmd := app.rootCmd()
+	f := cmd.PersistentFlags().Lookup("config")
+	if f == nil {
+		t.Fatal("expected persistent --config flag on root command")
+	}
+	usage := f.Usage
+	if !strings.Contains(usage, "$XDG_CONFIG_HOME") {
+		t.Errorf("--config usage %q must document the $XDG_CONFIG_HOME discovery order", usage)
+	}
+	if strings.Contains(usage, "os.UserConfigDir") {
+		t.Errorf("--config usage %q must not name os.UserConfigDir (XDG ~/.config is primary on every platform)", usage)
 	}
 }
 

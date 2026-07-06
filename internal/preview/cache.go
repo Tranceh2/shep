@@ -68,6 +68,6 @@ func PreviewCacheKey(path string, cfg config.PreviewConfig) string {
 // configFingerprint serialises the renderer-relevant preview config into a
 // stable string whose changes invalidate the cache.
 func configFingerprint(cfg config.PreviewConfig) string {
-	return fmt.Sprintf("cmd=%q|timeout=%d|ttl=%d|max=%d|secs=%v",
-		cfg.Command, cfg.Timeout, cfg.CacheTTL, cfg.MaxLines, cfg.Sections)
+	return fmt.Sprintf("timeout=%d|ttl=%d|max=%d|default=%v|commands=%v",
+		cfg.Timeout, cfg.CacheTTL, cfg.MaxLines, cfg.Default, cfg.Commands)
 }

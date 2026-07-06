@@ -24,10 +24,6 @@ func (f fakeDriver) ListWorkspaces(context.Context) ([]Workspace, error) {
 func (fakeDriver) FocusOrCreate(context.Context, Candidate) (FocusResult, error) {
 	return FocusResult{}, errors.New("fakeDriver does not implement FocusOrCreate")
 }
-func (fakeDriver) RunStartup(context.Context, string, string) error {
-	return errors.New("fakeDriver does not implement RunStartup")
-}
-
 func (fakeDriver) ListTabs(context.Context, string) ([]Tab, error) {
 	return nil, errors.New("fakeDriver does not implement ListTabs")
 }
@@ -40,6 +36,21 @@ func (fakeDriver) ListAgents(context.Context) ([]Agent, error) {
 func (fakeDriver) ReadPane(context.Context, string, int) (string, error) {
 	return "", errors.New("fakeDriver does not implement ReadPane")
 }
+func (fakeDriver) CreateTab(context.Context, string, string, string, bool) (Tab, Pane, error) {
+	return Tab{}, Pane{}, errors.New("fakeDriver does not implement CreateTab")
+}
+func (fakeDriver) RenameTab(context.Context, string, string) error {
+	return errors.New("fakeDriver does not implement RenameTab")
+}
+func (fakeDriver) SplitPane(context.Context, string, string, float64, string, bool) (Pane, error) {
+	return Pane{}, errors.New("fakeDriver does not implement SplitPane")
+}
+func (fakeDriver) RunPane(context.Context, string, string) error {
+	return errors.New("fakeDriver does not implement RunPane")
+}
+func (fakeDriver) FocusTab(context.Context, string) error {
+	return errors.New("fakeDriver does not implement FocusTab")
+}
 
 // TestCandidate_Clone ensures Meta is deep-copied so callers cannot mutate a
 // provider's internal map through a returned candidate.
@@ -50,158 +61,6 @@ func TestCandidate_Clone(t *testing.T) {
 	clone.Meta["a"] = "mutated"
 	if c.Meta["a"] == "mutated" {
 		t.Error("Clone shared Meta map with original")
-	}
-}
-
-// TestCwdProvider_List reports the process working directory as a single
-// candidate labelled with its base name.
-func TestCwdProvider_List(t *testing.T) {
-	t.Parallel()
-	p := cwdProvider{}
-	cands, err := p.List(context.Background())
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(cands) != 1 {
-		t.Fatalf("expected 1 candidate, got %d", len(cands))
-	}
-	if cands[0].Source != "cwd" {
-		t.Errorf("source: got %q", cands[0].Source)
-	}
-	if cands[0].Label == "" {
-		t.Error("cwd candidate has empty label")
-	}
-}
-
-// TestRootsProvider_EnabledAndList wires a roots source pointing at a temp
-// directory and asserts immediate subdirectories become candidates.
-func TestRootsProvider_EnabledAndList(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	// create two project dirs and one file (file must be skipped)
-	_ = os.Mkdir(filepath.Join(root, "alpha"), 0o755)
-	_ = os.Mkdir(filepath.Join(root, "beta"), 0o755)
-	_ = os.WriteFile(filepath.Join(root, "skip-file"), []byte("x"), 0o644)
-
-	cfg := config.Defaults()
-	cfg.Sources["dev"] = config.Source{Kind: config.KindRoots, Enabled: true, Options: map[string]string{"path": root}}
-
-	rp := &rootsProvider{cfg: cfg}
-	if !rp.enabled(cfg, config.Probes{}) {
-		t.Error("roots should be enabled when path is set")
-	}
-	cands, err := rp.List(context.Background())
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(cands) != 2 {
-		t.Fatalf("expected 2 dir candidates, got %d: %+v", len(cands), cands)
-	}
-	labels := map[string]bool{}
-	for _, c := range cands {
-		labels[c.Label] = true
-		if c.Source != "dev" {
-			t.Errorf("source: got %q", c.Source)
-		}
-	}
-	// Labels are home-relative display paths (RelativeLabel), not bare base
-	// names; root here is outside $HOME (t.TempDir()) so the full path
-	// passes through unchanged.
-	wantAlpha := filepath.Join(root, "alpha")
-	wantBeta := filepath.Join(root, "beta")
-	if !labels[wantAlpha] || !labels[wantBeta] {
-		t.Errorf("missing expected labels: %v (want %q, %q)", labels, wantAlpha, wantBeta)
-	}
-}
-
-// TestCwdProvider_ListUsesRelativeLabel proves the cwd candidate's Label is
-// home-relative when the process cwd sits under $HOME. Cannot run
-// t.Parallel because it mutates HOME and the process cwd.
-func TestCwdProvider_ListUsesRelativeLabel(t *testing.T) {
-	home, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatalf("eval symlinks: %v", err)
-	}
-	t.Setenv("HOME", home)
-	dir := filepath.Join(home, "work", "proj")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	orig, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(orig) })
-
-	cands, err := (cwdProvider{}).List(context.Background())
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(cands) != 1 {
-		t.Fatalf("expected 1 candidate, got %d", len(cands))
-	}
-	want := "~/work/proj"
-	if cands[0].Label != want {
-		t.Errorf("Label = %q, want %q", cands[0].Label, want)
-	}
-}
-
-// TestRootsProvider_ListUsesRelativeLabel proves roots candidates get a
-// home-relative Label (not a bare base name) when the root sits under $HOME.
-// Cannot run t.Parallel because it mutates HOME.
-func TestRootsProvider_ListUsesRelativeLabel(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	root := filepath.Join(home, "projects")
-	if err := os.Mkdir(root, 0o755); err != nil {
-		t.Fatalf("mkdir root: %v", err)
-	}
-	if err := os.Mkdir(filepath.Join(root, "gamma"), 0o755); err != nil {
-		t.Fatalf("mkdir gamma: %v", err)
-	}
-
-	cfg := config.Defaults()
-	cfg.Sources["dev"] = config.Source{Kind: config.KindRoots, Enabled: true, Options: map[string]string{"path": root}}
-	rp := &rootsProvider{cfg: cfg}
-	cands, err := rp.List(context.Background())
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(cands) != 1 {
-		t.Fatalf("expected 1 candidate, got %d: %+v", len(cands), cands)
-	}
-	want := "~/projects/gamma"
-	if cands[0].Label != want {
-		t.Errorf("Label = %q, want %q", cands[0].Label, want)
-	}
-}
-
-// TestRootsProvider_DisabledWhenNoPath verifies a roots source with an empty
-// path keeps the provider disabled.
-func TestRootsProvider_DisabledWhenNoPath(t *testing.T) {
-	t.Parallel()
-	cfg := config.Defaults()
-	cfg.Sources["dev"] = config.Source{Kind: config.KindRoots, Enabled: true}
-	if (rootsProvider{}).enabled(cfg, config.Probes{}) {
-		t.Error("roots should be disabled without a path")
-	}
-}
-
-// TestRootsProvider_MissingRootSkipped confirms a non-existent root directory
-// is skipped rather than reporting an error.
-func TestRootsProvider_MissingRootSkipped(t *testing.T) {
-	t.Parallel()
-	cfg := config.Defaults()
-	cfg.Sources["dev"] = config.Source{Kind: config.KindRoots, Enabled: true, Options: map[string]string{"path": "/definitely/not/here/sorep"}}
-	cands, err := ListRoots(context.Background(), cfg)
-	if err != nil {
-		t.Fatalf("missing root should be skipped, got err: %v", err)
-	}
-	if len(cands) != 0 {
-		t.Errorf("expected 0 candidates for missing root, got %d", len(cands))
 	}
 }
 
@@ -242,6 +101,9 @@ func TestHerdrProvider_WithDriver(t *testing.T) {
 	if cands[0].Meta["workspace_id"] != "w1" {
 		t.Errorf("workspace_id meta not propagated: %v", cands[0].Meta)
 	}
+	if cands[0].Source != config.SourceHerdr {
+		t.Errorf("source: got %q want %q", cands[0].Source, config.SourceHerdr)
+	}
 }
 
 // TestHerdrProvider_DisabledWhenBinaryMissing ensures gating by probes.Herdr.
@@ -250,17 +112,6 @@ func TestHerdrProvider_DisabledWhenBinaryMissing(t *testing.T) {
 	p := &herdrProvider{driver: fakeDriver{}, probes: config.Probes{Herdr: false}, cfg: config.Defaults()}
 	if p.enabled(config.Defaults(), config.Probes{Herdr: false}) {
 		t.Error("herdr should be disabled when binary probe is false")
-	}
-}
-
-// TestHerdrProvider_DisabledByOverride confirms a config source override wins.
-func TestHerdrProvider_DisabledByOverride(t *testing.T) {
-	t.Parallel()
-	cfg := config.Defaults()
-	cfg.Sources["herdr"] = config.Source{Kind: config.KindHerdr, Enabled: false}
-	p := &herdrProvider{driver: fakeDriver{detect: true}, probes: config.Probes{Herdr: true}, cfg: cfg}
-	if p.enabled(cfg, config.Probes{Herdr: true}) {
-		t.Error("herdr should be disabled by config override")
 	}
 }
 
@@ -274,7 +125,39 @@ func TestHerdrProvider_ListError(t *testing.T) {
 	}
 }
 
-// TestZoxideProvider_Enabled gates on the binary probe.
+// TestHerdrProvider_StaleCWDMarkedMissing (requirement: a candidate whose
+// path no longer exists on disk must fail clearly on selection, never fall
+// back to "/", $HOME, or cwd) confirms a workspace's pane cwd, which can go
+// stale if the directory is deleted while Herdr still reports it, is stat'd
+// so launch()'s existing Missing check actually has something to reject
+// instead of silently printing the path when Herdr itself is absent/fails.
+func TestHerdrProvider_StaleCWDMarkedMissing(t *testing.T) {
+	t.Parallel()
+	live := t.TempDir()
+	stale := filepath.Join(t.TempDir(), "deleted-workspace")
+	driver := fakeDriver{detect: true, workspaces: []Workspace{
+		{ID: "w1", Label: "live", CWD: live},
+		{ID: "w2", Label: "stale", CWD: stale},
+	}}
+	p := &herdrProvider{driver: driver, probes: config.Probes{Herdr: true}, cfg: config.Defaults()}
+	cands, err := p.List(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	byID := map[string]Candidate{}
+	for _, c := range cands {
+		byID[c.Meta["workspace_id"]] = c
+	}
+	if byID["w1"].Missing {
+		t.Errorf("live workspace %q must not be marked Missing", live)
+	}
+	if !byID["w2"].Missing {
+		t.Errorf("stale workspace %q must be marked Missing", stale)
+	}
+}
+
+// TestZoxideProvider_Enabled gates purely on the binary probe: general.sources
+// gating is applied by the registry, not the provider's own enabled().
 func TestZoxideProvider_Enabled(t *testing.T) {
 	t.Parallel()
 	p := zoxideProvider{}
@@ -284,25 +167,127 @@ func TestZoxideProvider_Enabled(t *testing.T) {
 	if !p.enabled(config.Defaults(), config.Probes{Zoxide: true}) {
 		t.Error("zoxide should be enabled when binary probe is true")
 	}
-	cfg := config.Defaults()
-	cfg.Sources["zoxide"] = config.Source{Kind: config.KindZoxide, Enabled: false}
-	if p.enabled(cfg, config.Probes{Zoxide: true}) {
-		t.Error("zoxide should respect config override disable")
+}
+
+// TestParseZoxideOutput_UnscopedReturnsEverything confirms the top-level
+// registry (root == "") surfaces the full zoxide history unfiltered.
+func TestParseZoxideOutput_UnscopedReturnsEverything(t *testing.T) {
+	t.Parallel()
+	raw := "10\t/home/x/projects/foo\n5\t/home/x/other/bar\n"
+	got := parseZoxideOutput(raw, "")
+	if len(got) != 2 {
+		t.Fatalf("expected 2 unscoped candidates, got %d: %v", len(got), got)
 	}
 }
 
-// TestRegistry_EnabledOrder honours General.ProviderOrder.
-func TestRegistry_EnabledOrder(t *testing.T) {
+// TestParseZoxideOutput_ScopedToGroupRoot (requirement: group-scoped zoxide)
+// confirms a non-empty root filters results to root's own descendants
+// (including root itself), keeping the user's entire zoxide history out of
+// a group workspace's nested picker.
+func TestParseZoxideOutput_ScopedToGroupRoot(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	inScope := filepath.Join(root, "svc-a")
+	nested := filepath.Join(root, "svc-a", "sub")
+	outOfScope := filepath.Join(t.TempDir(), "other-project")
+	raw := "9\t" + root + "\n8\t" + inScope + "\n7\t" + nested + "\n6\t" + outOfScope + "\n"
+
+	got := parseZoxideOutput(raw, root)
+
+	want := map[string]bool{root: true, inScope: true, nested: true}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d scoped candidates, got %d: %v", len(want), len(got), got)
+	}
+	for _, c := range got {
+		if !want[c.Path] {
+			t.Errorf("candidate %q must not be surfaced outside root %q", c.Path, root)
+		}
+	}
+}
+
+// TestParseZoxideOutput_SkipsMalformedLines confirms empty lines and blank
+// path columns are skipped rather than producing empty-path candidates.
+func TestParseZoxideOutput_SkipsMalformedLines(t *testing.T) {
+	t.Parallel()
+	raw := "\n5\t\n3\t/x/y\n"
+	got := parseZoxideOutput(raw, "")
+	if len(got) != 1 || got[0].Path != "/x/y" {
+		t.Errorf("got %v, want a single candidate /x/y", got)
+	}
+}
+
+// TestParseZoxideOutput_StalePathMarkedMissing (requirement: a candidate
+// whose path no longer exists on disk must fail clearly on selection, never
+// fall back to "/", $HOME, or cwd) confirms zoxide's directory history,
+// which can go stale once a visited directory is deleted, is stat'd so
+// launch()'s existing Missing check actually has something to reject.
+func TestParseZoxideOutput_StalePathMarkedMissing(t *testing.T) {
+	t.Parallel()
+	live := t.TempDir()
+	stale := filepath.Join(t.TempDir(), "deleted-project")
+	raw := "10\t" + live + "\n5\t" + stale + "\n"
+
+	got := parseZoxideOutput(raw, "")
+
+	if len(got) != 2 {
+		t.Fatalf("expected 2 candidates, got %d: %v", len(got), got)
+	}
+	byPath := map[string]Candidate{}
+	for _, c := range got {
+		byPath[c.Path] = c
+	}
+	if byPath[live].Missing {
+		t.Errorf("live path %q must not be marked Missing", live)
+	}
+	if !byPath[stale].Missing {
+		t.Errorf("stale path %q must be marked Missing", stale)
+	}
+}
+
+// TestNewScopedRegistry_ThreadsRootIntoZoxideProvider confirms a group
+// workspace's nested registry wires its root into the zoxide provider (not
+// just the projects provider), so the scoping in parseZoxideOutput actually
+// takes effect end-to-end instead of the provider defaulting to unscoped.
+func TestNewScopedRegistry_ThreadsRootIntoZoxideProvider(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	r := NewScopedRegistry(config.Defaults(), config.Probes{Zoxide: true}, nil, []string{config.SourceZoxide}, root)
+	p, ok := r.providers[config.SourceZoxide].(*zoxideProvider)
+	if !ok {
+		t.Fatalf("expected *zoxideProvider, got %T", r.providers[config.SourceZoxide])
+	}
+	if p.root != root {
+		t.Errorf("zoxide provider root = %q, want %q", p.root, root)
+	}
+}
+
+// TestRegistry_EnabledHonoursGeneralSources confirms only the sources listed
+// in general.sources run, in that declared order.
+func TestRegistry_EnabledHonoursGeneralSources(t *testing.T) {
 	t.Parallel()
 	cfg := config.Defaults()
-	cfg.General.ProviderOrder = []string{"zoxide", "cwd"}
-	r := NewRegistry(cfg, config.Probes{Zoxide: true}, nil)
+	cfg.General.Sources = []string{config.SourceZoxide, config.SourceHerdr}
+	r := NewRegistry(cfg, config.Probes{Zoxide: true, Herdr: true}, fakeDriver{detect: true})
 	got := r.Enabled()
-	if len(got) < 2 {
-		t.Fatalf("expected >=2 enabled, got %d", len(got))
+	if len(got) != 2 {
+		t.Fatalf("expected 2 enabled, got %d: %v", len(got), got)
 	}
-	if got[0].Name() != "zoxide" || got[1].Name() != "cwd" {
-		t.Errorf("order: got %s,%s want zoxide,cwd", got[0].Name(), got[1].Name())
+	if got[0].Name() != config.SourceZoxide || got[1].Name() != config.SourceHerdr {
+		t.Errorf("order: got %s,%s want zoxide,herdr", got[0].Name(), got[1].Name())
+	}
+}
+
+// TestRegistry_EnabledExcludesUnlistedSources confirms a source not named in
+// general.sources never runs even if its binary is present.
+func TestRegistry_EnabledExcludesUnlistedSources(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.General.Sources = []string{config.SourceHerdr}
+	r := NewRegistry(cfg, config.Probes{Zoxide: true, Herdr: true}, fakeDriver{detect: true})
+	for _, p := range r.Enabled() {
+		if p.Name() == config.SourceZoxide {
+			t.Fatal("zoxide should not run when absent from general.sources")
+		}
 	}
 }
 
@@ -311,28 +296,41 @@ func TestRegistry_EnabledOrder(t *testing.T) {
 func TestRegistry_CollectPreservesResultsOnPartialError(t *testing.T) {
 	t.Parallel()
 	cfg := config.Defaults()
-	root := t.TempDir()
-	_ = os.Mkdir(filepath.Join(root, "proj"), 0o755)
-	cfg.Sources["dev"] = config.Source{Kind: config.KindRoots, Enabled: true, Options: map[string]string{"path": root}}
+	cfg.Workspaces = []config.WorkspaceConfig{{Name: "ok", Path: t.TempDir()}}
 
-	// herdr with a driver that errors but is gated on by probes.Herdr=true.
-	// Using a fake driver whose ListWorkspaces errors surfaces the partial-fail.
 	driver := fakeDriver{listErr: errors.New("boom")}
 	r := NewRegistry(cfg, config.Probes{Herdr: true}, driver)
 	got, err := r.Collect(context.Background())
 	if err == nil {
 		t.Fatal("expected partial error from herdr, got nil")
 	}
-	// cwd + roots should still appear.
 	found := map[string]int{}
 	for _, c := range got {
 		found[c.Source]++
 	}
-	if found["cwd"] == 0 {
-		t.Error("cwd missing from partial-fail collect")
+	if found[config.SourceWorkspaces] == 0 {
+		t.Error("workspaces candidates missing from partial-fail collect")
 	}
-	if found["dev"] == 0 {
-		t.Error("roots candidates missing from partial-fail collect")
+}
+
+// TestRegistry_CollectAttachesConfiguredIcon (requirement: source icons from
+// [sources.*].icon must be shown) confirms Collect looks up the configured
+// icon for each candidate's source and attaches it to the candidate.
+func TestRegistry_CollectAttachesConfiguredIcon(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.Sources.Workspaces.Icon = "★"
+	cfg.Workspaces = []config.WorkspaceConfig{{Name: "proj", Path: t.TempDir()}}
+	r := NewRegistry(cfg, config.Probes{}, nil)
+	got, err := r.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(got))
+	}
+	if got[0].Icon != "★" {
+		t.Errorf("expected icon %q on workspaces candidate, got %q", "★", got[0].Icon)
 	}
 }
 
@@ -371,8 +369,8 @@ func TestRelativeLabel_HomeUnresolvable(t *testing.T) {
 	}
 }
 
-// TestExpandTilde covers the developer-shorthand expansion used by roots.
-// Cannot run t.Parallel because it mutates HOME.
+// TestExpandTilde covers the developer-shorthand expansion used by
+// workspaces/projects. Cannot run t.Parallel because it mutates HOME.
 func TestExpandTilde(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	if got := expandTilde("~/code"); !filepath.IsAbs(got) {
@@ -383,10 +381,11 @@ func TestExpandTilde(t *testing.T) {
 	}
 }
 
-// TestConfigProvider_List turns predefined [[workspaces]] entries into
+// TestWorkspacesProvider_List turns predefined [[workspaces]] entries into
 // candidates labelled by Name, with tilde-expanded paths, under Source
-// "config". Cannot run t.Parallel because it mutates HOME for tilde expansion.
-func TestConfigProvider_List(t *testing.T) {
+// "workspaces". Cannot run t.Parallel because it mutates HOME for tilde
+// expansion.
+func TestWorkspacesProvider_List(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	abs := filepath.Join(home, "code", "shep")
@@ -398,7 +397,7 @@ func TestConfigProvider_List(t *testing.T) {
 		{Name: "docs", Path: "~/docs"},
 		{Name: "shep", Path: abs},
 	}
-	p := &configProvider{cfg: cfg}
+	p := &workspacesProvider{cfg: cfg}
 	cands, err := p.List(context.Background())
 	if err != nil {
 		t.Fatalf("list: %v", err)
@@ -413,71 +412,67 @@ func TestConfigProvider_List(t *testing.T) {
 	if cands[0].Label != "docs" {
 		t.Errorf("docs label: got %q want docs", cands[0].Label)
 	}
-	if cands[0].Source != "config" {
+	if cands[0].Source != config.SourceWorkspaces {
 		t.Errorf("docs source: got %q", cands[0].Source)
 	}
-	if cands[1].Path != abs {
-		t.Errorf("shep path: got %q want %q", cands[1].Path, abs)
+	if !cands[0].Missing {
+		t.Error("docs path does not exist on disk and should be Missing")
 	}
-	if cands[1].Label != "shep" {
-		t.Errorf("shep label: got %q", cands[1].Label)
+	if cands[1].Missing {
+		t.Error("shep path exists on disk and should not be Missing")
 	}
 }
 
-// TestConfigProvider_Enabled gates on non-empty Workspaces and honours a
-// sources override disabling the provider (parity with herdr/zoxide).
-func TestConfigProvider_Enabled(t *testing.T) {
+// TestWorkspacesProvider_GroupEntry confirms a type=group workspace yields
+// one candidate marked as a group with its sources list encoded in Meta,
+// instead of being treated as a normal launchable candidate.
+func TestWorkspacesProvider_GroupEntry(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	root := t.TempDir()
+	cfg.Workspaces = []config.WorkspaceConfig{
+		{Name: "projects", Type: config.WorkspaceTypeGroup, Path: root, Sources: []string{config.SourceProjects, config.SourceZoxide}},
+	}
+	p := &workspacesProvider{cfg: cfg}
+	cands, err := p.List(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(cands) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(cands))
+	}
+	if cands[0].Meta["group"] != "true" {
+		t.Errorf("expected group meta marker, got %v", cands[0].Meta)
+	}
+	if got, want := cands[0].Meta["group_sources"], "projects,zoxide"; got != want {
+		t.Errorf("group_sources: got %q want %q", got, want)
+	}
+}
+
+// TestWorkspacesProvider_Enabled gates on non-empty Workspaces.
+func TestWorkspacesProvider_Enabled(t *testing.T) {
 	t.Parallel()
 	empty := config.Defaults()
-	if (configProvider{cfg: empty}).enabled(empty, config.Probes{}) {
-		t.Error("configProvider should be disabled when Workspaces is empty")
+	if (workspacesProvider{cfg: empty}).enabled(empty, config.Probes{}) {
+		t.Error("workspacesProvider should be disabled when Workspaces is empty")
 	}
 	cfg := config.Defaults()
 	cfg.Workspaces = []config.WorkspaceConfig{{Name: "x", Path: "/x"}}
-	if !(configProvider{cfg: cfg}).enabled(cfg, config.Probes{}) {
-		t.Error("configProvider should be enabled when Workspaces non-empty")
-	}
-	cfg.Sources["config"] = config.Source{Kind: config.KindConfig, Enabled: false}
-	if (configProvider{cfg: cfg}).enabled(cfg, config.Probes{}) {
-		t.Error("configProvider should be disabled by sources override")
+	if !(workspacesProvider{cfg: cfg}).enabled(cfg, config.Probes{}) {
+		t.Error("workspacesProvider should be enabled when Workspaces non-empty")
 	}
 }
 
-// TestConfigProvider_RegisteredInNewRegistry confirms the config provider is
-// part of the registry's provider set so `shep list`/`shep open` surface
-// configured workspaces.
-func TestConfigProvider_RegisteredInNewRegistry(t *testing.T) {
-	t.Parallel()
-	cfg := config.Defaults()
-	cfg.Workspaces = []config.WorkspaceConfig{{Name: "x", Path: "/x"}}
-	r := NewRegistry(cfg, config.Probes{}, nil)
-	names := map[string]bool{}
-	for _, p := range r.Providers() {
-		if p.Name() == "config" {
-			names["config"] = true
-		}
-	}
-	if !names["config"] {
-		t.Fatal("configProvider not registered in NewRegistry")
-	}
-	for _, p := range r.Enabled() {
-		if p.Name() == "config" {
-			return // found and enabled
-		}
-	}
-	t.Error("configProvider should be enabled when Workspaces non-empty")
-}
-
-// TestConfigProvider_ListHonoursContextCancellation ensures the provider
+// TestWorkspacesProvider_ListHonoursContextCancellation ensures the provider
 // aborts when its context is already cancelled.
-func TestConfigProvider_ListHonoursContextCancellation(t *testing.T) {
+func TestWorkspacesProvider_ListHonoursContextCancellation(t *testing.T) {
 	t.Parallel()
 	cfg := config.Defaults()
 	cfg.Workspaces = []config.WorkspaceConfig{
 		{Name: "a", Path: "/a"},
 		{Name: "b", Path: "/b"},
 	}
-	p := &configProvider{cfg: cfg}
+	p := &workspacesProvider{cfg: cfg}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	cands, err := p.List(ctx)
@@ -487,4 +482,138 @@ func TestConfigProvider_ListHonoursContextCancellation(t *testing.T) {
 	if cands != nil {
 		t.Errorf("expected nil candidates on cancelled ctx, got %v", cands)
 	}
+}
+
+// TestListProjects_NonRecursiveOneLevel scans only immediate children when
+// Recursive is false, matching markers by presence of any configured file or
+// directory name.
+func TestListProjects_NonRecursiveOneLevel(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	mkMarkerDir(t, root, "alpha", ".git")
+	mkMarkerDir(t, root, "beta", "go.mod")
+	_ = os.Mkdir(filepath.Join(root, "not-a-project"), 0o755)
+
+	cfg := config.ProjectsSourceConfig{Markers: []string{".git", "go.mod"}}
+	cands, err := ListProjects(context.Background(), cfg, root)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(cands) != 2 {
+		t.Fatalf("expected 2 project candidates, got %d: %+v", len(cands), cands)
+	}
+	for _, c := range cands {
+		if c.Source != config.SourceProjects {
+			t.Errorf("source: got %q", c.Source)
+		}
+	}
+}
+
+// TestListProjects_RecursiveRespectsMaxDepthAndIgnore confirms recursive
+// scanning descends up to max_depth, skips ignored directory names, and does
+// not descend past an already-detected project.
+func TestListProjects_RecursiveRespectsMaxDepthAndIgnore(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	// depth 1: client/ (not a project itself)
+	mkDirs(t, root, "client")
+	// depth 2: client/app (a project, has go.mod) with a NESTED go.mod
+	// project beneath it that must NOT be reported (no descending past a hit).
+	mkMarkerDir(t, filepath.Join(root, "client"), "app", "go.mod")
+	mkMarkerDir(t, filepath.Join(root, "client", "app"), "nested", "go.mod")
+	// an ignored directory full of noise that must be skipped entirely.
+	noisy := filepath.Join(root, "node_modules")
+	mkMarkerDir(t, root, "node_modules", "go.mod")
+	_ = noisy
+
+	cfg := config.ProjectsSourceConfig{
+		Recursive: true, MaxDepth: 3,
+		Markers: []string{"go.mod"},
+		Ignore:  []string{"node_modules"},
+	}
+	cands, err := ListProjects(context.Background(), cfg, root)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(cands) != 1 {
+		t.Fatalf("expected exactly 1 project (client/app), got %d: %+v", len(cands), cands)
+	}
+	want := filepath.Join(root, "client", "app")
+	if cands[0].Path != want {
+		t.Errorf("path: got %q want %q", cands[0].Path, want)
+	}
+}
+
+// TestListProjects_MissingRootReturnsEmpty confirms a non-existent root is
+// treated as "no candidates", not an error.
+func TestListProjects_MissingRootReturnsEmpty(t *testing.T) {
+	t.Parallel()
+	cfg := config.ProjectsSourceConfig{Markers: []string{".git"}}
+	cands, err := ListProjects(context.Background(), cfg, "/definitely/not/here/sorep")
+	if err != nil {
+		t.Fatalf("missing root should be skipped, got err: %v", err)
+	}
+	if len(cands) != 0 {
+		t.Errorf("expected 0 candidates for missing root, got %d", len(cands))
+	}
+}
+
+// TestProjectsProvider_EnabledOnlyWithRoot confirms the provider is inert
+// with no root (top-level general.sources listing without any group
+// workspace supplying a scan root).
+func TestProjectsProvider_EnabledOnlyWithRoot(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	if (&projectsProvider{cfg: cfg, root: ""}).enabled(cfg, config.Probes{}) {
+		t.Error("projects provider should be disabled without a root")
+	}
+	if !(&projectsProvider{cfg: cfg, root: "/x"}).enabled(cfg, config.Probes{}) {
+		t.Error("projects provider should be enabled with a root")
+	}
+}
+
+// TestNewScopedRegistry_UsesGroupSourcesAndRoot confirms a scoped registry
+// only enables the requested sources and feeds the projects provider the
+// group's own root.
+func TestNewScopedRegistry_UsesGroupSourcesAndRoot(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	mkMarkerDir(t, root, "svc", ".git")
+	cfg := config.Defaults()
+	cfg.Sources.Projects = config.ProjectsSourceConfig{Markers: []string{".git"}}
+
+	r := NewScopedRegistry(cfg, config.Probes{}, nil, []string{config.SourceProjects}, root)
+	got, err := r.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 candidate from scoped registry, got %d: %+v", len(got), got)
+	}
+	if got[0].Source != config.SourceProjects {
+		t.Errorf("source: got %q", got[0].Source)
+	}
+}
+
+func mkDirs(t *testing.T, elems ...string) string {
+	t.Helper()
+	p := filepath.Join(elems...)
+	if err := os.MkdirAll(p, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", p, err)
+	}
+	return p
+}
+
+// mkMarkerDir creates parent/name/marker (marker as an empty file, or as a
+// directory when it ends with "/") so tests can build project fixtures.
+func mkMarkerDir(t *testing.T, parent, name, marker string) string {
+	t.Helper()
+	dir := filepath.Join(parent, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, marker), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+	return dir
 }

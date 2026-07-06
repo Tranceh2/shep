@@ -26,6 +26,22 @@ func (f *fakeGit) Summary(_ context.Context, _ string) (GitSummary, error) {
 	return f.summary, nil
 }
 
+// fakeRunner is a scriptable CommandRunner for renderer tests.
+type fakeRunner struct {
+	out map[string]string // argv[0] -> output
+	err map[string]error
+}
+
+func (f *fakeRunner) Run(_ context.Context, argv []string, _ string, _ int) (string, error) {
+	if len(argv) == 0 {
+		return "", errors.New("empty argv")
+	}
+	if err, ok := f.err[argv[0]]; ok {
+		return "", err
+	}
+	return f.out[argv[0]], nil
+}
+
 func candidate(label, path, src, template string) source.Candidate {
 	c := source.Candidate{
 		Path:   path,
@@ -47,340 +63,182 @@ func mustRender(t *testing.T, r Renderer, cand source.Candidate) string {
 	return res.Text
 }
 
-// TestRender_DefaultLayout (WP-1) confirms the zero-config built-in preview
-// shows label, path, source, and omits template/git when absent.
-func TestRender_DefaultLayout(t *testing.T) {
-	t.Parallel()
+func cfgWithDefault(names ...string) *config.Config {
+	cfg := config.Defaults()
+	cfg.Preview.Default = names
+	return cfg
+}
 
-	r := NewRenderer(config.PreviewConfig{}, config.Probes{Git: true}, &fakeGit{summary: GitSummary{Branch: "main"}}, nil)
-	got := mustRender(t, r, candidate("foo", "/p/foo", "roots", ""))
-	want := "foo\npath: /p/foo\nsource: roots\ngit: main (clean)"
+// TestRender_IdentityLayout confirms the built-in "identity" section shows
+// label, path, source and omits template when absent.
+func TestRender_IdentityLayout(t *testing.T) {
+	t.Parallel()
+	r := NewRenderer(cfgWithDefault(config.PreviewIdentity), config.Probes{}, nil, nil)
+	got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
+	want := "foo\npath: /p/foo\nsource: workspaces"
 	if got != want {
-		t.Errorf("default layout:\n got %q\nwant %q", got, want)
+		t.Errorf("identity layout:\n got %q\nwant %q", got, want)
 	}
 }
 
-// TestRender_DefaultWithTemplate (WP-1) includes a matched template line.
-func TestRender_DefaultWithTemplate(t *testing.T) {
+// TestRender_IdentityWithTemplate includes a matched template line.
+func TestRender_IdentityWithTemplate(t *testing.T) {
 	t.Parallel()
-
-	r := NewRenderer(config.PreviewConfig{}, config.Probes{Git: true}, &fakeGit{summary: GitSummary{Branch: "main"}}, nil)
-	got := mustRender(t, r, candidate("foo", "/p/foo", "roots", "go"))
-	want := "foo\npath: /p/foo\nsource: roots\ntemplate: go\ngit: main (clean)"
+	r := NewRenderer(cfgWithDefault(config.PreviewIdentity), config.Probes{}, nil, nil)
+	got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", "dev"))
+	want := "foo\npath: /p/foo\nsource: workspaces\ntemplate: dev"
 	if got != want {
-		t.Errorf("default+template:\n got %q\nwant %q", got, want)
+		t.Errorf("identity+template:\n got %q\nwant %q", got, want)
 	}
 }
 
-// TestRender_DefaultWithGit (WP-1) appends a git summary line when git is fast
-// and available, and stays clean when the branch is clean.
-func TestRender_DefaultWithGit(t *testing.T) {
+// TestRender_IdentityAndGit confirms identity+git compose with a blank-line
+// separator and the git line renders "git: <summary>".
+func TestRender_IdentityAndGit(t *testing.T) {
 	t.Parallel()
-
-	r := NewRenderer(config.PreviewConfig{}, config.Probes{Git: true},
+	r := NewRenderer(cfgWithDefault(config.PreviewIdentity, config.PreviewGit), config.Probes{Git: true},
 		&fakeGit{summary: GitSummary{Branch: "main", Dirty: 2}}, nil)
-	got := mustRender(t, r, candidate("foo", "/p/foo", "roots", ""))
-	want := "foo\npath: /p/foo\nsource: roots\ngit: main (2 changes)"
+	got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
+	want := "foo\npath: /p/foo\nsource: workspaces\n\ngit: main (2 changes)"
 	if got != want {
-		t.Errorf("default+git:\n got %q\nwant %q", got, want)
+		t.Errorf("identity+git:\n got %q\nwant %q", got, want)
 	}
 }
 
-// TestRender_DefaultGitBypassed (WP-1) confirms the git line is omitted when
-// probes report git missing, or when Summary returns an error (slow/missing).
-func TestRender_DefaultGitBypassed(t *testing.T) {
+// TestRender_GitBypassed confirms the git section is entirely omitted when
+// probes report git missing, or when Summary errors (slow/missing/timeout),
+// and that the overall preview falls back to the identity built-in instead
+// of a blank success once the only configured section contributes nothing.
+func TestRender_GitBypassed(t *testing.T) {
 	t.Parallel()
 
 	t.Run("git probe off", func(t *testing.T) {
 		t.Parallel()
-		r := NewRenderer(config.PreviewConfig{}, config.Probes{Git: false},
+		r := NewRenderer(cfgWithDefault(config.PreviewGit), config.Probes{Git: false},
 			&fakeGit{summary: GitSummary{Branch: "main"}}, nil)
-		got := mustRender(t, r, candidate("foo", "/p/foo", "roots", ""))
-		if gitSummaryLinePresent(got) {
-			t.Errorf("git line must be absent when probe off: %q", got)
+		got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
+		if strings.Contains(got, "git:") {
+			t.Errorf("git section must be omitted when probe off: %q", got)
+		}
+		if !strings.HasPrefix(got, "foo\npath:") {
+			t.Errorf("expected identity fallback instead of blank preview, got %q", got)
 		}
 	})
 	t.Run("git summary errors", func(t *testing.T) {
 		t.Parallel()
-		r := NewRenderer(config.PreviewConfig{}, config.Probes{Git: true},
+		r := NewRenderer(cfgWithDefault(config.PreviewGit), config.Probes{Git: true},
 			&fakeGit{err: errors.New("timeout")}, nil)
-		got := mustRender(t, r, candidate("foo", "/p/foo", "roots", ""))
-		if gitSummaryLinePresent(got) {
-			t.Errorf("git line must be absent on summary error: %q", got)
+		got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
+		if strings.Contains(got, "git:") {
+			t.Errorf("git section must be omitted on summary error: %q", got)
+		}
+		if !strings.HasPrefix(got, "foo\npath:") {
+			t.Errorf("expected identity fallback instead of blank preview, got %q", got)
 		}
 	})
 }
 
-// gitSummaryLinePresent reports whether any line starts with "git:".
-func gitSummaryLinePresent(s string) bool {
-	for _, line := range strings.Split(s, "\n") {
-		if len(line) >= 4 && line[:4] == "git:" {
-			return true
+// TestRender_NoDefaultFallsBackToIdentity confirms an empty [preview].default
+// still renders something (the built-in identity fallback) rather than a
+// blank preview.
+func TestRender_NoDefaultFallsBackToIdentity(t *testing.T) {
+	t.Parallel()
+	r := NewRenderer(config.Defaults(), config.Probes{}, nil, nil)
+	got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
+	if !strings.HasPrefix(got, "foo\npath:") {
+		t.Errorf("expected identity fallback, got %q", got)
+	}
+}
+
+// TestRender_AllConfiguredSectionsFailFallsBackToIdentity is the blocking
+// case: every configured section is non-applicable/fails/empty (git probed
+// off, a custom command erroring, workspace/active_pane with no driver).
+// Render must never come back as a blank success; it must fall back to a
+// clean identity preview instead, and any command failure must stay hidden
+// (never surfaced as an error/warning).
+func TestRender_AllConfiguredSectionsFailFallsBackToIdentity(t *testing.T) {
+	t.Parallel()
+	cfg := cfgWithDefault(config.PreviewGit, "broken", config.PreviewWorkspace, config.PreviewActivePane)
+	cfg.Preview.Commands = map[string]config.PreviewCommand{
+		"broken": {Command: "false"},
+	}
+	runner := &fakeRunner{err: map[string]error{"false": errors.New("exit 1")}}
+	r := NewRenderer(cfg, config.Probes{Git: false}, nil, runner)
+	got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
+	want := "foo\npath: /p/foo\nsource: workspaces"
+	if got != want {
+		t.Errorf("expected clean identity fallback, got %q", got)
+	}
+}
+
+// TestResolvePreviewNames_Precedence exercises the documented precedence
+// chain end to end: workspace.preview > wildcard.preview >
+// sources.<source>.preview > preview.default > built-in fallback.
+func TestResolvePreviewNames_Precedence(t *testing.T) {
+	t.Parallel()
+
+	t.Run("workspace preview wins over everything", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Defaults()
+		cfg.Preview.Default = []string{config.PreviewGit}
+		cfg.Sources.Herdr.Preview = []string{config.PreviewDir}
+		cfg.Wildcards = []config.WildcardConfig{{Pattern: "/p/*", Preview: []string{config.PreviewIdentity}}}
+		cfg.Workspaces = []config.WorkspaceConfig{{Name: "foo", Path: "/p/foo", Preview: []string{"custom"}}}
+		got := resolvePreviewNames(cfg, source.Candidate{Path: "/p/foo", Source: config.SourceHerdr})
+		want := []string{"custom"}
+		if len(got) != 1 || got[0] != want[0] {
+			t.Errorf("got %v want %v", got, want)
 		}
-	}
-	return false
-}
+	})
 
-// TestRender_DeclarativeSections (WP-2) renders [[preview.sections]] in TOML
-// declaration order using the declared field names and section types.
-func TestRender_DeclarativeSections(t *testing.T) {
-	t.Parallel()
-
-	cfg := config.PreviewConfig{
-		Sections: []config.PreviewSection{
-			{Name: "Identity", Type: config.PreviewSectionBuiltin, Fields: []string{"label", "path", "source"}},
-			{Name: "Git", Type: config.PreviewSectionGit},
-		},
-	}
-	r := NewRenderer(cfg, config.Probes{Git: true},
-		&fakeGit{summary: GitSummary{Branch: "main"}}, nil)
-	got := mustRender(t, r, candidate("foo", "/p/foo", "roots", ""))
-	want := "Identity\nlabel: foo\npath: /p/foo\nsource: roots\n\nGit\nmain (clean)"
-	if got != want {
-		t.Errorf("declarative sections:\n got %q\nwant %q", got, want)
-	}
-}
-
-// TestRender_DeclarativeBuiltinFieldOrder (WP-2) confirms the renderer honours
-// the declared field order within a builtin section, not a fixed order.
-func TestRender_DeclarativeBuiltinFieldOrder(t *testing.T) {
-	t.Parallel()
-
-	cfg := config.PreviewConfig{
-		Sections: []config.PreviewSection{
-			{Name: "X", Type: config.PreviewSectionBuiltin, Fields: []string{"source", "label"}},
-		},
-	}
-	r := NewRenderer(cfg, config.Probes{Git: true}, &fakeGit{}, nil)
-	got := mustRender(t, r, candidate("foo", "/p/foo", "roots", ""))
-	want := "X\nsource: roots\nlabel: foo"
-	if got != want {
-		t.Errorf("builtin field order:\n got %q\nwant %q", got, want)
-	}
-}
-
-// TestRender_DeclarativeGitUnavailable (WP-2) renders a git section that cannot
-// satisfy the summary as an explicit unavailable note under its heading.
-func TestRender_DeclarativeGitUnavailable(t *testing.T) {
-	t.Parallel()
-
-	cfg := config.PreviewConfig{
-		Sections: []config.PreviewSection{
-			{Name: "Git", Type: config.PreviewSectionGit},
-		},
-	}
-	r := NewRenderer(cfg, config.Probes{Git: false}, &fakeGit{summary: GitSummary{Branch: "main"}}, nil)
-	got := mustRender(t, r, candidate("foo", "/p/foo", "roots", ""))
-	want := "Git\n(git unavailable)"
-	if got != want {
-		t.Errorf("git unavailable section:\n got %q\nwant %q", got, want)
-	}
-}
-
-// fakeRunner is a deterministic CommandRunner for renderer routing tests.
-type fakeRunner struct {
-	out      string
-	err      error
-	outs     []string
-	errs     []error
-	calls    int
-	lastArgv []string
-	lastDir  string
-	lastMax  int
-}
-
-func (f *fakeRunner) Run(_ context.Context, argv []string, dir string, maxLines int) (string, error) {
-	f.calls++
-	f.lastArgv = argv
-	f.lastDir = dir
-	f.lastMax = maxLines
-	idx := f.calls - 1
-	if idx < len(f.errs) && f.errs[idx] != nil {
-		return "", f.errs[idx]
-	}
-	if f.err != nil {
-		return "", f.err
-	}
-	if idx < len(f.outs) {
-		return f.outs[idx], nil
-	}
-	return f.out, nil
-}
-
-type blockingRunner struct{}
-
-func (blockingRunner) Run(ctx context.Context, _ []string, _ string, _ int) (string, error) {
-	<-ctx.Done()
-	return "", ctx.Err()
-}
-
-// TestRender_CommandRouting (WP-3, 2.9) executes the configured command via the
-// injected runner, passes the candidate path as a single substituted argument
-// and the candidate directory as dir, and surfaces the runner's stdout.
-func TestRender_CommandRouting(t *testing.T) {
-	t.Parallel()
-
-	cfg := config.PreviewConfig{
-		Command:  "git -C {path} log -n 5",
-		MaxLines: 50,
-	}
-	runner := &fakeRunner{out: "commit-a\ncommit-b"}
-	r := NewRenderer(cfg, config.Probes{}, nil, runner)
-	res, err := r.Render(context.Background(), candidate("foo", "/p/foo", "roots", ""), RenderOptions{})
-	if err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	if res.Text != "commit-a\ncommit-b" {
-		t.Errorf("text: got %q want %q", res.Text, "commit-a\\ncommit-b")
-	}
-	if runner.calls != 1 {
-		t.Errorf("runner calls: got %d want 1", runner.calls)
-	}
-	wantArgv := []string{"git", "-C", "/p/foo", "log", "-n", "5"}
-	if !stringSliceEqual(runner.lastArgv, wantArgv) {
-		t.Errorf("argv: got %v want %v", runner.lastArgv, wantArgv)
-	}
-	if runner.lastDir != "/p/foo" {
-		t.Errorf("dir: got %q want %q", runner.lastDir, "/p/foo")
-	}
-	if runner.lastMax != 50 {
-		t.Errorf("maxlines: got %d want 50", runner.lastMax)
-	}
-	if res.Warning != "" {
-		t.Errorf("unexpected warning %q", res.Warning)
-	}
-}
-
-// TestRender_CommandFallback (WP-3, 2.9) falls back to the built-in preview and
-// records a transient warning when the command fails.
-func TestRender_CommandFallback(t *testing.T) {
-	t.Parallel()
-
-	cfg := config.PreviewConfig{Command: "broken-cmd"}
-	runner := &fakeRunner{err: errors.New("exit 127")}
-	r := NewRenderer(cfg, config.Probes{Git: true}, &fakeGit{summary: GitSummary{Branch: "main"}}, runner)
-	res, err := r.Render(context.Background(), candidate("foo", "/p/foo", "roots", ""), RenderOptions{})
-	if err != nil {
-		t.Fatalf("render error must be nil on fallback: %v", err)
-	}
-	// Fallback is the built-in default layout (label/path/source, then git).
-	want := "foo\npath: /p/foo\nsource: roots\ngit: main (clean)"
-	if res.Text != want {
-		t.Errorf("fallback text:\n got %q\nwant %q", res.Text, want)
-	}
-	if res.Warning == "" {
-		t.Error("expected a non-empty warning on command failure")
-	}
-	if res.Warning != "preview command failed" {
-		t.Errorf("warning: got %q want generic command failure", res.Warning)
-	}
-}
-
-// TestRender_CommandTimeoutBounded applies preview.timeout at renderer level so
-// even a blocking runner falls back quickly with a safe warning.
-func TestRender_CommandTimeoutBounded(t *testing.T) {
-	t.Parallel()
-
-	cfg := config.PreviewConfig{Command: "slow {path}", Timeout: config.Duration(20 * time.Millisecond)}
-	r := NewRenderer(cfg, config.Probes{}, nil, blockingRunner{})
-	start := time.Now()
-	res, err := r.Render(context.Background(), candidate("foo", "/p/foo", "roots", ""), RenderOptions{})
-	elapsed := time.Since(start)
-	if err != nil {
-		t.Fatalf("render error must be nil on timeout fallback: %v", err)
-	}
-	if res.Warning != "preview command timed out" {
-		t.Errorf("warning: got %q want timeout warning", res.Warning)
-	}
-	if elapsed > 250*time.Millisecond {
-		t.Fatalf("timeout fallback took %v, want bounded elapsed", elapsed)
-	}
-	if res.Text != "foo\npath: /p/foo\nsource: roots" {
-		t.Errorf("fallback text: %q", res.Text)
-	}
-}
-
-// TestRender_CommandFailureIsNotCached retries a failed command on the next
-// render for the same path and clears the transient warning after success.
-func TestRender_CommandFailureIsNotCached(t *testing.T) {
-	t.Parallel()
-
-	cfg := config.PreviewConfig{Command: "preview {path}", CacheTTL: 0}
-	runner := &fakeRunner{outs: []string{"", "fresh output"}, errs: []error{errors.New("boom"), nil}}
-	r := NewRenderer(cfg, config.Probes{}, nil, runner)
-	cand := candidate("foo", "/p/foo", "roots", "")
-	first, err := r.Render(context.Background(), cand, RenderOptions{})
-	if err != nil {
-		t.Fatalf("first render: %v", err)
-	}
-	if first.Warning != "preview command failed" {
-		t.Fatalf("first warning: got %q", first.Warning)
-	}
-	second, err := r.Render(context.Background(), cand, RenderOptions{})
-	if err != nil {
-		t.Fatalf("second render: %v", err)
-	}
-	if second.Text != "fresh output" {
-		t.Errorf("second text: got %q want fresh command output", second.Text)
-	}
-	if second.Warning != "" {
-		t.Errorf("second warning must be cleared, got %q", second.Warning)
-	}
-	if second.FromCache {
-		t.Error("second render after failure must retry, not come from cache")
-	}
-	if runner.calls != 2 {
-		t.Errorf("runner calls: got %d want 2", runner.calls)
-	}
-}
-
-// TestRender_CommandCache (WP-3, 2.9) serves the second render for the same
-// candidate from cache without invoking the runner again.
-func TestRender_CommandCache(t *testing.T) {
-	t.Parallel()
-
-	cfg := config.PreviewConfig{Command: "echo hi", CacheTTL: 0} // 0 -> no expiry by time
-	runner := &fakeRunner{out: "hi"}
-	r := NewRenderer(cfg, config.Probes{}, nil, runner)
-	cand := candidate("foo", "/p/foo", "roots", "")
-	if _, err := r.Render(context.Background(), cand, RenderOptions{}); err != nil {
-		t.Fatalf("first render: %v", err)
-	}
-	res, err := r.Render(context.Background(), cand, RenderOptions{})
-	if err != nil {
-		t.Fatalf("second render: %v", err)
-	}
-	if !res.FromCache {
-		t.Error("second render must come from cache (FromCache=true)")
-	}
-	if runner.calls != 1 {
-		t.Errorf("runner calls after cache hit: got %d want 1", runner.calls)
-	}
-}
-
-func stringSliceEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
+	t.Run("wildcard wins over source and default", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Defaults()
+		cfg.Preview.Default = []string{config.PreviewGit}
+		cfg.Sources.Herdr.Preview = []string{config.PreviewDir}
+		cfg.Wildcards = []config.WildcardConfig{{Pattern: "/p/*", Preview: []string{config.PreviewIdentity}}}
+		got := resolvePreviewNames(cfg, source.Candidate{Path: "/p/foo", Source: config.SourceHerdr})
+		if len(got) != 1 || got[0] != config.PreviewIdentity {
+			t.Errorf("got %v want [identity]", got)
 		}
-	}
-	return true
+	})
+
+	t.Run("source preview wins over default", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Defaults()
+		cfg.Preview.Default = []string{config.PreviewGit}
+		cfg.Sources.Herdr.Preview = []string{config.PreviewDir}
+		got := resolvePreviewNames(cfg, source.Candidate{Path: "/other/foo", Source: config.SourceHerdr})
+		if len(got) != 1 || got[0] != config.PreviewDir {
+			t.Errorf("got %v want [dir]", got)
+		}
+	})
+
+	t.Run("default used when nothing else matches", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Defaults()
+		cfg.Preview.Default = []string{config.PreviewGit}
+		got := resolvePreviewNames(cfg, source.Candidate{Path: "/other/foo", Source: config.SourceZoxide})
+		if len(got) != 1 || got[0] != config.PreviewGit {
+			t.Errorf("got %v want [git]", got)
+		}
+	})
+
+	t.Run("built-in fallback when nothing configured at all", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Defaults()
+		got := resolvePreviewNames(cfg, source.Candidate{Path: "/other/foo", Source: config.SourceZoxide})
+		if len(got) != 1 || got[0] != config.PreviewIdentity {
+			t.Errorf("got %v want [identity]", got)
+		}
+	})
 }
 
-// --- PR4: herdr-backed workspace / active_pane preview sections ---
-
-// fakePreviewDriver is a controllable source.HerdrDriver for renderer tests. It
-// records the queries and returns scripted tab/pane/agent/read results. The
-// action methods (FocusOrCreate, RunStartup) are irrelevant to previews and
-// return errors so any accidental call fails loudly.
+// fakePreviewDriver is a controllable HerdrDriver for workspace/active_pane
+// section tests.
 type fakePreviewDriver struct {
-	detect     bool
 	tabs       []source.Tab
 	panes      []source.Pane
-	agents     []source.Agent
 	readOut    string
 	tabsErr    error
 	panesErr   error
@@ -394,19 +252,14 @@ type fakePreviewDriver struct {
 	block bool
 }
 
-func (f *fakePreviewDriver) Detect(context.Context) bool { return f.detect }
+func (f *fakePreviewDriver) Detect(context.Context) bool { return true }
 func (f *fakePreviewDriver) ListWorkspaces(context.Context) ([]source.Workspace, error) {
 	return nil, nil
 }
 func (fakePreviewDriver) FocusOrCreate(context.Context, source.Candidate) (source.FocusResult, error) {
 	return source.FocusResult{}, errors.New("fakePreviewDriver.FocusOrCreate not used in previews")
 }
-func (fakePreviewDriver) RunStartup(context.Context, string, string) error {
-	return errors.New("fakePreviewDriver.RunStartup not used in previews")
-}
-func (f *fakePreviewDriver) ListAgents(context.Context) ([]source.Agent, error) {
-	return f.agents, nil
-}
+func (f *fakePreviewDriver) ListAgents(context.Context) ([]source.Agent, error) { return nil, nil }
 
 func (f *fakePreviewDriver) ListTabs(ctx context.Context, workspaceID string) ([]source.Tab, error) {
 	f.listCalls = append(f.listCalls, "tabs:"+workspaceID)
@@ -434,6 +287,21 @@ func (f *fakePreviewDriver) ReadPane(ctx context.Context, paneID string, lines i
 	}
 	return f.readOut, f.readErr
 }
+func (f *fakePreviewDriver) CreateTab(context.Context, string, string, string, bool) (source.Tab, source.Pane, error) {
+	return source.Tab{}, source.Pane{}, errors.New("not used in previews")
+}
+func (f *fakePreviewDriver) RenameTab(context.Context, string, string) error {
+	return errors.New("not used in previews")
+}
+func (f *fakePreviewDriver) SplitPane(context.Context, string, string, float64, string, bool) (source.Pane, error) {
+	return source.Pane{}, errors.New("not used in previews")
+}
+func (f *fakePreviewDriver) RunPane(context.Context, string, string) error {
+	return errors.New("not used in previews")
+}
+func (fakePreviewDriver) FocusTab(context.Context, string) error {
+	return errors.New("not used in previews")
+}
 
 // herdrCandidate builds a candidate carrying a workspace_id meta key, mirroring
 // the herdr source provider's output.
@@ -441,22 +309,17 @@ func herdrCandidate(label, path, workspaceID string) source.Candidate {
 	return source.Candidate{
 		Path:   path,
 		Label:  label,
-		Source: "herdr",
+		Source: config.SourceHerdr,
 		Meta:   map[string]string{"workspace_id": workspaceID},
 	}
 }
 
-// TestRender_WorkspaceSection (PR4) renders an indented tabs/panes tree for a
+// TestRender_WorkspaceSection renders an indented tabs/panes tree for a
 // candidate that carries a workspace_id meta key.
 func TestRender_WorkspaceSection(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.PreviewConfig{
-		MaxLines: 50,
-		Sections: []config.PreviewSection{
-			{Name: "Workspace", Type: config.PreviewSectionWorkspace},
-		},
-	}
+	cfg := cfgWithDefault(config.PreviewWorkspace)
 	driver := &fakePreviewDriver{
 		tabs: []source.Tab{
 			{ID: "wA:t1", WorkspaceID: "wA", Label: "edit", Focused: true, Number: 1, PaneCount: 2},
@@ -469,7 +332,7 @@ func TestRender_WorkspaceSection(t *testing.T) {
 	}
 	r := NewRenderer(cfg, config.Probes{}, nil, nil, WithHerdrDriver(driver))
 	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
-	if !strings.Contains(got, "Workspace") {
+	if !strings.Contains(got, "workspace") {
 		t.Errorf("missing section heading: %q", got)
 	}
 	if !strings.Contains(got, "edit") || !strings.Contains(got, "term") {
@@ -486,17 +349,13 @@ func TestRender_WorkspaceSection(t *testing.T) {
 	}
 }
 
-// TestRender_ActivePaneSection (PR4) renders the focused pane's captured
-// terminal buffer, capped at MaxLines.
+// TestRender_ActivePaneSection renders the focused pane's captured terminal
+// buffer, capped at cfg.Preview.MaxLines.
 func TestRender_ActivePaneSection(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.PreviewConfig{
-		MaxLines: 42,
-		Sections: []config.PreviewSection{
-			{Name: "ActivePane", Type: config.PreviewSectionActivePane},
-		},
-	}
+	cfg := cfgWithDefault(config.PreviewActivePane)
+	cfg.Preview.MaxLines = 42
 	driver := &fakePreviewDriver{
 		panes: []source.Pane{
 			{ID: "wA:p2", WorkspaceID: "wA", CWD: "/y", Focused: false},
@@ -506,7 +365,7 @@ func TestRender_ActivePaneSection(t *testing.T) {
 	}
 	r := NewRenderer(cfg, config.Probes{}, nil, nil, WithHerdrDriver(driver))
 	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
-	if !strings.Contains(got, "ActivePane") {
+	if !strings.Contains(got, "active pane") {
 		t.Errorf("missing section heading: %q", got)
 	}
 	if !strings.Contains(got, "$ echo hi") {
@@ -516,21 +375,16 @@ func TestRender_ActivePaneSection(t *testing.T) {
 		t.Errorf("ReadPane called on %q, want the focused pane wA:p1", driver.lastPaneID)
 	}
 	if driver.lastLines != 42 {
-		t.Errorf("ReadPane lines = %d, want cfg.MaxLines=42", driver.lastLines)
+		t.Errorf("ReadPane lines = %d, want cfg.Preview.MaxLines=42", driver.lastLines)
 	}
 }
 
-// TestRender_ActivePaneSection_FallsBackToFirstPane (PR4) reads the first pane
+// TestRender_ActivePaneSection_FallsBackToFirstPane reads the first pane
 // when none is marked focused.
 func TestRender_ActivePaneSection_FallsBackToFirstPane(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.PreviewConfig{
-		MaxLines: 50,
-		Sections: []config.PreviewSection{
-			{Name: "Pane", Type: config.PreviewSectionActivePane},
-		},
-	}
+	cfg := cfgWithDefault(config.PreviewActivePane)
 	driver := &fakePreviewDriver{
 		panes: []source.Pane{
 			{ID: "wA:p1", WorkspaceID: "wA", CWD: "/x", Focused: false},
@@ -548,24 +402,16 @@ func TestRender_ActivePaneSection_FallsBackToFirstPane(t *testing.T) {
 	}
 }
 
-// TestRender_HerdrSections_SkipOnNonHerdrCandidate (PR4) skips workspace and
+// TestRender_HerdrSections_SkipOnNonHerdrCandidate skips workspace and
 // active_pane sections when the candidate has no workspace_id meta key.
 func TestRender_HerdrSections_SkipOnNonHerdrCandidate(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.PreviewConfig{
-		MaxLines: 50,
-		Sections: []config.PreviewSection{
-			{Name: "Workspace", Type: config.PreviewSectionWorkspace},
-			{Name: "Pane", Type: config.PreviewSectionActivePane},
-			{Name: "Identity", Type: config.PreviewSectionBuiltin, Fields: []string{"label"}},
-		},
-	}
+	cfg := cfgWithDefault(config.PreviewWorkspace, config.PreviewActivePane, config.PreviewIdentity)
 	driver := &fakePreviewDriver{tabs: []source.Tab{{ID: "wA:t1"}}}
 	r := NewRenderer(cfg, config.Probes{}, nil, nil, WithHerdrDriver(driver))
-	// Plain roots candidate, no workspace_id meta.
-	got := mustRender(t, r, candidate("foo", "/p/foo", "roots", ""))
-	want := "Identity\nlabel: foo"
+	got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
+	want := "foo\npath: /p/foo\nsource: workspaces"
 	if got != want {
 		t.Errorf("non-herdr preview must skip herdr sections:\n got %q\nwant %q", got, want)
 	}
@@ -575,18 +421,13 @@ func TestRender_HerdrSections_SkipOnNonHerdrCandidate(t *testing.T) {
 	}
 }
 
-// TestRender_WorkspaceSection_TimesOutGracefully (PR4 goal 2) confirms a slow
-// daemon is bounded by the 100ms preview timeout and the section degrades to a
-// muted unavailable note instead of hanging the selector.
+// TestRender_WorkspaceSection_TimesOutGracefully confirms a slow daemon is
+// bounded by the herdr preview timeout and the section degrades to an
+// unavailable note instead of hanging the selector.
 func TestRender_WorkspaceSection_TimesOutGracefully(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.PreviewConfig{
-		MaxLines: 50,
-		Sections: []config.PreviewSection{
-			{Name: "Workspace", Type: config.PreviewSectionWorkspace},
-		},
-	}
+	cfg := cfgWithDefault(config.PreviewWorkspace)
 	driver := &fakePreviewDriver{block: true}
 	r := NewRenderer(cfg, config.Probes{}, nil, nil, WithHerdrDriver(driver))
 	start := time.Now()
@@ -595,24 +436,20 @@ func TestRender_WorkspaceSection_TimesOutGracefully(t *testing.T) {
 	if elapsed > 300*time.Millisecond {
 		t.Fatalf("workspace preview took %v, want bounded by 100ms herdr timeout", elapsed)
 	}
-	if !strings.Contains(got, "Workspace") {
+	if !strings.Contains(got, "workspace") {
 		t.Errorf("section heading should still render on timeout: %q", got)
 	}
 	if !strings.Contains(got, "unavailable") {
-		t.Errorf("missing muted unavailable note on timeout: %q", got)
+		t.Errorf("missing unavailable note on timeout: %q", got)
 	}
 }
 
-// TestRender_ActivePaneSection_TimesOutGracefully (PR4 goal 2).
+// TestRender_ActivePaneSection_TimesOutGracefully mirrors the workspace
+// timeout test for the active_pane section.
 func TestRender_ActivePaneSection_TimesOutGracefully(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.PreviewConfig{
-		MaxLines: 50,
-		Sections: []config.PreviewSection{
-			{Name: "Pane", Type: config.PreviewSectionActivePane},
-		},
-	}
+	cfg := cfgWithDefault(config.PreviewActivePane)
 	driver := &fakePreviewDriver{block: true}
 	r := NewRenderer(cfg, config.Probes{}, nil, nil, WithHerdrDriver(driver))
 	start := time.Now()
@@ -622,26 +459,232 @@ func TestRender_ActivePaneSection_TimesOutGracefully(t *testing.T) {
 		t.Fatalf("active_pane preview took %v, want bounded by herdr timeouts", elapsed)
 	}
 	if !strings.Contains(got, "unavailable") {
-		t.Errorf("missing muted unavailable note on timeout: %q", got)
+		t.Errorf("missing unavailable note on timeout: %q", got)
 	}
 }
 
-// TestRender_HerdrSections_WithoutDriver (PR4) degrades gracefully when no
-// driver is wired (e.g. herdr not installed): herdr sections are skipped.
+// TestRender_HerdrSections_WithoutDriver degrades gracefully when no driver
+// is wired (e.g. herdr not installed): herdr sections are skipped.
 func TestRender_HerdrSections_WithoutDriver(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.PreviewConfig{
-		MaxLines: 50,
-		Sections: []config.PreviewSection{
-			{Name: "Workspace", Type: config.PreviewSectionWorkspace},
-			{Name: "Identity", Type: config.PreviewSectionBuiltin, Fields: []string{"label"}},
-		},
-	}
+	cfg := cfgWithDefault(config.PreviewWorkspace, config.PreviewIdentity)
 	r := NewRenderer(cfg, config.Probes{}, nil, nil)
 	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
-	want := "Identity\nlabel: foo"
+	want := "foo\npath: /x\nsource: herdr"
 	if got != want {
 		t.Errorf("no driver must skip herdr sections:\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestRender_DirSection_PicksLsdFirst confirms lsd wins when present.
+func TestRender_DirSection_PicksLsdFirst(t *testing.T) {
+	orig := dirLookPath
+	dirLookPath = func(name string) (string, error) {
+		if name == "lsd" {
+			return "/usr/bin/lsd", nil
+		}
+		return "", errors.New("not found")
+	}
+	defer func() { dirLookPath = orig }()
+
+	runner := &fakeRunner{out: map[string]string{"lsd": "lsd-output"}}
+	cfg := cfgWithDefault(config.PreviewDir)
+	r := NewRenderer(cfg, config.Probes{}, nil, runner)
+	got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
+	if got != "lsd-output" {
+		t.Errorf("got %q, want lsd-output", got)
+	}
+}
+
+// TestRender_DirSection_FallsBackToEza confirms eza is used when lsd is
+// absent.
+func TestRender_DirSection_FallsBackToEza(t *testing.T) {
+	orig := dirLookPath
+	dirLookPath = func(name string) (string, error) {
+		if name == "eza" {
+			return "/usr/bin/eza", nil
+		}
+		return "", errors.New("not found")
+	}
+	defer func() { dirLookPath = orig }()
+
+	runner := &fakeRunner{out: map[string]string{"eza": "eza-output"}}
+	cfg := cfgWithDefault(config.PreviewDir)
+	r := NewRenderer(cfg, config.Probes{}, nil, runner)
+	got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
+	if got != "eza-output" {
+		t.Errorf("got %q, want eza-output", got)
+	}
+}
+
+// TestRender_DirSection_FallsBackToLs confirms ls is the last resort when
+// neither lsd nor eza is present.
+func TestRender_DirSection_FallsBackToLs(t *testing.T) {
+	orig := dirLookPath
+	dirLookPath = func(string) (string, error) { return "", errors.New("not found") }
+	defer func() { dirLookPath = orig }()
+
+	runner := &fakeRunner{out: map[string]string{"ls": "ls-output"}}
+	cfg := cfgWithDefault(config.PreviewDir)
+	r := NewRenderer(cfg, config.Probes{}, nil, runner)
+	got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
+	if got != "ls-output" {
+		t.Errorf("got %q, want ls-output", got)
+	}
+}
+
+// TestDirArgv_Lsd_UsesColorAlways confirms dirArgv forces --color=always
+// into the lsd invocation so the "dir" preview section shows lsd's real
+// colored listing (the whole point of shelling out to lsd instead of
+// plain ls). This is safe because internal/tui/model.go's truncateToWidth
+// is ANSI-aware (charmbracelet/x/ansi.Truncate) and never cuts mid-escape
+// sequence — see TestTruncateToWidth_ANSIStyledInput_* in
+// internal/tui/model_internal_test.go.
+func TestDirArgv_Lsd_UsesColorAlways(t *testing.T) {
+	// No t.Parallel(): this test mutates the package-level dirLookPath seam
+	// (see dirLookPath in renderer.go), which races under -race against
+	// TestDirArgv_Eza_UsesColorAlways if both run concurrently.
+	orig := dirLookPath
+	dirLookPath = func(name string) (string, error) {
+		if name == "lsd" {
+			return "/usr/bin/lsd", nil
+		}
+		return "", errors.New("not found")
+	}
+	defer func() { dirLookPath = orig }()
+
+	got := dirArgv("/p/foo")
+	want := []string{"lsd", "-la", "--icon=always", "--color=always", "/p/foo"}
+	if !equalArgv(got, want) {
+		t.Errorf("dirArgv(lsd) = %v, want %v", got, want)
+	}
+}
+
+// TestDirArgv_Eza_UsesColorAlways is the eza counterpart of
+// TestDirArgv_Lsd_UsesColorAlways.
+func TestDirArgv_Eza_UsesColorAlways(t *testing.T) {
+	// No t.Parallel(): this test mutates the package-level dirLookPath seam
+	// (see dirLookPath in renderer.go), which races under -race against
+	// TestDirArgv_Lsd_UsesColorAlways if both run concurrently.
+	orig := dirLookPath
+	dirLookPath = func(name string) (string, error) {
+		if name == "eza" {
+			return "/usr/bin/eza", nil
+		}
+		return "", errors.New("not found")
+	}
+	defer func() { dirLookPath = orig }()
+
+	got := dirArgv("/p/foo")
+	want := []string{"eza", "--all", "--git", "--icons", "--color=always", "/p/foo"}
+	if !equalArgv(got, want) {
+		t.Errorf("dirArgv(eza) = %v, want %v", got, want)
+	}
+}
+
+func equalArgv(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestRender_DirSection_NoRunnerSkipsSilently confirms a missing runner
+// simply omits the section instead of erroring, falling back to the
+// identity built-in rather than a blank preview.
+func TestRender_DirSection_NoRunnerSkipsSilently(t *testing.T) {
+	t.Parallel()
+	cfg := cfgWithDefault(config.PreviewDir)
+	r := NewRenderer(cfg, config.Probes{}, nil, nil)
+	got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
+	if !strings.HasPrefix(got, "foo\npath:") {
+		t.Errorf("expected identity fallback instead of blank preview, got %q", got)
+	}
+}
+
+// TestRender_CustomCommand_RunsAndSubstitutesPath confirms a declared
+// [preview.commands.<name>] entry runs with {path} substituted.
+func TestRender_CustomCommand_RunsAndSubstitutesPath(t *testing.T) {
+	t.Parallel()
+	cfg := cfgWithDefault("recent_commits")
+	cfg.Preview.Commands = map[string]config.PreviewCommand{
+		"recent_commits": {Command: "git -C {path} log -n 3"},
+	}
+	runner := &fakeRunner{out: map[string]string{"git": "commit-log"}}
+	r := NewRenderer(cfg, config.Probes{}, nil, runner)
+	got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
+	if got != "commit-log" {
+		t.Errorf("got %q, want commit-log", got)
+	}
+}
+
+// TestRender_CustomCommand_FailureHiddenFromNormalOutput confirms a failing
+// custom command is silently omitted, not surfaced as an error/warning, per
+// the "hide command errors from normal preview output" rule.
+func TestRender_CustomCommand_FailureHiddenFromNormalOutput(t *testing.T) {
+	t.Parallel()
+	cfg := cfgWithDefault(config.PreviewIdentity, "broken")
+	cfg.Preview.Commands = map[string]config.PreviewCommand{
+		"broken": {Command: "git -C {path} log"},
+	}
+	runner := &fakeRunner{err: map[string]error{"git": errors.New("exit 1")}}
+	r := NewRenderer(cfg, config.Probes{}, nil, runner)
+	res, err := r.Render(context.Background(), candidate("foo", "/p/foo", "workspaces", ""), RenderOptions{})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if res.Warning != "" {
+		t.Errorf("expected no warning surfaced, got %q", res.Warning)
+	}
+	want := "foo\npath: /p/foo\nsource: workspaces"
+	if res.Text != want {
+		t.Errorf("got %q want %q (broken command must be silently omitted)", res.Text, want)
+	}
+}
+
+// TestRender_UnknownSectionNameSkipped confirms a name that is neither a
+// built-in nor a declared command is simply omitted (config validation
+// already prevents this at Load time, but the renderer stays defensive).
+func TestRender_UnknownSectionNameSkipped(t *testing.T) {
+	t.Parallel()
+	cfg := cfgWithDefault(config.PreviewIdentity, "does-not-exist")
+	r := NewRenderer(cfg, config.Probes{}, nil, nil)
+	got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
+	want := "foo\npath: /p/foo\nsource: workspaces"
+	if got != want {
+		t.Errorf("got %q want %q", got, want)
+	}
+}
+
+// TestRender_CachesResult confirms a second Render call for the same
+// candidate/config is served from cache (FromCache=true), avoiding a
+// redundant git call.
+func TestRender_CachesResult(t *testing.T) {
+	t.Parallel()
+	git := &fakeGit{summary: GitSummary{Branch: "main"}}
+	r := NewRenderer(cfgWithDefault(config.PreviewGit), config.Probes{Git: true}, git, nil)
+	cand := candidate("foo", "/p/foo", "workspaces", "")
+	first, err := r.Render(context.Background(), cand, RenderOptions{})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if first.FromCache {
+		t.Error("first render should not be from cache")
+	}
+	second, err := r.Render(context.Background(), cand, RenderOptions{})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !second.FromCache {
+		t.Error("second render should be served from cache")
+	}
+	if git.calls != 1 {
+		t.Errorf("git.Summary should only be called once, got %d calls", git.calls)
 	}
 }

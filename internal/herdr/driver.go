@@ -135,16 +135,10 @@ type paneListEnvelope struct {
 type rawPane struct {
 	PaneID        string `json:"pane_id"`
 	WorkspaceID   string `json:"workspace_id"`
+	TabID         string `json:"tab_id"`
 	CWD           string `json:"cwd"`
 	ForegroundCWD string `json:"foreground_cwd"`
 	Focused       bool   `json:"focused"`
-}
-
-type paneCurrentEnvelope struct {
-	ID     string `json:"id"`
-	Result struct {
-		Pane rawPane `json:"pane"`
-	} `json:"result"`
 }
 
 // tabListEnvelope wraps `herdr tab list --workspace <id>`.
@@ -270,10 +264,50 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
+// workspaceCreatedEnvelope wraps `herdr workspace create`.
+//
+//	{"id":"cli:workspace:create","result":{"type":"workspace_created",
+//	  "workspace":{...},"tab":{...},"root_pane":{...}}}
+type workspaceCreatedEnvelope struct {
+	ID     string `json:"id"`
+	Result struct {
+		Type      string       `json:"type"`
+		Workspace rawWorkspace `json:"workspace"`
+		Tab       rawTab       `json:"tab"`
+		RootPane  rawPane      `json:"root_pane"`
+	} `json:"result"`
+}
+
+// tabCreatedEnvelope wraps `herdr tab create`.
+//
+//	{"id":"cli:tab:create","result":{"type":"tab_created","tab":{...},
+//	  "root_pane":{...}}}
+type tabCreatedEnvelope struct {
+	ID     string `json:"id"`
+	Result struct {
+		Type     string  `json:"type"`
+		Tab      rawTab  `json:"tab"`
+		RootPane rawPane `json:"root_pane"`
+	} `json:"result"`
+}
+
+// paneInfoEnvelope wraps `herdr pane split` (and other pane_info results).
+//
+//	{"id":"cli:pane:split","result":{"type":"pane_info","pane":{...}}}
+type paneInfoEnvelope struct {
+	ID     string `json:"id"`
+	Result struct {
+		Type string  `json:"type"`
+		Pane rawPane `json:"pane"`
+	} `json:"result"`
+}
+
 // FocusOrCreate implements HI-3: focus an existing workspace whose pane cwd /
 // foreground_cwd normalises to the candidate's path, else create a new focused
 // workspace. The candidate carries its own NormalizedPath (filled by the
-// resolver); when empty we normalise on the fly against cand.Path.
+// resolver); when empty we normalise on the fly against cand.Path. A freshly
+// created workspace's root tab id/pane id are returned so the caller can
+// apply a template.
 func (d *Driver) FocusOrCreate(ctx context.Context, cand source.Candidate) (source.FocusResult, error) {
 	needle := cand.NormalizedPath
 	if needle == "" {
@@ -300,19 +334,162 @@ func (d *Driver) FocusOrCreate(ctx context.Context, cand source.Candidate) (sour
 	if label == "" {
 		label = filepath.Base(needle)
 	}
-	if _, err := d.run.Run(ctx, d.binary, "workspace", "create",
-		"--cwd", cand.Path, "--label", label, "--focus"); err != nil {
+	out, err := d.run.Run(ctx, d.binary, "workspace", "create",
+		"--cwd", cand.Path, "--label", label, "--focus")
+	if err != nil {
 		return source.FocusResult{}, fmt.Errorf("herdr workspace create: %w", err)
 	}
-
-	// The create command's stdout shape is not part of Herdr's documented
-	// contract; discover the freshly focused workspace via `herdr pane
-	// current`, which returns the now-active pane with its workspace_id.
-	id, err := d.currentWorkspaceID(ctx)
-	if err != nil {
-		return source.FocusResult{}, fmt.Errorf("herdr discover new workspace: %w", err)
+	var env workspaceCreatedEnvelope
+	if err := json.Unmarshal(out, &env); err != nil {
+		return source.FocusResult{}, fmt.Errorf("herdr workspace create: parse: %w", err)
 	}
-	return source.FocusResult{WorkspaceID: id, Action: source.HerdrActionCreated}, nil
+	if env.Result.Workspace.WorkspaceID == "" || env.Result.Tab.TabID == "" || env.Result.RootPane.PaneID == "" {
+		return source.FocusResult{}, errors.New("herdr workspace create: incomplete response")
+	}
+	return source.FocusResult{
+		WorkspaceID: env.Result.Workspace.WorkspaceID,
+		Action:      source.HerdrActionCreated,
+		RootTabID:   env.Result.Tab.TabID,
+		RootPaneID:  env.Result.RootPane.PaneID,
+	}, nil
+}
+
+// CreateTab creates a new tab in workspaceID via
+// `herdr tab create --workspace <id> --cwd <cwd> --label <label> [--focus|--no-focus]`,
+// returning the new tab and its root pane. focus true passes --focus (the new
+// tab steals keyboard focus); false passes --no-focus (the currently focused
+// tab keeps focus). Focus is set at creation time rather than via a post-hoc
+// `tab focus` call so the final focus state is deterministic regardless of
+// later pane operations.
+func (d *Driver) CreateTab(ctx context.Context, workspaceID, cwd, label string, focus bool) (source.Tab, source.Pane, error) {
+	if workspaceID == "" {
+		return source.Tab{}, source.Pane{}, errors.New("herdr tab create: empty workspace id")
+	}
+	args := []string{"tab", "create", "--workspace", workspaceID}
+	if cwd != "" {
+		args = append(args, "--cwd", cwd)
+	}
+	if label != "" {
+		args = append(args, "--label", label)
+	}
+	if focus {
+		args = append(args, "--focus")
+	} else {
+		args = append(args, "--no-focus")
+	}
+	out, err := d.run.Run(ctx, d.binary, args...)
+	if err != nil {
+		return source.Tab{}, source.Pane{}, fmt.Errorf("herdr tab create: %w", err)
+	}
+	var env tabCreatedEnvelope
+	if err := json.Unmarshal(out, &env); err != nil {
+		return source.Tab{}, source.Pane{}, fmt.Errorf("herdr tab create: parse: %w", err)
+	}
+	if env.Result.Tab.TabID == "" || env.Result.RootPane.PaneID == "" {
+		return source.Tab{}, source.Pane{}, errors.New("herdr tab create: incomplete response")
+	}
+	return source.Tab{
+			ID:          env.Result.Tab.TabID,
+			WorkspaceID: env.Result.Tab.WorkspaceID,
+			Label:       env.Result.Tab.Label,
+			Focused:     env.Result.Tab.Focused,
+			Number:      env.Result.Tab.Number,
+			PaneCount:   env.Result.Tab.PaneCount,
+		}, source.Pane{
+			ID:            env.Result.RootPane.PaneID,
+			WorkspaceID:   env.Result.RootPane.WorkspaceID,
+			TabID:         env.Result.RootPane.TabID,
+			CWD:           env.Result.RootPane.CWD,
+			ForegroundCWD: env.Result.RootPane.ForegroundCWD,
+			Focused:       env.Result.RootPane.Focused,
+		}, nil
+}
+
+// RenameTab renames tabID via `herdr tab rename <tab_id> <label>`.
+func (d *Driver) RenameTab(ctx context.Context, tabID, label string) error {
+	if tabID == "" {
+		return errors.New("herdr tab rename: empty tab id")
+	}
+	if _, err := d.run.Run(ctx, d.binary, "tab", "rename", tabID, label); err != nil {
+		return fmt.Errorf("herdr tab rename %s: %w", tabID, err)
+	}
+	return nil
+}
+
+// SplitPane splits paneID via
+// `herdr pane split <pane_id> --direction <direction> --ratio <ratio> --cwd <cwd> [--focus|--no-focus]`,
+// returning the newly created pane. ratio is the fraction of the ORIGINAL
+// pane (paneID) retained after the split; the new pane gets 1-ratio. focus
+// true passes --focus (the NEW pane steals keyboard focus); false passes
+// --no-focus (the original pane keeps focus). Herdr's `pane focus` command
+// only accepts --direction (left/right/up/down), NOT a positional pane id, so
+// pane-level focus MUST be controlled here at split creation time — there is
+// no valid post-hoc "focus pane by id" command.
+func (d *Driver) SplitPane(ctx context.Context, paneID, direction string, ratio float64, cwd string, focus bool) (source.Pane, error) {
+	if paneID == "" {
+		return source.Pane{}, errors.New("herdr pane split: empty pane id")
+	}
+	args := []string{"pane", "split", paneID, "--direction", direction, "--ratio", strconv.FormatFloat(ratio, 'f', -1, 64)}
+	if cwd != "" {
+		args = append(args, "--cwd", cwd)
+	}
+	if focus {
+		args = append(args, "--focus")
+	} else {
+		args = append(args, "--no-focus")
+	}
+	out, err := d.run.Run(ctx, d.binary, args...)
+	if err != nil {
+		return source.Pane{}, fmt.Errorf("herdr pane split %s: %w", paneID, err)
+	}
+	var env paneInfoEnvelope
+	if err := json.Unmarshal(out, &env); err != nil {
+		return source.Pane{}, fmt.Errorf("herdr pane split %s: parse: %w", paneID, err)
+	}
+	if env.Result.Pane.PaneID == "" {
+		return source.Pane{}, errors.New("herdr pane split: incomplete response")
+	}
+	p := env.Result.Pane
+	return source.Pane{
+		ID:            p.PaneID,
+		WorkspaceID:   p.WorkspaceID,
+		TabID:         p.TabID,
+		CWD:           p.CWD,
+		ForegroundCWD: p.ForegroundCWD,
+		Focused:       p.Focused,
+	}, nil
+}
+
+// RunPane runs command in paneID via `herdr pane run <pane_id> <command>`.
+// An empty command is a no-op so a plain-shell leaf never shells out.
+func (d *Driver) RunPane(ctx context.Context, paneID, command string) error {
+	if paneID == "" {
+		return errors.New("herdr pane run: empty pane id")
+	}
+	if strings.TrimSpace(command) == "" {
+		return nil
+	}
+	if _, err := d.run.Run(ctx, d.binary, "pane", "run", paneID, command); err != nil {
+		return fmt.Errorf("herdr pane run %s %q: %w", paneID, command, err)
+	}
+	return nil
+}
+
+// FocusTab focuses tabID via `herdr tab focus <id>`. This is a valid Herdr
+// command and is kept as a fallback; however, the primary focus mechanism is
+// the creation-time --focus/--no-focus flag on CreateTab/SplitPane, so this
+// is rarely needed in the template-apply path. (There is intentionally no
+// FocusPane method here: `herdr pane focus` only accepts --direction, not a
+// positional pane id, so focusing an arbitrary pane by id after creation is
+// not possible — it must be set at split time via SplitPane's focus flag.)
+func (d *Driver) FocusTab(ctx context.Context, tabID string) error {
+	if tabID == "" {
+		return errors.New("herdr tab focus: empty tab id")
+	}
+	if _, err := d.run.Run(ctx, d.binary, "tab", "focus", tabID); err != nil {
+		return fmt.Errorf("herdr tab focus %s: %w", tabID, err)
+	}
+	return nil
 }
 
 // matchWorkspaceByCWD returns the workspace_id of the first pane whose cwd or
@@ -333,50 +510,6 @@ func matchWorkspaceByCWD(panes []rawPane, needle string) string {
 		}
 	}
 	return ""
-}
-
-// currentWorkspaceID returns the workspace_id of the currently focused pane.
-func (d *Driver) currentWorkspaceID(ctx context.Context) (string, error) {
-	out, err := d.run.Run(ctx, d.binary, "pane", "current")
-	if err != nil {
-		return "", fmt.Errorf("herdr pane current: %w", err)
-	}
-	var env paneCurrentEnvelope
-	if err := json.Unmarshal(out, &env); err != nil {
-		return "", fmt.Errorf("herdr pane current: parse: %w", err)
-	}
-	if env.Result.Pane.WorkspaceID == "" {
-		return "", errors.New("herdr pane current: empty workspace_id")
-	}
-	return env.Result.Pane.WorkspaceID, nil
-}
-
-// RunStartup runs a command in the first pane of the named workspace via
-// `herdr pane run` (HI-4). It is meant to fire only on freshly created
-// workspaces; the pane is located through `herdr pane list --workspace`.
-func (d *Driver) RunStartup(ctx context.Context, workspaceID, command string) error {
-	if workspaceID == "" {
-		return errors.New("herdr run startup: empty workspace id")
-	}
-	if strings.TrimSpace(command) == "" {
-		return nil
-	}
-	out, err := d.run.Run(ctx, d.binary, "pane", "list", "--workspace", workspaceID)
-	if err != nil {
-		return fmt.Errorf("herdr pane list --workspace %s: %w", workspaceID, err)
-	}
-	var env paneListEnvelope
-	if err := json.Unmarshal(out, &env); err != nil {
-		return fmt.Errorf("herdr pane list --workspace %s: parse: %w", workspaceID, err)
-	}
-	if len(env.Result.Panes) == 0 {
-		return fmt.Errorf("herdr workspace %s has no panes", workspaceID)
-	}
-	paneID := env.Result.Panes[0].PaneID
-	if _, err := d.run.Run(ctx, d.binary, "pane", "run", paneID, command); err != nil {
-		return fmt.Errorf("herdr pane run %s %q: %w", paneID, command, err)
-	}
-	return nil
 }
 
 // ListTabs enumerates the tabs of the named workspace via
@@ -433,6 +566,7 @@ func (d *Driver) ListPanes(ctx context.Context, workspaceID string) ([]source.Pa
 		panes = append(panes, source.Pane{
 			ID:            p.PaneID,
 			WorkspaceID:   p.WorkspaceID,
+			TabID:         p.TabID,
 			CWD:           p.CWD,
 			ForegroundCWD: p.ForegroundCWD,
 			Focused:       p.Focused,
@@ -469,8 +603,14 @@ func (d *Driver) ListAgents(ctx context.Context) ([]source.Agent, error) {
 // ReadPane returns the captured terminal buffer of a pane via
 // `herdr pane read <pane_id> --lines <lines> --format ansi`. Unlike the list
 // methods, ReadPane does not parse a JSON envelope: `--format ansi` returns
-// the raw terminal buffer as stdout. lines <= 0 omits the flag so the daemon
-// applies its own default cap.
+// the raw terminal buffer as stdout, preserving the pane's real ANSI color
+// codes (unlike `--format text`, which strips them). Preserving color is the
+// point: the "active_pane" preview section exists to show the user what the
+// pane actually looks like right now, colors included. This is safe because
+// internal/tui/model.go's truncateToWidth is ANSI-aware (it delegates to
+// charmbracelet/x/ansi.Truncate) and never cuts mid-escape sequence, so the
+// colored buffer truncates cleanly at narrow widths. lines <= 0 omits the
+// flag so the daemon applies its own default cap.
 func (d *Driver) ReadPane(ctx context.Context, paneID string, lines int) (string, error) {
 	if paneID == "" {
 		return "", errors.New("herdr pane read: empty pane id")

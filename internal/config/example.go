@@ -2,104 +2,177 @@ package config
 
 // ExampleTOML returns a commented, path-agnostic example configuration suitable
 // for `shep init` to write to disk. It contains no absolute user-home paths;
-// example roots live only in comments as generic placeholders the user
-// replaces.
+// example roots live only as generic placeholders (~/...) the user replaces.
 func ExampleTOML() string {
 	return `# shep configuration — see https://github.com/tranceh2/shep
 #
-# Place this file at $XDG_CONFIG_HOME/shep/config.toml (or the equivalent
-# os.UserConfigDir location on your platform). Run "shep init --force" to
+# Place this file at $XDG_CONFIG_HOME/shep/config.toml, or at
+# ~/.config/shep/config.toml when XDG_CONFIG_HOME is unset (this XDG order is
+# used on every platform, including macOS). Run "shep init --force" to
 # regenerate it.
 
-# [general] overrides global behaviour. provider_order is optional; leave it
-# unset to use the default order: herdr -> roots -> zoxide -> cwd.
+version = 1
+
+[general]
+# sources lists the enabled built-in sources and their merge/display order.
+# Valid names: herdr, workspaces, zoxide, projects. Unknown names fail fast.
+sources = ["herdr", "workspaces", "zoxide", "projects"]
 # selector picks the interactive picker for "shep open" after the direct
 # (exact / single-match) short-circuit. Valid values: builtin, fzf, auto.
-#   builtin -> always use the Bubble Tea TUI (skip fzf even if installed)
-#   fzf     -> prefer fzf, fall back to the Bubble Tea TUI when fzf is absent
-#   auto    -> v1 behaviour: fzf if installed, else the Bubble Tea TUI
-# Absent or empty defaults to "builtin".
-# [general]
-# provider_order = ["herdr", "zoxide", "cwd"]
-# selector = "builtin"
+selector = "builtin"
 
 # [herdr] locates the Herdr CLI binary. Leave binary empty to use "herdr" from
 # PATH. Set it to an absolute path only if Herdr is not on PATH.
-# [herdr]
+[herdr]
 # binary = "herdr"
 
-# [defaults] supplies the fallback startup/preview commands applied when no
-# predefined workspace (see [[workspaces]]) and no wildcard (see [[wildcards]])
-# matched the resolved candidate. Leave unset to skip a default startup.
-# [defaults]
-# startup = "make"
-# preview = "echo hi"
+# [defaults] supplies the small set of fallback values used when a resolved
+# candidate carries none of its own. type is informational metadata; template
+# names the [templates.<name>] applied to a freshly created workspace when no
+# workspace/wildcard template matched.
+[defaults]
+type = "shell"
+template = "default"
 
-# [[workspaces]] lists predefined projects shep surfaces as selectable
-# candidates (under the "config" source). name is the candidate label; path may
-# use "~/..." which shep expands to your home directory; an optional startup
-# overrides [[wildcards]] and [defaults] for this workspace.
-# [[workspaces]]
-# name = "docs"
-# path = "~/docs"
-# startup = "just serve"
-#
-# [[workspaces]]
-# name = "shep"
-# path = "~/code/shep"
-
-# [[wildcards]] binds a glob pattern to a startup command, scanned in
-# declaration order on the resolved candidate's normalised path or base name.
-# First match wins. [[wildcards]] replaces the legacy per-glob startup table.
-# [[wildcards]]
-# pattern = "**/*.go"
-# startup = "go test ./..."
-#
-# [[wildcards]]
-# pattern = "Cargo.toml"
-# startup = "cargo build"
-
-# [sources.<name>] adds extra project roots to discover beyond the built-in
-# providers (herdr workspaces, zoxide, cwd). kind selects the provider family.
-#
-# A "roots" source scans a directory you choose. Replace the example path
-# below with your own; shep ships with NO default roots so this file is safe
-# to check into dotfiles across machines.
-# [sources.repos]
-# kind = "roots"
-# enabled = true
-#
-# [sources.repos.options]
-# path = "~/code"  # <- set this to your projects directory
-
-# Built-in providers can be disabled by declaring a source with the matching
-# kind and enabled = false. For example, to stop shep from listing zoxide
-# entries:
-# [sources.zoxide]
-# kind = "zoxide"
-# enabled = false
+# [tui] configures the picker's pane sizing. Values are "auto" or a
+# percentage like "60%".
+[tui]
+list_width = "auto"
+preview_width = "60%"
 
 # [preview] configures the workspace preview shown in the "shep open" selector
-# and the "shep preview" command. With no [preview] table shep shows a calm built-in
-# layout: label, path, source, matched template (when present), and a fast git
-# summary. timeout/cache_ttl/max_lines default to 100ms / 5s / 50 lines.
-# [preview]
-# command = "git -C {path} log -n 5"   # escape hatch: {path} is one arg, no sh -c
-# timeout = "100ms"
-# cache_ttl = "5s"
-# max_lines = 50
+# and the "shep preview" command. Built-in sections (identity, path/label/
+# source, git summary, workspace tabs/panes, active pane buffer, directory
+# listing) are hardcoded and always available by name; default picks which
+# ones render when nothing more specific (workspace > wildcard > source >
+# this default) applies.
+[preview]
+timeout = "150ms"
+cache_ttl = "5s"
+max_lines = 50
+default = ["identity", "git"]
 
-# [[preview.sections]] override the built-in layout IN DECLARATION ORDER. type
-# is "builtin" (render named candidate fields) or "git" (render a git summary).
-# builtin fields: path, label, source, template. Unknown types/fields fail
-# fast at load so typos surface immediately.
-# [[preview.sections]]
-# name = "Identity"
-# type = "builtin"
-# fields = ["label", "path", "source", "template"]
+# [preview.commands.<name>] declares a custom preview command referenced by
+# name from any preview = [...] list, alongside the built-ins above. {path}
+# is substituted as one argument value; no shell expansion, no sh -c.
+[preview.commands.recent_commits]
+command = "git -C {path} log -n 3"
+
+# [sources.<name>] configures the presentation of a built-in source. Only
+# herdr, workspaces, zoxide and projects are recognised.
+[sources.herdr]
+icon = "󰳆 "
+preview = ["workspace", "active_pane"]
+
+[sources.workspaces]
+icon = " "
+preview = ["identity", "dir"]
+
+[sources.zoxide]
+icon = " "
+preview = ["identity", "dir"]
+
+[sources.projects]
+icon = " "
+# recursive/max_depth bound how deep the projects source scans beneath a
+# group workspace's path. markers can be a file or a directory name; a
+# directory containing any of them is a project. ignore skips noisy
+# directories during the scan.
+recursive = true
+max_depth = 3
+markers = [".git", ".project", "package.json", "go.mod", "Cargo.toml", "pyproject.toml", "flake.nix"]
+ignore = ["node_modules", "vendor", ".direnv", ".devenv", "target", "dist", ".cache"]
+preview = ["identity", "git", "dir"]
+
+# [[workspaces]] lists predefined projects (or nested picker groups) shep
+# surfaces as selectable candidates. name is the candidate label; path may
+# use "~/..." which shep expands to your home directory.
+# [[workspaces]]
+# name = "dotfiles"
+# path = "~/dotfiles"
 #
-# [[preview.sections]]
-# name = "Git"
-# type = "git"
+# [[workspaces]]
+# name = "main-app"
+# path = "~/projects/main-app"
+# template = "dev"
+#
+# [[workspaces]]
+# name = "downloads"
+# path = "~/Downloads"
+# command = "yazi"
+#
+# type = "group" turns an entry into a nested picker source rooted at path,
+# drawing candidates from its own sources list.
+# [[workspaces]]
+# name = "projects"
+# type = "group"
+# path = "~/projects"
+# sources = ["projects", "zoxide"]
+# template = "dev"
+
+# [templates.<name>] describes what opens after Enter for a freshly created
+# workspace: a plain command in the root pane, or a structured multi-tab
+# layout via tabs/nodes.
+[templates.default]
+command = ""
+
+[templates.k8s]
+command = "k9s"
+
+# A tabs-based template lists one or more [[templates.<name>.tabs]] entries.
+# Each tab has a name (its label) and, when it needs more than one empty
+# shell, a root node id plus [[templates.<name>.tabs.nodes]]. A node with
+# split + children is layout-only (rows stacks top/bottom, cols places
+# side by side); a node without split is a real pane running command (empty
+# means a plain shell). Node ids are scoped to their own tab.
+#
+# focus = { tab = "...", node = "..." } is declared once at the template
+# level (never per tab/node): focus.tab names a declared tab by its name;
+# focus.node (optional) names a node id scoped to that same tab. Both are
+# validated at load — an unknown tab/node name fails fast. Omitting focus
+# entirely keeps the default: the first tab stays focused (it reuses the
+# workspace's already-focused root tab).
+#
+# close_on_exit = true on a leaf node closes its pane once the node's
+# command finishes (e.g. quitting nvim), via shell-chaining a
+# "herdr pane close <pane_id>" after the command.
+# [templates.dev]
+# description = "development workspace"
+# focus = { tab = "AI", node = "opencode" }
+#
+# [[templates.dev.tabs]]
+# name = "code"
+# root = "main"
+#
+#   [[templates.dev.tabs.nodes]]
+#   id = "main"
+#   split = "rows"
+#   children = ["editor", "terminal"]
+#   sizes = [80, 20]
+#
+#   [[templates.dev.tabs.nodes]]
+#   id = "editor"
+#   command = "nvim ."
+#
+#   [[templates.dev.tabs.nodes]]
+#   id = "terminal"
+#   command = ""
+#
+# [[templates.dev.tabs]]
+# name = "AI"
+# root = "opencode"
+#
+#   [[templates.dev.tabs.nodes]]
+#   id = "opencode"
+#   command = "opencode"
+#   close_on_exit = true
+
+# [[wildcards]] binds a glob pattern to a template and/or preview override,
+# scanned in declaration order on the resolved candidate's normalised path or
+# base name. First match wins.
+# [[wildcards]]
+# pattern = "~/projects/kubernetes/**"
+# template = "k8s"
+# preview = ["identity", "git", "recent_commits"]
 `
 }

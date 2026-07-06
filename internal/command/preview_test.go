@@ -117,23 +117,28 @@ func TestPreview_MissingArgReturnsError(t *testing.T) {
 	}
 }
 
-// TestPreview_CommandFallbackSurfacesWarning (WP-3 via WP-4) exercises the
-// safe-fallback path: a configured preview.command that cannot run degrades
-// to the built-in preview plus a stderr-free, stdout warning line.
-func TestPreview_CommandFallbackSurfacesWarning(t *testing.T) {
+// TestPreview_BrokenCustomCommandHiddenFromOutput exercises the safe
+// fallback path: a declared preview.commands entry that cannot run is
+// silently omitted (requirement: hide command errors from normal preview
+// output), leaving the built-in identity section intact with no warning
+// leaking through.
+func TestPreview_BrokenCustomCommandHiddenFromOutput(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	cfg := config.Defaults()
-	cfg.Preview.Command = "shep-preview-command-does-not-exist-xyz {path}"
+	cfg.Preview.Default = []string{config.PreviewIdentity, "broken"}
+	cfg.Preview.Commands = map[string]config.PreviewCommand{
+		"broken": {Command: "shep-preview-command-does-not-exist-xyz {path}"},
+	}
 	out, _, err := runPreviewFor(t, cfg, dir)
 	if err != nil {
 		t.Fatalf("preview: %v", err)
 	}
-	if !strings.Contains(out, "warning:") {
-		t.Errorf("expected a warning line for the fallback, got: %q", out)
+	if strings.Contains(out, "warning:") {
+		t.Errorf("command failures must be hidden from normal preview output, got: %q", out)
 	}
 	if !strings.Contains(out, "path: ") {
-		t.Errorf("expected built-in preview body in the fallback, got: %q", out)
+		t.Errorf("expected built-in identity body despite the broken command, got: %q", out)
 	}
 }
 
@@ -147,16 +152,21 @@ func TestPreviewCmd_ColorFlagRegistered(t *testing.T) {
 	}
 }
 
-// TestWritePreview_StyledAppliesANSI and TestWritePreview_PlainNoANSI cover
-// the CLI-layer color decision directly (isTerminalWriter itself is
+// TestWritePreview_StyledPlainTextStaysPlain and TestWritePreview_PlainNoANSI
+// cover the CLI-layer color decision directly (isTerminalWriter itself is
 // exercised separately), keeping the ANSI on/off contract unit-testable
-// without a real pty.
-func TestWritePreview_StyledAppliesANSI(t *testing.T) {
+// without a real pty. writePreview no longer flattens the body to a single
+// accent color, so plain (never-colored) renderer text — like the built-in
+// identity/git/workspace sections — must stay plain even when styled=true.
+func TestWritePreview_StyledPlainTextStaysPlain(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
 	writePreview(&out, preview.Result{Text: "hello"}, true)
-	if !strings.ContainsAny(out.String(), "\x1b") {
-		t.Errorf("expected ANSI styling when styled=true, got: %q", out.String())
+	if strings.ContainsAny(out.String(), "\x1b") {
+		t.Errorf("expected no ANSI added to plain text when styled=true, got: %q", out.String())
+	}
+	if strings.TrimSpace(out.String()) != "hello" {
+		t.Errorf("expected exact text passthrough, got: %q", out.String())
 	}
 }
 
@@ -223,20 +233,57 @@ func TestWritePreview_SanitizesANSIInDefaultOutput(t *testing.T) {
 	}
 }
 
-func TestWritePreview_SanitizesANSIEvenInStyledOutput(t *testing.T) {
+// TestWritePreview_DefaultStripsRealRendererANSI (Television-safe default)
+// simulates the kind of real ANSI a "dir"/"active_pane" section produces
+// (lsd/eza --color=always output, a captured pane's true-color escapes) and
+// confirms it is stripped to plain text when styled=false — the default, or
+// --color without a terminal.
+func TestWritePreview_DefaultStripsRealRendererANSI(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
+	// A true-color 24-bit escape, matching what lsd/eza --color=always or a
+	// captured pane buffer would actually emit (not just basic 8-color codes).
 	res := preview.Result{
-		Text:    "\x1b[31mRed Text\x1b[0m",
+		Text:    "\x1b[38;2;137;180;250mREADME.md\x1b[0m\n\x1b[1;34msrc\x1b[0m",
+		Warning: "\x1b[33mWarning text\x1b[0m",
+	}
+	writePreview(&out, res, false)
+	output := out.String()
+	if strings.ContainsAny(output, "\x1b") {
+		t.Errorf("expected real renderer ANSI to be stripped by default, got: %q", output)
+	}
+	if !strings.Contains(output, "README.md") || !strings.Contains(output, "src") {
+		t.Errorf("expected clean text content preserved, got: %q", output)
+	}
+	if !strings.Contains(output, "warning: Warning text") {
+		t.Errorf("expected warning to be sanitized, got: %q", output)
+	}
+}
+
+// TestWritePreview_StyledPreservesRealRendererANSI is the core regression
+// test for this fix: when styled=true (--color plus a real terminal), the
+// renderer's own ANSI color (dir/active_pane's real colors) must survive
+// byte-for-byte, matching what the interactive picker shows, instead of
+// being stripped or flattened into a single accent color.
+func TestWritePreview_StyledPreservesRealRendererANSI(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	rendererText := "\x1b[38;2;137;180;250mREADME.md\x1b[0m\n\x1b[1;34msrc\x1b[0m"
+	res := preview.Result{
+		Text:    rendererText,
 		Warning: "\x1b[33mWarning text\x1b[0m",
 	}
 	writePreview(&out, res, true)
 	output := out.String()
-	// Should contain ANSI sequence from shep-applied styling, but NOT the command-provided raw escape codes
-	if strings.Contains(output, "[31m") || strings.Contains(output, "[33m") {
-		t.Errorf("expected raw command-provided ANSI escapes ([31m or [33m) to be stripped, got: %q", output)
+	if !strings.Contains(output, rendererText) {
+		t.Errorf("expected renderer ANSI preserved byte-for-byte, got: %q", output)
 	}
-	if !strings.Contains(output, "Red Text") {
-		t.Errorf("expected 'Red Text' in output, got: %q", output)
+	// The warning line is always shep's own synthetic text: its raw escape
+	// must still be stripped before shep applies its own warn styling.
+	if strings.Contains(output, "\x1b[33m") {
+		t.Errorf("expected raw warning ANSI to be stripped before restyling, got: %q", output)
+	}
+	if !strings.Contains(output, "Warning text") {
+		t.Errorf("expected warning text content preserved, got: %q", output)
 	}
 }

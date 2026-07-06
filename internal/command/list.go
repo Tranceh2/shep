@@ -40,6 +40,7 @@ type listCandidate struct {
 	NormalizedPath string `json:"normalized_path"`
 	Label          string `json:"label"`
 	Source         string `json:"source"`
+	Missing        bool   `json:"missing"`
 }
 
 // listCmd builds `shep list` which enumerates candidates from all enabled
@@ -49,10 +50,13 @@ func (a *App) listCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List discovered project candidates from all enabled sources",
-		Long: `shep list enumerates candidates from Herdr workspaces, zoxide, the current
-directory and any configured roots, deduplicates by normalised path, and
-prints them as a table (human), tab-separated path	label lines (tsv) for
-Television, or structured JSON.`,
+		Long: `shep list enumerates candidates from Herdr workspaces, predefined
+[[workspaces]], zoxide, and marker-based project discovery beneath a
+type=group workspace's path, deduplicates by normalised path, and prints
+them as a table (human), tab-separated
+path	label lines (tsv) for Television, or structured JSON. A configured
+workspace whose path does not exist on disk is included but clearly marked
+missing.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			f, err := parseFormat(outFormat)
@@ -73,7 +77,7 @@ func (a *App) runList(cmd *cobra.Command, f format) error {
 	probes := a.Probes()
 	// The real Herdr driver powers the herdr source provider; when Herdr is
 	// not installed Driver() returns nil and the provider stays inert, so
-	// list still surfaces cwd/zoxide/roots candidates.
+	// list still surfaces workspaces/zoxide/projects candidates.
 	registry := source.NewRegistry(cfg, probes, a.Driver())
 
 	candidates, collectErr := registry.Collect(cmd.Context())
@@ -116,11 +120,19 @@ type candidate = source.Candidate
 
 func renderHuman(out io.Writer, cands []source.Candidate) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "PATH\tLABEL\tSOURCE")
+	fmt.Fprintln(w, "PATH\tLABEL\tSOURCE\tMISSING")
 	for _, c := range cands {
-		fmt.Fprintf(w, "%s\t%s\t%s\n", c.NormalizedPath, c.Label, c.Source)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", c.NormalizedPath, c.Label, c.Source, missingMark(c.Missing))
 	}
 	return w.Flush()
+}
+
+// missingMark renders a human-readable flag for the MISSING column.
+func missingMark(missing bool) string {
+	if missing {
+		return "yes"
+	}
+	return ""
 }
 
 func renderTSV(out io.Writer, cands []source.Candidate) error {
@@ -139,6 +151,7 @@ func renderJSON(out io.Writer, cands []source.Candidate) error {
 			NormalizedPath: c.NormalizedPath,
 			Label:          c.Label,
 			Source:         c.Source,
+			Missing:        c.Missing,
 		})
 	}
 	if out2 == nil {

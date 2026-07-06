@@ -134,11 +134,10 @@ func TestRoot_PreRunLoadsConfigAndProbes(t *testing.T) {
 	const doc = `
 [herdr]
 binary = "herdr"
-[sources.repos]
-kind = "roots"
-enabled = true
-[sources.repos.options]
-path = "~/code"
+[sources.projects]
+recursive = true
+max_depth = 2
+markers = ["go.mod"]
 `
 	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
 		t.Fatal(err)
@@ -158,7 +157,10 @@ path = "~/code"
 	if app.cfg == nil {
 		t.Fatal("PreRun did not load cfg")
 	}
-	if _, ok := app.cfg.Sources["repos"]; !ok {
-		t.Error("PreRun did not parse the supplied config sources")
+	if got, want := app.cfg.Herdr.Binary, "herdr"; got != want {
+		t.Errorf("PreRun did not parse the supplied herdr binary: got %q want %q", got, want)
+	}
+	if got, want := len(app.cfg.Sources.Projects.Markers), 1; got != want {
+		t.Errorf("PreRun did not parse the supplied projects markers: got %d want %d", got, want)
 	}
 }

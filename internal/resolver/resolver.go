@@ -52,11 +52,16 @@ func Normalize(input string) (string, error) {
 	return cleaned, nil
 }
 
-// Dedup normalises each candidate and removes path collisions, keeping the
-// first-seen candidate for each normalised path. The returned slice reuses
-// the input order for the survivors so provider order from the registry is
-// preserved. Candidates carry a defensive copy of Meta from the source
-// package; this function only sets NormalizedPath on the survivors.
+// Dedup normalises each candidate and removes path collisions using a
+// composite key of normalised path + label, keeping the first-seen
+// candidate for each key. The composite key preserves explicitly named
+// workspaces that target the same path (e.g. "ECORP" and "k8s-ecorp" at
+// /srv/ecorp) as distinct candidates while still collapsing true
+// duplicates (same path AND same label) from different providers. The
+// returned slice reuses the input order for the survivors so provider
+// order from the registry is preserved. Candidates carry a defensive copy
+// of Meta from the source package; this function only sets
+// NormalizedPath on the survivors.
 func Dedup(candidates []source.Candidate) []source.Candidate {
 	if len(candidates) == 0 {
 		return nil
@@ -70,15 +75,23 @@ func Dedup(candidates []source.Candidate) []source.Candidate {
 			// broken candidate does not silently swallow others.
 			norm = c.Path
 		}
-		if _, exists := seen[norm]; exists {
+		key := dedupKey(norm, c.Label)
+		if _, exists := seen[key]; exists {
 			continue
 		}
-		seen[norm] = struct{}{}
+		seen[key] = struct{}{}
 		clone := c.Clone()
 		clone.NormalizedPath = norm
 		out = append(out, clone)
 	}
 	return out
+}
+
+// dedupKey builds the composite dedup key from a normalised path and label.
+// Two candidates collide only when BOTH match, so explicitly named
+// workspaces at the same path are preserved as distinct candidates.
+func dedupKey(norm, label string) string {
+	return norm + "|" + label
 }
 
 // Match performs a case-insensitive substring search against each candidate's

@@ -50,8 +50,8 @@ func TestCache_TTLExpiry(t *testing.T) {
 func TestCache_Key_DistinguishesPathAndConfig(t *testing.T) {
 	t.Parallel()
 
-	cfgA := config.PreviewConfig{Command: "echo a"}
-	cfgB := config.PreviewConfig{Command: "echo b", MaxLines: 7}
+	cfgA := config.PreviewConfig{Default: []string{"identity"}}
+	cfgB := config.PreviewConfig{Default: []string{"git"}, MaxLines: 7}
 	keyA1 := PreviewCacheKey("/p/one", cfgA)
 	keyA2 := PreviewCacheKey("/p/one", cfgA)
 	keyB := PreviewCacheKey("/p/two", cfgA)

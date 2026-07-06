@@ -2,10 +2,11 @@
 // providers and offers a small registry that gates them by config and binary
 // availability.
 //
-// A Provider yields Candidates; a Registry decides which Providers are enabled
-// for a given Config + Probes snapshot and runs them. Normalisation and
-// deduplication are the resolver's job (see internal/resolver); source
-// providers only collect raw, labelled paths.
+// A Provider yields Candidates; a Registry decides which Providers are
+// enabled for a given Config + Probes snapshot (via [config.General.Sources])
+// and runs them in that order. Normalisation and deduplication are the
+// resolver's job (see internal/resolver); source providers only collect raw,
+// labelled paths.
 package source
 
 import (
@@ -22,13 +23,19 @@ import (
 // Candidate is one project discovered by a provider. Path is the raw path as
 // observed; NormalizedPath is filled by the resolver (left empty here).
 // Label is a short human-friendly name (usually the base directory). Source
-// names the provider that produced the candidate. Meta carries optional,
-// provider-specific metadata (copied defensively on read by callers).
+// names the provider that produced the candidate (herdr, workspaces, zoxide,
+// projects, or "path" for a direct --path/--path . invocation). Meta carries
+// optional, provider-specific metadata (copied defensively on read by
+// callers). Missing marks a configured workspace whose path does not exist
+// on disk; the picker may still show it (clearly marked), but selecting it
+// fails cleanly instead of falling back to "/", $HOME, or cwd.
 type Candidate struct {
 	Path           string
 	NormalizedPath string
 	Label          string
+	Icon           string
 	Source         string
+	Missing        bool
 	Meta           map[string]string
 }
 
@@ -49,7 +56,7 @@ func (c Candidate) Clone() Candidate {
 // config/probes snapshot captured at construction, so List takes only a
 // context (matching the design contract).
 type Provider interface {
-	// Name returns the short provider kind (cwd, herdr, zoxide, roots).
+	// Name returns the source's canonical name (see config.Source* consts).
 	Name() string
 	// List collects candidates. An empty result with nil error is normal.
 	List(ctx context.Context) ([]Candidate, error)
@@ -69,13 +76,10 @@ type HerdrDriver interface {
 	ListWorkspaces(ctx context.Context) ([]Workspace, error)
 	// FocusOrCreate focuses an existing workspace whose pane cwd /
 	// foreground_cwd normalises to the candidate's path, or creates a new
-	// focused workspace via `herdr workspace create --cwd --label --focus`. The
-	// returned action lets callers decide whether to run a startup command.
+	// focused workspace via `herdr workspace create --cwd --label --focus`.
+	// The returned result carries the workspace + root tab + root pane so
+	// callers can apply a template against a freshly created workspace.
 	FocusOrCreate(ctx context.Context, cand Candidate) (FocusResult, error)
-	// RunStartup runs a command in the first pane of the named workspace via
-	// `herdr pane run`. It is intended to fire only on a freshly created
-	// workspace (HI-4).
-	RunStartup(ctx context.Context, workspaceID, command string) error
 	// ListTabs returns the tabs of the named workspace via
 	// `herdr tab list --workspace <id>`. Used by the workspace preview section.
 	ListTabs(ctx context.Context, workspaceID string) ([]Tab, error)
@@ -84,10 +88,36 @@ type HerdrDriver interface {
 	ListPanes(ctx context.Context, workspaceID string) ([]Pane, error)
 	// ListAgents returns the agents known to Herdr via `herdr agent list`.
 	ListAgents(ctx context.Context) ([]Agent, error)
-	// ReadPane returns the captured terminal buffer of a pane via
-	// `herdr pane read <pane_id> --lines <lines> --format ansi`. lines caps the
-	// number of trailing lines returned; <= 0 means the daemon default.
+	// ReadPane returns the captured terminal buffer of a pane, with its real
+	// ANSI color codes preserved, via
+	// `herdr pane read <pane_id> --lines <lines> --format ansi`. lines caps
+	// the number of trailing lines returned; <= 0 means the daemon default.
 	ReadPane(ctx context.Context, paneID string, lines int) (string, error)
+	// CreateTab creates a new tab in workspaceID via
+	// `herdr tab create --workspace <id> --cwd <cwd> --label <label> [--focus|--no-focus]`,
+	// returning the new tab and its root pane. focus controls whether the new
+	// tab steals keyboard focus (--focus) or leaves the current tab focused
+	// (--no-focus). Focus is set at creation time for determinism.
+	CreateTab(ctx context.Context, workspaceID, cwd, label string, focus bool) (Tab, Pane, error)
+	// RenameTab renames tabID via `herdr tab rename <tab_id> <label>`.
+	RenameTab(ctx context.Context, tabID, label string) error
+	// SplitPane splits paneID via
+	// `herdr pane split <pane_id> --direction <direction> --ratio <ratio> --cwd <cwd> [--focus|--no-focus]`,
+	// returning the newly created pane. direction is "down" or "right";
+	// ratio is the fraction of the ORIGINAL pane retained by paneID (the new
+	// pane gets 1-ratio); focus true passes --focus (new pane steals focus),
+	// false passes --no-focus (original pane keeps focus). Pane focus MUST be
+	// controlled here: there is no valid post-hoc "focus pane by id" command
+	// in Herdr (pane focus only accepts --direction).
+	SplitPane(ctx context.Context, paneID, direction string, ratio float64, cwd string, focus bool) (Pane, error)
+	// RunPane runs command in paneID via `herdr pane run <pane_id> <command>`.
+	// An empty command is a no-op (the pane stays a plain shell). The command
+	// is typed into the pane's already-running interactive shell and submitted
+	// with Enter; it does NOT spawn the command as the pane's root process.
+	RunPane(ctx context.Context, paneID, command string) error
+	// FocusTab focuses tabID via `herdr tab focus <id>`. A valid fallback;
+	// the primary focus mechanism is the creation-time flag on CreateTab.
+	FocusTab(ctx context.Context, tabID string) error
 }
 
 // Workspace is a minimal, driver-supplied description of a Herdr workspace.
@@ -116,6 +146,7 @@ type Tab struct {
 type Pane struct {
 	ID            string
 	WorkspaceID   string
+	TabID         string
 	CWD           string
 	ForegroundCWD string
 	Focused       bool
@@ -129,7 +160,8 @@ type Agent struct {
 	Status string
 }
 
-// HerdrAction records what FocusOrCreate did so callers can gate startup.
+// HerdrAction records what FocusOrCreate did so callers can gate template
+// application (only a freshly created workspace gets its template applied).
 type HerdrAction int
 
 const (
@@ -142,18 +174,21 @@ const (
 	HerdrActionCreated
 )
 
-// FocusResult is the outcome of FocusOrCreate. WorkspaceID is the id of the
-// focused or freshly created workspace, ready to feed RunStartup.
+// FocusResult is the outcome of FocusOrCreate. RootTabID/RootPaneID are only
+// populated when Action == HerdrActionCreated (a freshly created workspace
+// has exactly one tab and one pane to seed a template from).
 type FocusResult struct {
 	WorkspaceID string
 	Action      HerdrAction
+	RootTabID   string
+	RootPaneID  string
 }
 
 // Registry keeps the provider set for a given config/probes snapshot. It is
 // safe to construct a Registry per command invocation; tests rebuild it to
 // avoid cross-test state.
 type Registry struct {
-	providers []Provider
+	providers map[string]Provider
 	cfg       *config.Config
 	probes    config.Probes
 }
@@ -161,88 +196,101 @@ type Registry struct {
 // NewRegistry returns a Registry populated with the built-in providers gated
 // by the supplied config/probes. The herdr driver is optional and may be nil
 // (the herdr provider then contributes no candidates); callers may inject a
-// real driver once available.
+// real driver once available. basePath/baseSources let a group workspace
+// entry build a scoped nested Registry (see command/open.go); pass "" and
+// nil for the top-level registry.
 func NewRegistry(cfg *config.Config, probes config.Probes, herdrDriver HerdrDriver) *Registry {
 	if cfg == nil {
 		cfg = config.Defaults()
 	}
 	return &Registry{
-		providers: []Provider{
-			&cwdProvider{},
-			&rootsProvider{cfg: cfg},
-			&configProvider{cfg: cfg},
-			&herdrProvider{driver: herdrDriver, probes: probes, cfg: cfg},
-			&zoxideProvider{probes: probes, cfg: cfg},
+		providers: map[string]Provider{
+			config.SourceHerdr:      &herdrProvider{driver: herdrDriver, probes: probes, cfg: cfg},
+			config.SourceWorkspaces: &workspacesProvider{cfg: cfg},
+			config.SourceZoxide:     &zoxideProvider{probes: probes, cfg: cfg},
+			config.SourceProjects:   &projectsProvider{cfg: cfg, root: ""},
 		},
 		cfg:    cfg,
 		probes: probes,
 	}
 }
 
-// Providers returns a defensive copy of the registered providers.
+// NewScopedRegistry builds a Registry for a group workspace's nested picker:
+// only the sources named in the group entry run; the projects source scans
+// beneath root instead of contributing nothing, and the zoxide source is
+// scoped to root's descendants instead of surfacing the user's entire
+// unscoped zoxide history inside a group picker.
+func NewScopedRegistry(cfg *config.Config, probes config.Probes, herdrDriver HerdrDriver, sources []string, root string) *Registry {
+	if cfg == nil {
+		cfg = config.Defaults()
+	}
+	scoped := &config.Config{
+		General:  config.General{Sources: sources, Selector: cfg.General.Selector},
+		Sources:  cfg.Sources,
+		Defaults: cfg.Defaults,
+	}
+	return &Registry{
+		providers: map[string]Provider{
+			config.SourceHerdr:      &herdrProvider{driver: herdrDriver, probes: probes, cfg: scoped},
+			config.SourceWorkspaces: &workspacesProvider{cfg: scoped},
+			config.SourceZoxide:     &zoxideProvider{probes: probes, cfg: scoped, root: root},
+			config.SourceProjects:   &projectsProvider{cfg: cfg, root: root},
+		},
+		cfg:    scoped,
+		probes: probes,
+	}
+}
+
+// Providers returns a defensive copy of the registered providers, in
+// [config.General.Sources] order (unlisted providers are appended after, for
+// callers introspecting the full set).
 func (r *Registry) Providers() []Provider {
-	out := make([]Provider, len(r.providers))
-	copy(out, r.providers)
+	out := make([]Provider, 0, len(r.providers))
+	seen := make(map[string]bool, len(r.providers))
+	for _, name := range r.cfg.General.Sources {
+		if p, ok := r.providers[name]; ok && !seen[name] {
+			out = append(out, p)
+			seen[name] = true
+		}
+	}
+	for name, p := range r.providers {
+		if !seen[name] {
+			out = append(out, p)
+			seen[name] = true
+		}
+	}
 	return out
 }
 
-// Enabled returns the providers that should run, honouring General.Provider
-// Order when set so callers iterate in a stable, user-controlled order.
-func (r *Registry) Enabled() []Provider {
-	enabled := make([]Provider, 0, len(r.providers))
-	for _, p := range r.providers {
-		if isEnabled(p, r.cfg, r.probes) {
-			enabled = append(enabled, p)
-		}
-	}
-	if order := r.cfg.General.ProviderOrder; len(order) > 0 {
-		enabled = applyOrder(enabled, order)
-	}
-	return enabled
-}
-
-// isEnabled centralises gating so adding a provider only needs one knob. Each
-// concrete provider implements an enabled() method instead of relying on the
-// registry to know every kind.
+// gatedProvider lets a concrete provider report whether it should run given
+// the config/probes snapshot (binary probes, empty workspace list, etc.),
+// beyond simply being named in general.sources.
 type gatedProvider interface {
 	Provider
 	enabled(cfg *config.Config, probes config.Probes) bool
 }
 
-func isEnabled(p Provider, cfg *config.Config, probes config.Probes) bool {
-	if g, ok := p.(gatedProvider); ok {
-		return g.enabled(cfg, probes)
-	}
-	return true
-}
-
-// applyOrder reorders providers to match the requested kind sequence,
-// appending unlisted enabled providers afterwards in registration order.
-func applyOrder(providers []Provider, order []string) []Provider {
-	byName := make(map[string]Provider, len(providers))
-	for _, p := range providers {
-		byName[p.Name()] = p
-	}
-	out := make([]Provider, 0, len(providers))
-	seen := make(map[string]bool, len(providers))
-	for _, name := range order {
-		if p, ok := byName[name]; ok {
-			out = append(out, p)
-			seen[name] = true
+// Enabled returns the providers that should run, in general.sources order.
+func (r *Registry) Enabled() []Provider {
+	enabled := make([]Provider, 0, len(r.providers))
+	for _, name := range r.cfg.General.Sources {
+		p, ok := r.providers[name]
+		if !ok {
+			continue
 		}
-	}
-	for _, p := range providers {
-		if !seen[p.Name()] {
-			out = append(out, p)
+		if g, ok := p.(gatedProvider); ok && !g.enabled(r.cfg, r.probes) {
+			continue
 		}
+		enabled = append(enabled, p)
 	}
-	return out
+	return enabled
 }
 
 // Collect runs all enabled providers and concatenates their candidates. A
 // failing provider contributes no candidates and its error is returned
 // alongside the other providers' results, so a single broken source never
-// blanks the list.
+// blanks the list. Each candidate receives its source's configured icon
+// (from [sources.<name>].icon) so the picker can render it.
 func (r *Registry) Collect(ctx context.Context) ([]Candidate, error) {
 	var (
 		out      []Candidate
@@ -256,132 +304,57 @@ func (r *Registry) Collect(ctx context.Context) ([]Candidate, error) {
 			}
 			continue
 		}
+		icon := r.iconFor(p.Name())
 		// Defensive copy: providers may reuse backing arrays across calls.
 		for _, c := range cands {
-			out = append(out, c.Clone())
+			clone := c.Clone()
+			if icon != "" {
+				clone.Icon = icon
+			}
+			out = append(out, clone)
 		}
 	}
 	return out, firstErr
 }
 
-// --- cwd provider ---
-
-type cwdProvider struct{}
-
-func (cwdProvider) Name() string { return "cwd" }
-
-func (c cwdProvider) enabled(_ *config.Config, _ config.Probes) bool { return true }
-
-func (cwdProvider) List(ctx context.Context) ([]Candidate, error) {
-	dir, err := os.Getwd()
-	if err != nil {
-		return nil, err
+// iconFor returns the configured icon for the named source, or "" when no
+// icon is configured. Centralised so every provider's candidates receive the
+// same icon from a single lookup site.
+func (r *Registry) iconFor(name string) string {
+	switch name {
+	case config.SourceHerdr:
+		return r.cfg.Sources.Herdr.Icon
+	case config.SourceWorkspaces:
+		return r.cfg.Sources.Workspaces.Icon
+	case config.SourceZoxide:
+		return r.cfg.Sources.Zoxide.Icon
+	case config.SourceProjects:
+		return r.cfg.Sources.Projects.Icon
 	}
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	default:
-	}
-	return []Candidate{{Path: dir, Label: RelativeLabel(dir), Source: "cwd"}}, nil
+	return ""
 }
 
-// --- roots provider ---
+// --- workspaces provider ---
 
-type rootsProvider struct {
+// workspacesProvider surfaces predefined [[workspaces]] entries as
+// selectable candidates. A plain entry (Type "" or "shell") yields one
+// candidate labelled by Name with a tilde-expanded Path, marked Missing when
+// the path does not exist on disk. A group entry (Type "group") yields one
+// candidate representing the group itself (Meta["group"]="true",
+// Meta["group_sources"]=comma-joined Sources) so the command layer can drill
+// into a nested, scoped picker on selection instead of launching Herdr
+// directly.
+type workspacesProvider struct {
 	cfg *config.Config
 }
 
-func (rootsProvider) Name() string { return "roots" }
+func (workspacesProvider) Name() string { return config.SourceWorkspaces }
 
-// enabled when at least one configured roots source defines a non-empty path.
-func (rootsProvider) enabled(cfg *config.Config, _ config.Probes) bool {
-	if cfg == nil {
-		return false
-	}
-	for _, s := range cfg.Sources {
-		if s.Kind == config.KindRoots && s.Enabled {
-			if p := s.Options["path"]; p != "" {
-				return true
-			}
-		}
-	}
-	return false
+func (workspacesProvider) enabled(cfg *config.Config, _ config.Probes) bool {
+	return cfg != nil && len(cfg.Workspaces) > 0
 }
 
-func (p *rootsProvider) List(ctx context.Context) ([]Candidate, error) {
-	return ListRoots(ctx, p.cfg)
-}
-
-// ListRoots expands every configured roots source into one candidate per
-// immediate subdirectory. Exported so tests can exercise the scan directly
-// without a full Collect round-trip.
-func ListRoots(ctx context.Context, cfg *config.Config) ([]Candidate, error) {
-	var out []Candidate
-	for name, s := range cfg.Sources {
-		if s.Kind != config.KindRoots || !s.Enabled {
-			continue
-		}
-		root := s.Options["path"]
-		if root == "" {
-			continue
-		}
-		root = expandTilde(root)
-		entries, err := os.ReadDir(root)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return nil, err
-		}
-		for _, e := range entries {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			default:
-			}
-			if !e.IsDir() {
-				continue
-			}
-			full := filepath.Join(root, e.Name())
-			out = append(out, Candidate{
-				Path:   full,
-				Label:  RelativeLabel(full),
-				Source: name,
-			})
-		}
-	}
-	return out, nil
-}
-
-// --- config provider ---
-
-// configProvider surfaces predefined [[workspaces]] entries from the config as
-// selectable candidates. It is the user-curated counterpart to the dynamic
-// providers (cwd, roots, herdr, zoxide): each workspace yields one candidate
-// with Label = workspace Name, Path = tilde-expanded workspace Path, and
-// Source = "config". It activates when cfg.Workspaces is non-empty and the
-// config does not disable it via a sources override (KindConfig + enabled=false).
-type configProvider struct {
-	cfg *config.Config
-}
-
-func (configProvider) Name() string { return "config" }
-
-// enabled: at least one predefined workspace AND not disabled by override.
-// Gating on non-empty Workspaces keeps the default (empty) config from
-// registering an inert provider and keeps `shep list` output minimal on a
-// pristine machine.
-func (configProvider) enabled(cfg *config.Config, _ config.Probes) bool {
-	if cfg == nil {
-		return false
-	}
-	if s, ok := cfg.Sources["config"]; ok && s.Kind == config.KindConfig && !s.Enabled {
-		return false
-	}
-	return len(cfg.Workspaces) > 0
-}
-
-func (p *configProvider) List(ctx context.Context) ([]Candidate, error) {
+func (p *workspacesProvider) List(ctx context.Context) ([]Candidate, error) {
 	out := make([]Candidate, 0, len(p.cfg.Workspaces))
 	for _, ws := range p.cfg.Workspaces {
 		select {
@@ -389,11 +362,30 @@ func (p *configProvider) List(ctx context.Context) ([]Candidate, error) {
 			return nil, ctx.Err()
 		default:
 		}
-		out = append(out, Candidate{
-			Path:   expandTilde(ws.Path),
+		path := expandTilde(ws.Path)
+		cand := Candidate{
+			Path:   path,
 			Label:  ws.Name,
-			Source: "config",
-		})
+			Source: config.SourceWorkspaces,
+		}
+		if _, err := os.Stat(path); err != nil {
+			cand.Missing = true
+		}
+		switch {
+		case ws.Type == config.WorkspaceTypeGroup:
+			cand.Meta = map[string]string{
+				"group":         "true",
+				"group_sources": strings.Join(ws.Sources, ","),
+			}
+			if ws.Template != "" {
+				cand.Meta["group_template"] = ws.Template
+			}
+		case ws.Template != "":
+			cand.Meta = map[string]string{"template": ws.Template}
+		case ws.Command != "":
+			cand.Meta = map[string]string{"command": ws.Command}
+		}
+		out = append(out, cand)
 	}
 	return out, nil
 }
@@ -406,21 +398,12 @@ type herdrProvider struct {
 	cfg    *config.Config
 }
 
-func (h *herdrProvider) Name() string { return "herdr" }
+func (h *herdrProvider) Name() string { return config.SourceHerdr }
 
-// enabled when a driver is present, the binary is on PATH, and the config
-// does not disable herdr by override. Without a driver the provider is inert
-// (PL-3 gating).
-func (h *herdrProvider) enabled(cfg *config.Config, probes config.Probes) bool {
-	if cfg != nil {
-		if s, ok := cfg.Sources["herdr"]; ok && s.Kind == config.KindHerdr && !s.Enabled {
-			return false
-		}
-	}
-	if !probes.Herdr {
-		return false
-	}
-	return true
+// enabled when a driver is present and the binary is on PATH. Without a
+// driver the provider is inert.
+func (h *herdrProvider) enabled(_ *config.Config, probes config.Probes) bool {
+	return probes.Herdr
 }
 
 func (h *herdrProvider) List(ctx context.Context) ([]Candidate, error) {
@@ -440,38 +423,43 @@ func (h *herdrProvider) List(ctx context.Context) ([]Candidate, error) {
 		if label == "" {
 			label = baseLabel(w.CWD)
 		}
-		out = append(out, Candidate{
+		cand := Candidate{
 			Path:   w.CWD,
 			Label:  label,
-			Source: "herdr",
+			Source: config.SourceHerdr,
 			Meta:   map[string]string{"workspace_id": w.ID},
-		})
+		}
+		// A workspace's reported pane cwd can go stale if the directory is
+		// deleted while Herdr still has it open; stat it here so launch()'s
+		// existing Missing check rejects it instead of silently printing the
+		// path when Herdr itself is absent/fails at selection time.
+		if _, err := os.Stat(w.CWD); err != nil {
+			cand.Missing = true
+		}
+		out = append(out, cand)
 	}
 	return out, nil
 }
 
 // --- zoxide provider ---
 
+// zoxideProvider surfaces zoxide's directory history as candidates. root, set
+// by a group workspace's nested picker (NewScopedRegistry), restricts results
+// to root's own descendants (including root itself); the top-level registry
+// leaves root empty so the full zoxide history is available unscoped.
 type zoxideProvider struct {
 	probes config.Probes
 	cfg    *config.Config
+	root   string
 }
 
-func (zoxideProvider) Name() string { return "zoxide" }
+func (zoxideProvider) Name() string { return config.SourceZoxide }
 
-func (zoxideProvider) enabled(cfg *config.Config, probes config.Probes) bool {
-	if !probes.Zoxide {
-		return false
-	}
-	if cfg != nil {
-		if s, ok := cfg.Sources["zoxide"]; ok && s.Kind == config.KindZoxide && !s.Enabled {
-			return false
-		}
-	}
-	return true
+func (zoxideProvider) enabled(_ *config.Config, probes config.Probes) bool {
+	return probes.Zoxide
 }
 
-func (zoxideProvider) List(ctx context.Context) ([]Candidate, error) {
+func (p zoxideProvider) List(ctx context.Context) ([]Candidate, error) {
 	// zoxide query --list prints "score\t/path/to/dir"; only the path column
 	// is used by shep. Errors (zoxide not initialised, empty db) degrade to
 	// an empty result rather than aborting enumeration.
@@ -480,7 +468,16 @@ func (zoxideProvider) List(ctx context.Context) ([]Candidate, error) {
 	if err != nil {
 		return nil, nil
 	}
-	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	return parseZoxideOutput(string(out), p.root), nil
+}
+
+// parseZoxideOutput parses `zoxide query --list` output ("score\tpath" per
+// line) into candidates. When root is non-empty, only paths at or beneath
+// root are kept, so a group workspace's nested picker never leaks the user's
+// entire unscoped zoxide history. Exported as a pure function (not a method)
+// so the scoping rule is unit-testable without shelling out to zoxide.
+func parseZoxideOutput(out, root string) []Candidate {
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	cands := make([]Candidate, 0, len(lines))
 	for _, line := range lines {
 		if line == "" {
@@ -493,13 +490,145 @@ func (zoxideProvider) List(ctx context.Context) ([]Candidate, error) {
 		if path == "" {
 			continue
 		}
-		cands = append(cands, Candidate{
+		if root != "" && !isWithinRoot(root, path) {
+			continue
+		}
+		cand := Candidate{
 			Path:   path,
 			Label:  RelativeLabel(path),
-			Source: "zoxide",
-		})
+			Source: config.SourceZoxide,
+		}
+		// zoxide's directory history can go stale once a visited directory is
+		// deleted; stat it here so launch()'s existing Missing check rejects
+		// it instead of a false success (printing the path) or falling back
+		// to "/", $HOME, or cwd.
+		if _, err := os.Stat(path); err != nil {
+			cand.Missing = true
+		}
+		cands = append(cands, cand)
 	}
-	return cands, nil
+	return cands
+}
+
+// isWithinRoot reports whether path is root itself or one of its
+// descendants. root may use a leading "~/" (as group workspace paths do); it
+// is tilde-expanded before comparison. An unresolvable relative path (e.g.
+// different volumes on Windows) is treated as "not within root".
+func isWithinRoot(root, path string) bool {
+	root = expandTilde(root)
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// --- projects provider ---
+
+// projectsProvider discovers directories that contain any configured marker
+// (a file or directory name) beneath root, recursively up to MaxDepth when
+// Recursive is set (depth 1 = root's immediate children). It never descends
+// past a directory it has already flagged as a project, to avoid noisy
+// nested matches (e.g. vendored dependencies).
+type projectsProvider struct {
+	cfg  *config.Config
+	root string
+}
+
+func (projectsProvider) Name() string { return config.SourceProjects }
+
+func (p *projectsProvider) enabled(_ *config.Config, _ config.Probes) bool {
+	return p.root != ""
+}
+
+func (p *projectsProvider) List(ctx context.Context) ([]Candidate, error) {
+	return ListProjects(ctx, p.cfg.Sources.Projects, p.root)
+}
+
+// ListProjects scans root for project directories per cfg. Exported so tests
+// and the command layer can exercise the scan directly. maxDepth <= 0 with
+// Recursive true is treated as depth 1 (immediate children only).
+func ListProjects(ctx context.Context, cfg config.ProjectsSourceConfig, root string) ([]Candidate, error) {
+	if root == "" {
+		return nil, nil
+	}
+	root = expandTilde(root)
+	maxDepth := cfg.MaxDepth
+	if !cfg.Recursive || maxDepth <= 0 {
+		maxDepth = 1
+	}
+	ignore := make(map[string]bool, len(cfg.Ignore))
+	for _, n := range cfg.Ignore {
+		ignore[n] = true
+	}
+	var out []Candidate
+	var walk func(dir string, depth int) error
+	walk = func(dir string, depth int) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		names := make(map[string]bool, len(entries))
+		for _, e := range entries {
+			names[e.Name()] = true
+		}
+		isProject := false
+		for _, m := range cfg.Markers {
+			if names[m] {
+				isProject = true
+				break
+			}
+		}
+		if isProject {
+			out = append(out, Candidate{
+				Path:   dir,
+				Label:  RelativeLabel(dir),
+				Source: config.SourceProjects,
+			})
+			return nil // do not descend past a detected project
+		}
+		if depth >= maxDepth {
+			return nil
+		}
+		for _, e := range entries {
+			if !e.IsDir() || ignore[e.Name()] {
+				continue
+			}
+			if err := walk(filepath.Join(dir, e.Name()), depth+1); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	// root itself is never a candidate (it is already represented by the
+	// group workspace entry that owns it); scanning starts at its children.
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	for _, e := range entries {
+		if !e.IsDir() || ignore[e.Name()] {
+			continue
+		}
+		if err := walk(filepath.Join(root, e.Name()), 1); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // expandTilde replaces a leading ~ with the user's home dir. Unresolvable

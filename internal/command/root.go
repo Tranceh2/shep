@@ -134,8 +134,8 @@ func (a *App) rootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "shep",
 		Short: "Herdr-first project launcher",
-		Long: "shep enumerates project workspaces from Herdr, zoxide and the\n" +
-			"current directory, then opens the selected one with Herdr.",
+		Long: "shep enumerates project workspaces from Herdr, predefined workspaces,\n" +
+			"zoxide and discovered projects, then opens the selected one with Herdr.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -151,7 +151,7 @@ func (a *App) rootCmd() *cobra.Command {
 	}
 
 	root.PersistentFlags().StringVar(&a.configPath, "config", "",
-		"path to shep config.toml (default: discovered via os.UserConfigDir)")
+		"path to shep config.toml (default: $XDG_CONFIG_HOME/shep/config.toml, or ~/.config/shep/config.toml when XDG_CONFIG_HOME is unset)")
 
 	// PersistentPreRunE runs before every subcommand: it loads the config
 	// (from --config or the discovered path, falling back to Defaults when
@@ -179,6 +179,7 @@ func (a *App) rootCmd() *cobra.Command {
 	root.AddCommand(a.listCmd())
 	root.AddCommand(a.openCmd())
 	root.AddCommand(a.previewCmd())
+	root.AddCommand(a.doctorCmd())
 
 	return root
 }

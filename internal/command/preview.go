@@ -15,20 +15,21 @@ import (
 	"github.com/tranceh2/shep/internal/preview"
 )
 
-// previewColorHex and previewWarnColorHex are standalone colors inspired by
-// the Catppuccin Mocha theme used in the TUI picker. They provide basic
-// ANSI color hints for `shep preview --color` output, independent of the
-// interactive picker's detailed layout styles.
-const (
-	previewColorHex     = "#89b4fa"
-	previewWarnColorHex = "#f5c2e7"
-)
+// previewWarnColorHex is a standalone color inspired by the Catppuccin Mocha
+// theme used in the TUI picker. It styles shep's own synthetic warning line
+// in `shep preview --color` output; the rendered preview body itself is
+// never flattened to a single color (see writePreview), so no equivalent
+// constant exists for the body text.
+const previewWarnColorHex = "#f5c2e7"
 
 // previewCmd builds `shep preview <path>` (WP-4): a stable, non-interactive
 // way to render the same preview shown in the `shep open` picker's preview
 // pane, so Television and other external tools can reuse it as a preview
 // command. Output defaults to plain text (no ANSI escape codes); --color
-// opts into Lip Gloss styling, applied only when stdout is a terminal.
+// opts into passing through any real ANSI color the renderer already
+// produced (e.g. lsd/eza coloring for "dir", a captured pane's colors for
+// "active_pane"), applied only when stdout is a terminal, so the CLI output
+// matches what the picker shows.
 func (a *App) previewCmd() *cobra.Command {
 	var color bool
 	cmd := &cobra.Command{
@@ -37,17 +38,19 @@ func (a *App) previewCmd() *cobra.Command {
 		Long: `shep preview renders the same preview shown in the shep open picker's
 preview pane for a single path, then exits. Output is plain text by default
 (no ANSI escape codes) so Television and other external tools can safely
-embed it as a preview command. Pass --color to opt into Lip Gloss styling;
-it only takes effect when stdout is a terminal, so piped/captured output
-always stays plain. An invalid or missing path reports a clean error on
-stderr and exits non-zero.`,
+embed it as a preview command. Pass --color to keep any real ANSI color the
+renderer already produced (e.g. a directory listing's own colors, or a
+captured pane's real terminal colors), so the output matches the picker; it
+only takes effect when stdout is a terminal, so piped/captured output always
+stays plain. An invalid or missing path reports a clean error on stderr and
+exits non-zero.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.runPreview(cmd, args[0], color)
 		},
 	}
 	cmd.Flags().BoolVar(&color, "color", false,
-		"opt into Lip Gloss ANSI styling when stdout is a terminal (default: plain text)")
+		"keep real ANSI color from the renderer when stdout is a terminal (default: plain text)")
 	return cmd
 }
 
@@ -114,25 +117,42 @@ func stripANSI(s string) string {
 }
 
 // writePreview writes the rendered preview text and any transient warning
-// (WP-3's safe command fallback) to out, applying Lip Gloss styling only when
-// styled is true (the caller has already gated that on --color plus a
-// terminal check). styled forces a color-capable renderer scoped to out
-// rather than re-detecting out's terminal capabilities, since the caller
-// already made that decision (isTerminalWriter) before committing to styled
-// output.
+// (WP-3's safe command fallback) to out. Precedence between the two output
+// modes:
+//
+//   - styled == false (the default, or --color passed but stdout is not a
+//     terminal): res.Text is always run through stripANSI. This keeps the
+//     Television-safe contract — plain text, no escape codes — so piped or
+//     captured output never surprises a script consumer.
+//   - styled == true (--color passed AND stdout is a real terminal, decided
+//     by the caller via isTerminalWriter before calling this function):
+//     res.Text is written through UNMODIFIED. The renderer may have already
+//     produced real ANSI color for some sections (e.g. lsd/eza's own
+//     coloring for "dir", or a captured pane's real terminal colors for
+//     "active_pane"); passing it through verbatim is what makes `shep
+//     preview --color` actually match what the interactive picker shows.
+//     Sections that never carried color ("identity", "git", "workspace")
+//     simply render as plain text here too, since they had none to begin
+//     with — this function no longer flattens everything to one accent
+//     color.
+//
+// The warning line is always shep's own synthetic text, never
+// renderer-sourced, so it is always stripped first and — only when
+// styled — given shep's own warn color on top.
 func writePreview(out io.Writer, res preview.Result, styled bool) {
-	text := stripANSI(res.Text)
+	text := res.Text
 	warn := ""
 	if res.Warning != "" {
 		warn = "warning: " + stripANSI(res.Warning)
 	}
 	if styled {
-		r := lipgloss.NewRenderer(out)
-		r.SetColorProfile(termenv.TrueColor)
-		text = r.NewStyle().Foreground(lipgloss.Color(previewColorHex)).Render(text)
 		if warn != "" {
+			r := lipgloss.NewRenderer(out)
+			r.SetColorProfile(termenv.TrueColor)
 			warn = r.NewStyle().Foreground(lipgloss.Color(previewWarnColorHex)).Italic(true).Render(warn)
 		}
+	} else {
+		text = stripANSI(text)
 	}
 	fmt.Fprintln(out, text)
 	if warn != "" {

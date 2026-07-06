@@ -21,9 +21,6 @@ func runListFor(t *testing.T, cfg *config.Config, format string) (string, string
 	}
 	var out, errOut bytes.Buffer
 	app := New(WithStreams(&out, &errOut))
-	// Inject the config so PersistentPreRunE sees it via the --config path is
-	// awkward for synthetic configs; set the field directly and skip preload
-	// by annotating — but list needs preload to run, so instead set cfg first.
 	app.cfg = cfg
 	app.probes = config.Probes{}
 
@@ -33,33 +30,52 @@ func runListFor(t *testing.T, cfg *config.Config, format string) (string, string
 	return out.String(), errOut.String(), err
 }
 
-// TestList_HumanFormatHasHeader (PL-1) confirms the human table renders a
-// header and the cwd candidate.
+// workspacesCfg builds a Config whose only enabled source is workspaces,
+// seeded with one entry per name under a fresh temp root.
+func workspacesCfg(t *testing.T, names ...string) (*config.Config, string) {
+	t.Helper()
+	root := t.TempDir()
+	cfg := config.Defaults()
+	cfg.General.Sources = []string{config.SourceWorkspaces}
+	for _, n := range names {
+		dir := filepath.Join(root, n)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		cfg.Workspaces = append(cfg.Workspaces, config.WorkspaceConfig{Name: n, Path: dir})
+	}
+	return cfg, root
+}
+
+// TestList_HumanFormatHasHeader confirms the human table renders a header
+// and a seeded workspace candidate.
 func TestList_HumanFormatHasHeader(t *testing.T) {
 	t.Parallel()
-	out, _, err := runListFor(t, nil, "human")
+	cfg, _ := workspacesCfg(t, "proj")
+	out, _, err := runListFor(t, cfg, "human")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
 	if !strings.Contains(out, "PATH") || !strings.Contains(out, "LABEL") || !strings.Contains(out, "SOURCE") {
 		t.Errorf("human output missing header, got:\n%s", out)
 	}
-	if !strings.Contains(out, "cwd") {
-		t.Errorf("expected cwd candidate in output, got:\n%s", out)
+	if !strings.Contains(out, "proj") {
+		t.Errorf("expected seeded workspace candidate in output, got:\n%s", out)
 	}
 }
 
-// TestList_TSVFormat (PL-5) asserts each non-header line is path\tlabel\n
-// with exactly one tab and no ANSI escapes, parseable by Television.
+// TestList_TSVFormat asserts each non-header line is path\tlabel\n with
+// exactly one tab and no ANSI escapes, parseable by Television.
 func TestList_TSVFormat(t *testing.T) {
 	t.Parallel()
-	out, _, err := runListFor(t, nil, "tsv")
+	cfg, _ := workspacesCfg(t, "proj")
+	out, _, err := runListFor(t, cfg, "tsv")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	if len(lines) == 0 {
-		t.Fatal("expected at least the cwd candidate in tsv output")
+		t.Fatal("expected at least the seeded candidate in tsv output")
 	}
 	for _, line := range lines {
 		tabCount := strings.Count(line, "\t")
@@ -72,11 +88,12 @@ func TestList_TSVFormat(t *testing.T) {
 	}
 }
 
-// TestList_JSONFormat (PL-6) decodes the output as a structured array with
-// the expected fields and valid JSON.
+// TestList_JSONFormat decodes the output as a structured array with the
+// expected fields and valid JSON.
 func TestList_JSONFormat(t *testing.T) {
 	t.Parallel()
-	out, _, err := runListFor(t, nil, "json")
+	cfg, _ := workspacesCfg(t, "proj")
+	out, _, err := runListFor(t, cfg, "json")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -94,12 +111,10 @@ func TestList_JSONFormat(t *testing.T) {
 	}
 }
 
-// TestList_JSONEmptyIsArray not []null when nothing matches; guard the
-// non-nil-array contract.
+// TestList_JSONEmptyIsArray guards the non-nil-array contract: [] not null
+// when nothing matches.
 func TestList_JSONEmptyIsArray(t *testing.T) {
 	t.Parallel()
-	// renderJSON must emit a non-null `[]` (not `null`) when there are no
-	// candidates so Television/JSON consumers can safely iterate.
 	var out bytes.Buffer
 	if err := renderJSON(&out, nil); err != nil {
 		t.Fatal(err)
@@ -116,40 +131,33 @@ func TestList_JSONEmptyIsArray(t *testing.T) {
 	}
 }
 
-// TestList_DedupAcrossSources (PL-4) seeds cwd + a roots entry that resolves
-// to the same directory and asserts only one candidate survives dedup.
-// Cannot run t.Parallel because it changes the process cwd via t.Chdir.
-func TestList_DedupAcrossSources(t *testing.T) {
-	parent := t.TempDir()
-	project := filepath.Join(parent, "proj")
-	if err := os.Mkdir(project, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Chdir(project) // cwd == project
-
+// TestList_MissingWorkspaceMarked confirms a configured workspace whose path
+// does not exist appears in the listing marked as missing, in both human and
+// json output.
+func TestList_MissingWorkspaceMarked(t *testing.T) {
+	t.Parallel()
 	cfg := config.Defaults()
-	cfg.Sources["dev"] = config.Source{
-		Kind:    config.KindRoots,
-		Enabled: true,
-		Options: map[string]string{"path": parent},
+	cfg.General.Sources = []string{config.SourceWorkspaces}
+	cfg.Workspaces = []config.WorkspaceConfig{{Name: "ghost", Path: filepath.Join(t.TempDir(), "nope")}}
+
+	humanOut, _, err := runListFor(t, cfg, "human")
+	if err != nil {
+		t.Fatalf("list human: %v", err)
+	}
+	if !strings.Contains(humanOut, "yes") {
+		t.Errorf("human output missing 'yes' missing marker:\n%s", humanOut)
 	}
 
-	out, _, err := runListFor(t, cfg, "tsv")
+	jsonOut, _, err := runListFor(t, cfg, "json")
 	if err != nil {
-		t.Fatalf("list: %v", err)
+		t.Fatalf("list json: %v", err)
 	}
-	// Both the cwd candidate and the dev-roots "proj" candidate normalise to
-	// the same path; dedup must leave exactly one "proj" row. project is
-	// outside $HOME here, so its home-relative Label is the path unchanged.
-	count := 0
-	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
-		parts := strings.SplitN(line, "\t", 2)
-		if len(parts) == 2 && parts[1] == project {
-			count++
-		}
+	var got []listCandidate
+	if err := json.Unmarshal([]byte(jsonOut), &got); err != nil {
+		t.Fatalf("invalid json: %v", err)
 	}
-	if count != 1 {
-		t.Errorf("expected exactly one %q row after dedup, got %d:\n%s", project, count, out)
+	if len(got) != 1 || !got[0].Missing {
+		t.Errorf("expected one missing=true candidate, got %+v", got)
 	}
 }
 
@@ -170,11 +178,8 @@ func TestList_InvalidFormatReturnsError(t *testing.T) {
 // candidates from the healthy sources.
 func TestList_PartialSourceErrorWarnsButSucceeds(t *testing.T) {
 	t.Parallel()
-	// A roots source pointing at a path that exists but contains entries plus
-	// an inaccessible herdr provider (nil driver) -> herdr inert, roots works.
-	tmp := t.TempDir()
-	cfg := config.Defaults()
-	cfg.Sources["dev"] = config.Source{Kind: config.KindRoots, Enabled: true, Options: map[string]string{"path": tmp}}
+	cfg, _ := workspacesCfg(t, "proj")
+	cfg.General.Sources = []string{config.SourceHerdr, config.SourceWorkspaces}
 	out, _, err := runListFor(t, cfg, "human")
 	if err != nil {
 		t.Fatalf("list should succeed on partial: %v", err)
@@ -209,27 +214,19 @@ func TestRender_HumanHasColumns(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := out.String()
-	// tabwriter pads columns with spaces; assert token presence rather than
-	// exact tab-separated substrings so the rendering contract stays loose.
-	for _, want := range []string{"PATH", "LABEL", "SOURCE", "/x", "x", "z"} {
+	for _, want := range []string{"PATH", "LABEL", "SOURCE", "MISSING", "/x", "x", "z"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("human output missing %q: %q", want, got)
 		}
 	}
 }
 
-// TestList_IncludesConfigWorkspaces (PR3 task 3.4) confirms predefined
-// [[workspaces]] entries surface as candidates with Source "config" in `shep
-// list` output across the human, tsv and json formats.
+// TestList_IncludesConfigWorkspaces confirms predefined [[workspaces]]
+// entries surface as candidates with Source "workspaces" in `shep list`
+// output across the human, tsv and json formats.
 func TestList_IncludesConfigWorkspaces(t *testing.T) {
 	t.Parallel()
-	tmp := t.TempDir()
-	proj := filepath.Join(tmp, "proj")
-	if err := os.Mkdir(proj, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	cfg := config.Defaults()
-	cfg.Workspaces = []config.WorkspaceConfig{{Name: "proj", Path: proj}}
+	cfg, _ := workspacesCfg(t, "proj")
 
 	for _, format := range []string{"human", "tsv", "json"} {
 		t.Run(format, func(t *testing.T) {
@@ -241,13 +238,11 @@ func TestList_IncludesConfigWorkspaces(t *testing.T) {
 			if !strings.Contains(out, "proj") {
 				t.Errorf("list %s missing workspace label 'proj':\n%s", format, out)
 			}
-			// tsv deliberately emits path\tlabel (no source column); human and
-			// json expose the source column where "config" must appear.
 			if format == "tsv" {
 				return
 			}
-			if !strings.Contains(out, "config") {
-				t.Errorf("list %s missing 'config' source:\n%s", format, out)
+			if !strings.Contains(out, "workspaces") {
+				t.Errorf("list %s missing 'workspaces' source:\n%s", format, out)
 			}
 		})
 	}
