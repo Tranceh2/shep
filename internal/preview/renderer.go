@@ -89,7 +89,7 @@ func NewRenderer(cfg *config.Config, probes config.Probes, git GitProvider, runn
 // in turn, joining non-empty blocks with a blank line, then caches the
 // result by path and config.
 func (r *defaultRenderer) Render(ctx context.Context, cand source.Candidate) (Result, error) {
-	key := PreviewCacheKey(renderPath(cand), r.cfg.Preview)
+	key := PreviewCacheKey(cand, r.cfg.Preview)
 	if cached, ok := r.cache.Get(key); ok {
 		return cached, nil
 	}

@@ -3,10 +3,13 @@ package preview
 import (
 	"crypto/sha256"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/tranceh2/shep/internal/config"
+	"github.com/tranceh2/shep/internal/source"
 )
 
 // Cache is a TTL-bounded in-memory cache of rendered preview Results, keyed by
@@ -58,11 +61,38 @@ func (c *Cache) Put(key string, r Result) {
 	c.items[key] = cacheItem{result: r, expires: exp}
 }
 
-// PreviewCacheKey derives a stable cache key from the candidate path and the
-// renderer config. Two candidates with the same path but different command or
-// sections must not alias each other, hence the config hash.
-func PreviewCacheKey(path string, cfg config.PreviewConfig) string {
-	return fmt.Sprintf("%s|%x", path, sha256.Sum256([]byte(configFingerprint(cfg))))
+// PreviewCacheKey derives a stable cache key from the candidate's identity
+// and the renderer config. Two DISTINCT candidates that happen to resolve to
+// the same filesystem path — e.g. multiple [[workspaces]] entries pointing
+// at the same directory, or multiple Herdr tabs/panes sharing a cwd — must
+// not alias each other, hence the full candidate fingerprint (not just the
+// path) feeds the key alongside the config hash.
+func PreviewCacheKey(cand source.Candidate, cfg config.PreviewConfig) string {
+	return fmt.Sprintf("%s|%x", candidateFingerprint(cand), sha256.Sum256([]byte(configFingerprint(cfg))))
+}
+
+// candidateFingerprint serialises the parts of a candidate that influence
+// rendered preview output (path, label, source, and metadata such as
+// workspace_id/tab_id) into a stable string. Meta keys are sorted before
+// serialising because Go map iteration order is randomised — an unsorted
+// serialization would itself be a second source of nondeterminism.
+func candidateFingerprint(cand source.Candidate) string {
+	keys := make([]string, 0, len(cand.Meta))
+	for k := range cand.Meta {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var meta strings.Builder
+	for i, k := range keys {
+		if i > 0 {
+			meta.WriteByte(',')
+		}
+		meta.WriteString(k)
+		meta.WriteByte('=')
+		meta.WriteString(cand.Meta[k])
+	}
+	return fmt.Sprintf("%s|%s|%s|%s", renderPath(cand), cand.Label, cand.Source, meta.String())
 }
 
 // configFingerprint serialises the renderer-relevant preview config into a

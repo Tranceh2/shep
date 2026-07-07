@@ -331,6 +331,14 @@ func TestResolvePreviewNames_CaseFoldMatches(t *testing.T) {
 type fakePreviewDriver struct {
 	tabs             []source.Tab
 	panes            []source.Pane
+	// tabsByWorkspace/panesByWorkspace, when non-nil, let a single fake
+	// serve DIFFERENT tabs/panes per workspaceID — needed to reproduce the
+	// cache-collision bug for herdr candidates that share a cwd (multiple
+	// tabs/panes commonly point at the same directory). When nil, ListTabs
+	// and ListPanes fall back to the flat tabs/panes fields for backward
+	// compatibility with existing single-workspace tests.
+	tabsByWorkspace  map[string][]source.Tab
+	panesByWorkspace map[string][]source.Pane
 	readOut          string
 	tabsErr          error
 	panesErr         error
@@ -362,6 +370,9 @@ func (f *fakePreviewDriver) ListTabs(ctx context.Context, workspaceID string) ([
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
+	if f.tabsByWorkspace != nil {
+		return f.tabsByWorkspace[workspaceID], f.tabsErr
+	}
 	return f.tabs, f.tabsErr
 }
 func (f *fakePreviewDriver) ListPanes(ctx context.Context, workspaceID string) ([]source.Pane, error) {
@@ -369,6 +380,9 @@ func (f *fakePreviewDriver) ListPanes(ctx context.Context, workspaceID string) (
 	if f.block {
 		<-ctx.Done()
 		return nil, ctx.Err()
+	}
+	if f.panesByWorkspace != nil {
+		return f.panesByWorkspace[workspaceID], f.panesErr
 	}
 	return f.panes, f.panesErr
 }
@@ -521,6 +535,69 @@ func TestRender_HerdrSections_SkipOnNonHerdrCandidate(t *testing.T) {
 	if len(driver.listCalls) != 0 || driver.readCalls != 0 {
 		t.Errorf("herdr driver must not be queried for non-herdr candidate: calls=%v read=%d",
 			driver.listCalls, driver.readCalls)
+	}
+}
+
+// TestRender_CacheKey_DoesNotAliasCandidatesSharingPath is the regression
+// test for the real-world repro: multiple [[workspaces]] entries pointing at
+// the identical path (e.g. "ECORP", "allsafe", "k8s-ecorp" all at
+// ~/Trabajo/ECORP) must render their own identity, not a stale cached
+// preview bled over from whichever candidate was rendered first.
+func TestRender_CacheKey_DoesNotAliasCandidatesSharingPath(t *testing.T) {
+	t.Parallel()
+
+	r := NewRenderer(cfgWithDefault(config.PreviewIdentity), config.Probes{}, nil, nil)
+	shared := "/Users/x/Trabajo/ECORP"
+
+	gotLatam := mustRender(t, r, candidate("ECORP", shared, config.SourceWorkspaces, ""))
+	gotallsafe := mustRender(t, r, candidate("allsafe", shared, config.SourceWorkspaces, ""))
+	gotK8s := mustRender(t, r, candidate("k8s-ecorp", shared, config.SourceWorkspaces, "k8s"))
+
+	if !strings.HasPrefix(gotLatam, "ECORP\n") {
+		t.Errorf("ECORP candidate must show its own identity: %q", gotLatam)
+	}
+	if !strings.HasPrefix(gotallsafe, "allsafe\n") {
+		t.Errorf("allsafe candidate must show its own identity, not ECORP's cached preview: %q", gotallsafe)
+	}
+	if !strings.HasPrefix(gotK8s, "k8s-ecorp\n") {
+		t.Errorf("k8s-ecorp candidate must show its own identity, not a cached collision: %q", gotK8s)
+	}
+	if gotLatam == gotallsafe || gotLatam == gotK8s || gotallsafe == gotK8s {
+		t.Error("distinct workspaces sharing a path must not alias in the preview cache")
+	}
+}
+
+// TestRender_CacheKey_DoesNotAliasHerdrCandidatesSharingCWD covers the same
+// class of bug for Herdr-sourced candidates: multiple tabs/panes commonly
+// share the same cwd, and each must render its own workspace section instead
+// of whichever workspace happened to populate the cache first.
+func TestRender_CacheKey_DoesNotAliasHerdrCandidatesSharingCWD(t *testing.T) {
+	t.Parallel()
+
+	cfg := cfgWithDefault(config.PreviewWorkspace)
+	driver := &fakePreviewDriver{
+		tabsByWorkspace: map[string][]source.Tab{
+			"wA": {{ID: "wA:t1", WorkspaceID: "wA", Label: "editorA", Focused: true, Number: 1, PaneCount: 1}},
+			"wB": {{ID: "wB:t1", WorkspaceID: "wB", Label: "editorB", Focused: true, Number: 1, PaneCount: 1}},
+		},
+		panesByWorkspace: map[string][]source.Pane{
+			"wA": {{ID: "wA:p1", WorkspaceID: "wA", CWD: "/shared", Focused: true}},
+			"wB": {{ID: "wB:p1", WorkspaceID: "wB", CWD: "/shared", Focused: true}},
+		},
+	}
+	r := NewRenderer(cfg, config.Probes{}, nil, nil, WithHerdrDriver(driver))
+
+	gotA := mustRender(t, r, herdrCandidate("tabA", "/shared", "wA"))
+	gotB := mustRender(t, r, herdrCandidate("tabB", "/shared", "wB"))
+
+	if !strings.Contains(gotA, "editorA") {
+		t.Errorf("candidate A must show its own tab: %q", gotA)
+	}
+	if !strings.Contains(gotB, "editorB") {
+		t.Errorf("candidate B must show its own tab, not A's cached result: %q", gotB)
+	}
+	if gotA == gotB {
+		t.Error("distinct herdr candidates sharing a cwd must not alias in the preview cache")
 	}
 }
 
