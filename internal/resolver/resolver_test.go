@@ -10,68 +10,26 @@ import (
 	"testing"
 
 	"github.com/tranceh2/shep/internal/config"
+	"github.com/tranceh2/shep/internal/pathutil"
 	"github.com/tranceh2/shep/internal/source"
 )
 
-// TestNormalize_Table is the spec table (PL-4). It exercises tilde expansion,
-// absolute resolution, trailing-slash trimming and that an unresolvable
-// symlink still returns a stable, non-empty key.
-func TestNormalize_Table(t *testing.T) {
-	tmp := t.TempDir()
-	// Create a real symlink so EvalSymlinks has something to follow.
-	target := filepath.Join(tmp, "real")
-	_ = os.Mkdir(target, 0o755)
-	link := filepath.Join(tmp, "link")
-	_ = os.Symlink(target, link)
-
-	cases := []struct {
-		name    string
-		input   string
-		wantAbs bool
-		wantSub string // substring expected in result (case-sensitive)
-		wantErr bool
-	}{
-		{name: "empty errors", input: "", wantErr: true},
-		{name: "absolute with trailing slash trimmed", input: target + string(filepath.Separator), wantSub: target},
-		{name: "symlink resolves to target", input: link, wantSub: target},
-		{name: "relative resolved to absolute", input: ".", wantAbs: true},
-		{name: "dot cleanup", input: target + "/./sub/..", wantSub: target},
+// TestNormalize_Delegates proves resolver.Normalize is a 1-line delegate to
+// pathutil.Normalize, not a separate implementation that could silently
+// diverge. One representative input is enough here — exhaustive coverage of
+// Normalize's behavior (tilde expansion, symlink resolution, trailing-slash
+// trimming, EvalSymlinks-failure fallback) lives in
+// internal/pathutil/normalize_test.go.
+func TestNormalize_Delegates(t *testing.T) {
+	t.Parallel()
+	input := "~/foo/../foo/bar/"
+	want, wantErr := pathutil.Normalize(input)
+	got, gotErr := Normalize(input)
+	if (gotErr == nil) != (wantErr == nil) {
+		t.Fatalf("resolver.Normalize(%q) err = %v, want err %v", input, gotErr, wantErr)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := Normalize(tc.input)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected error, got %q", got)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("normalize %q: %v", tc.input, err)
-			}
-			if tc.wantAbs && !filepath.IsAbs(got) {
-				t.Errorf("expected absolute, got %q", got)
-			}
-			if tc.wantSub != "" && !strings.Contains(got, tc.wantSub) {
-				t.Errorf("expected result to contain %q, got %q", tc.wantSub, got)
-			}
-			if strings.HasSuffix(got, string(filepath.Separator)) && got != string(filepath.Separator) {
-				t.Errorf("result has trailing separator: %q", got)
-			}
-		})
-	}
-}
-
-// TestNormalize_HomeUnresolvable returns an error when HOME is unavailable so
-// determination cannot silently produce a wrong dedup key.
-func TestNormalize_HomeUnresolvable(t *testing.T) {
-	// Cannot use t.Parallel with t.Setenv.
-	t.Setenv("HOME", "")
-	// On darwin os.UserHomeDir falls back to passwd lookup so this may still
-	// succeed; treat that as an acceptable platform variation rather than a
-	// hard assertion to keep the test portable.
-	if _, err := Normalize("~/x"); err == nil && runtime.GOOS != "darwin" {
-		t.Error("expected error expanding ~ without HOME on non-darwin")
+	if got != want {
+		t.Errorf("resolver.Normalize(%q) = %q, want %q (pathutil.Normalize)", input, got, want)
 	}
 }
 
@@ -103,6 +61,38 @@ func TestDedup_SymlinkCollapse(t *testing.T) {
 	}
 	if out[0].NormalizedPath != want {
 		t.Errorf("normalized path: got %q want %q", out[0].NormalizedPath, want)
+	}
+}
+
+// TestDedup_CaseFoldCollapse is the bug-reproduction test: two candidates
+// with the SAME label whose paths differ only in case (e.g. a Herdr
+// candidate at "ECORP" and a zoxide candidate at "ecorp") must collapse to
+// one entry when the filesystem itself considers them the same directory
+// (case-insensitive, e.g. macOS APFS default / Windows). This is gated to
+// darwin/windows because a case-sensitive filesystem (most Linux/ext4)
+// genuinely has two distinct directories here — SameDir correctly reports
+// false in that case, so asserting collapse would be wrong off-darwin.
+func TestDedup_CaseFoldCollapse(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		t.Skip("case-insensitive collapse only guaranteed on darwin/windows")
+	}
+	tmp := t.TempDir()
+	upper := filepath.Join(tmp, "ECORP")
+	if err := os.Mkdir(upper, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lower := filepath.Join(tmp, "ecorp")
+
+	cands := []source.Candidate{
+		{Path: upper, Label: "ECORP", Source: "herdr"},
+		{Path: lower, Label: "ECORP", Source: "zoxide"},
+	}
+	out := Dedup(cands)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 after case-fold dedup, got %d: %+v", len(out), out)
+	}
+	if out[0].Source != "herdr" {
+		t.Errorf("expected first-seen survivor (herdr), got %q", out[0].Source)
 	}
 }
 

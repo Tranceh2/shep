@@ -30,6 +30,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/tranceh2/shep/internal/config"
+	"github.com/tranceh2/shep/internal/pathutil"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -324,19 +326,35 @@ type paneCurrentEnvelope struct {
 func (d *Driver) FocusOrCreate(ctx context.Context, cand source.Candidate) (source.FocusResult, error) {
 	needle := cand.NormalizedPath
 	if needle == "" {
-		n, err := normalizePath(cand.Path)
+		n, err := pathutil.Normalize(cand.Path)
 		if err != nil {
 			return source.FocusResult{}, fmt.Errorf("normalize candidate path: %w", err)
 		}
 		needle = n
 	}
 
-	_, panes, err := d.loadState(ctx)
+	workspaces, panes, err := d.loadState(ctx)
 	if err != nil {
 		return source.FocusResult{}, err
 	}
 
-	if id := matchWorkspaceByCWD(panes, needle); id != "" {
+	// A [[workspaces]]-config candidate's identity is its label, not merely
+	// "any workspace at this directory": sibling config entries may share a
+	// path (e.g. a allsafe-launcher entry alongside a plain-shell entry at
+	// the same repo root). Matching by label+cwd together prevents focusing
+	// an unrelated same-path workspace; if no such match exists we go
+	// straight to create instead of falling back to a CWD-only match, which
+	// would reintroduce that exact mismatch. Any other source (zoxide,
+	// projects, herdr, or a workspaces candidate with an empty label) keeps
+	// the original CWD-only match unchanged.
+	if cand.Source == config.SourceWorkspaces && cand.Label != "" {
+		if id := matchWorkspaceByLabelAndCWD(workspaces, panes, cand.Label, needle); id != "" {
+			if _, err := d.run.Run(ctx, d.binary, "workspace", "focus", id); err != nil {
+				return source.FocusResult{}, fmt.Errorf("herdr workspace focus %s: %w", id, err)
+			}
+			return source.FocusResult{WorkspaceID: id, Action: source.HerdrActionFocused}, nil
+		}
+	} else if id := matchWorkspaceByCWD(panes, needle); id != "" {
 		if _, err := d.run.Run(ctx, d.binary, "workspace", "focus", id); err != nil {
 			return source.FocusResult{}, fmt.Errorf("herdr workspace focus %s: %w", id, err)
 		}
@@ -574,21 +592,73 @@ func rawPaneToPane(p rawPane) source.Pane {
 	}
 }
 
+// paneMatchesCWD reports whether pane p's CWD or ForegroundCWD normalizes
+// to the same filesystem entry as needle (the candidate's normalized path).
+// Returns false on any normalize error or stat mismatch — duplicate of the
+// inner loop previously inlined in matchWorkspaceByCWD and
+// matchWorkspaceByLabelAndCWD, extracted to keep case-fold matching in one
+// place.
+func paneMatchesCWD(p rawPane, needle string) bool {
+	for _, candidate := range []string{p.CWD, p.ForegroundCWD} {
+		if candidate == "" {
+			continue
+		}
+		n, err := pathutil.Normalize(candidate)
+		if err != nil {
+			continue
+		}
+		if pathutil.SameDir(n, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 // matchWorkspaceByCWD returns the workspace_id of the first pane whose cwd or
-// foreground_cwd normalises to needle. Returns "" when no pane matches.
+// foreground_cwd refers to the same directory as needle — using
+// pathutil.SameDir (filesystem identity via device+inode), not a string
+// comparison, so a differently-cased duplicate on a case-insensitive
+// filesystem (macOS APFS default, Windows) still matches. Returns "" when no
+// pane matches.
 func matchWorkspaceByCWD(panes []rawPane, needle string) string {
 	for _, p := range panes {
-		for _, candidate := range []string{p.CWD, p.ForegroundCWD} {
-			if candidate == "" {
-				continue
-			}
-			n, err := normalizePath(candidate)
-			if err != nil {
-				continue
-			}
-			if n == needle {
-				return p.WorkspaceID
-			}
+		if paneMatchesCWD(p, needle) {
+			return p.WorkspaceID
+		}
+	}
+	return ""
+}
+
+// matchWorkspaceByLabelAndCWD returns the workspace_id of a workspace whose
+// Label equals label (exact string match — label identifies which
+// [[workspaces]] config entry a candidate belongs to, so two entries at the
+// SAME directory but with different explicit names must stay distinct
+// identities) AND at least one of its panes' cwd/foreground_cwd refers to
+// the same directory as needle (pathutil.SameDir — filesystem identity via
+// device+inode, so a differently-cased duplicate on a case-insensitive
+// filesystem still matches). Both conditions must hold on the SAME
+// workspace; the cwd check alone also guards against Herdr ever returning
+// two workspaces with the same label at genuinely different paths. Returns
+// "" when no workspace satisfies both conditions.
+func matchWorkspaceByLabelAndCWD(workspaces []rawWorkspace, panes []rawPane, label, needle string) string {
+	if label == "" {
+		return ""
+	}
+	labeled := make(map[string]bool, len(workspaces))
+	for _, w := range workspaces {
+		if w.Label == label {
+			labeled[w.WorkspaceID] = true
+		}
+	}
+	if len(labeled) == 0 {
+		return ""
+	}
+	for _, p := range panes {
+		if !labeled[p.WorkspaceID] {
+			continue
+		}
+		if paneMatchesCWD(p, needle) {
+			return p.WorkspaceID
 		}
 	}
 	return ""
@@ -707,26 +777,4 @@ func (d *Driver) ReadPane(ctx context.Context, paneID string, lines int) (string
 		return "", fmt.Errorf("herdr pane read %s: %w", paneID, err)
 	}
 	return string(out), nil
-}
-
-// normalizePath mirrors the resolver's normalisation (expand ~, absolute,
-// trim trailing separator, EvalSymlinks) without importing the resolver to
-// avoid a herdr -> resolver -> source cycle. Unresolved symlinks keep the
-// cleaned absolute path.
-func normalizePath(p string) (string, error) {
-	if p == "" {
-		return "", errors.New("empty path")
-	}
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return "", err
-	}
-	cleaned := strings.TrimRight(abs, string(filepath.Separator))
-	if cleaned == "" {
-		cleaned = string(filepath.Separator)
-	}
-	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
-		return resolved, nil
-	}
-	return cleaned, nil
 }

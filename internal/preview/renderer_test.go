@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -256,6 +257,72 @@ func TestResolvePreviewNames_TildeWorkspacePathExpands(t *testing.T) {
 
 	if len(got) != 1 || got[0] != "custom" {
 		t.Errorf("got %v, want [custom] (tilde-prefixed workspace path should expand and match)", got)
+	}
+}
+
+// TestResolvePreviewNames_SymlinkAliasMatches is a regression guard: this
+// scenario must keep matching after the pathutil.SameDir swap (os.SameFile
+// is the source of truth for case-fold and symlink equivalence, so no
+// separate Normalize pass is needed at this call site). A workspace
+// configured via a symlink must still match a candidate whose path is the
+// symlink's real target (and vice versa).
+func TestResolvePreviewNames_SymlinkAliasMatches(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	real := filepath.Join(tmp, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(tmp, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("workspace is symlink, candidate is real target", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Defaults()
+		cfg.Workspaces = []config.WorkspaceConfig{{Name: "aliased", Path: link, Preview: []string{"custom"}}}
+		got := resolvePreviewNames(cfg, source.Candidate{Path: real, Source: config.SourceZoxide})
+		if len(got) != 1 || got[0] != "custom" {
+			t.Errorf("got %v, want [custom] (symlink workspace should match its real target)", got)
+		}
+	})
+
+	t.Run("workspace is real target, candidate is symlink", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Defaults()
+		cfg.Workspaces = []config.WorkspaceConfig{{Name: "aliased", Path: real, Preview: []string{"custom"}}}
+		got := resolvePreviewNames(cfg, source.Candidate{Path: link, Source: config.SourceZoxide})
+		if len(got) != 1 || got[0] != "custom" {
+			t.Errorf("got %v, want [custom] (real-target workspace should match a symlink candidate)", got)
+		}
+	})
+}
+
+// TestResolvePreviewNames_CaseFoldMatches is a regression guard: this
+// scenario must keep matching after the pathutil.SameDir swap (os.SameFile
+// is the source of truth for case-fold and symlink equivalence). On a
+// case-insensitive filesystem (macOS APFS default, Windows), a workspace
+// path differing only in case from the candidate's real directory must
+// still match. Gated to darwin/windows because a case-sensitive filesystem
+// (most Linux/ext4) genuinely has two distinct directories here.
+func TestResolvePreviewNames_CaseFoldMatches(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		t.Skip("case-insensitive match only guaranteed on darwin/windows")
+	}
+	t.Parallel()
+	tmp := t.TempDir()
+	upper := filepath.Join(tmp, "ECORP")
+	if err := os.Mkdir(upper, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lower := filepath.Join(tmp, "ecorp")
+
+	cfg := config.Defaults()
+	cfg.Workspaces = []config.WorkspaceConfig{{Name: "ecorp", Path: upper, Preview: []string{"custom"}}}
+	got := resolvePreviewNames(cfg, source.Candidate{Path: lower, Source: config.SourceZoxide})
+	if len(got) != 1 || got[0] != "custom" {
+		t.Errorf("got %v, want [custom] (case-insensitive filesystem match)", got)
 	}
 }
 

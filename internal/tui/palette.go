@@ -25,12 +25,10 @@ var palette = struct {
 	cursorStyle         lipgloss.Style
 	rowStyle            lipgloss.Style
 	mutedStyle          lipgloss.Style
-	previewHeaderStyle  lipgloss.Style
 	labelStyle          lipgloss.Style
 	previewLoadingStyle lipgloss.Style
 	previewErrStyle     lipgloss.Style
 	borderStyle         lipgloss.Style
-	hintDisabledStyle   lipgloss.Style
 }{
 	// query line: bold accent text so the live filter stands out.
 	queryStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorAccent)).Bold(true),
@@ -42,10 +40,8 @@ var palette = struct {
 	// normal row: base text on transparent background. Width applied
 	// per-render, same reasoning as cursorStyle above.
 	rowStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorText)),
-	// muted text (help, no-matches).
+	// muted text (help, no-matches, footer).
 	mutedStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted)),
-	// preview header: bold secondary accent.
-	previewHeaderStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorAccent2)).Bold(true),
 	// label prefix in the preview pane.
 	labelStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted)),
 	// loading indicator shown while an async preview render is in flight
@@ -61,10 +57,4 @@ var palette = struct {
 	// frame dimensions) so width/height chrome math has a single source of
 	// truth instead of drifting between two independently-tuned borders.
 	borderStyle: lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(colorBorder)).Padding(0, 1),
-	// hintDisabledStyle dims the footer's ctrl+t/ctrl+p keybinding hints when
-	// shep is not running inside a Herdr pane (Model.currentPane == nil):
-	// those bindings are inert in that case (see selectWithTarget), and
-	// Faint makes the disabled state visually distinct from the always-live
-	// "enter" hint and the candidate text, which keep mutedStyle.
-	hintDisabledStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted)).Faint(true),
 }

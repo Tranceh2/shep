@@ -157,7 +157,12 @@ func resolvePreviewNames(cfg *config.Config, cand source.Candidate) []string {
 		if wsPath == "" || len(ws.Preview) == 0 {
 			continue
 		}
-		if samePath(wsPath, path) {
+		// pathutil.SameDir already resolves symlinks and case-fold
+		// equivalence via os.Stat + os.SameFile (device+inode identity), so
+		// no separate Normalize pass is needed on either side here: a
+		// wsPath that is itself a symlink, or that differs only in case
+		// from path on a case-insensitive filesystem, still matches.
+		if pathutil.SameDir(wsPath, path) {
 			return ws.Preview
 		}
 	}
@@ -431,17 +436,4 @@ func renderPath(cand source.Candidate) string {
 		return cand.NormalizedPath
 	}
 	return cand.Path
-}
-
-// samePath reports whether two paths are equal after symlink resolution.
-func samePath(a, b string) bool {
-	if a == b {
-		return true
-	}
-	ra, errA := filepath.EvalSymlinks(a)
-	rb, errB := filepath.EvalSymlinks(b)
-	if errA != nil || errB != nil {
-		return false
-	}
-	return ra == rb
 }

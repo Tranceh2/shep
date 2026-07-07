@@ -15,9 +15,13 @@
 // selects; esc/q/ctrl+c/ctrl+g cancels (Run then returns ErrCancelled);
 // ctrl+l toggles the landscape/portrait layout for the current session only
 // (never persisted). Below both panes, a full-width footer line always
-// shows the highlighted candidate's complete text, even when the list
-// column truncates its own row. The palette is Catppuccin Mocha,
-// centralised in palette.go so colors live in one place.
+// shows the highlighted candidate's complete text plus context-sensitive
+// keybinding hints (hintsFor), even when the list column truncates its own
+// row — the ctrl+t/ctrl+p hint only appears for a Command-only workspace
+// (see candidateIsCommandOnly), and it is the sole indicator of which
+// entries can be opened as a Herdr tab/pane; list rows carry no per-entry
+// type marker. The palette is Catppuccin Mocha, centralised in palette.go
+// so colors live in one place.
 package tui
 
 import (
@@ -83,8 +87,8 @@ const minListH = chromeRows + 3
 
 // minPrevH reuses minPreviewHeight: it is already the terminal's own real
 // minimum height for a preview pane to render sensibly (previewChromeRows'
-// border+header+blank+help chrome plus 1 body line — see
-// capPreviewBodyLines' height-previewChromeRows accounting), independent of
+// border-only chrome plus 1 body line — see capPreviewBodyLines'
+// height-previewChromeRows accounting), independent of
 // whether that height budget comes from the full terminal (landscape, where
 // both panes share m.height) or a height-axis split share (portrait, where
 // the preview only gets prevH).
@@ -108,9 +112,10 @@ const minPortraitHeight = minListH + minPrevH + 2
 const chromeRows = 4
 
 // previewChromeRows is the fixed vertical overhead of the preview pane
-// deducted from the pane's outer height before capping body lines:
-// 2 (border top+bottom) + 1 (header) + 1 (blank) + 1 (help) = 5.
-const previewChromeRows = 5
+// deducted from the pane's outer height before capping body lines: 2
+// (border top+bottom). The preview pane has no header or help line — see
+// renderPreview — so the body gets the full remaining budget.
+const previewChromeRows = 2
 
 // ErrCancelled is the quiet cancellation sentinel returned by Run when the
 // user quits without selecting (esc/ctrl+c/ctrl+g). Callers use errors.Is to
@@ -134,8 +139,8 @@ type Model struct {
 	// currentPane is the Herdr pane shep is running inside, queried once by
 	// the caller and threaded in via WithCurrentPane. nil means "no current
 	// pane" (shep is not running inside a Herdr workspace pane, or the query
-	// failed): the footer's ctrl+t/ctrl+p hints render dimmed and handleKey
-	// ignores both bindings in that case (see selectWithTarget).
+	// failed): the footer's ctrl+t/ctrl+p hints are hidden entirely and
+	// handleKey ignores both bindings in that case (see selectWithTarget).
 	currentPane *source.Pane
 	// chosenTarget records which target the user picked via ctrl+t ("tab")
 	// or ctrl+p ("pane"). Empty means no override: enter was pressed (or the
@@ -354,17 +359,26 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // selectWithTarget handles ctrl+t ("tab") and ctrl+p ("pane"): when shep is
-// running inside a Herdr pane (currentPane != nil) and there is a highlighted
-// candidate to launch (filtered is non-empty), it selects the highlighted
-// candidate exactly like enter, records target as the chosen launch target
-// (read back via ChosenTarget), and quits. It is a no-op — the binding is
-// disabled — when currentPane is nil (the tab/pane launch targets require
-// shep to already be running inside a Herdr workspace pane; see
-// App.launchInCurrentWorkspace) or when filtered is empty (no candidate is
+// running inside a Herdr pane (currentPane != nil), there is a highlighted
+// candidate to launch (filtered is non-empty), and that candidate is a
+// Command-only workspace (candidateIsCommandOnly), it selects the
+// highlighted candidate exactly like enter, records target as the chosen
+// launch target (read back via ChosenTarget), and quits. It is a no-op —
+// the binding is disabled — when currentPane is nil (the tab/pane launch
+// targets require shep to already be running inside a Herdr workspace pane;
+// see App.launchInCurrentWorkspace), when filtered is empty (no candidate is
 // highlighted, mirroring enter's own len(m.filtered) > 0 guard — without
-// this, chosenTarget would be set for a launch that never had a candidate).
+// this, chosenTarget would be set for a launch that never had a candidate),
+// or when the highlighted candidate is not Command-only (a group/template/
+// plain entry has no command to launch — App.launchInCurrentWorkspace would
+// otherwise fail with "requires an entry with a command" after the TUI has
+// already quit, which reads as a crash instead of simply staying put).
 func (m Model) selectWithTarget(target string) (tea.Model, tea.Cmd) {
 	if m.currentPane == nil || len(m.filtered) == 0 {
+		return m, nil
+	}
+	cand, ok := m.currentCandidate()
+	if !ok || !candidateIsCommandOnly(cand) {
 		return m, nil
 	}
 	m.selected = m.cursor
@@ -587,30 +601,45 @@ func (m Model) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left, body, footer)
 }
 
-// footerHintsText is the static keybinding hints appended after the
-// candidate footer text: enter opens a new Herdr workspace (the default,
-// always live); ctrl+t opens a new tab and ctrl+p splits a new pane, both
-// inside the Herdr workspace shep is currently running in — only live when
-// currentPane is set (selectWithTarget no-ops both bindings otherwise).
-const footerHintsText = "enter: ws · ctrl+t: tab · ctrl+p: pane"
+// footerSeparator joins the candidate label and the keybinding hints in the
+// footer line.
+const footerSeparator = "  ·  "
+
+// hintsFor returns the context-sensitive keybinding hints shown in the
+// footer for cand. enter/esc/ctrl+l are always live, so they always appear.
+// ctrl+t (open a new Herdr tab) and ctrl+p (split a new Herdr pane) only
+// appear when BOTH shep is running inside a Herdr pane (hasCurrentPane) AND
+// cand is a Command-only workspace (candidateIsCommandOnly) — the only kind
+// of entry selectWithTarget actually launches. Advertising a binding that
+// would silently no-op (a group/template/plain entry, or no current pane at
+// all) would be misleading, so those hints are hidden entirely rather than
+// shown dimmed.
+func hintsFor(cand source.Candidate, hasCurrentPane bool) string {
+	if hasCurrentPane && candidateIsCommandOnly(cand) {
+		return "enter: open · ctrl+t: tab · ctrl+p: pane · esc: cancel · ctrl+l: layout"
+	}
+	return "enter: open · esc: cancel · ctrl+l: layout"
+}
 
 // renderFooter builds the full-width footer line: the currently highlighted
-// candidate's full text (footerText) followed by the keybinding hints
-// (footerHintsText), defensively truncated to m.width via the same
-// ANSI-safe truncateToWidth used everywhere else in this file, for the rare
-// narrow-terminal case where even the full line does not fit. The hints
-// segment renders in the dimmed hintDisabledStyle when currentPane is nil
-// (ctrl+t/ctrl+p are inert in that case — see selectWithTarget), and in the
-// same mutedStyle as the candidate text otherwise. Merged into the single
-// existing footer line (rather than a separate line) so the panes' height
-// budget math — carefully tuned around exactly one reserved footer row, see
+// candidate's full text (footerText) followed by the context-sensitive
+// keybinding hints (hintsFor), separated by footerSeparator. When the full
+// line would overflow m.width, the hints are kept intact (they are the
+// actionable part) and the label is truncated instead — the reverse of
+// naively truncating the whole composed string, which would eat into the
+// hints first since they come last. Merged into the single existing footer
+// line (rather than a separate line) so the panes' height budget math —
+// carefully tuned around exactly one reserved footer row, see
 // minPortraitHeight — never has to change.
 func (m Model) renderFooter() string {
-	hintsStyle := palette.mutedStyle
-	if m.currentPane == nil {
-		hintsStyle = palette.hintDisabledStyle
+	cand, _ := m.currentCandidate()
+	hints := hintsFor(cand, m.currentPane != nil)
+	label := m.footerText()
+	if m.width > 0 {
+		budget := m.width - lipgloss.Width(footerSeparator) - lipgloss.Width(hints)
+		label = truncateToWidth(label, budget)
 	}
-	full := palette.mutedStyle.Render(m.footerText()) + "  " + hintsStyle.Render(footerHintsText)
+	full := palette.mutedStyle.Render(label) + footerSeparator + palette.mutedStyle.Render(hints)
 	return lipgloss.NewStyle().Width(m.width).Render(truncateToWidth(full, m.width))
 }
 
@@ -895,6 +924,17 @@ func candidateDisplayText(c source.Candidate) string {
 	return row
 }
 
+// candidateIsCommandOnly reports whether cand is a Command-only workspace —
+// a plain `command = "..."` entry that is neither a group (Meta["group"] ==
+// "true") nor a template (Meta["template"] != ""). This is the only kind of
+// entry that can actually be opened as a Herdr tab/pane target
+// (App.launchInCurrentWorkspace requires a command); selectWithTarget and
+// hintsFor both use this to keep the ctrl+t/ctrl+p binding — and its footer
+// hint — a no-op/hidden on any entry that can't honour it.
+func candidateIsCommandOnly(cand source.Candidate) bool {
+	return cand.Meta["command"] != "" && cand.Meta["group"] != "true" && cand.Meta["template"] == ""
+}
+
 // footerText returns the full, untruncated display text for the currently
 // highlighted candidate (icon+label-or-path+missing-suffix, via
 // candidateDisplayText), or a muted "(no selection)" placeholder when the
@@ -926,17 +966,16 @@ func truncateToWidth(s string, maxW int) string {
 	return ansi.Truncate(s, maxW, "…")
 }
 
-// renderPreview shows the highlighted candidate's rendered preview plus a
-// short help line so the user always knows the keybindings. When the terminal
-// height is known, the body is capped to m.height - previewChromeRows lines so
-// a long output (e.g. dir or active pane content) never expands infinitely and
-// breaks JoinHorizontal / pushes the search box off screen.
+// renderPreview shows the highlighted candidate's rendered preview. There is
+// no header or help line — the keybinding hints live in the single footer
+// line (see hintsFor) so the preview pane's full budget goes to content.
+// When the terminal height is known, the body is capped to m.height -
+// previewChromeRows lines so a long output (e.g. dir or active pane content)
+// never expands infinitely and breaks JoinHorizontal / pushes the search box
+// off screen.
 func (m Model) renderPreview(width int) string {
-	header := palette.previewHeaderStyle.Width(width).Render(truncateToWidth("preview", width))
 	body := m.previewBody(width)
-	body = capPreviewBodyLines(body, m.height)
-	help := palette.mutedStyle.Width(width).Render(truncateToWidth("enter select  esc cancel  ctrl+j/k move  ctrl+l layout", width))
-	return lipgloss.JoinVertical(lipgloss.Left, header, body, "", help)
+	return capPreviewBodyLines(body, m.height)
 }
 
 // capPreviewBodyLines truncates body so it never exceeds the preview pane's
@@ -947,9 +986,8 @@ func (m Model) renderPreview(width int) string {
 // paneBoxStyle for the border. A non-positive height (unknown) returns body
 // unchanged so previews still render fully in headless/test contexts.
 //
-// The body budget is height minus: the border's 2 rows (top+bottom, see
-// paneBoxStyle) and the header/blank/help lines lipgloss.JoinVertical adds
-// around the body in renderPreview (3 more, each exactly 1 physical line).
+// The body budget is height minus the border's 2 rows (top+bottom, see
+// paneBoxStyle) — renderPreview has no header/help chrome around the body.
 // Capping strictly to this budget is what lets paneBoxStyle's Height()
 // modifier safely PAD shorter bodies up to the same budget without ever
 // having to truncate: Height() never truncates oversized content on its

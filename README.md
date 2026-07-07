@@ -97,6 +97,13 @@ A `type = "group"` entry is a nested picker: selecting it re-scopes the
 picker to its own `sources` list rooted at its own `path`, instead of opening
 the group entry itself.
 
+Renaming a `[[workspaces]]` entry's `name` does **not** re-focus the Herdr
+workspace created under the old name — `shep open` treats it as a new
+identity and creates a fresh workspace, leaving the old one open. To rename
+without losing the existing workspace: `shep close` the old Herdr workspace
+(or rename it directly in Herdr), then edit `name` and `shep open` the entry
+again.
+
 `[templates.<name>]` describes what opens after Enter for a **freshly
 created** workspace only (focusing an existing one never re-applies a
 template): a plain `command` in the root pane, or a structured `tabs`/`nodes`

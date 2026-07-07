@@ -12,8 +12,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/tranceh2/shep/internal/pathutil"
@@ -32,42 +30,38 @@ import (
 // A returned error only happens when the initial expansion or absolute
 // resolution itself fails (e.g. cwd unobtainable). Symlink failures never
 // produce an error — they degrade to the cleaned path.
+//
+// The implementation lives in pathutil.Normalize (a dependency-free leaf
+// package) so herdr can share it without importing resolver -> source and
+// creating a cycle. This export is kept for callers that already depend on
+// it (e.g. internal/command/open.go).
 func Normalize(input string) (string, error) {
-	if input == "" {
-		return "", errors.New("normalize: empty path")
-	}
-	expanded, err := pathutil.ExpandTilde(input)
-	if err != nil {
-		return "", fmt.Errorf("normalize %q: %w", input, err)
-	}
-	absolute, err := absPath(expanded)
-	if err != nil {
-		return "", fmt.Errorf("normalize %q: %w", input, err)
-	}
-	cleaned := filepath.Clean(absolute)
-	cleaned = trimTrailingSep(cleaned)
-	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
-		return resolved, nil
-	}
-	// Unresolved symlinks are not fatal: callers need a stable key for dedup.
-	return cleaned, nil
+	return pathutil.Normalize(input)
 }
 
-// Dedup normalises each candidate and removes path collisions using a
-// composite key of normalised path + label, keeping the first-seen
-// candidate for each key. The composite key preserves explicitly named
+// Dedup normalises each candidate and removes path collisions, keeping the
+// first-seen candidate whenever another already-kept candidate matches on
+// BOTH filesystem identity (pathutil.SameDir — device+inode, not a string
+// comparison) AND label. That composite check preserves explicitly named
 // workspaces that target the same path (e.g. "ECORP" and "k8s-ecorp" at
 // /srv/ecorp) as distinct candidates while still collapsing true
-// duplicates (same path AND same label) from different providers. The
-// returned slice reuses the input order for the survivors so provider
-// order from the registry is preserved. Candidates carry a defensive copy
-// of Meta from the source package; this function only sets
-// NormalizedPath on the survivors.
+// duplicates — including two candidates whose paths differ only in case on
+// a case-insensitive filesystem (e.g. a Herdr-sourced "ECORP" and a
+// zoxide-sourced "ecorp" that are the SAME real directory) — from
+// different providers. The returned slice reuses the input order for the
+// survivors so provider order from the registry is preserved. Candidates
+// carry a defensive copy of Meta from the source package; this function
+// only sets NormalizedPath on the survivors.
+//
+// This is an O(N^2) scan rather than an O(1) map lookup, because SameDir
+// cannot be expressed as a map key (it depends on a Stat syscall, not just
+// the two normalized strings). Picker-sized candidate lists are well under
+// 100 entries and this runs once per `shep open` invocation, so the cost is
+// a handful of Stat calls, not a hot path.
 func Dedup(candidates []source.Candidate) []source.Candidate {
 	if len(candidates) == 0 {
 		return nil
 	}
-	seen := make(map[string]struct{}, len(candidates))
 	out := make([]source.Candidate, 0, len(candidates))
 	for _, c := range candidates {
 		norm, err := Normalize(c.Path)
@@ -76,23 +70,21 @@ func Dedup(candidates []source.Candidate) []source.Candidate {
 			// broken candidate does not silently swallow others.
 			norm = c.Path
 		}
-		key := dedupKey(norm, c.Label)
-		if _, exists := seen[key]; exists {
+		duplicate := false
+		for _, kept := range out {
+			if kept.Label == c.Label && pathutil.SameDir(kept.NormalizedPath, norm) {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
 			continue
 		}
-		seen[key] = struct{}{}
 		clone := c.Clone()
 		clone.NormalizedPath = norm
 		out = append(out, clone)
 	}
 	return out
-}
-
-// dedupKey builds the composite dedup key from a normalised path and label.
-// Two candidates collide only when BOTH match, so explicitly named
-// workspaces at the same path are preserved as distinct candidates.
-func dedupKey(norm, label string) string {
-	return norm + "|" + label
 }
 
 // Match performs a case-insensitive substring search against each candidate's
@@ -147,27 +139,4 @@ func ResolveFromSources(ctx context.Context, registry *source.Registry, query st
 		return all, matches, collectErr
 	}
 	return all, matches, nil
-}
-
-// absPath makes a path absolute. Relative paths are anchored at the process
-// cwd; an unobtainable cwd is a hard error because absolute forms underpin
-// the rest of the normalisation pipeline.
-func absPath(p string) (string, error) {
-	if filepath.IsAbs(p) {
-		return p, nil
-	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(cwd, p), nil
-}
-
-// trimTrailingSep removes a single trailing separator while preserving the
-// root "/" so POSIX semantics hold on dedup keys.
-func trimTrailingSep(p string) string {
-	if p == string(filepath.Separator) {
-		return p
-	}
-	return strings.TrimRight(p, string(filepath.Separator))
 }

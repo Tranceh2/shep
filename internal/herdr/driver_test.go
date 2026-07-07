@@ -5,11 +5,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -478,6 +480,54 @@ func TestFocusOrCreate_MatchesForegroundCWD(t *testing.T) {
 	}
 }
 
+// TestFocusOrCreate_CaseFoldCWDMatch_FocusesExisting is the bug-reproduction
+// test from the original report: a Herdr workspace is already open at a
+// real directory ("ECORP"), and the candidate being opened differs only in
+// case ("ecorp", e.g. sourced from zoxide's lowercase history entry). On a
+// case-insensitive filesystem (macOS APFS default, Windows) these are the
+// SAME real directory, so FocusOrCreate must focus the existing workspace
+// instead of creating a duplicate one. Gated to darwin/windows because a
+// case-sensitive filesystem (most Linux/ext4) genuinely has two distinct
+// directories here.
+//
+// Against the pre-fix driver (string `==` comparison in matchWorkspaceByCWD),
+// this test fails: the old code would not match "ecorp" against "ECORP" and
+// would issue `workspace create` instead of `workspace focus wA`.
+func TestFocusOrCreate_CaseFoldCWDMatch_FocusesExisting(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		t.Skip("case-insensitive collapse only guaranteed on darwin/windows")
+	}
+	dir := t.TempDir()
+	upper := mkDir(t, dir, "ECORP")
+	lower := filepath.Join(dir, "ecorp")
+
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr workspace list", out: workspaceListJSON("wA", "ECORP")},
+		{match: "herdr pane list", out: paneListJSON(rawPane{
+			PaneID: "wA:p1", WorkspaceID: "wA", CWD: upper, ForegroundCWD: upper, Focused: true,
+		})},
+		{match: "herdr workspace focus wA", out: []byte(`{}`)},
+	}}
+	d := New("herdr", WithRunner(r))
+	res, err := d.FocusOrCreate(context.Background(), source.Candidate{
+		Path: lower, Label: "ecorp",
+	})
+	if err != nil {
+		t.Fatalf("FocusOrCreate: %v", err)
+	}
+	if res.Action != source.HerdrActionFocused {
+		t.Fatalf("Action = %v, want HerdrActionFocused (must not create a duplicate on a case-insensitive filesystem)", res.Action)
+	}
+	if res.WorkspaceID != "wA" {
+		t.Errorf("WorkspaceID = %q, want wA", res.WorkspaceID)
+	}
+	for _, c := range r.calls {
+		if strings.Contains(c, "create") {
+			t.Errorf("unexpected create call: %s", c)
+		}
+	}
+}
+
 // HI-6: malformed workspace list JSON surfaces as an error so the caller can
 // fall back to a path-print.
 func TestListWorkspaces_MalformedJSONReturnsError(t *testing.T) {
@@ -895,5 +945,317 @@ func TestDriver_CurrentPane_NoFocusedPaneReturnsSentinel(t *testing.T) {
 	_, err := d.CurrentPane(context.Background())
 	if !errors.Is(err, source.ErrNoFocusedPane) {
 		t.Errorf("expected source.ErrNoFocusedPane, got %v", err)
+	}
+}
+
+// TestMatchWorkspaceByCWD_CaseFold exercises matchWorkspaceByCWD directly
+// with a needle that differs only in case from a real pane cwd. On a
+// case-insensitive filesystem (macOS APFS default, Windows) that Stat
+// resolves to the same inode, so the match must succeed; gated to
+// darwin/windows since a case-sensitive filesystem (most Linux/ext4)
+// genuinely treats these as two distinct, non-existent-as-typed paths.
+func TestMatchWorkspaceByCWD_CaseFold(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		t.Skip("case-insensitive match only guaranteed on darwin/windows")
+	}
+	t.Parallel()
+	dir := t.TempDir()
+	upper := mkDir(t, dir, "ECORP")
+	lower := filepath.Join(dir, "ecorp")
+
+	panes := []rawPane{{PaneID: "wA:p1", WorkspaceID: "wA", CWD: upper}}
+	if got := matchWorkspaceByCWD(panes, lower); got != "wA" {
+		t.Errorf("matchWorkspaceByCWD() = %q, want wA (case-insensitive filesystem match)", got)
+	}
+}
+
+// TestMatchWorkspaceByLabelAndCWD exercises matchWorkspaceByLabelAndCWD in
+// isolation. This helper backs the two-tier FocusOrCreate match for
+// [[workspaces]]-sourced candidates: it requires both a workspace label
+// match AND a pane cwd/foreground_cwd match, so a same-path workspace with a
+// different label (e.g. a sibling [[workspaces]] entry sharing a path) is
+// never returned.
+func TestMatchWorkspaceByLabelAndCWD(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		workspaces []rawWorkspace
+		panes      []rawPane
+		label      string
+		needle     string
+		want       string
+	}{
+		{
+			name:       "label and cwd match via CWD field",
+			workspaces: []rawWorkspace{{WorkspaceID: "wA", Label: "allsafe"}},
+			panes:      []rawPane{{PaneID: "wA:p1", WorkspaceID: "wA", CWD: "/x"}},
+			label:      "allsafe",
+			needle:     "/x",
+			want:       "wA",
+		},
+		{
+			name:       "label and cwd match via ForegroundCWD field",
+			workspaces: []rawWorkspace{{WorkspaceID: "wA", Label: "allsafe"}},
+			panes:      []rawPane{{PaneID: "wA:p1", WorkspaceID: "wA", ForegroundCWD: "/x"}},
+			label:      "allsafe",
+			needle:     "/x",
+			want:       "wA",
+		},
+		{
+			name:       "label matches but no pane cwd matches",
+			workspaces: []rawWorkspace{{WorkspaceID: "wA", Label: "allsafe"}},
+			panes:      []rawPane{{PaneID: "wA:p1", WorkspaceID: "wA", CWD: "/other"}},
+			label:      "allsafe",
+			needle:     "/x",
+			want:       "",
+		},
+		{
+			name:       "cwd matches a different workspace but label does not match",
+			workspaces: []rawWorkspace{{WorkspaceID: "wA", Label: "SomeOtherWorkspace"}},
+			panes:      []rawPane{{PaneID: "wA:p1", WorkspaceID: "wA", CWD: "/x"}},
+			label:      "allsafe",
+			needle:     "/x",
+			want:       "",
+		},
+		{
+			name:       "no workspaces at all",
+			workspaces: nil,
+			panes:      nil,
+			label:      "allsafe",
+			needle:     "/x",
+			want:       "",
+		},
+		{
+			name:       "multiple panes for the same workspace, only one matches cwd",
+			workspaces: []rawWorkspace{{WorkspaceID: "wA", Label: "allsafe"}},
+			panes: []rawPane{
+				{PaneID: "wA:p1", WorkspaceID: "wA", CWD: "/other"},
+				{PaneID: "wA:p2", WorkspaceID: "wA", CWD: "/x"},
+			},
+			label:  "allsafe",
+			needle: "/x",
+			want:   "wA",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := matchWorkspaceByLabelAndCWD(tt.workspaces, tt.panes, tt.label, tt.needle)
+			if got != tt.want {
+				t.Errorf("matchWorkspaceByLabelAndCWD() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPaneMatchesCWD exercises paneMatchesCWD directly — the shared helper
+// extracted from the identical inner loop previously duplicated in
+// matchWorkspaceByCWD and matchWorkspaceByLabelAndCWD.
+func TestPaneMatchesCWD(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	a := mkDir(t, dir, "a")
+	b := mkDir(t, dir, "b")
+	brokenTarget := filepath.Join(dir, "nonexistent-target")
+	brokenLink := filepath.Join(dir, "broken")
+	if err := os.Symlink(brokenTarget, brokenLink); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name   string
+		pane   rawPane
+		needle string
+		want   bool
+	}{
+		{name: "CWD matches", pane: rawPane{CWD: a}, needle: a, want: true},
+		{name: "ForegroundCWD matches", pane: rawPane{CWD: b, ForegroundCWD: a}, needle: a, want: true},
+		{name: "neither matches", pane: rawPane{CWD: a, ForegroundCWD: b}, needle: dir, want: false},
+		{name: "CWD is a broken symlink to nonexistent target", pane: rawPane{CWD: brokenLink}, needle: a, want: false},
+		{name: "both fields empty", pane: rawPane{}, needle: a, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := paneMatchesCWD(tt.pane, tt.needle); got != tt.want {
+				t.Errorf("paneMatchesCWD(%+v, %q) = %v, want %v", tt.pane, tt.needle, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestFocusOrCreate_WorkspaceSource_LabelAndCWDMatch_Focuses: when the
+// candidate comes from config.SourceWorkspaces and carries a label, an
+// existing Herdr workspace whose label AND pane cwd both match is focused
+// (not recreated).
+func TestFocusOrCreate_WorkspaceSource_LabelAndCWDMatch_Focuses(t *testing.T) {
+	dir := t.TempDir()
+	ecorp := mkDir(t, dir, "ECORP")
+	ecorpN, err := filepath.EvalSymlinks(ecorp)
+	if err != nil {
+		t.Fatalf("eval symlinks: %v", err)
+	}
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr workspace list", out: workspaceListJSON("wallsafe", "allsafe")},
+		{match: "herdr pane list", out: paneListJSON(rawPane{
+			PaneID: "wallsafe:p1", WorkspaceID: "wallsafe", CWD: ecorp, ForegroundCWD: ecorp, Focused: true,
+		})},
+		{match: "herdr workspace focus wallsafe", out: []byte(`{}`)},
+	}}
+	d := New("herdr", WithRunner(r))
+	res, err := d.FocusOrCreate(context.Background(), source.Candidate{
+		Source: config.SourceWorkspaces, Path: ecorp, NormalizedPath: ecorpN, Label: "allsafe",
+	})
+	if err != nil {
+		t.Fatalf("FocusOrCreate: %v", err)
+	}
+	if res.Action != source.HerdrActionFocused {
+		t.Errorf("Action = %v, want HerdrActionFocused", res.Action)
+	}
+	if res.WorkspaceID != "wallsafe" {
+		t.Errorf("WorkspaceID = %q, want wallsafe", res.WorkspaceID)
+	}
+	for _, c := range r.calls {
+		if strings.Contains(c, "create") {
+			t.Errorf("unexpected create call: %s", c)
+		}
+	}
+}
+
+// TestFocusOrCreate_WorkspaceSource_SameCWDDifferentLabel_CreatesNew is the
+// bug-reproduction test: an existing workspace already sits at the candidate's
+// cwd (e.g. opened earlier via a sibling [[workspaces]] entry sharing the
+// same path, such as the "ECORP" group entry), but under a DIFFERENT label.
+// Opening "allsafe" (a distinct config entry at that same path) must create a
+// new workspace, not focus the mismatched-label one.
+//
+// Against the pre-fix driver (CWD-only matching), this test fails: the old
+// code would match by cwd alone and issue `workspace focus wOther` instead of
+// `workspace create --label allsafe`.
+func TestFocusOrCreate_WorkspaceSource_SameCWDDifferentLabel_CreatesNew(t *testing.T) {
+	dir := t.TempDir()
+	ecorp := mkDir(t, dir, "ECORP")
+	ecorpN, err := filepath.EvalSymlinks(ecorp)
+	if err != nil {
+		t.Fatalf("eval symlinks: %v", err)
+	}
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr workspace list", out: workspaceListJSON("wOther", "SomeOtherWorkspace")},
+		{match: "herdr pane list", out: paneListJSON(rawPane{
+			PaneID: "wOther:p1", WorkspaceID: "wOther", CWD: ecorp, ForegroundCWD: ecorp, Focused: true,
+		})},
+		{match: "herdr workspace create --cwd " + ecorp + " --label allsafe --focus", out: workspaceCreatedJSON("wNEW", "wNEW:t1", "wNEW:p1")},
+	}}
+	d := New("herdr", WithRunner(r))
+	res, err := d.FocusOrCreate(context.Background(), source.Candidate{
+		Source: config.SourceWorkspaces, Path: ecorp, NormalizedPath: ecorpN, Label: "allsafe",
+	})
+	if err != nil {
+		t.Fatalf("FocusOrCreate: %v", err)
+	}
+	if res.Action != source.HerdrActionCreated {
+		t.Fatalf("Action = %v, want HerdrActionCreated (must NOT focus the mismatched-label workspace at the same cwd)", res.Action)
+	}
+	if res.WorkspaceID != "wNEW" {
+		t.Errorf("WorkspaceID = %q, want wNEW", res.WorkspaceID)
+	}
+	for _, c := range r.calls {
+		if strings.Contains(c, "focus wOther") {
+			t.Errorf("must not focus the mismatched-label existing workspace: %s", c)
+		}
+	}
+}
+
+// TestFocusOrCreate_WorkspaceSource_NoMatch_CreatesNew: no existing workspace
+// shares the candidate's label or cwd -> create as always.
+func TestFocusOrCreate_WorkspaceSource_NoMatch_CreatesNew(t *testing.T) {
+	dir := t.TempDir()
+	unrelated := filepath.Join(dir, "unrelated")
+	matching := mkDir(t, dir, "k8s-ecorp")
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr workspace list", out: workspaceListJSON("wA", "SomethingElse")},
+		{match: "herdr pane list", out: paneListJSON(rawPane{
+			PaneID: "wA:p1", WorkspaceID: "wA", CWD: unrelated, ForegroundCWD: unrelated, Focused: true,
+		})},
+		{match: "herdr workspace create --cwd " + matching + " --label k8s-ecorp --focus", out: workspaceCreatedJSON("wNEW", "wNEW:t1", "wNEW:p1")},
+	}}
+	d := New("herdr", WithRunner(r))
+	res, err := d.FocusOrCreate(context.Background(), source.Candidate{
+		Source: config.SourceWorkspaces, Path: matching, Label: "k8s-ecorp",
+	})
+	if err != nil {
+		t.Fatalf("FocusOrCreate: %v", err)
+	}
+	if res.Action != source.HerdrActionCreated {
+		t.Fatalf("Action = %v, want HerdrActionCreated", res.Action)
+	}
+	if res.WorkspaceID != "wNEW" {
+		t.Errorf("WorkspaceID = %q, want wNEW", res.WorkspaceID)
+	}
+}
+
+// TestFocusOrCreate_NonWorkspaceSource_CWDMatchStillWorks is a regression
+// test: candidates from any non-workspaces source (zoxide, projects,
+// herdr) must keep the original CWD-only matching behaviour, even when
+// Herdr's label for the matched workspace differs from the candidate's
+// label.
+func TestFocusOrCreate_NonWorkspaceSource_CWDMatchStillWorks(t *testing.T) {
+	dir := t.TempDir()
+	proj := mkDir(t, dir, "proj")
+	projN, err := filepath.EvalSymlinks(proj)
+	if err != nil {
+		t.Fatalf("eval symlinks: %v", err)
+	}
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr workspace list", out: workspaceListJSON("wA", "some-unrelated-herdr-label")},
+		{match: "herdr pane list", out: paneListJSON(rawPane{
+			PaneID: "wA:p1", WorkspaceID: "wA", CWD: proj, ForegroundCWD: proj, Focused: true,
+		})},
+		{match: "herdr workspace focus wA", out: []byte(`{}`)},
+	}}
+	d := New("herdr", WithRunner(r))
+	res, err := d.FocusOrCreate(context.Background(), source.Candidate{
+		Source: config.SourceZoxide, Path: proj, NormalizedPath: projN, Label: "proj",
+	})
+	if err != nil {
+		t.Fatalf("FocusOrCreate: %v", err)
+	}
+	if res.Action != source.HerdrActionFocused {
+		t.Errorf("Action = %v, want HerdrActionFocused", res.Action)
+	}
+	if res.WorkspaceID != "wA" {
+		t.Errorf("WorkspaceID = %q, want wA", res.WorkspaceID)
+	}
+}
+
+// TestFocusOrCreate_WorkspaceSource_EmptyLabel_FallsBackToCWD: a
+// workspaces-sourced candidate with an empty label (edge case) falls back to
+// the plain CWD-only match rather than skipping matching entirely.
+func TestFocusOrCreate_WorkspaceSource_EmptyLabel_FallsBackToCWD(t *testing.T) {
+	dir := t.TempDir()
+	foo := mkDir(t, dir, "foo")
+	fooN, err := filepath.EvalSymlinks(foo)
+	if err != nil {
+		t.Fatalf("eval symlinks: %v", err)
+	}
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr workspace list", out: workspaceListJSON("wA", "whatever-label")},
+		{match: "herdr pane list", out: paneListJSON(rawPane{
+			PaneID: "wA:p1", WorkspaceID: "wA", CWD: foo, ForegroundCWD: foo, Focused: true,
+		})},
+		{match: "herdr workspace focus wA", out: []byte(`{}`)},
+	}}
+	d := New("herdr", WithRunner(r))
+	res, err := d.FocusOrCreate(context.Background(), source.Candidate{
+		Source: config.SourceWorkspaces, Path: foo, NormalizedPath: fooN, Label: "",
+	})
+	if err != nil {
+		t.Fatalf("FocusOrCreate: %v", err)
+	}
+	if res.Action != source.HerdrActionFocused {
+		t.Errorf("Action = %v, want HerdrActionFocused", res.Action)
+	}
+	if res.WorkspaceID != "wA" {
+		t.Errorf("WorkspaceID = %q, want wA", res.WorkspaceID)
 	}
 }

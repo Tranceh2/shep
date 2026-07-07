@@ -286,7 +286,10 @@ func TestModel_ViewHidesPreviewBelowMinWidth(t *testing.T) {
 		t.Fatalf("expected tui.Model, got %T", updated)
 	}
 	view := mm.View()
-	if strings.Contains(view, "preview") {
+	// nil renderer degrades the preview pane to a "label  <value>" summary
+	// line (see previewBody), a stable marker for "preview pane is shown"
+	// that does not depend on the (now removed) "preview" header text.
+	if strings.Contains(view, "label") {
 		t.Errorf("expected preview pane hidden at width 75, got:\n%s", view)
 	}
 }
@@ -301,7 +304,7 @@ func TestModel_ViewShowsPreviewAtMinWidth(t *testing.T) {
 		t.Fatalf("expected tui.Model, got %T", updated)
 	}
 	view := mm.View()
-	if !strings.Contains(view, "preview") {
+	if !strings.Contains(view, "label") {
 		t.Errorf("expected preview pane visible at width 80, got:\n%s", view)
 	}
 }
@@ -317,7 +320,7 @@ func TestModel_ViewHidesPreviewBelowMinHeight(t *testing.T) {
 		t.Fatalf("expected tui.Model, got %T", updated)
 	}
 	view := mm.View()
-	if strings.Contains(view, "preview") {
+	if strings.Contains(view, "label") {
 		t.Errorf("expected preview pane hidden at height 7, got:\n%s", view)
 	}
 }
@@ -332,7 +335,7 @@ func TestModel_ViewShowsPreviewAtMinHeight(t *testing.T) {
 		t.Fatalf("expected tui.Model, got %T", updated)
 	}
 	view := mm.View()
-	if !strings.Contains(view, "preview") {
+	if !strings.Contains(view, "label") {
 		t.Errorf("expected preview pane visible at height 8, got:\n%s", view)
 	}
 }
@@ -368,27 +371,6 @@ func TestModel_ViewFitsWithinReportedWidth(t *testing.T) {
 		if w := lipgloss.Width(line); w > 100 {
 			t.Errorf("line width %d exceeds terminal width 100: %q", w, line)
 		}
-	}
-}
-
-// TestModel_ViewShowsCtrlJKHelpLine (PR2: ctrl+j/k navigation) proves the
-// preview pane's keybinding help advertises ctrl+j/k (not bare j/k) for
-// cursor movement, so users know the updated navigation binding. A wide
-// terminal is used so the help line renders unwrapped (it wraps at narrow
-// preview widths, which would split "ctrl+j/k" from "move").
-func TestModel_ViewShowsCtrlJKHelpLine(t *testing.T) {
-	m := tui.NewModel(testCandidates(), nil)
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 24})
-	mm, ok := updated.(tui.Model)
-	if !ok {
-		t.Fatalf("expected tui.Model, got %T", updated)
-	}
-	view := mm.View()
-	if !strings.Contains(view, "ctrl+j/k move") {
-		t.Errorf("expected help line to advertise ctrl+j/k move, got:\n%s", view)
-	}
-	if strings.Contains(view, " j/k move") {
-		t.Errorf("help line still advertises bare j/k move, got:\n%s", view)
 	}
 }
 

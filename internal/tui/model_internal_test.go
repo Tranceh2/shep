@@ -49,6 +49,35 @@ func internalTestCands() []source.Candidate {
 	}
 }
 
+// commandOnlyCandidate is a Command-only workspace fixture: a plain
+// `command = "..."` entry that is neither a group nor a template — the only
+// entry type candidateIsCommandOnly reports true for, and therefore the
+// only one selectWithTarget/hintsFor treat as tab/pane-launchable.
+func commandOnlyCandidate() source.Candidate {
+	return source.Candidate{
+		Path: "/cmd", NormalizedPath: "/cmd", Label: "allsafe start",
+		Meta: map[string]string{"command": "allsafe start"},
+	}
+}
+
+// groupCandidate is a group workspace fixture (Meta["group"] == "true"): not
+// Command-only, so it cannot be launched via ctrl+t/ctrl+p.
+func groupCandidate() source.Candidate {
+	return source.Candidate{
+		Path: "/grp", NormalizedPath: "/grp", Label: "ECORP",
+		Meta: map[string]string{"group": "true"},
+	}
+}
+
+// templateCandidate is a template workspace fixture (Meta["template"] !=
+// ""): not Command-only, so it cannot be launched via ctrl+t/ctrl+p.
+func templateCandidate() source.Candidate {
+	return source.Candidate{
+		Path: "/tpl", NormalizedPath: "/tpl", Label: "k8s-ecorp",
+		Meta: map[string]string{"template": "k8s"},
+	}
+}
+
 // TestModel_CursorMoveIncrementsPreviewSeq (PL-11) proves the cursor-move
 // handler actually mutates previewSeq and returns a non-nil render Cmd when
 // the highlighted candidate changes, instead of silently no-op'ing.
@@ -239,7 +268,7 @@ func TestFinalizeRun_SelectedReturnsCandidateNilError(t *testing.T) {
 // candidate, so tuiSelector.Select can forward it to the caller.
 func TestFinalizeRun_CtrlTTarget_ReturnsChosenTarget(t *testing.T) {
 	pane := source.Pane{ID: "p1"}
-	m := NewModel(internalTestCands(), nil).WithCurrentPane(&pane)
+	m := NewModel([]source.Candidate{commandOnlyCandidate()}, nil).WithCurrentPane(&pane)
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
 	m, ok := updated.(Model)
 	if !ok {
@@ -253,8 +282,8 @@ func TestFinalizeRun_CtrlTTarget_ReturnsChosenTarget(t *testing.T) {
 	if !ok {
 		t.Fatal("expected ok=true for a selected candidate")
 	}
-	if cand.Label != "a" {
-		t.Errorf("candidate = %+v, want label %q", cand, "a")
+	if cand.Label != "allsafe start" {
+		t.Errorf("candidate = %+v, want label %q", cand, "allsafe start")
 	}
 	if target != "tab" {
 		t.Errorf("target = %q, want %q after ctrl+t", target, "tab")
@@ -647,19 +676,18 @@ func TestPreviewBody_LongLine_NeverWrapsAtNarrowWidth(t *testing.T) {
 	}
 }
 
-// TestModel_RenderPreviewConstantStrings_NeverWrapAtFloorWidth is the
-// regression test for the follow-up overflow bug: 4 constant-string render
-// call sites (the "preview" header, the help line, "(no selection)" and
-// "loading…") were missed by the wrap-truncation fix applied to candidate
-// rows and previewText body content, reintroducing the same overflow at the
-// narrowest content width the layout can clamp down to. clampWidths enforces
-// minPrev=10 as the floor outer preview pane width; paneContentWidth
-// converts that to the actual content width (6) fed to renderPreview, the
-// same floor a small `preview_width` percentage like "8%" can reach.
-// capPreviewBodyLines budgets the preview pane assuming header/blank/help are
-// each exactly 1 physical line (`maxLines -= 3`); if any of these constants
-// wrap, that assumption breaks and the pane overflows m.height again.
-func TestModel_RenderPreviewConstantStrings_NeverWrapAtFloorWidth(t *testing.T) {
+// TestModel_RenderPreviewNoHeaderOrHelp_AtFloorWidth is the regression test
+// for the header/help removal: renderPreview used to render 4 lines (header
+// + body + blank + help) even for a single-line body, and 2 of those
+// constant strings ("preview", the help line) could themselves word-wrap at
+// a narrow enough width. Now there is no header or help chrome at all — the
+// body gets the pane's full budget — so a single-line body must render as
+// exactly ONE line, padded to width, at the narrowest content width the
+// layout can clamp down to. clampWidths enforces minPrev=10 as the floor
+// outer preview pane width; paneContentWidth converts that to the actual
+// content width (6) fed to renderPreview, the same floor a small
+// `preview_width` percentage like "8%" can reach.
+func TestModel_RenderPreviewNoHeaderOrHelp_AtFloorWidth(t *testing.T) {
 	_, floorPrevOuter := clampWidths(100, 98, 1)
 	floorWidth := paneContentWidth(floorPrevOuter)
 	if floorWidth != 6 {
@@ -673,28 +701,19 @@ func TestModel_RenderPreviewConstantStrings_NeverWrapAtFloorWidth(t *testing.T) 
 
 	out := m.renderPreview(floorWidth)
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	// header(1) + body(1, "x") + blank(1) + help(1) = 4 lines total. Before
-	// the fix, the header and help lines each word-wrapped into multiple
-	// physical lines at this width, inflating the total well past 4 and
-	// past capPreviewBodyLines' budget.
-	const wantLines = 4
+	const wantLines = 1
 	if len(lines) != wantLines {
-		t.Fatalf("renderPreview at floor width %d produced %d lines, want %d (header/help must not wrap):\n%q",
+		t.Fatalf("renderPreview at floor width %d produced %d lines, want %d (no header/blank/help chrome):\n%q",
 			floorWidth, len(lines), wantLines, out)
 	}
-	header := lines[0]
-	help := lines[wantLines-1]
-	if w := lipgloss.Width(header); w != floorWidth {
-		t.Errorf("header line width = %d, want %d: %q", w, floorWidth, header)
+	if w := lipgloss.Width(lines[0]); w != floorWidth {
+		t.Errorf("body line width = %d, want %d: %q", w, floorWidth, lines[0])
 	}
-	if w := lipgloss.Width(help); w != floorWidth {
-		t.Errorf("help line width = %d, want %d: %q", w, floorWidth, help)
+	if strings.Contains(out, "preview") {
+		t.Errorf("expected no \"preview\" header in renderPreview output, got: %q", out)
 	}
-	if !strings.Contains(help, "…") {
-		t.Errorf("expected help line truncated with ellipsis at floor width, got: %q", help)
-	}
-	if len(lines) > m.height {
-		t.Errorf("renderPreview produced %d lines, want <= %d (height=%d):\n%s", len(lines), m.height, m.height, out)
+	if strings.Contains(out, "enter select") {
+		t.Errorf("expected no help line in renderPreview output, got: %q", out)
 	}
 }
 
@@ -970,7 +989,12 @@ func TestModel_ViewFooter_ShowsFullTextEvenWhenListRowTruncated(t *testing.T) {
 	m := newModelWithLayout([]source.Candidate{
 		{Path: "/x/" + longLabel, Label: longLabel},
 	}, nil, context.TODO(), Layout{ListWidth: "20%", PreviewWidth: "auto"})
-	m.width = 100
+	// Wide enough that label + separator + the full footer hints text
+	// (see hintsFor) comfortably fit on one line — this test is about the
+	// footer showing the full label despite the LIST PANE's own narrow
+	// column, not about the footer's own narrow-width truncation (see
+	// TestModel_ViewFooter_DefensivelyTruncatedAtExtremelyNarrowWidth).
+	m.width = 150
 	m.height = 24
 
 	view := m.View()
@@ -1118,25 +1142,33 @@ func TestView_PortraitLayout_StacksListAbovePreview_FullWidth(t *testing.T) {
 
 	view := m.View()
 	lines := strings.Split(view, "\n")
-	// Locate the list pane's top border and the preview header "preview" —
-	// in portrait, the preview header line must appear strictly AFTER the
-	// list pane's own bottom border (i.e. below it, not beside it).
+	// Locate the list pane's own bottom border and the preview pane's own
+	// top border — in portrait, both panes are bordered boxes stacked
+	// vertically, so the FIRST "╭" is the list pane's top border and the
+	// SECOND is the preview pane's top border; the preview's top border
+	// must appear strictly AFTER the list pane's own bottom border (i.e.
+	// below it, not beside it). (There is no "preview" header text to
+	// locate anymore — see renderPreview.)
 	listBottomIdx := -1
-	previewHeaderIdx := -1
+	previewTopIdx := -1
+	topBorderCount := 0
 	for i, line := range lines {
 		if strings.Contains(line, "╰") && listBottomIdx == -1 {
 			listBottomIdx = i
 		}
-		if strings.Contains(line, "preview") && previewHeaderIdx == -1 {
-			previewHeaderIdx = i
+		if strings.Contains(line, "╭") {
+			topBorderCount++
+			if topBorderCount == 2 && previewTopIdx == -1 {
+				previewTopIdx = i
+			}
 		}
 	}
-	if listBottomIdx == -1 || previewHeaderIdx == -1 {
-		t.Fatalf("could not locate list bottom border or preview header in output:\n%s", view)
+	if listBottomIdx == -1 || previewTopIdx == -1 {
+		t.Fatalf("could not locate list bottom border or preview top border in output:\n%s", view)
 	}
-	if previewHeaderIdx <= listBottomIdx {
-		t.Errorf("expected preview header (line %d) below list pane bottom border (line %d) in portrait mode:\n%s",
-			previewHeaderIdx, listBottomIdx, view)
+	if previewTopIdx <= listBottomIdx {
+		t.Errorf("expected preview top border (line %d) below list pane bottom border (line %d) in portrait mode:\n%s",
+			previewTopIdx, listBottomIdx, view)
 	}
 	// Every non-footer bordered line should span the full reported width
 	// (both panes span the FULL terminal width in portrait).
@@ -1274,35 +1306,36 @@ func TestView_PortraitLayout_BelowMinPortraitHeight_FallsBackToListOnly(t *testi
 	m.height = minPortraitHeight - 1
 
 	view := m.View()
-	if strings.Contains(view, "preview") {
-		t.Errorf("expected preview pane hidden below minPortraitHeight (%d), but found a preview header at height=%d:\n%s",
+	// nil renderer degrades the preview pane to a "label  <value>" summary
+	// line (see previewBody); its absence proves the preview pane is
+	// hidden entirely (there is no "preview" header text anymore — see
+	// renderPreview).
+	if strings.Contains(view, "label") {
+		t.Errorf("expected preview pane hidden below minPortraitHeight (%d), but found preview content at height=%d:\n%s",
 			minPortraitHeight, m.height, view)
 	}
 }
 
 // previewBottomBorderRow locates the preview pane's own bottom border
-// ("╰") row index within view: it scans forward from the preview header
-// line ("preview") so a portrait list pane's bottom border (which uses the
-// identical rounded-corner rune) is never mistaken for the preview pane's.
+// ("╰") row index within view: in portrait, both the list and preview panes
+// are bordered boxes stacked vertically, each rendering their own "╰" —
+// this is the SECOND occurrence, since the first belongs to the list pane
+// stacked above it. (There is no "preview" header text to scan forward from
+// anymore — see renderPreview — so this counts border occurrences directly
+// instead.)
 func previewBottomBorderRow(t *testing.T, view string) int {
 	t.Helper()
 	lines := strings.Split(view, "\n")
-	headerIdx := -1
+	bottomBorderCount := 0
 	for i, line := range lines {
-		if strings.Contains(line, "preview") {
-			headerIdx = i
-			break
+		if strings.Contains(line, "╰") {
+			bottomBorderCount++
+			if bottomBorderCount == 2 {
+				return i
+			}
 		}
 	}
-	if headerIdx == -1 {
-		t.Fatalf("could not locate preview header in view:\n%s", view)
-	}
-	for i := headerIdx; i < len(lines); i++ {
-		if strings.Contains(lines[i], "╰") {
-			return i
-		}
-	}
-	t.Fatalf("could not locate preview bottom border after header (row %d) in view:\n%s", headerIdx, view)
+	t.Fatalf("could not locate the preview pane's own bottom border (2nd \"╰\") in view:\n%s", view)
 	return -1
 }
 
@@ -1635,13 +1668,13 @@ func cloneCandidates(in []source.Candidate) []source.Candidate {
 // --- --target=tab|pane TUI bindings (ctrl+t / ctrl+p) ---
 
 // TestHandleKey_CtrlT_SetsTabTargetSelectsAndQuits proves ctrl+t, when shep
-// is running inside a Herdr pane (currentPane != nil), selects the
-// highlighted candidate exactly like enter, records "tab" as the chosen
-// launch target, and quits.
+// is running inside a Herdr pane (currentPane != nil) and the highlighted
+// candidate is a Command-only workspace, selects the highlighted candidate
+// exactly like enter, records "tab" as the chosen launch target, and quits.
 func TestHandleKey_CtrlT_SetsTabTargetSelectsAndQuits(t *testing.T) {
 	t.Parallel()
 	pane := source.Pane{ID: "p1"}
-	m := NewModel(internalTestCands(), nil).WithCurrentPane(&pane)
+	m := NewModel([]source.Candidate{commandOnlyCandidate()}, nil).WithCurrentPane(&pane)
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
 	mm, ok := updated.(Model)
@@ -1667,7 +1700,7 @@ func TestHandleKey_CtrlT_SetsTabTargetSelectsAndQuits(t *testing.T) {
 func TestHandleKey_CtrlP_SetsPaneTargetSelectsAndQuits(t *testing.T) {
 	t.Parallel()
 	pane := source.Pane{ID: "p1"}
-	m := NewModel(internalTestCands(), nil).WithCurrentPane(&pane)
+	m := NewModel([]source.Candidate{commandOnlyCandidate()}, nil).WithCurrentPane(&pane)
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
 	mm, ok := updated.(Model)
@@ -1775,51 +1808,295 @@ func TestHandleKey_CtrlP_NoCurrentPane_IsNoOp(t *testing.T) {
 	}
 }
 
-// --- footer keybinding hints (merged into the footer line) ---
-
-// TestRenderFooter_HintsLine_DimmedWithoutCurrentPane proves the footer's
-// ctrl+t/ctrl+p keybinding hints render in the dimmed hintDisabledStyle when
-// shep is not running inside a Herdr pane (currentPane == nil): those
-// bindings are inert in that case (selectWithTarget no-ops them), so the
-// footer visually marks them as disabled.
-func TestRenderFooter_HintsLine_DimmedWithoutCurrentPane(t *testing.T) {
-	prev := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	defer lipgloss.SetColorProfile(prev)
-
-	m := NewModel(internalTestCands(), nil)
-	m.width = 100
-
-	footer := m.renderFooter()
-	if !strings.Contains(footer, "ctrl+t: tab") || !strings.Contains(footer, "ctrl+p: pane") {
-		t.Fatalf("expected footer to show ctrl+t/ctrl+p hints, got: %q", footer)
+// TestHandleKey_CtrlT_NonCommandOnlyEntry_IsNoOp proves ctrl+t is a no-op —
+// no selection, no chosenTarget, no quit — when shep IS running inside a
+// Herdr pane (currentPane != nil) but the highlighted candidate cannot be
+// launched as a tab/pane target: a group workspace or a template workspace.
+// Before this guard, ctrl+t on either entry set chosenTarget and quit the
+// TUI, only for App.launchInCurrentWorkspace to fail afterward with
+// "requires an entry with a command" — this proves the TUI now stays put
+// silently instead.
+func TestHandleKey_CtrlT_NonCommandOnlyEntry_IsNoOp(t *testing.T) {
+	t.Parallel()
+	pane := source.Pane{ID: "p1"}
+	tests := []struct {
+		name string
+		cand source.Candidate
+	}{
+		{"group", groupCandidate()},
+		{"template", templateCandidate()},
 	}
-	// lipgloss combines the Faint SGR code (2) with the foreground color code
-	// into one escape sequence ("\x1b[2;38;2;...m"), never a bare "\x1b[2m",
-	// so assert on the leading "2;" parameter instead of a standalone code.
-	if !strings.Contains(footer, "\x1b[2;") {
-		t.Errorf("expected the hints to render Faint (dimmed) when currentPane is nil, got: %q", footer)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			m := NewModel([]source.Candidate{tt.cand}, nil).WithCurrentPane(&pane)
+
+			updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+			mm, ok := updated.(Model)
+			if !ok {
+				t.Fatalf("expected Model, got %T", updated)
+			}
+			if mm.ChosenTarget() != "" {
+				t.Errorf("ChosenTarget() = %q, want empty for a non-Command-only entry", mm.ChosenTarget())
+			}
+			if cmd != nil {
+				t.Error("expected a nil Cmd (no quit) when ctrl+t fires on a non-Command-only entry")
+			}
+			if _, ok := mm.Selected(); ok {
+				t.Error("expected no selection when ctrl+t fires on a non-Command-only entry")
+			}
+		})
 	}
 }
 
-// TestRenderFooter_HintsLine_NormalWithCurrentPane proves the hints render
-// WITHOUT the dimmed/Faint styling when shep IS running inside a Herdr pane
-// (currentPane != nil) — ctrl+t/ctrl+p are live in that case.
-func TestRenderFooter_HintsLine_NormalWithCurrentPane(t *testing.T) {
-	prev := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	defer lipgloss.SetColorProfile(prev)
-
+// TestHandleKey_CtrlP_NonCommandOnlyEntry_IsNoOp mirrors the ctrl+t no-op
+// test above for ctrl+p / "pane".
+func TestHandleKey_CtrlP_NonCommandOnlyEntry_IsNoOp(t *testing.T) {
+	t.Parallel()
 	pane := source.Pane{ID: "p1"}
-	m := NewModel(internalTestCands(), nil).WithCurrentPane(&pane)
+	tests := []struct {
+		name string
+		cand source.Candidate
+	}{
+		{"group", groupCandidate()},
+		{"template", templateCandidate()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			m := NewModel([]source.Candidate{tt.cand}, nil).WithCurrentPane(&pane)
+
+			updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+			mm, ok := updated.(Model)
+			if !ok {
+				t.Fatalf("expected Model, got %T", updated)
+			}
+			if mm.ChosenTarget() != "" {
+				t.Errorf("ChosenTarget() = %q, want empty for a non-Command-only entry", mm.ChosenTarget())
+			}
+			if cmd != nil {
+				t.Error("expected a nil Cmd (no quit) when ctrl+p fires on a non-Command-only entry")
+			}
+			if _, ok := mm.Selected(); ok {
+				t.Error("expected no selection when ctrl+p fires on a non-Command-only entry")
+			}
+		})
+	}
+}
+
+// --- candidateIsCommandOnly ---
+
+// TestCandidateIsCommandOnly_CommandOnlyWorkspace proves a plain command
+// entry (no group/template) reports true.
+func TestCandidateIsCommandOnly_CommandOnlyWorkspace(t *testing.T) {
+	t.Parallel()
+	if !candidateIsCommandOnly(commandOnlyCandidate()) {
+		t.Error("expected candidateIsCommandOnly() = true for a Command-only workspace")
+	}
+}
+
+// TestCandidateIsCommandOnly_GroupWorkspace proves a group workspace reports
+// false, even though App-side "group" entries never carry a command anyway
+// — the check must still hold if one somehow did (see the edge case test).
+func TestCandidateIsCommandOnly_GroupWorkspace(t *testing.T) {
+	t.Parallel()
+	if candidateIsCommandOnly(groupCandidate()) {
+		t.Error("expected candidateIsCommandOnly() = false for a group workspace")
+	}
+}
+
+// TestCandidateIsCommandOnly_TemplateWorkspace proves a template workspace
+// reports false.
+func TestCandidateIsCommandOnly_TemplateWorkspace(t *testing.T) {
+	t.Parallel()
+	if candidateIsCommandOnly(templateCandidate()) {
+		t.Error("expected candidateIsCommandOnly() = false for a template workspace")
+	}
+}
+
+// TestCandidateIsCommandOnly_PlainSource proves a plain source entry (no
+// command Meta at all) reports false.
+func TestCandidateIsCommandOnly_PlainSource(t *testing.T) {
+	t.Parallel()
+	if candidateIsCommandOnly(source.Candidate{Path: "/plain", Label: "plain"}) {
+		t.Error("expected candidateIsCommandOnly() = false for a plain source entry")
+	}
+}
+
+// TestCandidateIsCommandOnly_CommandAndGroup_Edge proves a candidate with
+// both command and group Meta set reports false (group wins).
+func TestCandidateIsCommandOnly_CommandAndGroup_Edge(t *testing.T) {
+	t.Parallel()
+	cand := source.Candidate{Meta: map[string]string{"command": "x", "group": "true"}}
+	if candidateIsCommandOnly(cand) {
+		t.Error("expected candidateIsCommandOnly() = false when group is also set")
+	}
+}
+
+// TestCandidateIsCommandOnly_CommandAndTemplate_Edge proves a candidate with
+// both command and template Meta set reports false (template wins).
+func TestCandidateIsCommandOnly_CommandAndTemplate_Edge(t *testing.T) {
+	t.Parallel()
+	cand := source.Candidate{Meta: map[string]string{"command": "x", "template": "y"}}
+	if candidateIsCommandOnly(cand) {
+		t.Error("expected candidateIsCommandOnly() = false when template is also set")
+	}
+}
+
+// --- renderList has no entry type tags ---
+
+// TestRenderList_NoEntryTypeTags proves the rendered list never carries a
+// bracketed entry-type tag ("[cmd]", "[grp]", "[tpl]") on any row, for a
+// Command-only workspace, a group workspace, a template workspace, or a
+// plain source entry. The footer's context-sensitive ctrl+t/ctrl+p hint
+// (see hintsFor) is the sole indicator of "openable as tab/pane" — the
+// per-row tags were removed because they broke the list's visual structure.
+func TestRenderList_NoEntryTypeTags(t *testing.T) {
+	t.Parallel()
+	cands := []source.Candidate{
+		commandOnlyCandidate(),
+		groupCandidate(),
+		templateCandidate(),
+		{Path: "/plain/path"},
+	}
+	m := NewModel(cands, nil)
+	out := m.renderList(60)
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	// lines[0] is the query line; candidate rows follow in provider order.
+	if len(lines) != 5 {
+		t.Fatalf("renderList produced %d lines, want 5 (query + 4 rows):\n%s", len(lines), out)
+	}
+	for i, row := range lines[1:] {
+		for _, tag := range []string{"[cmd]", "[grp]", "[tpl]"} {
+			if strings.Contains(row, tag) {
+				t.Errorf("row %d = %q, want no entry type tag, found %q", i, row, tag)
+			}
+		}
+	}
+}
+
+// --- footer keybinding hints (merged into the footer line) ---
+
+// TestHintsFor_NoCurrentPane_ExcludesTabPaneHints proves hintsFor omits the
+// ctrl+t/ctrl+p hints entirely (not dimmed — absent) when shep is not
+// running inside a Herdr pane, regardless of the highlighted candidate,
+// since selectWithTarget always no-ops both bindings in that case.
+func TestHintsFor_NoCurrentPane_ExcludesTabPaneHints(t *testing.T) {
+	t.Parallel()
+	got := hintsFor(commandOnlyCandidate(), false)
+	for _, want := range []string{"enter: open", "esc: cancel", "ctrl+l: layout"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("hintsFor() = %q, want to contain %q", got, want)
+		}
+	}
+	for _, absent := range []string{"ctrl+t", "ctrl+p"} {
+		if strings.Contains(got, absent) {
+			t.Errorf("hintsFor() = %q, want no %q hint (no current pane)", got, absent)
+		}
+	}
+}
+
+// TestHintsFor_CurrentPaneCommandOnly_IncludesTabPaneHints proves hintsFor
+// includes ALL hints — enter/ctrl+t/ctrl+p/esc/ctrl+l — when shep IS
+// running inside a Herdr pane AND the highlighted candidate is a
+// Command-only workspace, the only entry selectWithTarget actually launches.
+func TestHintsFor_CurrentPaneCommandOnly_IncludesTabPaneHints(t *testing.T) {
+	t.Parallel()
+	got := hintsFor(commandOnlyCandidate(), true)
+	for _, want := range []string{"enter: open", "ctrl+t: tab", "ctrl+p: pane", "esc: cancel", "ctrl+l: layout"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("hintsFor() = %q, want to contain %q", got, want)
+		}
+	}
+}
+
+// TestHintsFor_CurrentPaneNonCommandOnly_ExcludesTabPaneHints proves hintsFor
+// still omits ctrl+t/ctrl+p when shep IS running inside a Herdr pane but the
+// highlighted candidate is a group or template workspace — selectWithTarget
+// would no-op the binding on either, so advertising it would be misleading.
+func TestHintsFor_CurrentPaneNonCommandOnly_ExcludesTabPaneHints(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		cand source.Candidate
+	}{
+		{"group", groupCandidate()},
+		{"template", templateCandidate()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := hintsFor(tt.cand, true)
+			for _, want := range []string{"enter: open", "esc: cancel", "ctrl+l: layout"} {
+				if !strings.Contains(got, want) {
+					t.Errorf("hintsFor() = %q, want to contain %q", got, want)
+				}
+			}
+			for _, absent := range []string{"ctrl+t", "ctrl+p"} {
+				if strings.Contains(got, absent) {
+					t.Errorf("hintsFor() = %q, want no %q hint (non-Command-only entry)", got, absent)
+				}
+			}
+		})
+	}
+}
+
+// TestRenderFooter_NoCurrentPane_ExcludesTabPaneHints proves renderFooter
+// itself (not just hintsFor in isolation) omits ctrl+t/ctrl+p when there is
+// no current pane.
+func TestRenderFooter_NoCurrentPane_ExcludesTabPaneHints(t *testing.T) {
+	t.Parallel()
+	m := NewModel([]source.Candidate{commandOnlyCandidate()}, nil)
+	m.width = 100
+
+	footer := m.renderFooter()
+	if strings.Contains(footer, "ctrl+t") || strings.Contains(footer, "ctrl+p") {
+		t.Errorf("expected no ctrl+t/ctrl+p hints without a current pane, got: %q", footer)
+	}
+	if !strings.Contains(footer, "enter: open") || !strings.Contains(footer, "ctrl+l: layout") {
+		t.Errorf("expected the always-live hints present, got: %q", footer)
+	}
+}
+
+// TestRenderFooter_CurrentPaneCommandOnly_IncludesTabPaneHints proves
+// renderFooter shows ctrl+t/ctrl+p when shep is running inside a Herdr pane
+// and the highlighted candidate is Command-only.
+func TestRenderFooter_CurrentPaneCommandOnly_IncludesTabPaneHints(t *testing.T) {
+	t.Parallel()
+	pane := source.Pane{ID: "p1"}
+	m := NewModel([]source.Candidate{commandOnlyCandidate()}, nil).WithCurrentPane(&pane)
 	m.width = 100
 
 	footer := m.renderFooter()
 	if !strings.Contains(footer, "ctrl+t: tab") || !strings.Contains(footer, "ctrl+p: pane") {
-		t.Fatalf("expected footer to show ctrl+t/ctrl+p hints, got: %q", footer)
+		t.Errorf("expected footer to show ctrl+t/ctrl+p hints for a Command-only entry, got: %q", footer)
 	}
-	if strings.Contains(footer, "\x1b[2;") {
-		t.Errorf("expected the hints NOT to render Faint when currentPane is set, got: %q", footer)
+}
+
+// TestRenderFooter_CurrentPaneNonCommandOnly_ExcludesTabPaneHints proves
+// renderFooter hides ctrl+t/ctrl+p when the highlighted candidate is a group
+// or template workspace, even with a current pane set.
+func TestRenderFooter_CurrentPaneNonCommandOnly_ExcludesTabPaneHints(t *testing.T) {
+	t.Parallel()
+	pane := source.Pane{ID: "p1"}
+	tests := []struct {
+		name string
+		cand source.Candidate
+	}{
+		{"group", groupCandidate()},
+		{"template", templateCandidate()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			m := NewModel([]source.Candidate{tt.cand}, nil).WithCurrentPane(&pane)
+			m.width = 100
+
+			footer := m.renderFooter()
+			if strings.Contains(footer, "ctrl+t") || strings.Contains(footer, "ctrl+p") {
+				t.Errorf("expected no ctrl+t/ctrl+p hints for a non-Command-only entry, got: %q", footer)
+			}
+		})
 	}
 }
 
@@ -1828,12 +2105,41 @@ func TestRenderFooter_HintsLine_NormalWithCurrentPane(t *testing.T) {
 // isolation.
 func TestView_FooterIncludesKeybindingHints(t *testing.T) {
 	t.Parallel()
-	m := NewModel(internalTestCands(), nil)
+	pane := source.Pane{ID: "p1"}
+	m := NewModel([]source.Candidate{commandOnlyCandidate()}, nil).WithCurrentPane(&pane)
 	m.width = 100
 	m.height = 24
 
 	view := m.View()
 	if !strings.Contains(view, "ctrl+t: tab") || !strings.Contains(view, "ctrl+p: pane") {
 		t.Errorf("expected View() to include the ctrl+t/ctrl+p hints, got:\n%s", view)
+	}
+}
+
+// TestRenderFooter_NarrowWidth_PrefersHintsOverLabel proves that when the
+// composed footer line (label + separator + hints) does not fit m.width,
+// the hints are kept intact (they are the actionable part) and the label is
+// truncated instead — the reverse of naively truncating the whole string,
+// which would eat into the hints first since they come last.
+func TestRenderFooter_NarrowWidth_PrefersHintsOverLabel(t *testing.T) {
+	t.Parallel()
+	longLabel := strings.Repeat("x", 200)
+	m := NewModel([]source.Candidate{{Path: "/y", Label: longLabel}}, nil)
+	m.width = 60
+
+	footer := m.renderFooter()
+	if w := lipgloss.Width(footer); w > m.width {
+		t.Fatalf("footer width = %d, must not exceed terminal width %d: %q", w, m.width, footer)
+	}
+	for _, want := range []string{"enter: open", "esc: cancel", "ctrl+l: layout"} {
+		if !strings.Contains(footer, want) {
+			t.Errorf("footer = %q, want the full hints preserved (%q missing)", footer, want)
+		}
+	}
+	if strings.Contains(footer, longLabel) {
+		t.Errorf("footer = %q, want the label truncated at this narrow width", footer)
+	}
+	if !strings.Contains(footer, "…") {
+		t.Errorf("footer = %q, want a truncation ellipsis on the label", footer)
 	}
 }
