@@ -328,6 +328,9 @@ func (fakeErrDriver) RunPane(context.Context, string, string) error {
 func (fakeErrDriver) FocusTab(context.Context, string) error {
 	return errors.New("fakeErrDriver does not implement FocusTab")
 }
+func (fakeErrDriver) CurrentPane(context.Context) (source.Pane, error) {
+	return source.Pane{}, errors.New("fakeErrDriver does not implement CurrentPane")
+}
 
 // fakeWorkspacesDriver is a HerdrDriver that returns a fixed workspace set,
 // used by the priority-dedup contract test.
@@ -368,6 +371,9 @@ func (fakeWorkspacesDriver) RunPane(context.Context, string, string) error {
 }
 func (fakeWorkspacesDriver) FocusTab(context.Context, string) error {
 	return errors.New("fakeWorkspacesDriver does not implement FocusTab")
+}
+func (fakeWorkspacesDriver) CurrentPane(context.Context) (source.Pane, error) {
+	return source.Pane{}, errors.New("fakeWorkspacesDriver does not implement CurrentPane")
 }
 
 // TestDedup_PriorityOrderOwnsDuplicatePath proves general.sources order owns

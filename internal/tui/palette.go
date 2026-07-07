@@ -30,6 +30,7 @@ var palette = struct {
 	previewLoadingStyle lipgloss.Style
 	previewErrStyle     lipgloss.Style
 	borderStyle         lipgloss.Style
+	hintDisabledStyle   lipgloss.Style
 }{
 	// query line: bold accent text so the live filter stands out.
 	queryStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorAccent)).Bold(true),
@@ -60,4 +61,10 @@ var palette = struct {
 	// frame dimensions) so width/height chrome math has a single source of
 	// truth instead of drifting between two independently-tuned borders.
 	borderStyle: lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(colorBorder)).Padding(0, 1),
+	// hintDisabledStyle dims the footer's ctrl+t/ctrl+p keybinding hints when
+	// shep is not running inside a Herdr pane (Model.currentPane == nil):
+	// those bindings are inert in that case (see selectWithTarget), and
+	// Faint makes the disabled state visually distinct from the always-live
+	// "enter" hint and the candidate text, which keep mutedStyle.
+	hintDisabledStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted)).Faint(true),
 }

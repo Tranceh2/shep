@@ -7,8 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tranceh2/shep/internal/config"
@@ -41,11 +43,25 @@ type openDriver struct {
 	rootPaneID  string
 	listErr     error
 
+	// currentPane/currentPaneErr script CurrentPane: when currentPaneErr is
+	// non-nil it is returned (use source.ErrNoFocusedPane to model "shep not
+	// inside a herdr pane"); otherwise currentPane is returned as-is.
+	currentPane      source.Pane
+	currentPaneErr   error
+	currentCalled    bool
+	currentPaneDelay time.Duration
+
 	renamed []string
 	ran     []string
-	created []string
+	created []string // "tab:<ws>:<cwd>:<label>:<focus>" / "split:<pane>:<dir>:<ratio>:<cwd>:<focus>"
 	focused []string
 	runErr  error
+	// runErrOnFirstCall, when non-nil, is returned only for the first RunPane
+	// call (the Apply-internal run); every subsequent call succeeds
+	// regardless of runErr. Used to script an Apply failure followed by a
+	// successful best-effort rollback close.
+	runErrOnFirstCall error
+	runCallCount      int
 }
 
 func (d *openDriver) Detect(context.Context) bool { return d.detect }
@@ -75,24 +91,50 @@ func (d *openDriver) ListAgents(context.Context) ([]source.Agent, error) {
 func (d *openDriver) ReadPane(context.Context, string, int) (string, error) {
 	return "", errors.New("openDriver does not implement ReadPane")
 }
-func (d *openDriver) CreateTab(_ context.Context, workspaceID, cwd, label string, _ bool) (source.Tab, source.Pane, error) {
-	d.created = append(d.created, "tab:"+workspaceID+":"+cwd+":"+label)
+func (d *openDriver) CreateTab(_ context.Context, workspaceID, cwd, label string, focus bool) (source.Tab, source.Pane, error) {
+	d.created = append(d.created, "tab:"+workspaceID+":"+cwd+":"+label+":"+openFocusStr(focus))
 	return source.Tab{ID: "new-t"}, source.Pane{ID: "new-p"}, nil
 }
 func (d *openDriver) RenameTab(_ context.Context, tabID, label string) error {
 	d.renamed = append(d.renamed, "rename:"+tabID+":"+label)
 	return nil
 }
-func (d *openDriver) SplitPane(_ context.Context, paneID, direction string, ratio float64, cwd string, _ bool) (source.Pane, error) {
+func (d *openDriver) SplitPane(_ context.Context, paneID, direction string, ratio float64, cwd string, focus bool) (source.Pane, error) {
+	d.created = append(d.created, "split:"+paneID+":"+direction+":"+strconv.FormatFloat(ratio, 'f', -1, 64)+":"+cwd+":"+openFocusStr(focus))
 	return source.Pane{ID: "split-p"}, nil
 }
 func (d *openDriver) RunPane(_ context.Context, paneID, command string) error {
 	d.ran = append(d.ran, "run:"+paneID+":"+command)
+	d.runCallCount++
+	if d.runErrOnFirstCall != nil && d.runCallCount == 1 {
+		return d.runErrOnFirstCall
+	}
 	return d.runErr
 }
 func (d *openDriver) FocusTab(_ context.Context, tabID string) error {
 	d.focused = append(d.focused, "focus-tab:"+tabID)
 	return nil
+}
+func (d *openDriver) CurrentPane(ctx context.Context) (source.Pane, error) {
+	d.currentCalled = true
+	if d.currentPaneDelay > 0 {
+		select {
+		case <-time.After(d.currentPaneDelay):
+		case <-ctx.Done():
+			return source.Pane{}, ctx.Err()
+		}
+	}
+	return d.currentPane, d.currentPaneErr
+}
+
+// openFocusStr renders a focus bool the same way the templates-package fake
+// does, so the recorded CreateTab/SplitPane entries are directly comparable
+// across both packages' tests.
+func openFocusStr(b bool) string {
+	if b {
+		return "focus"
+	}
+	return "nofocus"
 }
 
 // fakeSelector lets open tests script the cascade without invoking fzf.
@@ -183,7 +225,7 @@ func TestCascadeFor_RoutesBySelector(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := cascadeFor(tc.sel, nil).Names()
+			got := cascadeFor(tc.sel, nil, nil, nil).Names()
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("selector %q: cascade names got %v want %v", tc.sel, got, tc.want)
 			}
@@ -514,6 +556,40 @@ func TestResolveTemplate_Precedence(t *testing.T) {
 		}
 	})
 
+	t.Run("workspace command forwards close_on_exit to synthetic template", func(t *testing.T) {
+		t.Parallel()
+		cand := base
+		cand.Meta = map[string]string{"command": "nvim", "close_on_exit": "true"}
+		got := resolveTemplate(cand, cfg)
+		if got.Command != "nvim" || !got.CloseOnExit {
+			t.Errorf("got %+v want {Command: nvim, CloseOnExit: true}", got)
+		}
+	})
+
+	t.Run("workspace command with close_on_exit false stays plain", func(t *testing.T) {
+		t.Parallel()
+		cand := base
+		cand.Meta = map[string]string{"command": "nvim", "close_on_exit": "false"}
+		got := resolveTemplate(cand, cfg)
+		if got.Command != "nvim" || got.CloseOnExit {
+			t.Errorf("got %+v want {Command: nvim, CloseOnExit: false}", got)
+		}
+	})
+
+	t.Run("workspace command close_on_exit strict true only rejects 1/T", func(t *testing.T) {
+		t.Parallel()
+		cand := base
+		// The only writer (workspacesProvider.List) emits the literal "true";
+		// resolveTemplate must treat any other value (here "1", which
+		// strconv.ParseBool would otherwise accept) as false so a future
+		// provider writing "1" cannot silently flip close-on-exit on.
+		cand.Meta = map[string]string{"command": "nvim", "close_on_exit": "1"}
+		got := resolveTemplate(cand, cfg)
+		if got.Command != "nvim" || got.CloseOnExit {
+			t.Errorf("got %+v want {Command: nvim, CloseOnExit: false} (strict == %q contract)", got, "true")
+		}
+	})
+
 	t.Run("wildcard wins over parent and defaults", func(t *testing.T) {
 		t.Parallel()
 		cand := base
@@ -622,6 +698,33 @@ func TestOpen_TemplateAppliesOnCreatedWorkspace(t *testing.T) {
 	}
 	if len(driver.ran) != 1 || driver.ran[0] != "run:wA:p1:nvim" {
 		t.Errorf("expected nvim run in root pane, got %v", driver.ran)
+	}
+}
+
+// TestOpen_WorkspaceCommandCloseOnExit_WrapsRootPane is the end-to-end wiring
+// test for the whole chain this feature added: a [[workspaces]] entry with a
+// top-level command + close_on_exit flows config -> workspacesProvider.List
+// (which forwards Meta["close_on_exit"]="true") -> resolveTemplate (synthetic
+// template) -> templates.Apply -> driver.RunPane receiving the shell-chained
+// command. It proves no link in the chain silently drops the wrap.
+func TestOpen_WorkspaceCommandCloseOnExit_WrapsRootPane(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Defaults()
+	cfg.General.Sources = []string{config.SourceWorkspaces}
+	cfg.Workspaces = []config.WorkspaceConfig{{
+		Name: "ops", Path: dir, Command: "k9s", CloseOnExit: true,
+	}}
+	driver := &openDriver{
+		detect: true, workspaceID: "wA", rootTabID: "wA:t1", rootPaneID: "wA:p1",
+		lastAction: source.HerdrActionCreated,
+	}
+	_, _, err := runOpen(t, cfg, driver, nil, "ops")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	want := "run:wA:p1:k9s; herdr pane close wA:p1"
+	if len(driver.ran) != 1 || driver.ran[0] != want {
+		t.Errorf("expected root pane to receive wrapped command %q, got %v", want, driver.ran)
 	}
 }
 
@@ -769,9 +872,77 @@ func TestLayoutFromConfig_EmptyLayoutDefaultsToZeroOrientation(t *testing.T) {
 // silently defaulting to nil.
 func TestNewTUISelector_StoresRenderer(t *testing.T) {
 	r := fakePreviewRenderer{}
-	s := newTUISelector(r)
+	s := newTUISelector(r, nil, nil)
 	if s.renderer == nil {
 		t.Fatal("expected tuiSelector to carry a non-nil renderer")
+	}
+}
+
+// TestTUISelector_Select_ForwardsChosenTargetToApp proves the TUI→App
+// bridge end-to-end: when the (fake, real-Bubble-Tea-free) picker resolves a
+// ctrl+t pick — a candidate plus target "tab" — tuiSelector.Select invokes
+// onTarget with it, exactly as selectorFactory wires onTarget to
+// App.setChosenTarget, so a.chosenTarget carries the override after Select
+// returns.
+func TestTUISelector_Select_ForwardsChosenTargetToApp(t *testing.T) {
+	t.Parallel()
+	app := New()
+	sel := newTUISelector(nil, nil, app.setChosenTarget)
+	sel.run = func(_ context.Context, candidates []source.Candidate, _ string, _ preview.Renderer, _ *source.Pane, _ ...tui.Layout) (source.Candidate, string, bool, error) {
+		return candidates[0], "tab", true, nil
+	}
+
+	cand := source.Candidate{Path: "/x", Label: "x"}
+	pick, ok, err := sel.Select(context.Background(), []source.Candidate{cand}, "")
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if !ok || pick.Label != "x" {
+		t.Fatalf("Select() = %+v, ok=%v, want the candidate selected", pick, ok)
+	}
+	if app.chosenTarget != "tab" {
+		t.Errorf("app.chosenTarget = %q, want %q after a simulated ctrl+t pick", app.chosenTarget, "tab")
+	}
+}
+
+// TestTUISelector_Select_EnterLeavesChosenTargetEmpty proves a plain enter
+// pick (target "") also reaches onTarget, so any earlier chosenTarget from a
+// prior batch is cleared rather than left stale — a fake picker still ran
+// and returned "" (the default), so App.chosenTarget must reflect that.
+func TestTUISelector_Select_EnterLeavesChosenTargetEmpty(t *testing.T) {
+	t.Parallel()
+	app := New()
+	app.chosenTarget = "pane" // simulate stale state from a prior invocation
+	sel := newTUISelector(nil, nil, app.setChosenTarget)
+	sel.run = func(_ context.Context, candidates []source.Candidate, _ string, _ preview.Renderer, _ *source.Pane, _ ...tui.Layout) (source.Candidate, string, bool, error) {
+		return candidates[0], "", true, nil
+	}
+
+	if _, ok, err := sel.Select(context.Background(), []source.Candidate{{Path: "/x", Label: "x"}}, ""); err != nil || !ok {
+		t.Fatalf("Select() = ok=%v, err=%v, want ok=true nil error", ok, err)
+	}
+	if app.chosenTarget != "" {
+		t.Errorf("app.chosenTarget = %q, want empty after a plain enter pick", app.chosenTarget)
+	}
+}
+
+// TestTUISelector_Select_CancelledNeverInvokesOnTarget proves a cancelled or
+// unsuccessful pick (ok=false) never calls onTarget, so App.chosenTarget is
+// left untouched instead of being overwritten with a meaningless target.
+func TestTUISelector_Select_CancelledNeverInvokesOnTarget(t *testing.T) {
+	t.Parallel()
+	app := New()
+	app.chosenTarget = "tab"
+	sel := newTUISelector(nil, nil, app.setChosenTarget)
+	sel.run = func(_ context.Context, _ []source.Candidate, _ string, _ preview.Renderer, _ *source.Pane, _ ...tui.Layout) (source.Candidate, string, bool, error) {
+		return source.Candidate{}, "pane", false, tui.ErrCancelled
+	}
+
+	if _, ok, err := sel.Select(context.Background(), []source.Candidate{{Path: "/x", Label: "x"}}, ""); ok || !errors.Is(err, tui.ErrCancelled) {
+		t.Fatalf("Select() = ok=%v, err=%v, want ok=false ErrCancelled", ok, err)
+	}
+	if app.chosenTarget != "tab" {
+		t.Errorf("app.chosenTarget = %q, want unchanged %q after a cancelled pick", app.chosenTarget, "tab")
 	}
 }
 
@@ -828,6 +999,9 @@ func (*recordingDriver) SplitPane(context.Context, string, string, float64, stri
 }
 func (*recordingDriver) RunPane(context.Context, string, string) error { return errors.New("not used") }
 func (*recordingDriver) FocusTab(context.Context, string) error        { return errors.New("not used") }
+func (*recordingDriver) CurrentPane(context.Context) (source.Pane, error) {
+	return source.Pane{}, nil
+}
 
 // TestApp_BuildPreviewRenderer_ThreadsHerdrDriver proves an injected
 // HerdrDriver is wired into the preview renderer so workspace/active_pane
@@ -896,5 +1070,334 @@ func TestOpenLayoutToggle_ConfigUnchangedAfterCtrlL(t *testing.T) {
 	// ...the original config.TUIConfig value stays completely unchanged.
 	if cfg.TUI != originalTUI {
 		t.Errorf("cfg.TUI mutated by ctrl+l toggle: got %+v, want unchanged %+v", cfg.TUI, originalTUI)
+	}
+}
+
+// targetFlagValue builds `shep open`'s cobra command, parses the given flag
+// args against it (without running the command body), and returns the resolved
+// --target value. Used by the flag-parsing tests below so they exercise real
+// cobra flag plumbing instead of poking struct fields directly.
+func targetFlagValue(t *testing.T, parseArgs ...string) string {
+	t.Helper()
+	app := New()
+	cmd := app.openCmd()
+	if err := cmd.ParseFlags(parseArgs); err != nil {
+		t.Fatalf("ParseFlags(%v): %v", parseArgs, err)
+	}
+	return cmd.Flags().Lookup("target").Value.String()
+}
+
+// TestOpenCmd_TargetFlag_Parses confirms `--target=tab` is accepted and stored.
+func TestOpenCmd_TargetFlag_Parses(t *testing.T) {
+	t.Parallel()
+	if got := targetFlagValue(t, "--target", "tab"); got != "tab" {
+		t.Errorf("--target tab = %q, want %q", got, "tab")
+	}
+	if got := targetFlagValue(t, "--target=pane"); got != "pane" {
+		t.Errorf("--target=pane = %q, want %q", got, "pane")
+	}
+}
+
+// TestOpenCmd_TargetFlag_DefaultsToWorkspace confirms the zero value of
+// --target is "workspace", preserving the pre-flag launch behaviour.
+func TestOpenCmd_TargetFlag_DefaultsToWorkspace(t *testing.T) {
+	t.Parallel()
+	if got := targetFlagValue(t); got != "workspace" {
+		t.Errorf("default --target = %q, want %q", got, "workspace")
+	}
+}
+
+// TestOpenCmd_TargetFlag_RejectsInvalid confirms an unknown --target value is
+// rejected (via PreRunE validation) with a clear error rather than silently
+// falling through to the workspace path.
+func TestOpenCmd_TargetFlag_RejectsInvalid(t *testing.T) {
+	t.Parallel()
+	cfg, _ := seedCfg(t, "foo")
+	driver := &openDriver{detect: true, workspaceID: "wA"}
+	_, errOut, err := runOpen(t, cfg, driver, nil, "--target", "bogus", "foo")
+	if err == nil {
+		t.Fatal("expected an error for an invalid --target value")
+	}
+	if !strings.Contains(errOut, "invalid --target") {
+		t.Errorf("stderr = %q, want it to mention 'invalid --target'", errOut)
+	}
+	if driver.lastCand.Path != "" {
+		t.Errorf("driver must not be invoked for an invalid --target; got candidate %q", driver.lastCand.Path)
+	}
+}
+
+// commandWorkspaceCfg builds a config with a single Command-only [[workspaces]]
+// entry (command + optional close_on_exit) rooted at a temp dir, so the
+// target=tab/pane tests get a candidate whose Meta carries the command.
+func commandWorkspaceCfg(t *testing.T, name, command string, closeOnExit bool) (*config.Config, string) {
+	t.Helper()
+	root := t.TempDir()
+	dir := filepath.Join(root, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	cfg := config.Defaults()
+	cfg.General.Sources = []string{config.SourceWorkspaces}
+	cfg.Workspaces = []config.WorkspaceConfig{{
+		Name: name, Path: dir, Command: command, CloseOnExit: closeOnExit,
+	}}
+	return cfg, dir
+}
+
+// insidePaneDriver returns an openDriver configured to look like shep is
+// running inside the given Herdr pane (CurrentPane succeeds). workspaceID is
+// only used by the workspace-target path; the tab/pane paths read from
+// currentPane instead.
+func insidePaneDriver(pane source.Pane) *openDriver {
+	return &openDriver{
+		detect:      true,
+		currentPane: pane,
+	}
+}
+
+// TestOpen_TargetTab_OpensInCurrentWorkspace (end-to-end): a Command-only
+// workspace entry opened with --target=tab creates a new tab in the workspace
+// shep is running inside (focus=true so the new tab gets keyboard focus) and
+// runs the command in that tab's root pane, wrapped with close_on_exit.
+func TestOpen_TargetTab_OpensInCurrentWorkspace(t *testing.T) {
+	cfg, _ := commandWorkspaceCfg(t, "ops", "k9s", true)
+	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
+	driver := insidePaneDriver(pane)
+	_, _, err := runOpen(t, cfg, driver, nil, "--target", "tab", "ops")
+	if err != nil {
+		t.Fatalf("open --target=tab: %v", err)
+	}
+	if len(driver.created) != 1 || driver.created[0] != "tab:wA:/cur:ops:focus" {
+		t.Errorf("expected one focused CreateTab in the current workspace, got %v", driver.created)
+	}
+	want := "run:new-p:k9s; herdr pane close new-p"
+	if len(driver.ran) != 1 || driver.ran[0] != want {
+		t.Errorf("expected wrapped command %q in the new pane, got %v", want, driver.ran)
+	}
+	// The standalone-workspace path must NOT have run.
+	if driver.lastCand.Path != "" {
+		t.Errorf("FocusOrCreate must not be called for target=tab; got candidate %q", driver.lastCand.Path)
+	}
+}
+
+// TestOpen_TargetPane_OpensInCurrentWorkspace (end-to-end): --target=pane
+// splits a new pane off the current one (right, 0.5, focus=true) and runs the
+// wrapped command there.
+func TestOpen_TargetPane_OpensInCurrentWorkspace(t *testing.T) {
+	cfg, _ := commandWorkspaceCfg(t, "ops", "k9s", true)
+	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
+	driver := insidePaneDriver(pane)
+	_, _, err := runOpen(t, cfg, driver, nil, "--target", "pane", "ops")
+	if err != nil {
+		t.Fatalf("open --target=pane: %v", err)
+	}
+	if len(driver.created) != 1 || driver.created[0] != "split:cur-p:right:0.5:/cur:focus" {
+		t.Errorf("expected one focused right split of the current pane, got %v", driver.created)
+	}
+	want := "run:split-p:k9s; herdr pane close split-p"
+	if len(driver.ran) != 1 || driver.ran[0] != want {
+		t.Errorf("expected wrapped command %q in the split pane, got %v", want, driver.ran)
+	}
+}
+
+// TestOpen_TargetTab_NoCurrentPane_Errors (end-to-end): --target=tab when
+// shep is NOT running inside a Herdr pane (CurrentPane returns
+// source.ErrNoFocusedPane) surfaces a clear, specific error and never reaches
+// CreateTab/RunPane.
+func TestOpen_TargetTab_NoCurrentPane_Errors(t *testing.T) {
+	cfg, _ := commandWorkspaceCfg(t, "ops", "k9s", true)
+	driver := &openDriver{
+		detect:         true,
+		currentPaneErr: source.ErrNoFocusedPane,
+	}
+	_, errOut, err := runOpen(t, cfg, driver, nil, "--target", "tab", "ops")
+	if err == nil {
+		t.Fatal("expected an error when --target=tab has no current pane")
+	}
+	if !strings.Contains(errOut, "requires shep to be running inside a herdr workspace pane") {
+		t.Errorf("stderr = %q, want the 'inside a herdr workspace pane' message", errOut)
+	}
+	if len(driver.created) != 0 || len(driver.ran) != 0 {
+		t.Errorf("no tab/pane mutation must occur without a current pane; created=%v ran=%v", driver.created, driver.ran)
+	}
+}
+
+// TestOpen_TargetTab_TemplateEntry_Errors (end-to-end): --target=tab on a
+// workspace that declares a template (not a bare command) is rejected with a
+// message naming the template, because tab/pane only support Command-only
+// entries.
+func TestOpen_TargetTab_TemplateEntry_Errors(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "ops")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.General.Sources = []string{config.SourceWorkspaces}
+	cfg.Templates["code"] = config.TemplateConfig{Command: "nvim"}
+	cfg.Workspaces = []config.WorkspaceConfig{{Name: "ops", Path: dir, Template: "code"}}
+	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", CWD: "/cur"}
+	driver := insidePaneDriver(pane)
+	_, errOut, err := runOpen(t, cfg, driver, nil, "--target", "tab", "ops")
+	if err == nil {
+		t.Fatal("expected an error for --target=tab on a template entry")
+	}
+	if !strings.Contains(errOut, "only supports command-only entries") || !strings.Contains(errOut, "template") {
+		t.Errorf("stderr = %q, want the command-only/template message", errOut)
+	}
+	if len(driver.created) != 0 || len(driver.ran) != 0 {
+		t.Errorf("no tab/pane mutation must occur for a template entry; created=%v ran=%v", driver.created, driver.ran)
+	}
+}
+
+// TestOpen_TargetTab_PlainPathHasNoCommand_Errors (end-to-end via --path):
+// --target=tab on a plain path with no command/template/group is rejected,
+// because there is no command to run in the new tab.
+func TestOpen_TargetTab_PlainPathHasNoCommand_Errors(t *testing.T) {
+	cfg := config.Defaults()
+	dir := t.TempDir()
+	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", CWD: "/cur"}
+	driver := insidePaneDriver(pane)
+	_, errOut, err := runOpen(t, cfg, driver, nil, "--target", "tab", "--path", dir)
+	if err == nil {
+		t.Fatal("expected an error for --target=tab on a plain path")
+	}
+	if !strings.Contains(errOut, "requires an entry with a command") {
+		t.Errorf("stderr = %q, want the 'requires an entry with a command' message", errOut)
+	}
+	if len(driver.created) != 0 || len(driver.ran) != 0 {
+		t.Errorf("no tab/pane mutation must occur for a plain path; created=%v ran=%v", driver.created, driver.ran)
+	}
+}
+
+// runLaunchDirect calls App.launch directly (bypassing runOpen's candidate
+// resolution) so a target-validation test can feed a crafted candidate the
+// normal resolution flow would intercept — e.g. a group workspace, which
+// resolveFromRegistry always drills into and therefore never forwards to
+// launch. It returns stderr and the launch error.
+func runLaunchDirect(t *testing.T, cand source.Candidate, target string, currentPane *source.Pane, driver *openDriver) (string, error) {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	app := New(WithStreams(&out, &errOut))
+	app.herdrDriver = driver
+	app.herdrDriverInjected = true
+	app.cfg = config.Defaults()
+	app.probes = config.Probes{Herdr: true, Git: true}
+	err := app.launch(context.Background(), cand, target, currentPane, &out, &errOut)
+	return errOut.String(), err
+}
+
+// TestLaunch_TargetTab_GroupWorkspace_Errors (direct launch): a group
+// workspace candidate (Meta["group"]="true") is rejected for --target=tab.
+// This shape is unreachable through `shep open` (resolveFromRegistry drills
+// into groups before launch ever sees them), so the guard is exercised here
+// against launch directly to keep the disallowTarget branch covered.
+func TestLaunch_TargetTab_GroupWorkspace_Errors(t *testing.T) {
+	cand := source.Candidate{Path: "/g", Label: "groupentry", Meta: map[string]string{"group": "true"}}
+	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", CWD: "/cur"}
+	driver := insidePaneDriver(pane)
+	errOut, err := runLaunchDirect(t, cand, "tab", &pane, driver)
+	if err == nil {
+		t.Fatal("expected an error for --target=tab on a group workspace")
+	}
+	if !strings.Contains(errOut, "requires an entry with a command") || !strings.Contains(errOut, "group workspace") {
+		t.Errorf("stderr = %q, want the group-workspace message", errOut)
+	}
+	if len(driver.created) != 0 || len(driver.ran) != 0 {
+		t.Errorf("no tab/pane mutation must occur for a group entry; created=%v ran=%v", driver.created, driver.ran)
+	}
+}
+
+// TestRunOpen_CurrentPaneTimeout confirms runOpen bounds its CurrentPane
+// probe with a short timeout: a hung Herdr daemon (here, a CurrentPane stub
+// that sleeps 5s) must not block the whole invocation — runOpen degrades
+// gracefully (currentPane stays nil) and returns well within the 2s budget
+// plus test slack.
+func TestRunOpen_CurrentPaneTimeout(t *testing.T) {
+	t.Parallel()
+	cfg, _ := seedCfg(t, "foo")
+	driver := &openDriver{detect: true, currentPaneDelay: 5 * time.Second}
+	start := time.Now()
+	_, _, err := runOpen(t, cfg, driver, nil, "foo")
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("runOpen: %v", err)
+	}
+	if !driver.currentCalled {
+		t.Fatal("expected CurrentPane to have been called")
+	}
+	if elapsed > 2500*time.Millisecond {
+		t.Errorf("runOpen took %v, want it to return within ~2.5s despite a hung CurrentPane", elapsed)
+	}
+}
+
+// TestLaunch_TargetPane_NoCurrentPane_Errors triangulates the pane target
+// against the same no-current-pane guard the tab target uses, confirming both
+// targets share the precondition.
+func TestLaunch_TargetPane_NoCurrentPane_Errors(t *testing.T) {
+	cand := source.Candidate{Path: "/x", Label: "ops", Meta: map[string]string{"command": "k9s"}}
+	errOut, err := runLaunchDirect(t, cand, "pane", nil, &openDriver{detect: true})
+	if err == nil {
+		t.Fatal("expected an error for --target=pane with no current pane")
+	}
+	if !strings.Contains(errOut, "requires shep to be running inside a herdr workspace pane") {
+		t.Errorf("stderr = %q, want the inside-a-pane message", errOut)
+	}
+}
+
+// TestOpen_TargetTab_ApplyFailureRollsBackAndErrors (end-to-end): when
+// templates.Apply fails after --target=tab has already created the new tab
+// (RunPane's Apply-internal call errors), launchInCurrentWorkspace must
+// best-effort close the now-ghost pane/tab and surface a real error (exit 1)
+// instead of silently returning nil.
+func TestOpen_TargetTab_ApplyFailureRollsBackAndErrors(t *testing.T) {
+	cfg, _ := commandWorkspaceCfg(t, "ops", "k9s", false)
+	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
+	driver := insidePaneDriver(pane)
+	driver.runErrOnFirstCall = errors.New("boom")
+	_, errOut, err := runOpen(t, cfg, driver, nil, "--target", "tab", "ops")
+	if err == nil {
+		t.Fatal("expected an error when Apply fails after tab creation")
+	}
+	if !errors.Is(err, errExitOne) {
+		t.Errorf("expected errExitOne, got %v", err)
+	}
+	if !strings.Contains(errOut, "warning: launch failed") {
+		t.Errorf("stderr = %q, want it to mention launch failed", errOut)
+	}
+	// Two RunPane calls expected: the failed Apply-internal run, then the
+	// best-effort close attempt on the ghost pane.
+	if len(driver.ran) != 2 {
+		t.Fatalf("expected 2 RunPane calls (failed run + rollback close), got %v", driver.ran)
+	}
+	wantClose := "run:new-p:herdr pane close new-p"
+	if driver.ran[1] != wantClose {
+		t.Errorf("expected rollback close %q, got %q", wantClose, driver.ran[1])
+	}
+}
+
+// TestOpen_TargetPane_ApplyFailureRollsBackAndErrors mirrors the tab test for
+// --target=pane, confirming the rollback close targets the split pane.
+func TestOpen_TargetPane_ApplyFailureRollsBackAndErrors(t *testing.T) {
+	cfg, _ := commandWorkspaceCfg(t, "ops", "k9s", false)
+	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
+	driver := insidePaneDriver(pane)
+	driver.runErrOnFirstCall = errors.New("boom")
+	_, errOut, err := runOpen(t, cfg, driver, nil, "--target", "pane", "ops")
+	if err == nil {
+		t.Fatal("expected an error when Apply fails after pane split")
+	}
+	if !errors.Is(err, errExitOne) {
+		t.Errorf("expected errExitOne, got %v", err)
+	}
+	if !strings.Contains(errOut, "warning: launch failed") {
+		t.Errorf("stderr = %q, want it to mention launch failed", errOut)
+	}
+	if len(driver.ran) != 2 {
+		t.Fatalf("expected 2 RunPane calls (failed run + rollback close), got %v", driver.ran)
+	}
+	wantClose := "run:split-p:herdr pane close split-p"
+	if driver.ran[1] != wantClose {
+		t.Errorf("expected rollback close %q, got %q", wantClose, driver.ran[1])
 	}
 }

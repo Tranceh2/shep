@@ -220,8 +220,15 @@ type WorkspaceConfig struct {
 	Template string `toml:"template,omitempty"`
 	// Command, when set (and Template is not), runs directly in the root
 	// pane of a freshly created workspace for this entry.
-	Command string   `toml:"command,omitempty"`
-	Preview []string `toml:"preview,omitempty"`
+	Command string `toml:"command,omitempty"`
+	// CloseOnExit wraps Command (only when Command is set) so the workspace's
+	// root pane closes itself after the command's shell returns control
+	// (regardless of exit status), via the same shell-chaining
+	// ("; <binary> pane close <pane_id>") used by leaf nodes. It is rejected
+	// for type=group and template= entries (those own their own close-on-exit
+	// per node).
+	CloseOnExit bool     `toml:"close_on_exit,omitempty"`
+	Preview     []string `toml:"preview,omitempty"`
 }
 
 // WildcardConfig is one entry in the [[wildcards]] list: a glob pattern with
@@ -292,6 +299,12 @@ type TemplateConfig struct {
 	Description string         `toml:"description,omitempty"`
 	Tabs        []TemplateTab  `toml:"tabs,omitempty"`
 	Focus       *TemplateFocus `toml:"focus,omitempty"`
+	// CloseOnExit wraps Command (only the simple-Command case: no Tabs) so the
+	// template's root pane closes itself after the command's shell returns
+	// control (regardless of exit status), via the same shell-chaining used
+	// by leaf nodes. It is rejected when Tabs is set (per-tab/per-pane
+	// close-on-exit is already the node-level feature).
+	CloseOnExit bool `toml:"close_on_exit,omitempty"`
 }
 
 // TemplateTab is one tab in a template, in creation order. Name is the tab's
@@ -555,11 +568,22 @@ func validateSources(names []string) error {
 // validateTemplates enforces that a template uses either Command or Tabs
 // (never both), that every tab/node is internally consistent, and that the
 // top-level Focus (when set) refers to a real tab name and (when Node is
-// set) a real node id within that specific tab.
+// set) a real node id within that specific tab. It also enforces that
+// close_on_exit, when set, is consistent with the template shape: rejected
+// on a TemplateConfig that sets Tabs, or on a TemplateConfig with an empty
+// Command.
 func validateTemplates(templates map[string]TemplateConfig) error {
 	for name, tpl := range templates {
 		if tpl.Command != "" && len(tpl.Tabs) > 0 {
 			return fmt.Errorf("templates.%s: sets both command and tabs; use one or the other", name)
+		}
+		if tpl.CloseOnExit {
+			if len(tpl.Tabs) > 0 {
+				return fmt.Errorf("templates.%s: sets close_on_exit but also has tabs (per-tab close-on-exit is the node-level feature)", name)
+			}
+			if tpl.Command == "" {
+				return fmt.Errorf("templates.%s: sets close_on_exit but has no command; it would never trigger", name)
+			}
 		}
 		for i, tab := range tpl.Tabs {
 			if err := validateTemplateTab(name, i, tab); err != nil {
@@ -732,7 +756,9 @@ func validateTemplateNode(prefix, tabName string, n TemplateNode, byID map[strin
 
 // validateWorkspaces enforces per-entry invariants: a name is required;
 // group entries validate their Sources list; a template reference (if set)
-// must exist.
+// must exist. It also enforces that close_on_exit, when set, is consistent
+// with the workspace shape: rejected on a Type="group" workspace, on a
+// workspace that sets a Template, or on a workspace with an empty Command.
 func validateWorkspaces(workspaces []WorkspaceConfig, templates map[string]TemplateConfig) error {
 	for i, ws := range workspaces {
 		if strings.TrimSpace(ws.Name) == "" {
@@ -755,6 +781,17 @@ func validateWorkspaces(workspaces []WorkspaceConfig, templates map[string]Templ
 		}
 		if ws.Template != "" && ws.Command != "" {
 			return fmt.Errorf("workspaces[%d] (%q): sets both template and command; use one or the other", i, ws.Name)
+		}
+		if ws.CloseOnExit {
+			if ws.Type == WorkspaceTypeGroup {
+				return fmt.Errorf("workspaces[%d] (%q): sets close_on_exit but type=%q (a group has no pane/command of its own)", i, ws.Name, ws.Type)
+			}
+			if ws.Template != "" {
+				return fmt.Errorf("workspaces[%d] (%q): sets close_on_exit but template=%q (the template owns close-on-exit per node)", i, ws.Name, ws.Template)
+			}
+			if ws.Command == "" {
+				return fmt.Errorf("workspaces[%d] (%q): sets close_on_exit but has no command; it would never trigger", i, ws.Name)
+			}
 		}
 	}
 	return nil

@@ -51,6 +51,9 @@ func (fakeDriver) RunPane(context.Context, string, string) error {
 func (fakeDriver) FocusTab(context.Context, string) error {
 	return errors.New("fakeDriver does not implement FocusTab")
 }
+func (fakeDriver) CurrentPane(context.Context) (Pane, error) {
+	return Pane{}, errors.New("fakeDriver does not implement CurrentPane")
+}
 
 // TestCandidate_Clone ensures Meta is deep-copied so callers cannot mutate a
 // provider's internal map through a returned candidate.
@@ -466,6 +469,38 @@ func TestWorkspacesProvider_GroupEntry(t *testing.T) {
 	}
 	if got, want := cands[0].Meta["group_sources"], "projects,zoxide"; got != want {
 		t.Errorf("group_sources: got %q want %q", got, want)
+	}
+}
+
+// TestWorkspacesProvider_CloseOnExitForwardsMeta confirms a workspace with
+// CloseOnExit=true and a command surfaces that flag via Meta["close_on_exit"]
+// = "true", mirroring how Meta["command"] forwards the workspace command to
+// the command layer. Mirroring the existing command-forwarding pattern keeps
+// the synthetic-template path and the real one in sync.
+func TestWorkspacesProvider_CloseOnExitForwardsMeta(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	root := t.TempDir()
+	cfg.Workspaces = []config.WorkspaceConfig{
+		{Name: "yazi", Path: root, Command: "yazi", CloseOnExit: true},
+		{Name: "shell", Path: root, Command: "bash"},
+	}
+	p := &workspacesProvider{cfg: cfg}
+	cands, err := p.List(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(cands) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(cands))
+	}
+	if got := cands[0].Meta["close_on_exit"]; got != "true" {
+		t.Errorf("yazi close_on_exit: got %q want %q", got, "true")
+	}
+	if got := cands[0].Meta["command"]; got != "yazi" {
+		t.Errorf("yazi command: got %q want %q", got, "yazi")
+	}
+	if _, ok := cands[1].Meta["close_on_exit"]; ok {
+		t.Errorf("shell (CloseOnExit=false) must not set Meta[close_on_exit], got %q", cands[1].Meta["close_on_exit"])
 	}
 }
 

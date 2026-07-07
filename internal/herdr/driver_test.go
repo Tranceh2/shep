@@ -238,6 +238,14 @@ func paneInfoJSON(workspaceID, tabID, paneID string) []byte {
 		`"pane":{"pane_id":"` + paneID + `","workspace_id":"` + workspaceID + `","tab_id":"` + tabID + `","focused":false,"agent_status":"unknown"}}}`)
 }
 
+// paneCurrentJSON builds a `herdr pane current` result envelope. The shape
+// mirrors the package doc: {"id":"cli:pane:current","result":{"pane":{...}}}.
+func paneCurrentJSON(p rawPane) []byte {
+	return []byte(`{"id":"cli:pane:current","result":{"pane":{` +
+		`"pane_id":"` + p.PaneID + `","workspace_id":"` + p.WorkspaceID + `","tab_id":"` + p.TabID + `",` +
+		`"cwd":"` + p.CWD + `","foreground_cwd":"` + p.ForegroundCWD + `","focused":` + boolStr(p.Focused) + `}}}`)
+}
+
 // TestCreateTab_ParsesEnvelope confirms CreateTab issues
 // `herdr tab create --workspace <id> --cwd <cwd> --label <label> --focus`
 // and returns the new tab + root pane from the tab_created envelope.
@@ -264,6 +272,20 @@ func TestCreateTab_EmptyWorkspaceIDReturnsError(t *testing.T) {
 	d := New("herdr", WithRunner(&fakeRunner{}))
 	if _, _, err := d.CreateTab(context.Background(), "", "/x", "label", false); err == nil {
 		t.Fatal("expected error for empty workspace id")
+	}
+}
+
+// TestCreateTab_RejectsMaliciousPaneID defends against a hostile/malformed
+// Herdr response: a root_pane.pane_id carrying shell metacharacters must be
+// rejected, since it eventually reaches wrapCloseOnExit's shell-chained
+// command construction.
+func TestCreateTab_RejectsMaliciousPaneID(t *testing.T) {
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr tab create --workspace wA --cwd /x --label server --focus", out: tabCreatedJSON("wA", "wA:t2", "p1; rm -rf ~ #")},
+	}}
+	d := New("herdr", WithRunner(r))
+	if _, _, err := d.CreateTab(context.Background(), "wA", "/x", "server", true); err == nil {
+		t.Fatal("expected error for a pane_id containing shell metacharacters")
 	}
 }
 
@@ -308,6 +330,19 @@ func TestSplitPane_EmptyPaneIDReturnsError(t *testing.T) {
 	d := New("herdr", WithRunner(&fakeRunner{}))
 	if _, err := d.SplitPane(context.Background(), "", "down", 0.5, "", false); err == nil {
 		t.Fatal("expected error for empty pane id")
+	}
+}
+
+// TestSplitPane_RejectsMaliciousPaneID defends against a hostile/malformed
+// Herdr response: a returned pane.pane_id carrying shell metacharacters must
+// be rejected before it can reach wrapCloseOnExit's shell-chained command.
+func TestSplitPane_RejectsMaliciousPaneID(t *testing.T) {
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr pane split wA:p1 --direction down --ratio 0.8 --cwd /x --focus", out: paneInfoJSON("wA", "wA:t1", "p1; rm -rf ~ #")},
+	}}
+	d := New("herdr", WithRunner(r))
+	if _, err := d.SplitPane(context.Background(), "wA:p1", "down", 0.8, "/x", true); err == nil {
+		t.Fatal("expected error for a pane_id containing shell metacharacters")
 	}
 }
 
@@ -768,5 +803,97 @@ func TestReadPane_ContextDeadlineSurfaces(t *testing.T) {
 	defer cancel()
 	if _, err := d.ReadPane(ctx, "wA:p1", 50); err == nil {
 		t.Fatal("expected error when context deadline exceeded")
+	}
+}
+
+// TestDriver_CurrentPane_PaneCurrent confirms CurrentPane issues
+// `herdr pane current` and parses the focused pane out of the envelope,
+// carrying pane_id/workspace_id/tab_id/cwd through to the returned source.Pane.
+func TestDriver_CurrentPane_PaneCurrent(t *testing.T) {
+	t.Parallel()
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr pane current", out: paneCurrentJSON(rawPane{
+			PaneID: "wA:p3", WorkspaceID: "wA", TabID: "wA:t2", CWD: "/proj", Focused: true,
+		})},
+	}}
+	d := New("herdr", WithRunner(r))
+	got, err := d.CurrentPane(context.Background())
+	if err != nil {
+		t.Fatalf("CurrentPane: %v", err)
+	}
+	want := source.Pane{ID: "wA:p3", WorkspaceID: "wA", TabID: "wA:t2", CWD: "/proj", Focused: true}
+	if got != want {
+		t.Errorf("CurrentPane = %+v, want %+v", got, want)
+	}
+}
+
+// TestDriver_CurrentPane_FallbackToPaneList confirms that when `herdr pane
+// current` is unavailable (here: the build returns a non-zero exit / error as
+// it would for an unknown subcommand), CurrentPane falls back to `pane list`
+// and returns the first Focused:true pane. This mirrors the activePaneID
+// pattern in internal/preview/renderer.go.
+func TestDriver_CurrentPane_FallbackToPaneList(t *testing.T) {
+	t.Parallel()
+	r := &fakeRunner{script: []fakeCall{
+		// Old herdr build: `pane current` is not a recognized subcommand and
+		// exits non-zero.
+		{match: "herdr pane current", err: errors.New("exit status 1: unknown command")},
+		{match: "herdr workspace list", out: workspaceListJSON("wA", "foo")},
+		{
+			match: "herdr pane list",
+			out: paneListJSON(
+				rawPane{PaneID: "wA:p1", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/a", Focused: false},
+				rawPane{PaneID: "wA:p2", WorkspaceID: "wA", TabID: "wA:t2", CWD: "/b", Focused: true},
+			),
+		},
+	}}
+	d := New("herdr", WithRunner(r))
+	got, err := d.CurrentPane(context.Background())
+	if err != nil {
+		t.Fatalf("CurrentPane fallback: %v", err)
+	}
+	// The pane-list fallback recovers id/workspace/cwd/focused. tab_id is not
+	// part of the pane list envelope (and is not needed by the tab/pane launch
+	// paths, which only consume WorkspaceID/PaneID/CWD), so we do not assert
+	// it here — `pane current` is the only source that carries tab_id.
+	if got.ID != "wA:p2" || got.WorkspaceID != "wA" || got.CWD != "/b" || !got.Focused {
+		t.Errorf("CurrentPane fallback returned %+v, want the focused pane wA:p2", got)
+	}
+}
+
+// TestDriver_CurrentPane_RejectsMaliciousPaneID defends against a
+// hostile/malformed Herdr response: a pane_id carrying shell metacharacters
+// must be rejected before it reaches wrapCloseOnExit's shell-chained command.
+func TestDriver_CurrentPane_RejectsMaliciousPaneID(t *testing.T) {
+	t.Parallel()
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr pane current", out: paneCurrentJSON(rawPane{
+			PaneID: "p1; rm -rf ~ #", WorkspaceID: "wA", TabID: "wA:t2", CWD: "/proj", Focused: true,
+		})},
+	}}
+	d := New("herdr", WithRunner(r))
+	if _, err := d.CurrentPane(context.Background()); err == nil {
+		t.Fatal("expected error for a pane_id containing shell metacharacters")
+	}
+}
+
+// TestDriver_CurrentPane_NoFocusedPaneReturnsSentinel confirms that when the
+// fallback `pane list` returns no focused pane, CurrentPane returns
+// source.ErrNoFocusedPane so callers can distinguish "no Herdr context" from a
+// real daemon failure.
+func TestDriver_CurrentPane_NoFocusedPaneReturnsSentinel(t *testing.T) {
+	t.Parallel()
+	r := &fakeRunner{script: []fakeCall{
+		{match: "herdr pane current", err: errors.New("exit status 1: unknown command")},
+		{match: "herdr workspace list", out: workspaceListJSON("wA", "foo")},
+		{
+			match: "herdr pane list",
+			out:   paneListJSON(rawPane{PaneID: "wA:p1", WorkspaceID: "wA", CWD: "/a", Focused: false}),
+		},
+	}}
+	d := New("herdr", WithRunner(r))
+	_, err := d.CurrentPane(context.Background())
+	if !errors.Is(err, source.ErrNoFocusedPane) {
+		t.Errorf("expected source.ErrNoFocusedPane, got %v", err)
 	}
 }

@@ -82,11 +82,12 @@ const minPreviewHeight = 8
 const minListH = chromeRows + 3
 
 // minPrevH reuses minPreviewHeight: it is already the terminal's own real
-// minimum height for a preview pane to render sensibly (border+header+
-// blank+help chrome plus 1 body line — see capPreviewBodyLines' height-
-// chromeRows-3 accounting), independent of whether that height budget comes
-// from the full terminal (landscape, where both panes share m.height) or a
-// height-axis split share (portrait, where the preview only gets prevH).
+// minimum height for a preview pane to render sensibly (previewChromeRows'
+// border+header+blank+help chrome plus 1 body line — see
+// capPreviewBodyLines' height-previewChromeRows accounting), independent of
+// whether that height budget comes from the full terminal (landscape, where
+// both panes share m.height) or a height-axis split share (portrait, where
+// the preview only gets prevH).
 const minPrevH = minPreviewHeight
 
 // minPortraitHeight is the raw terminal height (m.height, before View's
@@ -106,6 +107,11 @@ const minPortraitHeight = minListH + minPrevH + 2
 // border and never be visible even when scrolled all the way down.
 const chromeRows = 4
 
+// previewChromeRows is the fixed vertical overhead of the preview pane
+// deducted from the pane's outer height before capping body lines:
+// 2 (border top+bottom) + 1 (header) + 1 (blank) + 1 (help) = 5.
+const previewChromeRows = 5
+
 // ErrCancelled is the quiet cancellation sentinel returned by Run when the
 // user quits without selecting (esc/ctrl+c/ctrl+g). Callers use errors.Is to
 // distinguish an intentional cancel from "no selector available" (ok=false
@@ -124,6 +130,19 @@ type Model struct {
 	selected   int // -1 until a candidate is chosen
 	cancelled  bool
 	layout     Layout
+
+	// currentPane is the Herdr pane shep is running inside, queried once by
+	// the caller and threaded in via WithCurrentPane. nil means "no current
+	// pane" (shep is not running inside a Herdr workspace pane, or the query
+	// failed): the footer's ctrl+t/ctrl+p hints render dimmed and handleKey
+	// ignores both bindings in that case (see selectWithTarget).
+	currentPane *source.Pane
+	// chosenTarget records which target the user picked via ctrl+t ("tab")
+	// or ctrl+p ("pane"). Empty means no override: enter was pressed (or the
+	// run was cancelled), and the caller's --target flag value applies
+	// unchanged. Set by selectWithTarget, read back via ChosenTarget once
+	// Run returns.
+	chosenTarget string
 
 	// renderer produces the preview pane content asynchronously. nil is valid
 	// (tests, or wiring not yet available) and degrades to a built-in
@@ -216,6 +235,21 @@ func (m Model) Cancelled() bool { return m.cancelled }
 // built it from; see toggleLayoutOrientation.
 func (m Model) Layout() Layout { return m.layout }
 
+// ChosenTarget returns the target the user picked via ctrl+t ("tab") or
+// ctrl+p ("pane"). Empty means no override — enter was pressed, or the run
+// was cancelled — so the caller's --target flag value applies unchanged.
+func (m Model) ChosenTarget() string { return m.chosenTarget }
+
+// WithCurrentPane returns a copy of m with currentPane set to p. Run calls
+// this to thread the Herdr pane shep is running inside into the model
+// before driving it, so the footer hints and ctrl+t/ctrl+p bindings can
+// react to it without extending every existing NewModel/NewModelWithLayout
+// call site (most of which never need a current pane at all).
+func (m Model) WithCurrentPane(p *source.Pane) Model {
+	m.currentPane = p
+	return m
+}
+
 // Init kicks off the first async preview render for the initially
 // highlighted candidate (cursor 0) when a Renderer is wired. Its Cmd is
 // tagged with the model's initial previewSeq (0) so the resulting
@@ -284,6 +318,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+l":
 		m.toggleLayoutOrientation()
 		return m, nil
+	case "ctrl+t":
+		return m.selectWithTarget("tab")
+	case "ctrl+p":
+		return m.selectWithTarget("pane")
 	}
 
 	prevKey := m.currentPreviewKey()
@@ -313,6 +351,25 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	cmd := m.syncPreviewAfterSelectionChange(prevKey)
 	return m, cmd
+}
+
+// selectWithTarget handles ctrl+t ("tab") and ctrl+p ("pane"): when shep is
+// running inside a Herdr pane (currentPane != nil) and there is a highlighted
+// candidate to launch (filtered is non-empty), it selects the highlighted
+// candidate exactly like enter, records target as the chosen launch target
+// (read back via ChosenTarget), and quits. It is a no-op — the binding is
+// disabled — when currentPane is nil (the tab/pane launch targets require
+// shep to already be running inside a Herdr workspace pane; see
+// App.launchInCurrentWorkspace) or when filtered is empty (no candidate is
+// highlighted, mirroring enter's own len(m.filtered) > 0 guard — without
+// this, chosenTarget would be set for a launch that never had a candidate).
+func (m Model) selectWithTarget(target string) (tea.Model, tea.Cmd) {
+	if m.currentPane == nil || len(m.filtered) == 0 {
+		return m, nil
+	}
+	m.selected = m.cursor
+	m.chosenTarget = target
+	return m, tea.Quit
 }
 
 // toggleLayoutOrientation flips m.layout.Orientation between landscape and
@@ -518,25 +575,43 @@ func (m Model) View() string {
 	var body string
 	switch {
 	case hidePreview:
-		body = palette.borderStyle.Render(paneModel.renderList(paneContentWidth(m.width)))
+		body = paneBoxStyle(paneHeight).Render(paneModel.renderList(paneContentWidth(m.width)))
 	case m.layout.Orientation == LayoutPortrait:
 		body = paneModel.renderPortrait()
 	default:
 		listW, prevW := splitWidths(m.width, m.layout)
-		listPane := palette.borderStyle.Render(paneModel.renderList(paneContentWidth(listW)))
-		previewPane := palette.borderStyle.Render(paneModel.renderPreview(paneContentWidth(prevW)))
+		listPane := paneBoxStyle(paneHeight).Render(paneModel.renderList(paneContentWidth(listW)))
+		previewPane := paneBoxStyle(paneHeight).Render(paneModel.renderPreview(paneContentWidth(prevW)))
 		body = lipgloss.JoinHorizontal(lipgloss.Top, listPane, gap(), previewPane)
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, body, footer)
 }
 
+// footerHintsText is the static keybinding hints appended after the
+// candidate footer text: enter opens a new Herdr workspace (the default,
+// always live); ctrl+t opens a new tab and ctrl+p splits a new pane, both
+// inside the Herdr workspace shep is currently running in — only live when
+// currentPane is set (selectWithTarget no-ops both bindings otherwise).
+const footerHintsText = "enter: ws · ctrl+t: tab · ctrl+p: pane"
+
 // renderFooter builds the full-width footer line: the currently highlighted
-// candidate's full text (footerText), defensively truncated to m.width via
-// the same ANSI-safe truncateToWidth used everywhere else in this file, for
-// the rare narrow-terminal case where even the full candidate line does not
-// fit.
+// candidate's full text (footerText) followed by the keybinding hints
+// (footerHintsText), defensively truncated to m.width via the same
+// ANSI-safe truncateToWidth used everywhere else in this file, for the rare
+// narrow-terminal case where even the full line does not fit. The hints
+// segment renders in the dimmed hintDisabledStyle when currentPane is nil
+// (ctrl+t/ctrl+p are inert in that case — see selectWithTarget), and in the
+// same mutedStyle as the candidate text otherwise. Merged into the single
+// existing footer line (rather than a separate line) so the panes' height
+// budget math — carefully tuned around exactly one reserved footer row, see
+// minPortraitHeight — never has to change.
 func (m Model) renderFooter() string {
-	return palette.mutedStyle.Width(m.width).Render(truncateToWidth(m.footerText(), m.width))
+	hintsStyle := palette.mutedStyle
+	if m.currentPane == nil {
+		hintsStyle = palette.hintDisabledStyle
+	}
+	full := palette.mutedStyle.Render(m.footerText()) + "  " + hintsStyle.Render(footerHintsText)
+	return lipgloss.NewStyle().Width(m.width).Render(truncateToWidth(full, m.width))
 }
 
 // renderPortrait stacks the list pane above the preview pane, each spanning
@@ -556,8 +631,8 @@ func (m Model) renderPortrait() string {
 	listModel.height = listH
 	prevModel := m
 	prevModel.height = prevH
-	listPane := palette.borderStyle.Render(listModel.renderList(paneContentWidth(m.width)))
-	previewPane := palette.borderStyle.Render(prevModel.renderPreview(paneContentWidth(m.width)))
+	listPane := paneBoxStyle(listH).Render(listModel.renderList(paneContentWidth(m.width)))
+	previewPane := paneBoxStyle(prevH).Render(prevModel.renderPreview(paneContentWidth(m.width)))
 	return lipgloss.JoinVertical(lipgloss.Left, listPane, previewPane)
 }
 
@@ -702,6 +777,39 @@ func paneContentWidth(outer int) int {
 	return inner
 }
 
+// paneBoxStyle returns palette.borderStyle with a fixed content height so a
+// pane's outer border sits at exactly outerHeight rows regardless of how
+// many lines the pane's own content naturally renders — the fix for the
+// preview (and list) pane border growing/shrinking with the highlighted
+// candidate's content instead of staying anchored at its assigned budget
+// (the full pane height in landscape, or the splitSizes share in portrait).
+//
+// lipgloss.Style.Render applies Height() BEFORE the border is drawn (pads/
+// aligns the content to `height` lines, then wraps it in the border), so
+// the height passed to Height() must be the CONTENT height, i.e.
+// outerHeight minus the border's own vertical frame size (2 rows: top+
+// bottom, palette.borderStyle has no vertical padding). Height() only PADS
+// short content — it never truncates long content (lipgloss's
+// alignTextVertical returns oversized input unchanged) — so callers must
+// independently guarantee their content never exceeds outerHeight-2 lines
+// (see capPreviewBodyLines for the preview pane; renderList's maxRows cap
+// already does this for the list pane).
+//
+// outerHeight<=0 means unknown (headless/test contexts without a
+// WindowSizeMsg): the unmodified borderStyle is returned so panes still
+// render at their natural content height, matching every other height<=0
+// fallback in this file (see capPreviewBodyLines, View's hidePreview check).
+func paneBoxStyle(outerHeight int) lipgloss.Style {
+	if outerHeight <= 0 {
+		return palette.borderStyle
+	}
+	inner := outerHeight - palette.borderStyle.GetVerticalFrameSize()
+	if inner < 1 {
+		inner = 1
+	}
+	return palette.borderStyle.Height(inner)
+}
+
 func gap() string { return " " }
 
 // renderList draws the filtered candidates with a cursor marker and the query
@@ -820,8 +928,8 @@ func truncateToWidth(s string, maxW int) string {
 
 // renderPreview shows the highlighted candidate's rendered preview plus a
 // short help line so the user always knows the keybindings. When the terminal
-// height is known, the body is capped to m.height - chromeRows lines so a long
-// output (e.g. dir or active pane content) never expands infinitely and
+// height is known, the body is capped to m.height - previewChromeRows lines so
+// a long output (e.g. dir or active pane content) never expands infinitely and
 // breaks JoinHorizontal / pushes the search box off screen.
 func (m Model) renderPreview(width int) string {
 	header := palette.previewHeaderStyle.Width(width).Render(truncateToWidth("preview", width))
@@ -831,31 +939,39 @@ func (m Model) renderPreview(width int) string {
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, "", help)
 }
 
-// capPreviewBodyLines truncates body to at most height-chromeRows content
-// lines when height is positive, appending an ellipsis line when truncation
-// occurs. A non-positive height (unknown) returns body unchanged so previews
-// still render fully in headless/test contexts.
+// capPreviewBodyLines truncates body so it never exceeds the preview pane's
+// fixed body-line budget, appending an ellipsis line in place of the last
+// surviving line when truncation occurs. height is the pane's own outer
+// height budget (m.height — already the correct per-pane budget in both
+// landscape and portrait; see View/renderPortrait), the same value fed to
+// paneBoxStyle for the border. A non-positive height (unknown) returns body
+// unchanged so previews still render fully in headless/test contexts.
+//
+// The body budget is height minus: the border's 2 rows (top+bottom, see
+// paneBoxStyle) and the header/blank/help lines lipgloss.JoinVertical adds
+// around the body in renderPreview (3 more, each exactly 1 physical line).
+// Capping strictly to this budget is what lets paneBoxStyle's Height()
+// modifier safely PAD shorter bodies up to the same budget without ever
+// having to truncate: Height() never truncates oversized content on its
+// own (see paneBoxStyle's doc comment), so this cap is the only thing
+// standing between a long preview body and the pane overflowing past its
+// fixed bottom border.
 func capPreviewBodyLines(body string, height int) string {
 	if height <= 0 {
 		return body
 	}
-	maxLines := height - chromeRows
-	if maxLines <= 0 {
-		maxLines = 1
-	}
-	// lipgloss.JoinVertical adds the header, blank, and help lines around
-	// the body; subtract those (3) plus the border (2) so the total pane
-	// height stays within `height`. chromeRows already covers border+query
-	// for the list pane; the preview adds header+blank+help (3 extra).
-	maxLines -= 3
-	if maxLines <= 0 {
+	maxLines := height - previewChromeRows
+	if maxLines < 1 {
 		maxLines = 1
 	}
 	lines := strings.Split(body, "\n")
 	if len(lines) <= maxLines {
 		return body
 	}
-	truncated := append(lines[:maxLines], "…")
+	if maxLines == 1 {
+		return "…"
+	}
+	truncated := append(lines[:maxLines-1], "…")
 	return strings.Join(truncated, "\n")
 }
 
@@ -928,18 +1044,22 @@ func clamp(v, lo, hi int) int {
 }
 
 // Run drives the model through a Bubble Tea program and returns the selected
-// candidate. The query seeds the live filter so users get a head-start (the
-// fzf path forwards a query the same way). renderer backs the async preview
-// pane (nil degrades to the built-in summary). It is the entry point used by
-// the selector's TUI selector. A cancelled run (esc/ctrl+c/ctrl+g) returns
+// candidate plus the target the user chose (ctrl+t => "tab", ctrl+p =>
+// "pane", or "" for the default via enter). The query seeds the live filter
+// so users get a head-start (the fzf path forwards a query the same way).
+// renderer backs the async preview pane (nil degrades to the built-in
+// summary). currentPane is the Herdr pane shep is running inside (nil when
+// not running inside one), threaded into the model so the footer hints and
+// ctrl+t/ctrl+p bindings can react to it. It is the entry point used by the
+// selector's TUI selector. A cancelled run (esc/ctrl+c/ctrl+g) returns
 // ErrCancelled rather than a plain ok=false so callers can exit quietly
 // instead of treating it as "selector unavailable".
-func Run(ctx context.Context, candidates []source.Candidate, query string, renderer preview.Renderer, layout ...Layout) (source.Candidate, bool, error) {
+func Run(ctx context.Context, candidates []source.Candidate, query string, renderer preview.Renderer, currentPane *source.Pane, layout ...Layout) (source.Candidate, string, bool, error) {
 	var l Layout
 	if len(layout) > 0 {
 		l = layout[0]
 	}
-	m := newModelWithLayout(candidates, renderer, ctx, l)
+	m := newModelWithLayout(candidates, renderer, ctx, l).WithCurrentPane(currentPane)
 	m.query = query
 	m.applyFilter()
 	// refreshPreviewLoadingFlag is not re-called here: newModelWithLayout
@@ -963,18 +1083,19 @@ func Run(ctx context.Context, candidates []source.Candidate, query string, rende
 	p := tea.NewProgram(m, tea.WithContext(ctx), tea.WithAltScreen())
 	final, err := p.Run()
 	if err != nil {
-		return source.Candidate{}, false, err
+		return source.Candidate{}, "", false, err
 	}
 	return finalizeRun(final.(Model))
 }
 
-// finalizeRun turns a terminated model's end state into Run's return triple.
-// Factored out so cancellation handling is unit-testable without driving a
-// real Bubble Tea program (Run itself always talks to a real tea.Program).
-func finalizeRun(m Model) (source.Candidate, bool, error) {
+// finalizeRun turns a terminated model's end state into Run's return
+// quadruple. Factored out so cancellation handling is unit-testable without
+// driving a real Bubble Tea program (Run itself always talks to a real
+// tea.Program).
+func finalizeRun(m Model) (source.Candidate, string, bool, error) {
 	if m.Cancelled() {
-		return source.Candidate{}, false, ErrCancelled
+		return source.Candidate{}, "", false, ErrCancelled
 	}
 	res, ok := m.Selected()
-	return res, ok, nil
+	return res, m.ChosenTarget(), ok, nil
 }

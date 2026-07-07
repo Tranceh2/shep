@@ -119,6 +119,14 @@ type HerdrDriver interface {
 	// FocusTab focuses tabID via `herdr tab focus <id>`. A valid fallback;
 	// the primary focus mechanism is the creation-time flag on CreateTab.
 	FocusTab(ctx context.Context, tabID string) error
+	// CurrentPane returns the pane that currently has keyboard focus inside
+	// Herdr, via `herdr pane current` (falling back to `pane list` + a
+	// Focused:true filter on older Herdr builds that lack the subcommand).
+	// The returned Pane carries WorkspaceID/TabID/PaneID/CWD so callers can
+	// open a new tab or split a pane inside that same workspace. Returns
+	// ErrNoFocusedPane when no pane is focused (e.g. shep is not running
+	// inside a Herdr pane at all).
+	CurrentPane(ctx context.Context) (Pane, error)
 }
 
 // Workspace is a minimal, driver-supplied description of a Herdr workspace.
@@ -140,6 +148,12 @@ type Tab struct {
 	Number      int
 	PaneCount   int
 }
+
+// ErrNoFocusedPane is returned by CurrentPane when no Herdr pane currently has
+// keyboard focus (e.g. the Herdr daemon is reachable but shep is not running
+// inside a Herdr pane). Callers treat this as "no current workspace context"
+// and disable the tab/pane launch targets accordingly.
+var ErrNoFocusedPane = errors.New("no focused pane")
 
 // Pane is one pane of a Herdr workspace. CWD is the pane's working directory;
 // ForegroundCWD is the cwd of the foreground process running in it (Herdr
@@ -397,6 +411,9 @@ func (p *workspacesProvider) List(ctx context.Context) ([]Candidate, error) {
 			cand.Meta = map[string]string{"template": ws.Template}
 		case ws.Command != "":
 			cand.Meta = map[string]string{"command": ws.Command}
+			if ws.CloseOnExit {
+				cand.Meta["close_on_exit"] = "true"
+			}
 		}
 		out = append(out, cand)
 	}

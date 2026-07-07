@@ -106,6 +106,16 @@ preview = ["identity", "git", "dir"]
 # path = "~/Downloads"
 # command = "yazi"
 #
+# close_on_exit = true on a workspace (with a command) closes the workspace's
+# root pane after that command's shell returns control (regardless of exit
+# status), via the same shell-chaining used by leaf nodes. It is rejected for
+# type=group and template= entries.
+# [[workspaces]]
+# name = "k9s"
+# path = "~/projects/ops"
+# command = "k9s"
+# close_on_exit = true
+#
 # type = "group" turns an entry into a nested picker source rooted at path,
 # drawing candidates from its own sources list.
 # [[workspaces]]
@@ -124,6 +134,15 @@ command = ""
 [templates.k8s]
 command = "k9s"
 
+# close_on_exit = true on a simple-command [templates.<name>] (no tabs) closes
+# the workspace's root pane after that command's shell returns control
+# (regardless of exit status), via the same shell-chaining as a leaf node. It
+# is rejected when tabs is set (per-tab close-on-exit is the node-level
+# feature).
+# [templates.k9s-close]
+# command = "k9s"
+# close_on_exit = true
+
 # A tabs-based template lists one or more [[templates.<name>.tabs]] entries.
 # Each tab has a name (its label) and, when it needs more than one empty
 # shell, a root node id plus [[templates.<name>.tabs.nodes]]. A node with
@@ -138,9 +157,9 @@ command = "k9s"
 # entirely keeps the default: the first tab stays focused (it reuses the
 # workspace's already-focused root tab).
 #
-# close_on_exit = true on a leaf node closes its pane once the node's
-# command finishes (e.g. quitting nvim), via shell-chaining a
-# "herdr pane close <pane_id>" after the command.
+# close_on_exit = true on a leaf node closes its pane after the node's
+# command's shell returns control (regardless of exit status — e.g. quitting
+# nvim), via shell-chaining a "herdr pane close <pane_id>" after the command.
 # [templates.dev]
 # description = "development workspace"
 # focus = { tab = "AI", node = "opencode" }

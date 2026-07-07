@@ -69,6 +69,9 @@ func (f *fakeDriver) FocusTab(_ context.Context, tabID string) error {
 	f.focused = append(f.focused, "focus-tab:"+tabID)
 	return nil
 }
+func (f *fakeDriver) CurrentPane(context.Context) (source.Pane, error) {
+	return source.Pane{}, nil
+}
 
 func seqID(prefix string, n int) string {
 	return prefix + "-" + string(rune('0'+n))
@@ -487,5 +490,115 @@ func TestApply_CloseOnExit_CustomBinary(t *testing.T) {
 	want := "run:w1:p1:nvim; myherdr pane close w1:p1"
 	if len(d.ran) != 1 || d.ran[0] != want {
 		t.Errorf("expected wrap with custom binary %q, got %v", want, d.ran)
+	}
+}
+
+// TestApply_CloseOnExitTopLevel_WrapsCommand confirms a top-level
+// TemplateConfig (no Tabs) with CloseOnExit=true and a non-empty Command has
+// its command wrapped so the root pane closes itself once the command
+// finishes — the workspace-command path that was previously silently ignored.
+// It reuses the same wrap as the leaf-node path (one tested code path).
+func TestApply_CloseOnExitTopLevel_WrapsCommand(t *testing.T) {
+	t.Parallel()
+	d := &fakeDriver{}
+	tpl := config.TemplateConfig{Command: "nvim", CloseOnExit: true}
+	err := Apply(context.Background(), d, Target{
+		WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj", Binary: "herdr",
+	}, tpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	want := "run:w1:p1:nvim; herdr pane close w1:p1"
+	if len(d.ran) != 1 || d.ran[0] != want {
+		t.Errorf("expected wrapped top-level command %q, got %v", want, d.ran)
+	}
+}
+
+// TestApply_CloseOnExitTopLevelFalse_PlainCommand confirms CloseOnExit=false
+// (the default) on a top-level template sends the plain command with no
+// close-on-exit chaining.
+func TestApply_CloseOnExitTopLevelFalse_PlainCommand(t *testing.T) {
+	t.Parallel()
+	d := &fakeDriver{}
+	tpl := config.TemplateConfig{Command: "nvim"}
+	err := Apply(context.Background(), d, Target{
+		WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj", Binary: "herdr",
+	}, tpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(d.ran) != 1 || d.ran[0] != "run:w1:p1:nvim" {
+		t.Errorf("expected plain top-level command, got %v", d.ran)
+	}
+}
+
+// TestApply_CloseOnExitTopLevel_CustomBinary confirms the top-level wrap uses
+// the configured binary name (Target.Binary), not a hardcoded "herdr", and
+// falls back to "herdr" when Binary is empty.
+func TestApply_CloseOnExitTopLevel_CustomBinary(t *testing.T) {
+	t.Parallel()
+	d := &fakeDriver{}
+	tpl := config.TemplateConfig{Command: "nvim", CloseOnExit: true}
+	err := Apply(context.Background(), d, Target{
+		WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj", Binary: "myherdr",
+	}, tpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	want := "run:w1:p1:nvim; myherdr pane close w1:p1"
+	if len(d.ran) != 1 || d.ran[0] != want {
+		t.Errorf("expected top-level wrap with custom binary %q, got %v", want, d.ran)
+	}
+}
+
+// TestApply_CloseOnExitTopLevel_EmptyBinary_DefaultsToHerdr confirms the
+// simple-Command path with an empty Target.Binary still produces a valid wrap
+// ("herdr" substituted by wrapCloseOnExit, the single default owner) rather
+// than a malformed "k9s;  pane close <id>" with a missing binary token.
+func TestApply_CloseOnExitTopLevel_EmptyBinary_DefaultsToHerdr(t *testing.T) {
+	t.Parallel()
+	d := &fakeDriver{}
+	tpl := config.TemplateConfig{Command: "k9s", CloseOnExit: true}
+	err := Apply(context.Background(), d, Target{
+		WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj", Binary: "",
+	}, tpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	want := "run:w1:p1:k9s; herdr pane close w1:p1"
+	if len(d.ran) != 1 || d.ran[0] != want {
+		t.Errorf("expected empty binary to default to herdr in the wrap %q, got %v", want, d.ran)
+	}
+}
+
+// TestWrapCloseOnExit_Helper is a focused table-driven test for the shared
+// wrapCloseOnExit helper used by both the simple-Command Apply branch and the
+// leaf applyNode branch. Both code paths must share this one implementation.
+func TestWrapCloseOnExit_Helper(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		cmd    string
+		paneID string
+		binary string
+		on     bool
+		want   string
+	}{
+		{name: "on wraps", cmd: "nvim", paneID: "p1", binary: "herdr", on: true, want: "nvim; herdr pane close p1"},
+		{name: "off no wrap", cmd: "nvim", paneID: "p1", binary: "herdr", on: false, want: "nvim"},
+		{name: "custom binary", cmd: "nvim", paneID: "p1", binary: "myherdr", on: true, want: "nvim; myherdr pane close p1"},
+		{name: "empty binary defaults to herdr", cmd: "nvim", paneID: "p1", binary: "", on: true, want: "nvim; herdr pane close p1"},
+		{name: "paneID empty on=true returns cmd unchanged (defensive no-wrap)", cmd: "nvim", paneID: "", binary: "herdr", on: true, want: "nvim"},
+		{name: "off preserves empty cmd", cmd: "", paneID: "p1", binary: "herdr", on: false, want: ""},
+		{name: "paneID with shell metacharacters returns cmd unchanged (defensive no-wrap)", cmd: "nvim", paneID: "p1; rm -rf ~ #", binary: "herdr", on: true, want: "nvim"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := wrapCloseOnExit(tc.cmd, tc.paneID, tc.binary, tc.on)
+			if got != tc.want {
+				t.Errorf("wrapCloseOnExit(%q,%q,%q,%v) = %q, want %q", tc.cmd, tc.paneID, tc.binary, tc.on, got, tc.want)
+			}
+		})
 	}
 }

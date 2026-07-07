@@ -19,8 +19,9 @@ import (
 )
 
 // App wires the shep command tree and holds runtime state shared across
-// subcommands (config, probes, output streams). Construct one with New per
-// process or test invocation.
+// subcommands (config, probes, output streams) and per-invocation open-run
+// state (currentPane, chosenTarget). Construct one with New per process or
+// test invocation.
 type App struct {
 	// versionInfo holds build metadata shown by `shep --version`.
 	versionInfo versionInfo
@@ -46,6 +47,17 @@ type App struct {
 	// selectorBuilder overrides the `shep open` selector cascade for tests.
 	// nil falls back to the default [Direct, Fzf] cascade.
 	selectorBuilder func() *selector.Cascade
+	// chosenTarget records a target override chosen by the interactive TUI
+	// picker (ctrl+t => "tab", ctrl+p => "pane"). Empty means "no override":
+	// runOpen then uses the --target flag value (default "workspace"). It is
+	// populated only when the TUI is the selecting selector and the user
+	// pressed a target binding; Direct/fzf never set it.
+	chosenTarget string
+	// currentPane is the Herdr pane shep is running inside, queried once per
+	// invocation so the TUI footer hints and the launch path share a single
+	// CurrentPane call. nil means "not inside a Herdr pane" (or the query
+	// failed); the tab/pane launch targets are disabled in that case.
+	currentPane *source.Pane
 }
 
 // Config returns the loaded configuration, defaulting to path-agnostic
@@ -92,6 +104,15 @@ func WithHerdrDriver(d source.HerdrDriver) Option {
 		a.herdrDriver = d
 		a.herdrDriverInjected = true
 	}
+}
+
+// setChosenTarget records a target override chosen by the interactive TUI
+// picker (ctrl+t => "tab", ctrl+p => "pane"; "" means no override). It is
+// threaded into the TUI selector as a callback (see newTUISelector) because
+// the shared selector.Selector interface's Select signature is fixed across
+// every cascade member and cannot itself grow a target return value.
+func (a *App) setChosenTarget(target string) {
+	a.chosenTarget = target
 }
 
 // Driver returns the active Herdr driver, lazily building a real one from the

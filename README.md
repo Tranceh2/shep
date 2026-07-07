@@ -147,12 +147,36 @@ first-tab behavior instead of the last-created tab/pane stealing focus. Focus
 is applied entirely via Herdr's `--focus`/`--no-focus` flags at tab/pane
 creation time; there is no post-hoc "focus by id" command for panes.
 
-A leaf node's `close_on_exit = true` closes its pane once the node's command
-finishes (e.g. quitting `nvim`). This is opt-in and implemented via shell
+A leaf node's `close_on_exit = true` closes its pane after the node's
+command's shell returns control (regardless of exit status — e.g. quitting
+`nvim`, or `nvim` exiting non-zero). This is opt-in and implemented via shell
 chaining (`<command>; herdr pane close <pane_id>`) because Herdr's `pane run`
 types the command into the pane's already-running interactive shell rather
 than spawning it as the pane's root process — Herdr has no native
 close-on-exit primitive today.
+
+The same flag also works on a workspace with a top-level `command`
+(`[[workspaces]]` with `command = "..."`) and on a simple-command
+`[templates.<name>]` (no `tabs`), closing the workspace's root pane after
+that command's shell returns control (regardless of exit status). It is
+rejected for `type = "group"` workspaces, for
+workspaces with `template = "..."` set (the template owns close-on-exit per
+node), and for top-level templates with `tabs` set (per-tab/per-pane
+close-on-exit is the node-level feature):
+
+```toml
+# A workspace whose root pane closes itself once k9s quits.
+[[workspaces]]
+name = "k9s"
+path = "~/projects/ops"
+command = "k9s"
+close_on_exit = true
+
+# The same on a simple-command template.
+[templates.k9s-close]
+command = "k9s"
+close_on_exit = true
+```
 
 Template resolution precedence for a freshly created workspace:
 
@@ -209,6 +233,38 @@ cwd normalises to the candidate path, or to create a new focused workspace
 (`herdr workspace create --cwd --label --focus`). A freshly **created**
 workspace also has its resolved template applied (focused workspaces skip
 templates). Herdr absent or unavailable prints the resolved path and exits 0.
+
+### Opening inside the current workspace
+
+`--target` selects WHERE a Command-only entry (a bare `command`, no
+`template`, not a group workspace) opens:
+
+- `workspace` (default) — focus/create a standalone Herdr workspace, same as
+  today.
+- `tab` — open a new tab in the Herdr workspace shep is already running
+  inside.
+- `pane` — split a new pane beside the pane shep is already running inside.
+
+```sh
+shep open ops --target=tab    # open "ops" as a new tab in the current workspace
+shep open ops --target=pane   # open "ops" as a new pane beside the current one
+```
+
+The same targets are available from the interactive TUI picker: `Ctrl+T`
+opens the highlighted candidate as a new tab, `Ctrl+P` as a new pane, and
+`Enter` keeps the default (`--target`'s value, `workspace` unless overridden).
+
+`tab` and `pane` only work when **both** conditions hold:
+
+1. shep is running inside a Herdr workspace pane (e.g. launched from a
+   Television cable or a shell running inside Herdr).
+2. The selected entry is Command-only — no `template`, not a `type = "group"`
+   workspace.
+
+When shep is not running inside a Herdr pane, the TUI's `Ctrl+T`/`Ctrl+P`
+hints render dimmed and the keys are no-ops; `shep open --target=tab|pane`
+returns a clear error instead. Targeting a template or group entry with
+`--target=tab|pane` also returns a clear, specific error naming the entry.
 
 ### `[tui]` pane sizing and layout
 

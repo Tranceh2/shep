@@ -119,8 +119,27 @@ func TestTUI_DownThenEnterSelectsSecond(t *testing.T) {
 	}
 }
 
-// TestTUI_TypeQueryFilters: typing filters candidates; with "docs" entered as
-// the query, only "shep-docs" matches, and enter selects it.
+// TestTUI_TypeQueryFilters: typing filters candidates; with "sdocs" entered
+// as the query, only "shep-docs" matches (as a fuzzy subsequence — sahilm/
+// fuzzy does not require a contiguous substring), and enter selects it.
+//
+// The query is "sdocs", not the more obviously-named "docs", specifically so
+// that the very FIRST keystroke ('s') already excludes "zoxide" outright:
+// none of zoxide's letters (z,o,x,i,d,e) is 's'. Typing "docs" instead has a
+// narrow but real transient-state hazard: after only the first keystroke
+// ('d'), the query "d" is a subsequence match for BOTH "shep-docs" and
+// "zoxide" (zoxide does contain the letter d) — a single-character render
+// frame that teatest.WaitFor's condition can observe if it happens to poll
+// right then, permanently failing the "!contains(zoxide)" assertion for the
+// rest of that WaitFor call (its accumulator only ever grows, never resets
+// mid-call). That window is normally too narrow to ever get its own
+// rendered frame, but the preview/list panes now redraw at their full fixed
+// outer height on every keystroke (see paneBoxStyle) — a larger per-frame
+// ANSI payload than before that fix — which under `go test -race` was
+// enough to make that one-keystroke frame independently observable and
+// intermittently fail this test. "sdocs" removes the hazard at its root
+// instead of racing the render pipeline: zoxide can never validly match any
+// prefix of it.
 func TestTUI_TypeQueryFilters(t *testing.T) {
 	cands := testCandidates()
 	tm := startTUI(t, cands, nil)
@@ -129,7 +148,7 @@ func TestTUI_TypeQueryFilters(t *testing.T) {
 		return strings.Contains(string(out), "shep")
 	}, teatest.WithDuration(2*time.Second), teatest.WithCheckInterval(10*time.Millisecond))
 
-	tm.Type("docs")
+	tm.Type("sdocs")
 	// Wait for the filter to drop "zoxide" from the visible list.
 	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
 		s := string(out)

@@ -200,7 +200,7 @@ func TestFinalizeRun_CancelledReturnsErrCancelled(t *testing.T) {
 	m := NewModel(internalTestCands(), nil)
 	m.cancelled = true
 
-	_, ok, err := finalizeRun(m)
+	_, _, ok, err := finalizeRun(m)
 	if ok {
 		t.Error("expected ok=false when cancelled")
 	}
@@ -219,7 +219,7 @@ func TestFinalizeRun_SelectedReturnsCandidateNilError(t *testing.T) {
 		t.Fatalf("expected Model, got %T", updated)
 	}
 
-	cand, ok, err := finalizeRun(m)
+	cand, target, ok, err := finalizeRun(m)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -228,6 +228,36 @@ func TestFinalizeRun_SelectedReturnsCandidateNilError(t *testing.T) {
 	}
 	if cand.Label != "a" {
 		t.Errorf("candidate = %+v, want label %q", cand, "a")
+	}
+	if target != "" {
+		t.Errorf("target = %q, want empty after plain enter (no ctrl+t/ctrl+p override)", target)
+	}
+}
+
+// TestFinalizeRun_CtrlTTarget_ReturnsChosenTarget proves finalizeRun surfaces
+// the ctrl+t/ctrl+p target override (ChosenTarget) alongside the selected
+// candidate, so tuiSelector.Select can forward it to the caller.
+func TestFinalizeRun_CtrlTTarget_ReturnsChosenTarget(t *testing.T) {
+	pane := source.Pane{ID: "p1"}
+	m := NewModel(internalTestCands(), nil).WithCurrentPane(&pane)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+	m, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("expected Model, got %T", updated)
+	}
+
+	cand, target, ok, err := finalizeRun(m)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if !ok {
+		t.Fatal("expected ok=true for a selected candidate")
+	}
+	if cand.Label != "a" {
+		t.Errorf("candidate = %+v, want label %q", cand, "a")
+	}
+	if target != "tab" {
+		t.Errorf("target = %q, want %q after ctrl+t", target, "tab")
 	}
 }
 
@@ -1250,6 +1280,142 @@ func TestView_PortraitLayout_BelowMinPortraitHeight_FallsBackToListOnly(t *testi
 	}
 }
 
+// previewBottomBorderRow locates the preview pane's own bottom border
+// ("╰") row index within view: it scans forward from the preview header
+// line ("preview") so a portrait list pane's bottom border (which uses the
+// identical rounded-corner rune) is never mistaken for the preview pane's.
+func previewBottomBorderRow(t *testing.T, view string) int {
+	t.Helper()
+	lines := strings.Split(view, "\n")
+	headerIdx := -1
+	for i, line := range lines {
+		if strings.Contains(line, "preview") {
+			headerIdx = i
+			break
+		}
+	}
+	if headerIdx == -1 {
+		t.Fatalf("could not locate preview header in view:\n%s", view)
+	}
+	for i := headerIdx; i < len(lines); i++ {
+		if strings.Contains(lines[i], "╰") {
+			return i
+		}
+	}
+	t.Fatalf("could not locate preview bottom border after header (row %d) in view:\n%s", headerIdx, view)
+	return -1
+}
+
+// TestView_PortraitLayout_PreviewBorderStaysFixed_TallBody is the RED test
+// for the preview-border-stability fix: today the preview pane's outer
+// height is the JoinVertical'd content's OWN natural height (header+body+
+// blank+help+border), so a highlighted candidate with a long preview body
+// pushes the bottom border down past the row splitSizes actually assigned
+// the pane (prevH). This proves the bottom border stays pinned at that
+// fixed row regardless of how many lines the body has.
+func TestView_PortraitLayout_PreviewBorderStaysFixed_TallBody(t *testing.T) {
+	t.Parallel()
+	m := newModelWithLayout(internalTestCands(), stubRenderer{}, context.TODO(), Layout{Orientation: LayoutPortrait})
+	m.width = 80
+	m.height = 40
+	m.previewLoading = false
+	m.previewText = strings.Repeat("line\n", 30)
+
+	view := m.View()
+	gotRow := previewBottomBorderRow(t, view)
+
+	paneHeight := m.height - 1 // footer reserved, mirrors View()
+	listH, prevH := splitSizes(paneHeight, m.layout, minListH, minPrevH)
+	wantRow := listH + prevH - 1
+
+	if gotRow != wantRow {
+		t.Errorf("preview bottom border at row %d, want %d (fixed at the splitSizes budget, listH=%d prevH=%d) — full view:\n%s",
+			gotRow, wantRow, listH, prevH, view)
+	}
+}
+
+// TestView_PortraitLayout_PreviewBorderStaysFixed_ShortBody is the RED test
+// for the padding side of the same fix: a SHORT preview body (here, zero
+// candidates -> "(no selection)", a single line) must NOT collapse the
+// pane's border up to the content's natural height — the bottom border must
+// land on the exact same row as the tall-body case above, since both are
+// anchored to the same splitSizes budget (prevH), not to body length.
+func TestView_PortraitLayout_PreviewBorderStaysFixed_ShortBody(t *testing.T) {
+	t.Parallel()
+	m := newModelWithLayout(nil, nil, context.TODO(), Layout{Orientation: LayoutPortrait})
+	m.width = 80
+	m.height = 40
+
+	view := m.View()
+	gotRow := previewBottomBorderRow(t, view)
+
+	paneHeight := m.height - 1
+	listH, prevH := splitSizes(paneHeight, m.layout, minListH, minPrevH)
+	wantRow := listH + prevH - 1
+
+	if gotRow != wantRow {
+		t.Errorf("preview bottom border at row %d, want %d (must match the tall-body case, not collapse to the short content's natural height) — full view:\n%s",
+			gotRow, wantRow, view)
+	}
+}
+
+// TestView_LandscapeLayout_BothPanesBordersAlign_TallPreview proves that in
+// landscape mode both panes share the SAME fixed outer height (paneHeight),
+// so their bottom borders land on the identical row even when the preview
+// pane's body has far more lines than the list pane's own content — before
+// the fix, the preview pane grew taller than the list pane and the two
+// borders drifted apart.
+func TestView_LandscapeLayout_BothPanesBordersAlign_TallPreview(t *testing.T) {
+	t.Parallel()
+	m := newModelWithLayout(internalTestCands(), stubRenderer{}, context.TODO(), Layout{})
+	m.width = 100
+	m.height = 30
+	m.previewLoading = false
+	m.previewText = strings.Repeat("line\n", 30)
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+
+	paneHeight := m.height - 1
+	wantRow := paneHeight - 1
+	if wantRow < 0 || wantRow >= len(lines) {
+		t.Fatalf("computed wantRow %d out of range for %d rendered lines:\n%s", wantRow, len(lines), view)
+	}
+
+	got := strings.Count(lines[wantRow], "╰")
+	if got != 2 {
+		t.Errorf("expected both panes' bottom border (╰) on the same row %d, found %d occurrence(s): %q\nfull view:\n%s",
+			wantRow, got, lines[wantRow], view)
+	}
+}
+
+// TestView_LandscapeLayout_ListPaneBorderStaysFixed_EmptyCandidates proves
+// the list pane also gets the fixed-outer-height treatment: with zero
+// candidates, renderList's own natural content is just 2 lines (query +
+// "no matches"), far shorter than the pane's assigned budget — the border
+// must still sit at the budget's row, not collapse around the 2-line
+// content. Uses the single-pane (hidePreview) fallback so the located "╰"
+// row is unambiguously the list pane's own bottom border.
+func TestView_LandscapeLayout_ListPaneBorderStaysFixed_EmptyCandidates(t *testing.T) {
+	t.Parallel()
+	m := newModelWithLayout(nil, nil, context.TODO(), Layout{})
+	m.width = 70 // < minPreviewWidth: hidePreview, single list-only pane
+	m.height = 24
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+
+	paneHeight := m.height - 1
+	wantRow := paneHeight - 1
+	if wantRow < 0 || wantRow >= len(lines) {
+		t.Fatalf("computed wantRow %d out of range for %d rendered lines:\n%s", wantRow, len(lines), view)
+	}
+	if !strings.Contains(lines[wantRow], "╰") {
+		t.Errorf("expected list pane's bottom border at row %d even with zero candidates, got: %q\nfull view:\n%s",
+			wantRow, lines[wantRow], view)
+	}
+}
+
 // filteredLabels maps the model's filtered indices to their labels, in display
 // order. Used by ranking/order assertions that need to assert which candidate
 // lands where without depending on rendering.
@@ -1464,4 +1630,210 @@ func cloneCandidates(in []source.Candidate) []source.Candidate {
 	out := make([]source.Candidate, len(in))
 	copy(out, in)
 	return out
+}
+
+// --- --target=tab|pane TUI bindings (ctrl+t / ctrl+p) ---
+
+// TestHandleKey_CtrlT_SetsTabTargetSelectsAndQuits proves ctrl+t, when shep
+// is running inside a Herdr pane (currentPane != nil), selects the
+// highlighted candidate exactly like enter, records "tab" as the chosen
+// launch target, and quits.
+func TestHandleKey_CtrlT_SetsTabTargetSelectsAndQuits(t *testing.T) {
+	t.Parallel()
+	pane := source.Pane{ID: "p1"}
+	m := NewModel(internalTestCands(), nil).WithCurrentPane(&pane)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+	mm, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("expected Model, got %T", updated)
+	}
+	if mm.ChosenTarget() != "tab" {
+		t.Errorf("ChosenTarget() = %q, want %q", mm.ChosenTarget(), "tab")
+	}
+	if cmd == nil {
+		t.Fatal("expected a quit Cmd after ctrl+t")
+	}
+	if _, isQuit := cmd().(tea.QuitMsg); !isQuit {
+		t.Errorf("expected cmd() to be tea.QuitMsg, got %T", cmd())
+	}
+	if _, ok := mm.Selected(); !ok {
+		t.Error("expected ctrl+t to also select the highlighted candidate, like enter")
+	}
+}
+
+// TestHandleKey_CtrlP_SetsPaneTargetSelectsAndQuits mirrors the ctrl+t test
+// for ctrl+p / "pane".
+func TestHandleKey_CtrlP_SetsPaneTargetSelectsAndQuits(t *testing.T) {
+	t.Parallel()
+	pane := source.Pane{ID: "p1"}
+	m := NewModel(internalTestCands(), nil).WithCurrentPane(&pane)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	mm, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("expected Model, got %T", updated)
+	}
+	if mm.ChosenTarget() != "pane" {
+		t.Errorf("ChosenTarget() = %q, want %q", mm.ChosenTarget(), "pane")
+	}
+	if cmd == nil {
+		t.Fatal("expected a quit Cmd after ctrl+p")
+	}
+	if _, isQuit := cmd().(tea.QuitMsg); !isQuit {
+		t.Errorf("expected cmd() to be tea.QuitMsg, got %T", cmd())
+	}
+	if _, ok := mm.Selected(); !ok {
+		t.Error("expected ctrl+p to also select the highlighted candidate, like enter")
+	}
+}
+
+// TestHandleKey_CtrlT_EmptyFiltered_IsNoOp mirrors the no-current-pane no-op
+// guard: when the candidate list is filtered down to nothing (e.g. a query
+// with zero matches), ctrl+t must not set a chosenTarget or quit — there is
+// no highlighted candidate to launch, and setting chosenTarget anyway would
+// make runOpen's disallowTarget surface a confusing "requires an entry with
+// a command" error for a launch that never had a candidate at all.
+func TestHandleKey_CtrlT_EmptyFiltered_IsNoOp(t *testing.T) {
+	t.Parallel()
+	pane := source.Pane{ID: "p1"}
+	m := NewModel(nil, nil).WithCurrentPane(&pane)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+	mm, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("expected Model, got %T", updated)
+	}
+	if mm.ChosenTarget() != "" {
+		t.Errorf("ChosenTarget() = %q, want empty when filtered is empty", mm.ChosenTarget())
+	}
+	if cmd != nil {
+		t.Error("expected a nil Cmd (no quit) when ctrl+t fires with an empty filtered list")
+	}
+	if _, ok := mm.Selected(); ok {
+		t.Error("expected no selection when ctrl+t fires with an empty filtered list")
+	}
+}
+
+// TestHandleKey_Enter_ChosenTargetStaysEmpty proves enter never sets a
+// target override: ChosenTarget stays "" even when currentPane is set, so
+// runOpen falls back to the --target flag value unchanged.
+func TestHandleKey_Enter_ChosenTargetStaysEmpty(t *testing.T) {
+	t.Parallel()
+	pane := source.Pane{ID: "p1"}
+	m := NewModel(internalTestCands(), nil).WithCurrentPane(&pane)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	mm, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("expected Model, got %T", updated)
+	}
+	if mm.ChosenTarget() != "" {
+		t.Errorf("ChosenTarget() = %q, want empty after enter", mm.ChosenTarget())
+	}
+}
+
+// TestHandleKey_CtrlT_NoCurrentPane_IsNoOp proves ctrl+t is disabled — no
+// selection, no target, no quit — when shep is not running inside a Herdr
+// pane (currentPane == nil).
+func TestHandleKey_CtrlT_NoCurrentPane_IsNoOp(t *testing.T) {
+	t.Parallel()
+	m := NewModel(internalTestCands(), nil) // currentPane stays nil
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+	mm, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("expected Model, got %T", updated)
+	}
+	if mm.ChosenTarget() != "" {
+		t.Errorf("ChosenTarget() = %q, want empty when no current pane", mm.ChosenTarget())
+	}
+	if cmd != nil {
+		t.Error("expected a nil Cmd (no quit) when ctrl+t fires with no current pane")
+	}
+	if _, ok := mm.Selected(); ok {
+		t.Error("expected no selection when ctrl+t fires with no current pane")
+	}
+}
+
+// TestHandleKey_CtrlP_NoCurrentPane_IsNoOp mirrors the ctrl+t no-op test for
+// ctrl+p / "pane".
+func TestHandleKey_CtrlP_NoCurrentPane_IsNoOp(t *testing.T) {
+	t.Parallel()
+	m := NewModel(internalTestCands(), nil)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	mm, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("expected Model, got %T", updated)
+	}
+	if mm.ChosenTarget() != "" {
+		t.Errorf("ChosenTarget() = %q, want empty when no current pane", mm.ChosenTarget())
+	}
+	if cmd != nil {
+		t.Error("expected a nil Cmd (no quit) when ctrl+p fires with no current pane")
+	}
+}
+
+// --- footer keybinding hints (merged into the footer line) ---
+
+// TestRenderFooter_HintsLine_DimmedWithoutCurrentPane proves the footer's
+// ctrl+t/ctrl+p keybinding hints render in the dimmed hintDisabledStyle when
+// shep is not running inside a Herdr pane (currentPane == nil): those
+// bindings are inert in that case (selectWithTarget no-ops them), so the
+// footer visually marks them as disabled.
+func TestRenderFooter_HintsLine_DimmedWithoutCurrentPane(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(prev)
+
+	m := NewModel(internalTestCands(), nil)
+	m.width = 100
+
+	footer := m.renderFooter()
+	if !strings.Contains(footer, "ctrl+t: tab") || !strings.Contains(footer, "ctrl+p: pane") {
+		t.Fatalf("expected footer to show ctrl+t/ctrl+p hints, got: %q", footer)
+	}
+	// lipgloss combines the Faint SGR code (2) with the foreground color code
+	// into one escape sequence ("\x1b[2;38;2;...m"), never a bare "\x1b[2m",
+	// so assert on the leading "2;" parameter instead of a standalone code.
+	if !strings.Contains(footer, "\x1b[2;") {
+		t.Errorf("expected the hints to render Faint (dimmed) when currentPane is nil, got: %q", footer)
+	}
+}
+
+// TestRenderFooter_HintsLine_NormalWithCurrentPane proves the hints render
+// WITHOUT the dimmed/Faint styling when shep IS running inside a Herdr pane
+// (currentPane != nil) — ctrl+t/ctrl+p are live in that case.
+func TestRenderFooter_HintsLine_NormalWithCurrentPane(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(prev)
+
+	pane := source.Pane{ID: "p1"}
+	m := NewModel(internalTestCands(), nil).WithCurrentPane(&pane)
+	m.width = 100
+
+	footer := m.renderFooter()
+	if !strings.Contains(footer, "ctrl+t: tab") || !strings.Contains(footer, "ctrl+p: pane") {
+		t.Fatalf("expected footer to show ctrl+t/ctrl+p hints, got: %q", footer)
+	}
+	if strings.Contains(footer, "\x1b[2;") {
+		t.Errorf("expected the hints NOT to render Faint when currentPane is set, got: %q", footer)
+	}
+}
+
+// TestView_FooterIncludesKeybindingHints proves View()'s rendered output
+// includes the merged footer/hints line end-to-end, not just renderFooter in
+// isolation.
+func TestView_FooterIncludesKeybindingHints(t *testing.T) {
+	t.Parallel()
+	m := NewModel(internalTestCands(), nil)
+	m.width = 100
+	m.height = 24
+
+	view := m.View()
+	if !strings.Contains(view, "ctrl+t: tab") || !strings.Contains(view, "ctrl+p: pane") {
+		t.Errorf("expected View() to include the ctrl+t/ctrl+p hints, got:\n%s", view)
+	}
 }

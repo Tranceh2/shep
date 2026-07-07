@@ -24,10 +24,17 @@ package templates
 import (
 	"context"
 	"fmt"
+	"regexp"
 
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
 )
+
+// validPaneID matches the shape Herdr's own pane ids use. wrapCloseOnExit
+// rejects anything outside this set so a hostile/malformed Herdr response
+// can never smuggle shell metacharacters into the command typed into a
+// pane's interactive shell.
+var validPaneID = regexp.MustCompile(`^[A-Za-z0-9:._-]+$`)
 
 // Target identifies the freshly created workspace a template applies to:
 // the workspace id, its initial (root) tab and pane ids, the cwd new
@@ -49,12 +56,18 @@ type Target struct {
 // tab index + node id before anything is created, then threaded through
 // every CreateTab/SplitPane via the focus bool so the requested tab/pane
 // receives keyboard focus — no post-hoc focus commands are issued.
+//
+// When CloseOnExit is true on the TemplateConfig (or on a WorkspaceConfig that
+// materialises a synthetic template), the command is shell-chained with
+// "; <binary> pane close <paneID>" so the pane closes itself once the
+// command's shell returns control (regardless of exit status).
 func Apply(ctx context.Context, driver source.HerdrDriver, target Target, tpl config.TemplateConfig) error {
+	binary := target.Binary
 	if len(tpl.Tabs) == 0 {
 		if tpl.Command == "" {
 			return nil
 		}
-		return driver.RunPane(ctx, target.RootPaneID, tpl.Command)
+		return driver.RunPane(ctx, target.RootPaneID, wrapCloseOnExit(tpl.Command, target.RootPaneID, binary, tpl.CloseOnExit))
 	}
 
 	// Resolve the focus target BEFORE creating anything: which tab index
@@ -62,10 +75,6 @@ func Apply(ctx context.Context, driver source.HerdrDriver, target Target, tpl co
 	// Focus is nil/empty, the default is tab index 0 — the first tab, which
 	// reuses the workspace's already-focused root tab.
 	focusTabIndex, focusNodeID := resolveFocus(tpl)
-	binary := target.Binary
-	if binary == "" {
-		binary = "herdr"
-	}
 
 	for i, tab := range tpl.Tabs {
 		var rootPaneID string
@@ -136,6 +145,32 @@ func applyTab(ctx context.Context, driver source.HerdrDriver, cwd, binary string
 	return applyNode(ctx, driver, cwd, binary, byID, tab.Root, rootPaneID, focusNodeID)
 }
 
+// wrapCloseOnExit returns cmd unchanged when on is false, otherwise appends
+// "; <binary> pane close <paneID>" so the pane closes itself once the
+// command's shell returns control. When binary is empty it defaults to
+// "herdr". This is the single, tested code path for the close_on_exit shell
+// chaining, shared by both the simple-Command Apply branch (top-level
+// templates and workspace commands) and the leaf applyNode branch (per-node
+// close_on_exit). The chaining exists because Herdr's `pane run` types into
+// an already-running interactive shell rather than spawning the command as
+// the pane's root process, and Herdr's CLI/socket API has no native
+// close-on-exit primitive.
+//
+// paneID is validated against validPaneID before being concatenated into the
+// shell-chained command: a paneID carrying shell metacharacters (a hostile
+// or malformed Herdr response) would otherwise let arbitrary commands run in
+// the pane's shell. A paneID that fails validation degrades to the same
+// defensive no-wrap as on=false or an empty paneID.
+func wrapCloseOnExit(cmd, paneID, binary string, on bool) string {
+	if !on || paneID == "" || !validPaneID.MatchString(paneID) {
+		return cmd
+	}
+	if binary == "" {
+		binary = "herdr"
+	}
+	return cmd + "; " + binary + " pane close " + paneID
+}
+
 // applyNode assigns nodeID's subtree to paneID: a leaf runs its command in
 // paneID (wrapped with "; <binary> pane close <paneID>" when CloseOnExit is
 // set, so the pane closes itself once the command's shell returns control);
@@ -155,16 +190,8 @@ func applyNode(ctx context.Context, driver source.HerdrDriver, cwd, binary strin
 	}
 	if !node.IsBranch() {
 		if node.Command != "" {
-			cmd := node.Command
-			// CloseOnExit wraps the command so the pane closes itself once
-			// the command finishes. This is achieved via shell chaining
-			// ("; <binary> pane close <id>") because Herdr's `pane run`
-			// types into an already-running interactive shell rather than
-			// spawning the command as the pane's root process, and Herdr's
-			// CLI/socket API has no native close-on-exit primitive.
-			if node.CloseOnExit {
-				cmd = cmd + "; " + binary + " pane close " + paneID
-			}
+			// CloseOnExit wraps the command via the shared helper; see wrapCloseOnExit for rationale.
+			cmd := wrapCloseOnExit(node.Command, paneID, binary, node.CloseOnExit)
 			if err := driver.RunPane(ctx, paneID, cmd); err != nil {
 				return err
 			}

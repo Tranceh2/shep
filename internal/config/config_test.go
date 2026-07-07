@@ -1551,6 +1551,203 @@ root = "main"
 	}
 }
 
+// TestLoad_WorkspaceCloseOnExit_Parses confirms the close_on_exit field on a
+// [[workspaces]] entry with a command parses into WorkspaceConfig.CloseOnExit.
+func TestLoad_WorkspaceCloseOnExit_Parses(t *testing.T) {
+	t.Parallel()
+	const doc = `
+[[workspaces]]
+name = "yazi"
+path = "~/Downloads"
+command = "yazi"
+close_on_exit = true
+`
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(cfg.Workspaces) != 1 {
+		t.Fatalf("expected 1 workspace, got %d", len(cfg.Workspaces))
+	}
+	if !cfg.Workspaces[0].CloseOnExit {
+		t.Errorf("CloseOnExit = false, want true")
+	}
+}
+
+// TestLoad_WorkspaceCloseOnExit_Group_Rejected confirms that a type=group
+// workspace cannot set close_on_exit: true. A group is a nested picker source
+// (no pane/command of its own), so close_on_exit would be a silent no-op.
+// Load must fail fast, mirroring the branch-node close_on_exit rejection.
+func TestLoad_WorkspaceCloseOnExit_Group_Rejected(t *testing.T) {
+	t.Parallel()
+	const doc = `
+[[workspaces]]
+name = "projects"
+type = "group"
+path = "~/projects"
+sources = ["projects"]
+close_on_exit = true
+`
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error: group workspace cannot set close_on_exit")
+	}
+	if !strings.Contains(err.Error(), "close_on_exit") || !strings.Contains(err.Error(), "projects") {
+		t.Errorf("error %q should name close_on_exit and the workspace name %q", err.Error(), "projects")
+	}
+}
+
+// TestLoad_WorkspaceCloseOnExit_WithTemplate_Rejected confirms that a
+// workspace with template set cannot also set close_on_exit: true. Per-tab
+// close-on-exit is already the node-level feature owned by the template, so a
+// workspace-level close_on_exit would be ambiguous/ignored. Load fails fast.
+func TestLoad_WorkspaceCloseOnExit_WithTemplate_Rejected(t *testing.T) {
+	t.Parallel()
+	const doc = `
+[templates.dev]
+command = "nvim"
+
+[[workspaces]]
+name = "app"
+path = "~/projects/app"
+template = "dev"
+close_on_exit = true
+`
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error: workspace with template cannot set close_on_exit")
+	}
+	if !strings.Contains(err.Error(), "close_on_exit") || !strings.Contains(err.Error(), "app") {
+		t.Errorf("error %q should name close_on_exit and the workspace name %q", err.Error(), "app")
+	}
+}
+
+// TestLoad_WorkspaceCloseOnExit_EmptyCommand_Rejected confirms that a
+// workspace cannot set close_on_exit: true with an empty command. Without a
+// command there is nothing whose exit closes the pane, so it would silently
+// never trigger — mirroring the leaf-node empty-command rule.
+func TestLoad_WorkspaceCloseOnExit_EmptyCommand_Rejected(t *testing.T) {
+	t.Parallel()
+	const doc = `
+[[workspaces]]
+name = "shell"
+path = "~/projects/shell"
+close_on_exit = true
+`
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error: workspace with close_on_exit=true but empty command")
+	}
+	if !strings.Contains(err.Error(), "close_on_exit") || !strings.Contains(err.Error(), "shell") {
+		t.Errorf("error %q should name close_on_exit and the workspace name %q", err.Error(), "shell")
+	}
+}
+
+// TestLoad_TemplateConfigCloseOnExit_Parses confirms the close_on_exit field
+// on a top-level [templates.<name>] with a command parses into
+// TemplateConfig.CloseOnExit.
+func TestLoad_TemplateConfigCloseOnExit_Parses(t *testing.T) {
+	t.Parallel()
+	const doc = `
+[templates.k9s]
+command = "k9s"
+close_on_exit = true
+`
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	tpl, ok := cfg.Templates["k9s"]
+	if !ok {
+		t.Fatal("template k9s missing")
+	}
+	if !tpl.CloseOnExit {
+		t.Errorf("CloseOnExit = false, want true")
+	}
+}
+
+// TestLoad_TemplateConfigCloseOnExit_WithTabs_Rejected confirms that a
+// top-level [templates.<name>] cannot set close_on_exit: true together with
+// tabs. Per-tab/per-pane close-on-exit is already the node-level feature, so
+// a template-level close_on_exit over tabs would be ambiguous. Load fails
+// fast, mirroring the workspace template rejection.
+func TestLoad_TemplateConfigCloseOnExit_WithTabs_Rejected(t *testing.T) {
+	t.Parallel()
+	const doc = `
+[templates.dev]
+close_on_exit = true
+
+[[templates.dev.tabs]]
+name = "code"
+root = "main"
+
+  [[templates.dev.tabs.nodes]]
+  id = "main"
+  command = "nvim"
+`
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error: top-level template with close_on_exit and tabs")
+	}
+	if !strings.Contains(err.Error(), "close_on_exit") || !strings.Contains(err.Error(), "dev") {
+		t.Errorf("error %q should name close_on_exit and the template %q", err.Error(), "dev")
+	}
+}
+
+// TestLoad_TemplateConfigCloseOnExit_EmptyCommand_Rejected confirms that a
+// top-level [templates.<name>] cannot set close_on_exit: true without a
+// command. Without a command there is nothing whose exit closes the pane, so
+// it would silently never trigger — mirroring the leaf-node rule.
+func TestLoad_TemplateConfigCloseOnExit_EmptyCommand_Rejected(t *testing.T) {
+	t.Parallel()
+	const doc = `
+[templates.dev]
+close_on_exit = true
+`
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error: top-level template with close_on_exit but no command")
+	}
+	if !strings.Contains(err.Error(), "close_on_exit") || !strings.Contains(err.Error(), "dev") {
+		t.Errorf("error %q should name close_on_exit and the template %q", err.Error(), "dev")
+	}
+}
+
 // TestLoad_TemplateLeafCloseOnExitEmptyCommand_Rejected confirms that a LEAF
 // node cannot set close_on_exit: true without a non-empty command. Without a
 // command there is nothing whose exit closes the pane, so it would silently

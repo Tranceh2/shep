@@ -327,6 +327,9 @@ func (f *fakePreviewDriver) RunPane(context.Context, string, string) error {
 func (fakePreviewDriver) FocusTab(context.Context, string) error {
 	return errors.New("not used in previews")
 }
+func (fakePreviewDriver) CurrentPane(context.Context) (source.Pane, error) {
+	return source.Pane{}, errors.New("not used in previews")
+}
 
 // herdrCandidate builds a candidate carrying a workspace_id meta key, mirroring
 // the herdr source provider's output.

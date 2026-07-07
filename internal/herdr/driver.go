@@ -12,7 +12,7 @@
 //	pane list     {"id":"cli:pane:list","result":{"panes":[{pane_id,workspace_id,
 //	              cwd,foreground_cwd,focused,...}]}}
 //	pane current  {"id":"cli:pane:current","result":{"pane":{pane_id,workspace_id,
-//	              cwd,foreground_cwd,focused,...}}}
+//	              tab_id,cwd,foreground_cwd,focused,...}}}
 //
 // Workspaces do NOT carry a cwd; the driver joins workspaces to panes by
 // workspace_id to derive a representative cwd. All command execution goes
@@ -26,11 +26,20 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/tranceh2/shep/internal/source"
 )
+
+// validPaneID matches the shape Herdr's own pane ids use. CreateTab,
+// SplitPane and CurrentPane reject any pane_id outside this set as
+// defense-in-depth: those ids eventually reach
+// internal/templates.wrapCloseOnExit's shell-chained command construction, so
+// a hostile or malformed Herdr response must never carry shell
+// metacharacters through this layer.
+var validPaneID = regexp.MustCompile(`^[A-Za-z0-9:._-]+$`)
 
 // CommandRunner executes a named command and returns its stdout. The default
 // implementation shells out via exec.CommandContext; tests inject a fake to
@@ -294,6 +303,18 @@ type paneInfoEnvelope struct {
 	} `json:"result"`
 }
 
+// paneCurrentEnvelope wraps `herdr pane current`, documented in the package
+// doc comment:
+//
+//	{"id":"cli:pane:current","result":{"pane":{pane_id,workspace_id,tab_id,
+//	  cwd,foreground_cwd,focused,...}}}
+type paneCurrentEnvelope struct {
+	ID     string `json:"id"`
+	Result struct {
+		Pane rawPane `json:"pane"`
+	} `json:"result"`
+}
+
 // FocusOrCreate implements HI-3: focus an existing workspace whose pane cwd /
 // foreground_cwd normalises to the candidate's path, else create a new focused
 // workspace. The candidate carries its own NormalizedPath (filled by the
@@ -380,6 +401,9 @@ func (d *Driver) CreateTab(ctx context.Context, workspaceID, cwd, label string, 
 	if env.Result.Tab.TabID == "" || env.Result.RootPane.PaneID == "" {
 		return source.Tab{}, source.Pane{}, errors.New("herdr tab create: incomplete response")
 	}
+	if !validPaneID.MatchString(env.Result.RootPane.PaneID) {
+		return source.Tab{}, source.Pane{}, fmt.Errorf("herdr tab create: invalid pane id %q", env.Result.RootPane.PaneID)
+	}
 	return source.Tab{
 			ID:          env.Result.Tab.TabID,
 			WorkspaceID: env.Result.Tab.WorkspaceID,
@@ -441,6 +465,9 @@ func (d *Driver) SplitPane(ctx context.Context, paneID, direction string, ratio 
 	if env.Result.Pane.PaneID == "" {
 		return source.Pane{}, errors.New("herdr pane split: incomplete response")
 	}
+	if !validPaneID.MatchString(env.Result.Pane.PaneID) {
+		return source.Pane{}, fmt.Errorf("herdr pane split: invalid pane id %q", env.Result.Pane.PaneID)
+	}
 	p := env.Result.Pane
 	return source.Pane{
 		ID:            p.PaneID,
@@ -482,6 +509,69 @@ func (d *Driver) FocusTab(ctx context.Context, tabID string) error {
 		return fmt.Errorf("herdr tab focus %s: %w", tabID, err)
 	}
 	return nil
+}
+
+// CurrentPane returns the pane that currently has keyboard focus inside Herdr,
+// via `herdr pane current`. Newer Herdr builds answer with a single-pane
+// envelope (pane_id/workspace_id/tab_id/cwd/focused). Older builds that do not
+// recognise the `pane current` subcommand exit non-zero; CurrentPane then
+// falls back to the loadState pair (`workspace list` + `pane list`) and returns
+// the first pane whose Focused flag is set — the same filter pattern
+// internal/preview/renderer.go's activePaneID uses. When no pane is focused
+// (shep is not running inside a Herdr pane), CurrentPane returns
+// source.ErrNoFocusedPane so callers can disable the tab/pane launch targets.
+//
+// `pane current` deliberately carries no --format flag, matching every other
+// JSON-emitting herdr command in this driver (`workspace list`, `pane list`,
+// `tab list`, `agent list`): JSON is the default envelope, and adding a
+// format flag here would diverge from the established convention without
+// changing the response shape.
+func (d *Driver) CurrentPane(ctx context.Context) (source.Pane, error) {
+	out, err := d.run.Run(ctx, d.binary, "pane", "current")
+	if err == nil {
+		var env paneCurrentEnvelope
+		if jErr := json.Unmarshal(out, &env); jErr != nil {
+			return source.Pane{}, fmt.Errorf("herdr pane current: parse: %w", jErr)
+		}
+		if env.Result.Pane.PaneID == "" {
+			return source.Pane{}, fmt.Errorf("herdr pane current: incomplete response")
+		}
+		if !validPaneID.MatchString(env.Result.Pane.PaneID) {
+			return source.Pane{}, fmt.Errorf("herdr pane current: invalid pane id %q", env.Result.Pane.PaneID)
+		}
+		return rawPaneToPane(env.Result.Pane), nil
+	}
+
+	// Fallback: older Herdr builds reject `pane current` as an unknown
+	// subcommand (non-zero exit). Re-derive the focused pane from the full
+	// `pane list`, mirroring activePaneID in internal/preview/renderer.go.
+	_, panes, lerr := d.loadState(ctx)
+	if lerr != nil {
+		// Surface the original `pane current` failure so callers see why the
+		// fallback was attempted, not just the secondary list error.
+		return source.Pane{}, fmt.Errorf("herdr pane current: %w", err)
+	}
+	for _, p := range panes {
+		if p.Focused {
+			return rawPaneToPane(p), nil
+		}
+	}
+	return source.Pane{}, source.ErrNoFocusedPane
+}
+
+// rawPaneToPane converts the JSON envelope's rawPane into the exported
+// source.Pane. Kept unexported and local because it is only needed by the
+// pane-producing methods of this driver; the templates/command layers consume
+// source.Pane directly.
+func rawPaneToPane(p rawPane) source.Pane {
+	return source.Pane{
+		ID:            p.PaneID,
+		WorkspaceID:   p.WorkspaceID,
+		TabID:         p.TabID,
+		CWD:           p.CWD,
+		ForegroundCWD: p.ForegroundCWD,
+		Focused:       p.Focused,
+	}
 }
 
 // matchWorkspaceByCWD returns the workspace_id of the first pane whose cwd or
