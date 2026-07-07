@@ -20,7 +20,6 @@ const (
 	colorBorder  = "#585b70" // Surface2 — subtle frame around list/preview panes
 	colorYellow  = "#f9e2af" // yellow — blocked agent status
 	colorOverlay = "#9399b2" // Overlay2 — unknown agent status
-	colorMauve   = "#cba6f7" // mauve — section headings
 )
 
 var palette = struct {
@@ -32,7 +31,6 @@ var palette = struct {
 	previewLoadingStyle lipgloss.Style
 	previewErrStyle     lipgloss.Style
 	borderStyle         lipgloss.Style
-	sectionHeadingStyle lipgloss.Style
 	surfaceStyle        lipgloss.Style
 	statusIdleStyle     lipgloss.Style
 	statusWorkingStyle  lipgloss.Style
@@ -67,9 +65,6 @@ var palette = struct {
 	// frame dimensions) so width/height chrome math has a single source of
 	// truth instead of drifting between two independently-tuned borders.
 	borderStyle: lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(colorBorder)).Padding(0, 1),
-	// sectionHeadingStyle: a more saturated heading color than mutedStyle,
-	// reserved for future section-heading rendering.
-	sectionHeadingStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorMauve)).Bold(true),
 	// surfaceStyle: a subtle background block, used to set off the footer's
 	// "focused: <status>" segment from the rest of the hint line.
 	surfaceStyle: lipgloss.NewStyle().Background(lipgloss.Color(colorSurface)),

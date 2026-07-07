@@ -367,9 +367,14 @@ func (m Model) shouldAnimateWorking() bool {
 // focusedAgentStatusDisplay returns the text hintsFor embeds after
 // "focused: " in the footer: the raw status, with the current
 // workingSpinner glyph appended when status == "working" (R5). Any other
-// status renders unchanged — only the working state animates.
+// status renders unchanged — only the working state animates. AgentStatus
+// is decoded straight from Herdr's JSON with no sanitization guarantee, so
+// the raw value is run through ansi.Strip (R1) before it ever reaches
+// hintsFor's plain-text composition or renderFooter's
+// statusStyle(...).Render(...) call — otherwise an untrusted status value
+// could inject escape sequences into shep's own terminal output.
 func (m Model) focusedAgentStatusDisplay() string {
-	status := m.focusedAgentStatus()
+	status := ansi.Strip(m.focusedAgentStatus())
 	if status == "working" {
 		return status + " " + workingSpinner[m.workingFrame%len(workingSpinner)]
 	}
@@ -704,22 +709,26 @@ const footerSeparator = " / "
 // would silently no-op (a group/template/plain entry, or no current pane at
 // all) would be misleading, so those hints are hidden entirely rather than
 // shown dimmed.
-// agentStatus is the focused Herdr pane's static, at-open-time agent_status
-// snapshot (m.currentPane.AgentStatus, "" when there is no current pane).
-// Empty and "unknown" are deliberately distinct here (unlike the agent_status
-// preview section, which normalizes both to "unknown" text): an empty status
-// means older Herdr or a non-agent pane and produces no "focused:" segment at
-// all, while an explicit "unknown" means Herdr itself could not classify the
-// pane and is shown as such rather than hidden.
-func hintsFor(cand source.Candidate, hasCurrentPane bool, agentStatus string) string {
+// focusedStatusLabel is the display label rendered after "focused: " in the
+// footer ("" when there is no current pane). It is NOT necessarily the raw
+// agent_status enum value: the real call site (renderFooter) passes
+// focusedAgentStatusDisplay()'s output, which appends an animated
+// workingSpinner glyph suffix (e.g. "working ⠋") while the focused pane's
+// status is "working" (R5). Empty and a bare "unknown" are deliberately
+// distinct here (unlike the agent_status preview section, which normalizes
+// both to "unknown" text): an empty label means older Herdr or a non-agent
+// pane and produces no "focused:" segment at all, while an explicit
+// "unknown" means Herdr itself could not classify the pane and is shown as
+// such rather than hidden.
+func hintsFor(cand source.Candidate, hasCurrentPane bool, focusedStatusLabel string) string {
 	segments := []string{formatHint("enter", "open")}
 	if hasCurrentPane && candidateIsCommandOnly(cand) {
 		segments = append(segments, formatHint("t", "tab"), formatHint("p", "pane"))
 	}
 	segments = append(segments, formatHint("esc", "cancel"), formatHint("ctrl+l", "layout"))
 	hints := strings.Join(segments, footerSeparator)
-	if agentStatus != "" {
-		hints = "focused: " + agentStatus + footerSeparator + hints
+	if focusedStatusLabel != "" {
+		hints = "focused: " + focusedStatusLabel + footerSeparator + hints
 	}
 	return hints
 }
@@ -1207,14 +1216,18 @@ const statusLinePrefix = "  status: "
 // statusStyle, operating on already-truncated raw text (same
 // truncate-then-style ordering as styleLinePrefix) so truncateLinesToWidth's
 // raw rune budget is never eaten by injected ANSI bytes. Lines without the
-// statusLinePrefix are left untouched.
+// statusLinePrefix are left untouched. The extracted status word is run
+// through ansi.Strip (R1) before statusStyle(...).Render(...): it traces
+// back to the same untrusted, Herdr-reported AgentStatus value as the
+// footer (see focusedAgentStatusDisplay), so it must not be able to inject
+// escape sequences into the preview pane either.
 func styleStatusLine(text string) string {
 	lines := strings.Split(text, "\n")
 	for i, line := range lines {
 		if !strings.HasPrefix(line, statusLinePrefix) {
 			continue
 		}
-		status := strings.TrimPrefix(line, statusLinePrefix)
+		status := ansi.Strip(strings.TrimPrefix(line, statusLinePrefix))
 		lines[i] = statusLinePrefix + statusStyle(status).Render(status)
 	}
 	return strings.Join(lines, "\n")

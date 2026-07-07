@@ -2392,3 +2392,70 @@ func TestRenderFooter_NarrowWidth_PrefersHintsOverLabel(t *testing.T) {
 		t.Errorf("footer = %q, want a truncation ellipsis on the label", footer)
 	}
 }
+
+// TestRenderFooter_StripsANSIFromAgentStatus (R1 review follow-up) proves an
+// AgentStatus value carrying embedded ANSI/control escape sequences never
+// reaches the rendered footer verbatim. AgentStatus is a raw string decoded
+// straight from Herdr's JSON with no sanitization guarantee, so a malicious
+// or buggy agent must not be able to inject escape sequences (e.g. an OSC 52
+// clipboard write) into shep's own terminal output via that field. Forces
+// TrueColor so statusStyle's own legitimate SGR codes are actually emitted,
+// proving the assertion isn't vacuously true because color output is off.
+func TestRenderFooter_StripsANSIFromAgentStatus(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(prev)
+
+	const injected = "\x1b]52;c;ZXZpbA==\x07"
+	pane := source.Pane{ID: "p1", AgentStatus: "working" + injected}
+	m := NewModel(internalTestCands(), nil).WithCurrentPane(&pane)
+	m.width = 100
+
+	footer := m.renderFooter()
+	if strings.Contains(footer, injected) {
+		t.Errorf("footer contains raw injected escape bytes from AgentStatus: %q", footer)
+	}
+}
+
+// TestStyleStatusLine_StripsANSIFromRawStatus (R1 review follow-up) proves
+// styleStatusLine strips embedded ANSI/control escape sequences from the raw
+// status word before wrapping it in statusStyle(...).Render(...) — the
+// preview "status:" line ultimately traces back to the same untrusted
+// Herdr-reported AgentStatus value as the footer.
+func TestStyleStatusLine_StripsANSIFromRawStatus(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(prev)
+
+	const injected = "\x1b[31m"
+	text := "agent status\n" + statusLinePrefix + "working" + injected
+
+	out := styleStatusLine(text)
+	if strings.Contains(out, injected) {
+		t.Errorf("styleStatusLine contains raw injected escape bytes from status: %q", out)
+	}
+}
+
+// TestModel_Update_TickWrapsFrameAtSpinnerLength (R3 review follow-up)
+// proves handleTick wraps workingFrame back to 0 via modulo when it is
+// already at the last spinner index, instead of leaving it at
+// len(workingSpinner) (which would then index workingSpinner[10] out of
+// range on the very next display read). Existing tick tests only exercise
+// the 0 -> 1 transition, never the wraparound edge.
+func TestModel_Update_TickWrapsFrameAtSpinnerLength(t *testing.T) {
+	t.Parallel()
+	pane := source.Pane{ID: "p1", AgentStatus: "working"}
+	m := NewModel(internalTestCands(), nil).WithCurrentPane(&pane)
+	m.width = 100
+	m.height = 24
+	m.workingFrame = len(workingSpinner) - 1
+
+	updated, _ := m.Update(tickMsg(time.Now()))
+	mm, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("expected Model, got %T", updated)
+	}
+	if mm.workingFrame != 0 {
+		t.Errorf("workingFrame = %d, want 0 (wrapped from %d)", mm.workingFrame, len(workingSpinner)-1)
+	}
+}
