@@ -18,6 +18,9 @@ const (
 	colorAccent2 = "#f5c2e7" // pink secondary
 	colorGreen   = "#a6e3a1" // green for success
 	colorBorder  = "#585b70" // Surface2 — subtle frame around list/preview panes
+	colorYellow  = "#f9e2af" // yellow — blocked agent status
+	colorOverlay = "#9399b2" // Overlay2 — unknown agent status
+	colorMauve   = "#cba6f7" // mauve — section headings
 )
 
 var palette = struct {
@@ -29,6 +32,13 @@ var palette = struct {
 	previewLoadingStyle lipgloss.Style
 	previewErrStyle     lipgloss.Style
 	borderStyle         lipgloss.Style
+	sectionHeadingStyle lipgloss.Style
+	surfaceStyle        lipgloss.Style
+	statusIdleStyle     lipgloss.Style
+	statusWorkingStyle  lipgloss.Style
+	statusBlockedStyle  lipgloss.Style
+	statusDoneStyle     lipgloss.Style
+	statusUnknownStyle  lipgloss.Style
 }{
 	// query line: bold accent text so the live filter stands out.
 	queryStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorAccent)).Bold(true),
@@ -57,4 +67,39 @@ var palette = struct {
 	// frame dimensions) so width/height chrome math has a single source of
 	// truth instead of drifting between two independently-tuned borders.
 	borderStyle: lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(colorBorder)).Padding(0, 1),
+	// sectionHeadingStyle: a more saturated heading color than mutedStyle,
+	// reserved for future section-heading rendering.
+	sectionHeadingStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorMauve)).Bold(true),
+	// surfaceStyle: a subtle background block, used to set off the footer's
+	// "focused: <status>" segment from the rest of the hint line.
+	surfaceStyle: lipgloss.NewStyle().Background(lipgloss.Color(colorSurface)),
+	// Per-status styles applied via statusStyle: same mapping in both the
+	// preview "status:" line and the footer "focused:" segment (R1).
+	statusIdleStyle:    lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted)),
+	statusWorkingStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorGreen)).Bold(true),
+	statusBlockedStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorYellow)).Bold(true),
+	statusDoneStyle:    lipgloss.NewStyle().Foreground(lipgloss.Color(colorAccent)),
+	statusUnknownStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorOverlay)),
+}
+
+// statusStyle maps an agent_status value ("idle", "working", "blocked",
+// "done") to its dedicated Catppuccin Mocha style. Any other value —
+// including the explicit "unknown" status Herdr itself may report, and any
+// unrecognized string — falls back to statusUnknownStyle. Both the preview
+// "status:" line (see styleStatusLine in model.go) and the footer "focused:"
+// segment (see renderFooter) style through this single function so the two
+// never drift.
+func statusStyle(status string) lipgloss.Style {
+	switch status {
+	case "idle":
+		return palette.statusIdleStyle
+	case "working":
+		return palette.statusWorkingStyle
+	case "blocked":
+		return palette.statusBlockedStyle
+	case "done":
+		return palette.statusDoneStyle
+	default:
+		return palette.statusUnknownStyle
+	}
 }

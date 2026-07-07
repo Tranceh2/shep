@@ -27,7 +27,9 @@ package tui
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -165,7 +167,25 @@ type Model struct {
 	// implementation) — a mechanism distinct from the removed Result.Warning
 	// field. Empty after any successful render or on selection change.
 	previewErr string
+
+	// workingFrame indexes workingSpinner for the footer's scoped working
+	// animation (R5): advanced by one on every tickMsg while
+	// shouldAnimateWorking() is true. Never touches previewText/previewSeq —
+	// the preview pane's "status:" line stays a static snapshot regardless
+	// of how many frames have ticked.
+	workingFrame int
 }
+
+// tickMsg drives the footer's scoped working-status spinner (R5). Sent by
+// workingTickCmd via tea.Tick and handled in Update; a one-shot timer, so
+// the animation only keeps running as long as Update keeps returning a new
+// workingTickCmd (see shouldAnimateWorking).
+type tickMsg time.Time
+
+// workingSpinner is the Braille spinner glyph cycle shown after "focused:
+// working" in the footer while the focused pane's agent_status is
+// "working". Indexed by workingFrame % len(workingSpinner).
+var workingSpinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 // previewResponseMsg carries the result of an async preview render. seq must
 // match the model's current previewSeq or the response is stale and ignored.
@@ -258,16 +278,31 @@ func (m Model) WithCurrentPane(p *source.Pane) Model {
 // Init kicks off the first async preview render for the initially
 // highlighted candidate (cursor 0) when a Renderer is wired. Its Cmd is
 // tagged with the model's initial previewSeq (0) so the resulting
-// previewResponseMsg is accepted, not treated as stale.
+// previewResponseMsg is accepted, not treated as stale. It also seeds the
+// footer's working-spinner tick (R5) when the focused pane's status is
+// already "working" at construction time — batched alongside the preview
+// Cmd via tea.Batch when both apply.
 func (m Model) Init() tea.Cmd {
-	if m.renderer == nil {
+	var pCmd tea.Cmd
+	if m.renderer != nil {
+		if cand, ok := m.currentCandidate(); ok {
+			pCmd = m.previewCmd(m.previewSeq, cand)
+		}
+	}
+	var tCmd tea.Cmd
+	if m.shouldAnimateWorking() {
+		tCmd = m.workingTickCmd()
+	}
+	switch {
+	case pCmd != nil && tCmd != nil:
+		return tea.Batch(pCmd, tCmd)
+	case pCmd != nil:
+		return pCmd
+	case tCmd != nil:
+		return tCmd
+	default:
 		return nil
 	}
-	cand, ok := m.currentCandidate()
-	if !ok {
-		return nil
-	}
-	return m.previewCmd(m.previewSeq, cand)
 }
 
 // Update handles key presses, window sizing and async preview responses. It
@@ -281,10 +316,64 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case previewResponseMsg:
 		return m.handlePreviewResponse(msg), nil
+	case tickMsg:
+		return m.handleTick()
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
 	return m, nil
+}
+
+// handleTick advances the footer's working-spinner frame (R5) and
+// reschedules the next tick only while shouldAnimateWorking() is still
+// true — a status transition away from "working" between ticks freezes the
+// spinner on its current glyph instead of continuing to reschedule. Never
+// touches previewText/previewSeq: the preview pane's "status:" line stays a
+// static snapshot regardless of how many frames have ticked.
+func (m Model) handleTick() (tea.Model, tea.Cmd) {
+	m.workingFrame = (m.workingFrame + 1) % len(workingSpinner)
+	if m.shouldAnimateWorking() {
+		return m, m.workingTickCmd()
+	}
+	return m, nil
+}
+
+// workingTickCmd schedules the next footer spinner frame 120ms out.
+// tea.Tick is one-shot, so the animation loop only continues as long as
+// handleTick keeps returning a fresh workingTickCmd (see shouldAnimateWorking).
+func (m Model) workingTickCmd() tea.Cmd {
+	return tea.Tick(120*time.Millisecond, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
+}
+
+// focusedAgentStatus returns the raw agent_status of the Herdr pane shep is
+// running inside (m.currentPane), or "" when there is no current pane.
+func (m Model) focusedAgentStatus() string {
+	if m.currentPane == nil {
+		return ""
+	}
+	return m.currentPane.AgentStatus
+}
+
+// shouldAnimateWorking reports whether the footer spinner should keep
+// ticking: there is a current pane and its focused status is exactly
+// "working" (R5). Any other status, an empty status, or no current pane
+// stops the animation.
+func (m Model) shouldAnimateWorking() bool {
+	return m.focusedAgentStatus() == "working"
+}
+
+// focusedAgentStatusDisplay returns the text hintsFor embeds after
+// "focused: " in the footer: the raw status, with the current
+// workingSpinner glyph appended when status == "working" (R5). Any other
+// status renders unchanged — only the working state animates.
+func (m Model) focusedAgentStatusDisplay() string {
+	status := m.focusedAgentStatus()
+	if status == "working" {
+		return status + " " + workingSpinner[m.workingFrame%len(workingSpinner)]
+	}
+	return status
 }
 
 // handlePreviewResponse applies a completed async render, discarding it as
@@ -602,8 +691,9 @@ func (m Model) View() string {
 }
 
 // footerSeparator joins the candidate label and the keybinding hints in the
-// footer line.
-const footerSeparator = "  ·  "
+// footer line, and (via hintsFor) each individual hint segment within that
+// hints string — a single compact separator throughout the footer line.
+const footerSeparator = " / "
 
 // hintsFor returns the context-sensitive keybinding hints shown in the
 // footer for cand. enter/esc/ctrl+l are always live, so they always appear.
@@ -622,14 +712,25 @@ const footerSeparator = "  ·  "
 // all, while an explicit "unknown" means Herdr itself could not classify the
 // pane and is shown as such rather than hidden.
 func hintsFor(cand source.Candidate, hasCurrentPane bool, agentStatus string) string {
-	hints := "enter: open · esc: cancel · ctrl+l: layout"
+	segments := []string{formatHint("enter", "open")}
 	if hasCurrentPane && candidateIsCommandOnly(cand) {
-		hints = "enter: open · ctrl+t: tab · ctrl+p: pane · esc: cancel · ctrl+l: layout"
+		segments = append(segments, formatHint("t", "tab"), formatHint("p", "pane"))
 	}
+	segments = append(segments, formatHint("esc", "cancel"), formatHint("ctrl+l", "layout"))
+	hints := strings.Join(segments, footerSeparator)
 	if agentStatus != "" {
-		hints = "focused: " + agentStatus + " · " + hints
+		hints = "focused: " + agentStatus + footerSeparator + hints
 	}
 	return hints
+}
+
+// formatHint builds one "<key> <label>" footer hint segment. Every hint
+// drops the "ctrl+" prefix for letter keys (e.g. "t tab", not "ctrl+t tab")
+// but keeps it for ctrl+l (the layout toggle is a two-key chord, unlike the
+// single-letter t/p bindings) — R4's exact contract, applied uniformly here
+// instead of repeating each literal segment inline.
+func formatHint(key, label string) string {
+	return key + " " + label
 }
 
 // renderFooter builds the full-width footer line: the currently highlighted
@@ -644,17 +745,28 @@ func hintsFor(cand source.Candidate, hasCurrentPane bool, agentStatus string) st
 // minPortraitHeight — never has to change.
 func (m Model) renderFooter() string {
 	cand, _ := m.currentCandidate()
-	agentStatus := ""
-	if m.currentPane != nil {
-		agentStatus = m.currentPane.AgentStatus
-	}
-	hints := hintsFor(cand, m.currentPane != nil, agentStatus)
+	agentStatus := m.focusedAgentStatus()
+	displayStatus := m.focusedAgentStatusDisplay()
+	hints := hintsFor(cand, m.currentPane != nil, displayStatus)
 	label := m.footerText()
 	if m.width > 0 {
 		budget := m.width - lipgloss.Width(footerSeparator) - lipgloss.Width(hints)
 		label = truncateToWidth(label, budget)
 	}
-	full := palette.mutedStyle.Render(label) + footerSeparator + palette.mutedStyle.Render(hints)
+	// R1/R2: color the "focused: <status>" segment via statusStyle (e.g.
+	// green for "working") and set it off with surfaceStyle's background —
+	// the single render path (besides the preview status line, see
+	// styleStatusLine) that references the previously-dead colorGreen/
+	// colorSurface tokens. hintsFor already built this exact plain
+	// substring, so a targeted replace layers styling on top without
+	// duplicating the hint-composition logic.
+	styledHints := hints
+	if agentStatus != "" {
+		plainFocused := "focused: " + displayStatus
+		styledFocused := palette.surfaceStyle.Render("focused: " + statusStyle(agentStatus).Render(displayStatus))
+		styledHints = strings.Replace(hints, plainFocused, styledFocused, 1)
+	}
+	full := palette.mutedStyle.Render(label) + footerSeparator + palette.mutedStyle.Render(styledHints)
 	return lipgloss.NewStyle().Width(m.width).Render(truncateToWidth(full, m.width))
 }
 
@@ -856,15 +968,41 @@ func paneBoxStyle(outerHeight int) lipgloss.Style {
 
 func gap() string { return " " }
 
+// renderQueryLine builds the top query line: the live filter text
+// (palette.queryStyle) on the left and the match count — len(filtered), a
+// plain decimal in palette.mutedStyle — right-aligned on the right (R3),
+// when both fit within width. At a width too narrow to fit both, the count
+// is dropped entirely and the query text alone is truncated with an
+// ellipsis: the query is what the user is actively typing and must never be
+// silently cut in favor of the count.
+func renderQueryLine(query string, filteredCount, width int) string {
+	queryText := "> " + query
+	countText := strconv.Itoa(filteredCount)
+	if width < lipgloss.Width(queryText)+1+lipgloss.Width(countText) {
+		return palette.queryStyle.Width(width).Render(truncateToWidth(queryText, width))
+	}
+	line := rightPadToWidth(palette.queryStyle.Render(queryText), palette.mutedStyle.Render(countText), width)
+	return lipgloss.NewStyle().Width(width).Render(line)
+}
+
+// rightPadToWidth pads spaces between left and right so the combined line
+// occupies exactly width visible cells, right-aligning right against the
+// line's end. Used by renderQueryLine's match-count row.
+func rightPadToWidth(left, right string, width int) string {
+	pad := width - lipgloss.Width(left) - lipgloss.Width(right)
+	if pad < 0 {
+		pad = 0
+	}
+	return left + strings.Repeat(" ", pad) + right
+}
+
 // renderList draws the filtered candidates with a cursor marker and the query
 // line at the top. Every rendered line is explicitly padded to width so the
 // list pane never drifts from the split computed by View (previously rows
 // used a style-level hardcoded width instead of the width passed in here).
 func (m Model) renderList(width int) string {
 	var b strings.Builder
-	styleQuery := palette.queryStyle.Width(width)
-	queryLine := truncateToWidth("> "+m.query, width)
-	b.WriteString(styleQuery.Render(queryLine))
+	b.WriteString(renderQueryLine(m.query, len(m.filtered), width))
 	b.WriteString("\n")
 	if len(m.filtered) == 0 {
 		b.WriteString(palette.mutedStyle.Width(width).Render(truncateToWidth("  no matches", width)))
@@ -1053,7 +1191,33 @@ func (m Model) previewBody(width int) string {
 		return palette.previewErrStyle.Width(width).Render(truncateToWidth(m.previewErr, width))
 	}
 	text := truncateLinesToWidth(m.previewText, width)
+	text = styleStatusLine(text)
 	return lipgloss.NewStyle().Width(width).Render(text)
+}
+
+// statusLinePrefix is the literal prefix renderAgentStatusSection
+// (internal/preview/renderer.go) writes before the raw status word. Matched
+// here so the TUI can recolor just that word (via statusStyle, R1) without
+// touching the shared preview renderer — which must keep emitting plain
+// text, since it also backs the Television-safe `shep preview` CLI output
+// (see internal/command/preview.go's stripANSI default).
+const statusLinePrefix = "  status: "
+
+// styleStatusLine recolors the agent_status preview line's status word via
+// statusStyle, operating on already-truncated raw text (same
+// truncate-then-style ordering as styleLinePrefix) so truncateLinesToWidth's
+// raw rune budget is never eaten by injected ANSI bytes. Lines without the
+// statusLinePrefix are left untouched.
+func styleStatusLine(text string) string {
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		if !strings.HasPrefix(line, statusLinePrefix) {
+			continue
+		}
+		status := strings.TrimPrefix(line, statusLinePrefix)
+		lines[i] = statusLinePrefix + statusStyle(status).Render(status)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // truncateLinesToWidth splits text on "\n" and truncates each individual

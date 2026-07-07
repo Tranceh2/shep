@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -95,6 +96,105 @@ func TestModel_CursorMoveIncrementsPreviewSeq(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatal("expected a non-nil preview request Cmd after cursor move")
+	}
+}
+
+// TestModel_Init_StartsTickWhenWorking (R5) proves Init returns a non-nil
+// Cmd — the working spinner's first tick — when the focused Herdr pane's
+// AgentStatus is "working" at construction time.
+func TestModel_Init_StartsTickWhenWorking(t *testing.T) {
+	t.Parallel()
+	pane := source.Pane{ID: "p1", AgentStatus: "working"}
+	m := NewModel(internalTestCands(), nil).WithCurrentPane(&pane)
+
+	cmd := m.Init()
+	if cmd == nil {
+		t.Fatal("expected a non-nil Cmd from Init when the focused status is working")
+	}
+}
+
+// TestModel_Update_TickAdvancesFrame (R5) proves a tickMsg advances
+// workingFrame and returns a non-nil Cmd (to reschedule) while the focused
+// status is still "working", and that View() reflects the next spinner
+// glyph for the advanced frame.
+func TestModel_Update_TickAdvancesFrame(t *testing.T) {
+	t.Parallel()
+	pane := source.Pane{ID: "p1", AgentStatus: "working"}
+	m := NewModel(internalTestCands(), nil).WithCurrentPane(&pane)
+	m.width = 100
+	m.height = 24
+	beforeFrame := m.workingFrame
+
+	updated, cmd := m.Update(tickMsg(time.Now()))
+	mm, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("expected Model, got %T", updated)
+	}
+	wantFrame := (beforeFrame + 1) % len(workingSpinner)
+	if mm.workingFrame != wantFrame {
+		t.Errorf("workingFrame = %d, want %d", mm.workingFrame, wantFrame)
+	}
+	if cmd == nil {
+		t.Error("expected a non-nil Cmd to reschedule the tick while still working")
+	}
+	wantGlyph := workingSpinner[wantFrame]
+	if !strings.Contains(mm.View(), wantGlyph) {
+		t.Errorf("View() after tick does not contain the next glyph %q:\n%s", wantGlyph, mm.View())
+	}
+}
+
+// TestModel_Update_TickStopsOnNonWorking (R5) proves a tickMsg returns a nil
+// Cmd once the focused status is no longer "working" — the spinner freezes
+// on its current glyph instead of rescheduling forever.
+func TestModel_Update_TickStopsOnNonWorking(t *testing.T) {
+	t.Parallel()
+	pane := source.Pane{ID: "p1", AgentStatus: "working"}
+	m := NewModel(internalTestCands(), nil).WithCurrentPane(&pane)
+	m.width = 100
+	m.height = 24
+
+	// Simulate the focused pane's status flipping between the previous tick
+	// and this one (e.g. the agent finished while a tick was in flight).
+	pane.AgentStatus = "done"
+
+	_, cmd := m.Update(tickMsg(time.Now()))
+	if cmd != nil {
+		t.Error("expected a nil Cmd once the focused status is no longer working")
+	}
+}
+
+// TestModel_PreviewStatusLine_StaysStaticAcrossFrames (R5) proves the
+// preview pane's "status:" line stays byte-identical across working-spinner
+// frames — the animation is scoped to the footer only, never the async
+// preview body.
+func TestModel_PreviewStatusLine_StaysStaticAcrossFrames(t *testing.T) {
+	t.Parallel()
+	pane := source.Pane{ID: "p1", AgentStatus: "working"}
+	m := newModel(internalTestCands(), stubRenderer{}, context.TODO()).WithCurrentPane(&pane)
+	m.width = 100
+	m.height = 24
+	m.previewLoading = false
+	m.previewText = "agent status\n  status: working"
+
+	var statusLines []string
+	cur := m
+	for i := 0; i < 3; i++ {
+		body := cur.previewBody(paneContentWidth(60))
+		for _, line := range strings.Split(body, "\n") {
+			if strings.Contains(line, "status:") {
+				statusLines = append(statusLines, line)
+			}
+		}
+		updated, _ := cur.Update(tickMsg(time.Now()))
+		cur = updated.(Model)
+	}
+	if len(statusLines) != 3 {
+		t.Fatalf("expected 3 status lines (one per frame), got %d: %v", len(statusLines), statusLines)
+	}
+	for i := 1; i < len(statusLines); i++ {
+		if statusLines[i] != statusLines[0] {
+			t.Errorf("preview status line changed across frames: frame0=%q frame%d=%q", statusLines[0], i, statusLines[i])
+		}
 	}
 }
 
@@ -218,6 +318,76 @@ func TestModel_RenderListRespectsWidth(t *testing.T) {
 		if got := lipgloss.Width(line); got != width {
 			t.Errorf("line %q rendered width = %d, want %d", line, got, width)
 		}
+	}
+}
+
+// TestModel_RenderListShowsRightAlignedMatchCount (R3) proves the query
+// line shows len(m.filtered) right-aligned in palette.mutedStyle as a plain
+// decimal, using m.filtered as the single source of truth.
+func TestModel_RenderListShowsRightAlignedMatchCount(t *testing.T) {
+	t.Parallel()
+	cands := []source.Candidate{
+		{Path: "/a", Label: "a"},
+		{Path: "/b", Label: "b"},
+		{Path: "/c", Label: "c"},
+	}
+	m := NewModel(cands, nil)
+	const width = 30
+
+	out := m.renderList(width)
+	lines := strings.Split(out, "\n")
+	if len(lines) == 0 {
+		t.Fatal("renderList returned no lines")
+	}
+	line0 := lines[0]
+	if w := lipgloss.Width(line0); w != width {
+		t.Errorf("query line width = %d, want %d: %q", w, width, line0)
+	}
+	if !strings.HasSuffix(line0, "3") {
+		t.Errorf("query line = %q, want to end with the right-aligned match count %q", line0, "3")
+	}
+}
+
+// TestModel_RenderListEmptyFilteredShowsZero (R3) proves the match count
+// shows 0 when the current query matches no candidates, not an empty string
+// or the total candidate count.
+func TestModel_RenderListEmptyFilteredShowsZero(t *testing.T) {
+	t.Parallel()
+	m := NewModel([]source.Candidate{{Path: "/a", Label: "apple"}}, nil)
+	m.query = "zzz"
+	m.applyFilter()
+	if len(m.filtered) != 0 {
+		t.Fatalf("test setup: expected filtered to be empty, got %d", len(m.filtered))
+	}
+	const width = 30
+
+	out := m.renderList(width)
+	lines := strings.Split(out, "\n")
+	line0 := lines[0]
+	if !strings.HasSuffix(line0, "0") {
+		t.Errorf("query line = %q, want to end with match count %q", line0, "0")
+	}
+}
+
+// TestModel_RenderListNarrowWidthDropsCountBeforeTruncatingQuery (R3) proves
+// that at a narrow width where the query text and count cannot both fit, the
+// count is dropped entirely and the query text is preserved with an
+// ellipsis — the query is what the user is actively typing and must never
+// be silently truncated in favor of the count.
+func TestModel_RenderListNarrowWidthDropsCountBeforeTruncatingQuery(t *testing.T) {
+	t.Parallel()
+	m := NewModel([]source.Candidate{{Path: "/a", Label: "a"}}, nil)
+	m.query = strings.Repeat("q", 100)
+	const width = 10
+
+	out := m.renderList(width)
+	lines := strings.Split(out, "\n")
+	line0 := lines[0]
+	if w := lipgloss.Width(line0); w != width {
+		t.Errorf("query line width = %d, want %d: %q", w, width, line0)
+	}
+	if !strings.Contains(line0, "…") {
+		t.Errorf("query line = %q, want a truncation ellipsis", line0)
 	}
 }
 
@@ -898,6 +1068,52 @@ func TestModel_PreviewPreservesRealRendererANSIEndToEnd(t *testing.T) {
 	if !strings.Contains(view, "\x1b[") {
 		t.Errorf("View() stripped real renderer ANSI end-to-end, got: %q", view)
 	}
+}
+
+// TestView_StatusWorking_ReferencesGreenAndSurfaceHex proves the previously
+// dead colorGreen/colorSurface palette tokens (R2) are now actually
+// referenced in a real render path: a focused pane with AgentStatus
+// "working" must cause the "working" text to render in colorGreen
+// (statusStyle) and the surrounding "focused:" segment to carry a
+// colorSurface background (surfaceStyle), both end-to-end through View().
+func TestView_StatusWorking_ReferencesGreenAndSurfaceHex(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(prev)
+
+	pane := source.Pane{ID: "p1", AgentStatus: "working"}
+	m := NewModel(internalTestCands(), nil).WithCurrentPane(&pane)
+	m.width = 100
+	m.height = 24
+
+	view := m.View()
+	// ANSI truecolor escapes carry decimal RGB, not the literal hex string,
+	// so render each style against a throwaway marker and check for its
+	// real escape prefix rather than hand-computing the hex-to-decimal
+	// conversion (which termenv's gamma-aware color matching may round
+	// slightly differently anyway).
+	greenPrefix := ansiEscapePrefix(palette.statusWorkingStyle)
+	surfacePrefix := ansiEscapePrefix(palette.surfaceStyle)
+	if !strings.Contains(view, greenPrefix) {
+		t.Errorf("View() = %q, want colorGreen (statusWorkingStyle, escape %q) referenced for working status", view, greenPrefix)
+	}
+	if !strings.Contains(view, surfacePrefix) {
+		t.Errorf("View() = %q, want colorSurface (surfaceStyle, escape %q) referenced for working status", view, surfacePrefix)
+	}
+}
+
+// ansiEscapePrefix renders a throwaway marker through style and returns the
+// literal ANSI escape sequence that precedes it — the actual byte sequence
+// the current color profile produces for that style's color, rather than a
+// hand-computed hex-to-decimal guess (termenv's gamma-aware color matching
+// may round slightly differently than a naive conversion).
+func ansiEscapePrefix(style lipgloss.Style) string {
+	rendered := style.Render("Z")
+	idx := strings.Index(rendered, "Z")
+	if idx < 0 {
+		return rendered
+	}
+	return rendered[:idx]
 }
 
 // TestModel_RenderListNoMatches_NeverWrapsEvenBelowMinList guards the
@@ -1984,12 +2200,12 @@ func TestRenderList_NoEntryTypeTags(t *testing.T) {
 func TestHintsFor_NoCurrentPane_ExcludesTabPaneHints(t *testing.T) {
 	t.Parallel()
 	got := hintsFor(commandOnlyCandidate(), false, "")
-	for _, want := range []string{"enter: open", "esc: cancel", "ctrl+l: layout"} {
+	for _, want := range []string{"enter open", "esc cancel", "ctrl+l layout"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("hintsFor() = %q, want to contain %q", got, want)
 		}
 	}
-	for _, absent := range []string{"ctrl+t", "ctrl+p"} {
+	for _, absent := range []string{"t tab", "p pane"} {
 		if strings.Contains(got, absent) {
 			t.Errorf("hintsFor() = %q, want no %q hint (no current pane)", got, absent)
 		}
@@ -2022,7 +2238,7 @@ func TestHintsFor_UnknownAgentStatus_ShowsFocusedUnknown(t *testing.T) {
 	if !strings.Contains(got, "focused: unknown") {
 		t.Errorf("hintsFor() = %q, want to contain %q", got, "focused: unknown")
 	}
-	for _, want := range []string{"enter: open", "ctrl+t: tab", "ctrl+p: pane", "esc: cancel", "ctrl+l: layout"} {
+	for _, want := range []string{"enter open", "t tab", "p pane", "esc cancel", "ctrl+l layout"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("hintsFor() = %q, want to still contain %q", got, want)
 		}
@@ -2036,7 +2252,7 @@ func TestHintsFor_UnknownAgentStatus_ShowsFocusedUnknown(t *testing.T) {
 func TestHintsFor_CurrentPaneCommandOnly_IncludesTabPaneHints(t *testing.T) {
 	t.Parallel()
 	got := hintsFor(commandOnlyCandidate(), true, "")
-	for _, want := range []string{"enter: open", "ctrl+t: tab", "ctrl+p: pane", "esc: cancel", "ctrl+l: layout"} {
+	for _, want := range []string{"enter open", "t tab", "p pane", "esc cancel", "ctrl+l layout"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("hintsFor() = %q, want to contain %q", got, want)
 		}
@@ -2060,12 +2276,12 @@ func TestHintsFor_CurrentPaneNonCommandOnly_ExcludesTabPaneHints(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got := hintsFor(tt.cand, true, "")
-			for _, want := range []string{"enter: open", "esc: cancel", "ctrl+l: layout"} {
+			for _, want := range []string{"enter open", "esc cancel", "ctrl+l layout"} {
 				if !strings.Contains(got, want) {
 					t.Errorf("hintsFor() = %q, want to contain %q", got, want)
 				}
 			}
-			for _, absent := range []string{"ctrl+t", "ctrl+p"} {
+			for _, absent := range []string{"t tab", "p pane"} {
 				if strings.Contains(got, absent) {
 					t.Errorf("hintsFor() = %q, want no %q hint (non-Command-only entry)", got, absent)
 				}
@@ -2083,10 +2299,10 @@ func TestRenderFooter_NoCurrentPane_ExcludesTabPaneHints(t *testing.T) {
 	m.width = 100
 
 	footer := m.renderFooter()
-	if strings.Contains(footer, "ctrl+t") || strings.Contains(footer, "ctrl+p") {
+	if strings.Contains(footer, "t tab") || strings.Contains(footer, "p pane") {
 		t.Errorf("expected no ctrl+t/ctrl+p hints without a current pane, got: %q", footer)
 	}
-	if !strings.Contains(footer, "enter: open") || !strings.Contains(footer, "ctrl+l: layout") {
+	if !strings.Contains(footer, "enter open") || !strings.Contains(footer, "ctrl+l layout") {
 		t.Errorf("expected the always-live hints present, got: %q", footer)
 	}
 }
@@ -2101,7 +2317,7 @@ func TestRenderFooter_CurrentPaneCommandOnly_IncludesTabPaneHints(t *testing.T) 
 	m.width = 100
 
 	footer := m.renderFooter()
-	if !strings.Contains(footer, "ctrl+t: tab") || !strings.Contains(footer, "ctrl+p: pane") {
+	if !strings.Contains(footer, "t tab") || !strings.Contains(footer, "p pane") {
 		t.Errorf("expected footer to show ctrl+t/ctrl+p hints for a Command-only entry, got: %q", footer)
 	}
 }
@@ -2126,7 +2342,7 @@ func TestRenderFooter_CurrentPaneNonCommandOnly_ExcludesTabPaneHints(t *testing.
 			m.width = 100
 
 			footer := m.renderFooter()
-			if strings.Contains(footer, "ctrl+t") || strings.Contains(footer, "ctrl+p") {
+			if strings.Contains(footer, "t tab") || strings.Contains(footer, "p pane") {
 				t.Errorf("expected no ctrl+t/ctrl+p hints for a non-Command-only entry, got: %q", footer)
 			}
 		})
@@ -2144,7 +2360,7 @@ func TestView_FooterIncludesKeybindingHints(t *testing.T) {
 	m.height = 24
 
 	view := m.View()
-	if !strings.Contains(view, "ctrl+t: tab") || !strings.Contains(view, "ctrl+p: pane") {
+	if !strings.Contains(view, "t tab") || !strings.Contains(view, "p pane") {
 		t.Errorf("expected View() to include the ctrl+t/ctrl+p hints, got:\n%s", view)
 	}
 }
@@ -2164,7 +2380,7 @@ func TestRenderFooter_NarrowWidth_PrefersHintsOverLabel(t *testing.T) {
 	if w := lipgloss.Width(footer); w > m.width {
 		t.Fatalf("footer width = %d, must not exceed terminal width %d: %q", w, m.width, footer)
 	}
-	for _, want := range []string{"enter: open", "esc: cancel", "ctrl+l: layout"} {
+	for _, want := range []string{"enter open", "esc cancel", "ctrl+l layout"} {
 		if !strings.Contains(footer, want) {
 			t.Errorf("footer = %q, want the full hints preserved (%q missing)", footer, want)
 		}
