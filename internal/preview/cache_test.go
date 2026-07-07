@@ -136,3 +136,58 @@ func TestCache_Key_MetaOrderIndependent(t *testing.T) {
 		t.Error("meta key insertion order must not affect the cache key")
 	}
 }
+
+// TestCache_Key_NoDelimiterBoundaryAliasing is the regression test for the
+// unescaped-delimiter fingerprint bug: candidateFingerprint joined
+// Path|Label|Source|Meta with a raw "|" separator, so two candidates whose
+// field content itself contains "|" could shift the field boundary and
+// serialise to the identical string, e.g. Path="/a|b", Label="c" and
+// Path="/a", Label="b|c" both naively join to "/a|b|c|...". User-controlled
+// fields (Label from [[workspaces]].name, Meta values) can legitimately
+// contain "|", "," and "=".
+func TestCache_Key_NoDelimiterBoundaryAliasing(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.PreviewConfig{Default: []string{"identity"}}
+
+	candA := source.Candidate{Path: "/a|b", Label: "c", Source: config.SourceWorkspaces}
+	candB := source.Candidate{Path: "/a", Label: "b|c", Source: config.SourceWorkspaces}
+
+	keyA := PreviewCacheKey(candA, cfg)
+	keyB := PreviewCacheKey(candB, cfg)
+	if keyA == keyB {
+		t.Errorf("Path/Label boundary shift must not alias keys: got %q for both", keyA)
+	}
+}
+
+// TestCache_Key_NoDelimiterCollisionInMeta mirrors realistic Meta content
+// (e.g. Meta["command"] holding a value with embedded "," and "=") that
+// naively serialises to the same "k=v,k=v" string as a Meta map with a
+// genuinely different key/value split. Meta["command"]="echo hi,verbose=true"
+// (one entry) and Meta={"command":"echo hi","verbose":"true"} (two entries)
+// both naively join to "command=echo hi,verbose=true" — a real collision in
+// the sorted-pairs serialisation, not just the outer field join.
+func TestCache_Key_NoDelimiterCollisionInMeta(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.PreviewConfig{Default: []string{"identity"}}
+
+	candA := source.Candidate{
+		Path:   "/x",
+		Label:  "foo",
+		Source: config.SourceWorkspaces,
+		Meta:   map[string]string{"command": "echo hi,verbose=true"},
+	}
+	candB := source.Candidate{
+		Path:   "/x",
+		Label:  "foo",
+		Source: config.SourceWorkspaces,
+		Meta:   map[string]string{"command": "echo hi", "verbose": "true"},
+	}
+
+	keyA := PreviewCacheKey(candA, cfg)
+	keyB := PreviewCacheKey(candB, cfg)
+	if keyA == keyB {
+		t.Errorf("Meta delimiter collision must not alias keys: got %q for both", keyA)
+	}
+}

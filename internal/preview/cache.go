@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -76,6 +77,13 @@ func PreviewCacheKey(cand source.Candidate, cfg config.PreviewConfig) string {
 // workspace_id/tab_id) into a stable string. Meta keys are sorted before
 // serialising because Go map iteration order is randomised — an unsorted
 // serialization would itself be a second source of nondeterminism.
+//
+// Every field is passed through strconv.Quote before joining. Label (from
+// [[workspaces]].name) and Meta values (e.g. Meta["command"]) are
+// user-controlled and may legitimately contain the "|", ",", "=" characters
+// used as delimiters here. Quoting escapes any embedded delimiter or quote
+// character, so a field boundary can never shift — two structurally
+// different candidates can no longer serialise to the same fingerprint.
 func candidateFingerprint(cand source.Candidate) string {
 	keys := make([]string, 0, len(cand.Meta))
 	for k := range cand.Meta {
@@ -88,11 +96,15 @@ func candidateFingerprint(cand source.Candidate) string {
 		if i > 0 {
 			meta.WriteByte(',')
 		}
-		meta.WriteString(k)
+		meta.WriteString(strconv.Quote(k))
 		meta.WriteByte('=')
-		meta.WriteString(cand.Meta[k])
+		meta.WriteString(strconv.Quote(cand.Meta[k]))
 	}
-	return fmt.Sprintf("%s|%s|%s|%s", renderPath(cand), cand.Label, cand.Source, meta.String())
+	return fmt.Sprintf("%s|%s|%s|%s",
+		strconv.Quote(renderPath(cand)),
+		strconv.Quote(cand.Label),
+		strconv.Quote(string(cand.Source)),
+		meta.String())
 }
 
 // configFingerprint serialises the renderer-relevant preview config into a
