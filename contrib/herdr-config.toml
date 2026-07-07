@@ -1,0 +1,34 @@
+# Herdr keybind snippet for launching shep — see README.md's "Herdr keybind"
+# section for full context.
+#
+# Copy the [[keys.command]] block below into your own
+# ~/.config/herdr/config.toml (merge it into an existing [keys] table /
+# [[keys.command]] list if you already have one; do not duplicate [keys]).
+#
+# command = "shep open" references the shep binary by name only, so it is
+# resolved via your shell's $PATH — do not rewrite it to a relative path or
+# a hardcoded absolute path under your home directory. This is a plain user
+# keybind, not a Herdr plugin manifest (no herdr-plugin.toml file, no
+# HERDR_PLUGIN_CONTEXT_JSON decoding, no plugin registration step).
+#
+# type = "pane" opens a temporary pane that closes automatically once shep
+# exits (after focusing/creating the target workspace) — the same pattern
+# Herdr uses for its own lazygit/$SHELL scratch-pane bindings.
+[[keys.command]]
+key = "prefix+alt+p"        # pick any key your config does not already bind
+type = "pane"
+command = "shep open"
+description = "shep: open project picker"
+
+# Herdr's [[keys.command]] bindings are global only (verified against Herdr
+# 0.7.1's `herdr --default-config`): there is currently no per-workspace or
+# workspace-local override for a custom command keybind, so the single
+# global block above is the complete picture for this integration — it
+# applies the same way from every workspace.
+#
+# When shep is launched from inside the Herdr pane this keybind opens, it
+# detects the Herdr pane it is running in (Driver.CurrentPane) and enables
+# the in-overlay features: Ctrl+T/Ctrl+P (open the highlighted entry as a
+# new tab/pane), the agent_status preview section, and the footer's
+# "focused: <status>" hint. Launching shep from a raw terminal (outside any
+# Herdr pane) shows the picker without any of those extras — same as today.

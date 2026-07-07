@@ -298,6 +298,8 @@ hardcoded and always available by name — no declaration needed:
 - `git` — a fast git summary (skipped when git is missing or slow)
 - `workspace` — the active Herdr workspace's tabs/panes tree
 - `active_pane` — the active pane's captured terminal buffer
+- `agent_status` — the focused Herdr pane's agent status, a static
+  at-open-time snapshot (not live-updated)
 - `dir` — a directory listing, preferring `lsd`, then `eza`, then `ls -la`
 
 ```sh
@@ -350,6 +352,46 @@ runs it as a subprocess — so the picker's preview pane shows actual color for
 `dir` (lsd/eza) and `active_pane` (captured pane) sections, matching the
 `shep open` picker. Selecting an entry runs `shep open --path '{split:\t:0}'`,
 which flows through the same Herdr focus/create path as the CLI.
+
+## Herdr keybind
+
+Bind a key in your own `~/.config/herdr/config.toml` to launch `shep open`
+in a temporary Herdr pane — a plain user keybind, not a Herdr plugin (no
+manifest, no `HERDR_PLUGIN_CONTEXT_JSON` decoding).
+
+**Prerequisites**: Herdr installed, and `shep` on `$PATH` (`go install
+./cmd/shep`, or `make install` from a clone of this repo).
+
+```toml
+# Launch shep in a temporary Herdr pane. type = "pane" opens a scratch pane
+# that closes automatically once shep exits (after focusing/creating the
+# target workspace) — the same pattern Herdr uses for lazygit/$SHELL panes.
+[[keys.command]]
+key = "prefix+alt+p"   # pick any key your config does not already bind
+type = "pane"
+command = "shep open"
+description = "shep: open project picker"
+```
+
+The block above is copy-pasteable from
+[`contrib/herdr-config.toml`](contrib/herdr-config.toml). `command = "shep
+open"` references the binary by name only, so it resolves through the
+invoking shell's `$PATH` — do not rewrite it to a relative path, a
+hardcoded absolute path under your home directory, or a plugin-manifest
+entry; none of those are needed for this keybind.
+
+Herdr's custom-command keybindings (`[[keys.command]]`, verified against
+Herdr 0.7.1's `--default-config`) are global only: there is currently no
+per-workspace or workspace-local override for a custom command binding, so
+this single block is the whole picture — the same keybind applies from
+every workspace.
+
+When the bound key launches `shep open` from inside that Herdr pane, shep
+detects it is running inside a Herdr pane (`Driver.CurrentPane`) and enables
+the in-overlay features: `Ctrl+T`/`Ctrl+P` to open the highlighted entry as
+a new tab/pane, the `agent_status` preview section, and the footer's
+`focused: <status>` hint. Launching `shep open` from a raw terminal (outside
+any Herdr pane) shows the picker without any of those — same as today.
 
 ## Build, test, lint
 
