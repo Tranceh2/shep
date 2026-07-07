@@ -562,6 +562,9 @@ func TestRenderAgentStatusSection_KnownStatus(t *testing.T) {
 	if !strings.Contains(got, "idle") {
 		t.Errorf("missing known status text: %q", got)
 	}
+	if strings.Contains(got, "wA:p1") {
+		t.Errorf("rendered output must not leak the raw pane id: %q", got)
+	}
 	if driver.currentPaneCalls != 1 {
 		t.Errorf("expected 1 CurrentPane call, got %d", driver.currentPaneCalls)
 	}

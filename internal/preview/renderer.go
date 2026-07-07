@@ -282,7 +282,7 @@ func (r *defaultRenderer) renderAgentStatusSection(ctx context.Context, cand sou
 	if status == "" {
 		status = "unknown"
 	}
-	lines = append(lines, fmt.Sprintf("  pane %s: %s", pane.ID, status))
+	lines = append(lines, "  status: "+status)
 	return strings.Join(lines, "\n"), true
 }
 
