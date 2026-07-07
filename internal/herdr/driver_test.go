@@ -55,7 +55,8 @@ func workspaceListJSON(id, label string) []byte {
 
 // paneListJSON builds a pane list envelope from (workspaceID, cwd) pairs. The
 // first pane of each workspace is marked focused to mirror a real focused
-// workspace.
+// workspace. A pane with an empty AgentStatus omits the "agent_status" JSON
+// key entirely, mirroring an older Herdr build that doesn't report it yet.
 func paneListJSON(panes ...rawPane) []byte {
 	out := `{"id":"cli:pane:list","result":{"panes":[`
 	for i, p := range panes {
@@ -63,7 +64,11 @@ func paneListJSON(panes ...rawPane) []byte {
 			out += ","
 		}
 		out += `{"pane_id":"` + p.PaneID + `","workspace_id":"` + p.WorkspaceID + `","cwd":"` + p.CWD +
-			`","foreground_cwd":"` + p.ForegroundCWD + `","focused":` + boolStr(p.Focused) + `}`
+			`","foreground_cwd":"` + p.ForegroundCWD + `","focused":` + boolStr(p.Focused)
+		if p.AgentStatus != "" {
+			out += `,"agent_status":"` + p.AgentStatus + `"`
+		}
+		out += `}`
 	}
 	out += `]}}`
 	return []byte(out)
@@ -242,10 +247,16 @@ func paneInfoJSON(workspaceID, tabID, paneID string) []byte {
 
 // paneCurrentJSON builds a `herdr pane current` result envelope. The shape
 // mirrors the package doc: {"id":"cli:pane:current","result":{"pane":{...}}}.
+// An empty p.AgentStatus omits the "agent_status" JSON key entirely.
 func paneCurrentJSON(p rawPane) []byte {
-	return []byte(`{"id":"cli:pane:current","result":{"pane":{` +
+	out := `{"id":"cli:pane:current","result":{"pane":{` +
 		`"pane_id":"` + p.PaneID + `","workspace_id":"` + p.WorkspaceID + `","tab_id":"` + p.TabID + `",` +
-		`"cwd":"` + p.CWD + `","foreground_cwd":"` + p.ForegroundCWD + `","focused":` + boolStr(p.Focused) + `}}}`)
+		`"cwd":"` + p.CWD + `","foreground_cwd":"` + p.ForegroundCWD + `","focused":` + boolStr(p.Focused)
+	if p.AgentStatus != "" {
+		out += `,"agent_status":"` + p.AgentStatus + `"`
+	}
+	out += `}}}`
+	return []byte(out)
 }
 
 // TestCreateTab_ParsesEnvelope confirms CreateTab issues
@@ -312,7 +323,8 @@ func TestRenameTab_EmptyTabIDReturnsError(t *testing.T) {
 }
 
 // TestSplitPane_ParsesEnvelope confirms the exact split invocation (direction,
-// ratio, cwd) and that the new pane is parsed from the pane_info envelope.
+// ratio, cwd) and that the new pane is parsed from the pane_info envelope,
+// including its agent_status ("unknown" per the fixture's pane_info envelope).
 func TestSplitPane_ParsesEnvelope(t *testing.T) {
 	r := &fakeRunner{script: []fakeCall{
 		{match: "herdr pane split wA:p1 --direction down --ratio 0.8 --cwd /x --focus", out: paneInfoJSON("wA", "wA:t1", "wA:p2")},
@@ -324,6 +336,9 @@ func TestSplitPane_ParsesEnvelope(t *testing.T) {
 	}
 	if pane.ID != "wA:p2" {
 		t.Errorf("pane id = %q, want wA:p2", pane.ID)
+	}
+	if pane.AgentStatus != "unknown" {
+		t.Errorf("pane AgentStatus = %q, want %q", pane.AgentStatus, "unknown")
 	}
 }
 
@@ -668,12 +683,15 @@ func TestListTabs_CommandErrorReturnsError(t *testing.T) {
 }
 
 // TestListPanes_ParsesEnvelope (4.2/4.5) parses a workspace-scoped pane list.
+// The fixture is intentionally mixed: p1 carries an explicit "agent_status"
+// ("working"), p2 omits the key entirely (mirroring an older Herdr build or
+// a non-agent shell pane) and must parse to AgentStatus == "" with no error.
 func TestListPanes_ParsesEnvelope(t *testing.T) {
 	r := &fakeRunner{script: []fakeCall{
 		{
 			match: "herdr pane list --workspace wA",
 			out: paneListJSON(
-				rawPane{PaneID: "wA:p1", WorkspaceID: "wA", CWD: "/x", ForegroundCWD: "/x", Focused: true},
+				rawPane{PaneID: "wA:p1", WorkspaceID: "wA", CWD: "/x", ForegroundCWD: "/x", Focused: true, AgentStatus: "working"},
 				rawPane{PaneID: "wA:p2", WorkspaceID: "wA", CWD: "/y", ForegroundCWD: "", Focused: false},
 			),
 		},
@@ -684,8 +702,8 @@ func TestListPanes_ParsesEnvelope(t *testing.T) {
 		t.Fatalf("ListPanes: %v", err)
 	}
 	want := []source.Pane{
-		{ID: "wA:p1", WorkspaceID: "wA", CWD: "/x", ForegroundCWD: "/x", Focused: true},
-		{ID: "wA:p2", WorkspaceID: "wA", CWD: "/y", ForegroundCWD: "", Focused: false},
+		{ID: "wA:p1", WorkspaceID: "wA", CWD: "/x", ForegroundCWD: "/x", Focused: true, AgentStatus: "working"},
+		{ID: "wA:p2", WorkspaceID: "wA", CWD: "/y", ForegroundCWD: "", Focused: false, AgentStatus: ""},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("expected %d panes, got %d: %+v", len(want), len(got), got)
@@ -858,12 +876,13 @@ func TestReadPane_ContextDeadlineSurfaces(t *testing.T) {
 
 // TestDriver_CurrentPane_PaneCurrent confirms CurrentPane issues
 // `herdr pane current` and parses the focused pane out of the envelope,
-// carrying pane_id/workspace_id/tab_id/cwd through to the returned source.Pane.
+// carrying pane_id/workspace_id/tab_id/cwd/agent_status through to the
+// returned source.Pane.
 func TestDriver_CurrentPane_PaneCurrent(t *testing.T) {
 	t.Parallel()
 	r := &fakeRunner{script: []fakeCall{
 		{match: "herdr pane current", out: paneCurrentJSON(rawPane{
-			PaneID: "wA:p3", WorkspaceID: "wA", TabID: "wA:t2", CWD: "/proj", Focused: true,
+			PaneID: "wA:p3", WorkspaceID: "wA", TabID: "wA:t2", CWD: "/proj", Focused: true, AgentStatus: "blocked",
 		})},
 	}}
 	d := New("herdr", WithRunner(r))
@@ -871,7 +890,7 @@ func TestDriver_CurrentPane_PaneCurrent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CurrentPane: %v", err)
 	}
-	want := source.Pane{ID: "wA:p3", WorkspaceID: "wA", TabID: "wA:t2", CWD: "/proj", Focused: true}
+	want := source.Pane{ID: "wA:p3", WorkspaceID: "wA", TabID: "wA:t2", CWD: "/proj", Focused: true, AgentStatus: "blocked"}
 	if got != want {
 		t.Errorf("CurrentPane = %+v, want %+v", got, want)
 	}

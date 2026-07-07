@@ -614,11 +614,22 @@ const footerSeparator = "  ·  "
 // would silently no-op (a group/template/plain entry, or no current pane at
 // all) would be misleading, so those hints are hidden entirely rather than
 // shown dimmed.
-func hintsFor(cand source.Candidate, hasCurrentPane bool) string {
+// agentStatus is the focused Herdr pane's static, at-open-time agent_status
+// snapshot (m.currentPane.AgentStatus, "" when there is no current pane).
+// Empty and "unknown" are deliberately distinct here (unlike the agent_status
+// preview section, which normalizes both to "unknown" text): an empty status
+// means older Herdr or a non-agent pane and produces no "focused:" segment at
+// all, while an explicit "unknown" means Herdr itself could not classify the
+// pane and is shown as such rather than hidden.
+func hintsFor(cand source.Candidate, hasCurrentPane bool, agentStatus string) string {
+	hints := "enter: open · esc: cancel · ctrl+l: layout"
 	if hasCurrentPane && candidateIsCommandOnly(cand) {
-		return "enter: open · ctrl+t: tab · ctrl+p: pane · esc: cancel · ctrl+l: layout"
+		hints = "enter: open · ctrl+t: tab · ctrl+p: pane · esc: cancel · ctrl+l: layout"
 	}
-	return "enter: open · esc: cancel · ctrl+l: layout"
+	if agentStatus != "" {
+		hints = "focused: " + agentStatus + " · " + hints
+	}
+	return hints
 }
 
 // renderFooter builds the full-width footer line: the currently highlighted
@@ -633,7 +644,11 @@ func hintsFor(cand source.Candidate, hasCurrentPane bool) string {
 // minPortraitHeight — never has to change.
 func (m Model) renderFooter() string {
 	cand, _ := m.currentCandidate()
-	hints := hintsFor(cand, m.currentPane != nil)
+	agentStatus := ""
+	if m.currentPane != nil {
+		agentStatus = m.currentPane.AgentStatus
+	}
+	hints := hintsFor(cand, m.currentPane != nil, agentStatus)
 	label := m.footerText()
 	if m.width > 0 {
 		budget := m.width - lipgloss.Width(footerSeparator) - lipgloss.Width(hints)

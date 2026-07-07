@@ -329,16 +329,19 @@ func TestResolvePreviewNames_CaseFoldMatches(t *testing.T) {
 // fakePreviewDriver is a controllable HerdrDriver for workspace/active_pane
 // section tests.
 type fakePreviewDriver struct {
-	tabs       []source.Tab
-	panes      []source.Pane
-	readOut    string
-	tabsErr    error
-	panesErr   error
-	readErr    error
-	listCalls  []string
-	readCalls  int
-	lastLines  int
-	lastPaneID string
+	tabs             []source.Tab
+	panes            []source.Pane
+	readOut          string
+	tabsErr          error
+	panesErr         error
+	readErr          error
+	listCalls        []string
+	readCalls        int
+	lastLines        int
+	lastPaneID       string
+	currentPane      source.Pane
+	currentPaneErr   error
+	currentPaneCalls int
 	// block switches each herdr query into a ctx-bound blocker that returns
 	// ctx.Err() — used for the timeout tests.
 	block bool
@@ -394,8 +397,13 @@ func (f *fakePreviewDriver) RunPane(context.Context, string, string) error {
 func (fakePreviewDriver) FocusTab(context.Context, string) error {
 	return errors.New("not used in previews")
 }
-func (fakePreviewDriver) CurrentPane(context.Context) (source.Pane, error) {
-	return source.Pane{}, errors.New("not used in previews")
+func (f *fakePreviewDriver) CurrentPane(ctx context.Context) (source.Pane, error) {
+	f.currentPaneCalls++
+	if f.block {
+		<-ctx.Done()
+		return source.Pane{}, ctx.Err()
+	}
+	return f.currentPane, f.currentPaneErr
 }
 
 // herdrCandidate builds a candidate carrying a workspace_id meta key, mirroring
@@ -536,6 +544,63 @@ func TestRender_WorkspaceSection_TimesOutGracefully(t *testing.T) {
 	}
 	if !strings.Contains(got, "unavailable") {
 		t.Errorf("missing unavailable note on timeout: %q", got)
+	}
+}
+
+// TestRenderAgentStatusSection_KnownStatus renders the agent_status section
+// heading plus the current pane's known status text.
+func TestRenderAgentStatusSection_KnownStatus(t *testing.T) {
+	t.Parallel()
+
+	cfg := cfgWithDefault(config.PreviewAgentStatus)
+	driver := &fakePreviewDriver{currentPane: source.Pane{ID: "wA:p1", AgentStatus: "idle"}}
+	r := NewRenderer(cfg, config.Probes{}, nil, nil, WithHerdrDriver(driver))
+	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
+	if !strings.Contains(got, "agent status") {
+		t.Errorf("missing section heading: %q", got)
+	}
+	if !strings.Contains(got, "idle") {
+		t.Errorf("missing known status text: %q", got)
+	}
+	if driver.currentPaneCalls != 1 {
+		t.Errorf("expected 1 CurrentPane call, got %d", driver.currentPaneCalls)
+	}
+}
+
+// TestRenderAgentStatusSection_EmptyStatus confirms an empty AgentStatus
+// (older Herdr, or a non-agent shell pane) degrades to a "not detected"/
+// "unknown" fallback in the preview — this is the preview-only normalization
+// rule; the footer keeps empty and "unknown" distinct (see model_internal_test.go).
+func TestRenderAgentStatusSection_EmptyStatus(t *testing.T) {
+	t.Parallel()
+
+	cfg := cfgWithDefault(config.PreviewAgentStatus)
+	driver := &fakePreviewDriver{currentPane: source.Pane{ID: "wA:p1", AgentStatus: ""}}
+	r := NewRenderer(cfg, config.Probes{}, nil, nil, WithHerdrDriver(driver))
+	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
+	if !strings.Contains(got, "agent status") {
+		t.Errorf("missing section heading: %q", got)
+	}
+	if !strings.Contains(got, "unknown") {
+		t.Errorf("expected empty status to render as unknown: %q", got)
+	}
+}
+
+// TestRenderAgentStatusSection_SectionDisabled confirms the section is
+// entirely omitted from the joined output (same omit rule as git/dir) when
+// the user's preview list does not include agent_status.
+func TestRenderAgentStatusSection_SectionDisabled(t *testing.T) {
+	t.Parallel()
+
+	cfg := cfgWithDefault(config.PreviewIdentity)
+	driver := &fakePreviewDriver{currentPane: source.Pane{ID: "wA:p1", AgentStatus: "working"}}
+	r := NewRenderer(cfg, config.Probes{}, nil, nil, WithHerdrDriver(driver))
+	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
+	if strings.Contains(got, "agent status") || strings.Contains(got, "working") {
+		t.Errorf("agent_status section must be omitted when disabled: %q", got)
+	}
+	if driver.currentPaneCalls != 0 {
+		t.Errorf("driver must not be queried when the section is disabled, got %d calls", driver.currentPaneCalls)
 	}
 }
 

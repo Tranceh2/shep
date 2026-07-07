@@ -68,16 +68,17 @@ const (
 // preview renderer and require no declaration in config; they are simply
 // valid names wherever a `preview = [...]` list is accepted.
 const (
-	PreviewIdentity   = "identity"
-	PreviewGit        = "git"
-	PreviewWorkspace  = "workspace"
-	PreviewActivePane = "active_pane"
-	PreviewDir        = "dir"
+	PreviewIdentity    = "identity"
+	PreviewGit         = "git"
+	PreviewWorkspace   = "workspace"
+	PreviewActivePane  = "active_pane"
+	PreviewDir         = "dir"
+	PreviewAgentStatus = "agent_status"
 )
 
 var builtinPreviewNames = map[string]bool{
 	PreviewIdentity: true, PreviewGit: true, PreviewWorkspace: true,
-	PreviewActivePane: true, PreviewDir: true,
+	PreviewActivePane: true, PreviewDir: true, PreviewAgentStatus: true,
 }
 
 // Default preview durations and output cap. They apply when the user omits

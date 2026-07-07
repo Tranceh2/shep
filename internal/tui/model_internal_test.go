@@ -1983,7 +1983,7 @@ func TestRenderList_NoEntryTypeTags(t *testing.T) {
 // since selectWithTarget always no-ops both bindings in that case.
 func TestHintsFor_NoCurrentPane_ExcludesTabPaneHints(t *testing.T) {
 	t.Parallel()
-	got := hintsFor(commandOnlyCandidate(), false)
+	got := hintsFor(commandOnlyCandidate(), false, "")
 	for _, want := range []string{"enter: open", "esc: cancel", "ctrl+l: layout"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("hintsFor() = %q, want to contain %q", got, want)
@@ -1996,13 +1996,46 @@ func TestHintsFor_NoCurrentPane_ExcludesTabPaneHints(t *testing.T) {
 	}
 }
 
+// TestHintsFor_EmptyAgentStatus_NoFocusedSegment proves an empty AgentStatus
+// (older Herdr, or a non-agent shell pane) produces unchanged hints — no
+// "focused:" segment — per the design's footer contract, which deliberately
+// keeps empty distinct from the explicit "unknown" status.
+func TestHintsFor_EmptyAgentStatus_NoFocusedSegment(t *testing.T) {
+	t.Parallel()
+	got := hintsFor(commandOnlyCandidate(), true, "")
+	if strings.Contains(got, "focused:") {
+		t.Errorf("hintsFor() = %q, want no focused: segment for an empty AgentStatus", got)
+	}
+	want := hintsFor(commandOnlyCandidate(), true, "")
+	if got != want {
+		t.Errorf("hintsFor() with empty AgentStatus changed the base hints: got %q want %q", got, want)
+	}
+}
+
+// TestHintsFor_UnknownAgentStatus_ShowsFocusedUnknown proves an explicit
+// "unknown" AgentStatus renders as "focused: unknown", joined before the
+// existing hint string — the design deliberately keeps this explicit rather
+// than hiding it like the empty case.
+func TestHintsFor_UnknownAgentStatus_ShowsFocusedUnknown(t *testing.T) {
+	t.Parallel()
+	got := hintsFor(commandOnlyCandidate(), true, "unknown")
+	if !strings.Contains(got, "focused: unknown") {
+		t.Errorf("hintsFor() = %q, want to contain %q", got, "focused: unknown")
+	}
+	for _, want := range []string{"enter: open", "ctrl+t: tab", "ctrl+p: pane", "esc: cancel", "ctrl+l: layout"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("hintsFor() = %q, want to still contain %q", got, want)
+		}
+	}
+}
+
 // TestHintsFor_CurrentPaneCommandOnly_IncludesTabPaneHints proves hintsFor
 // includes ALL hints — enter/ctrl+t/ctrl+p/esc/ctrl+l — when shep IS
 // running inside a Herdr pane AND the highlighted candidate is a
 // Command-only workspace, the only entry selectWithTarget actually launches.
 func TestHintsFor_CurrentPaneCommandOnly_IncludesTabPaneHints(t *testing.T) {
 	t.Parallel()
-	got := hintsFor(commandOnlyCandidate(), true)
+	got := hintsFor(commandOnlyCandidate(), true, "")
 	for _, want := range []string{"enter: open", "ctrl+t: tab", "ctrl+p: pane", "esc: cancel", "ctrl+l: layout"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("hintsFor() = %q, want to contain %q", got, want)
@@ -2026,7 +2059,7 @@ func TestHintsFor_CurrentPaneNonCommandOnly_ExcludesTabPaneHints(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := hintsFor(tt.cand, true)
+			got := hintsFor(tt.cand, true, "")
 			for _, want := range []string{"enter: open", "esc: cancel", "ctrl+l: layout"} {
 				if !strings.Contains(got, want) {
 					t.Errorf("hintsFor() = %q, want to contain %q", got, want)

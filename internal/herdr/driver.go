@@ -142,6 +142,7 @@ type rawPane struct {
 	CWD           string `json:"cwd"`
 	ForegroundCWD string `json:"foreground_cwd"`
 	Focused       bool   `json:"focused"`
+	AgentStatus   string `json:"agent_status"`
 }
 
 // tabListEnvelope wraps `herdr tab list --workspace <id>`.
@@ -494,6 +495,7 @@ func (d *Driver) SplitPane(ctx context.Context, paneID, direction string, ratio 
 		CWD:           p.CWD,
 		ForegroundCWD: p.ForegroundCWD,
 		Focused:       p.Focused,
+		AgentStatus:   p.AgentStatus,
 	}, nil
 }
 
@@ -589,6 +591,7 @@ func rawPaneToPane(p rawPane) source.Pane {
 		CWD:           p.CWD,
 		ForegroundCWD: p.ForegroundCWD,
 		Focused:       p.Focused,
+		AgentStatus:   p.AgentStatus,
 	}
 }
 
@@ -722,6 +725,7 @@ func (d *Driver) ListPanes(ctx context.Context, workspaceID string) ([]source.Pa
 			CWD:           p.CWD,
 			ForegroundCWD: p.ForegroundCWD,
 			Focused:       p.Focused,
+			AgentStatus:   p.AgentStatus,
 		})
 	}
 	return panes, nil

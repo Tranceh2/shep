@@ -157,7 +157,12 @@ var ErrNoFocusedPane = errors.New("no focused pane")
 
 // Pane is one pane of a Herdr workspace. CWD is the pane's working directory;
 // ForegroundCWD is the cwd of the foreground process running in it (Herdr
-// populates this only while a command is active).
+// populates this only while a command is active). AgentStatus mirrors the
+// pane envelope's `agent_status` field: one of "idle", "working", "blocked",
+// "done", "unknown", or "" when the pane predates the field (older Herdr) or
+// carries no agent (a plain shell pane). Empty and "unknown" are distinct:
+// "" means the status is unavailable, "unknown" is Herdr explicitly
+// reporting it cannot classify the pane's agent.
 type Pane struct {
 	ID            string
 	WorkspaceID   string
@@ -165,6 +170,7 @@ type Pane struct {
 	CWD           string
 	ForegroundCWD string
 	Focused       bool
+	AgentStatus   string
 }
 
 // Agent is one Herdr agent. Status mirrors the `agent_status` field of the

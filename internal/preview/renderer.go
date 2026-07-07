@@ -2,6 +2,7 @@ package preview
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -129,6 +130,8 @@ func (r *defaultRenderer) renderSection(ctx context.Context, cand source.Candida
 		return r.renderWorkspaceSection(ctx, cand)
 	case config.PreviewActivePane:
 		return r.renderActivePaneSection(ctx, cand)
+	case config.PreviewAgentStatus:
+		return r.renderAgentStatusSection(ctx, cand)
 	case config.PreviewDir:
 		return r.renderDirSection(ctx, cand)
 	default:
@@ -247,6 +250,39 @@ func (r *defaultRenderer) renderWorkspaceSection(ctx context.Context, cand sourc
 		}
 		lines = append(lines, fmt.Sprintf("  pane %s %s %s", p.ID, marker, p.CWD))
 	}
+	return strings.Join(lines, "\n"), true
+}
+
+// renderAgentStatusSection renders a static, at-open-time snapshot of the
+// focused Herdr pane's agent status (via Driver.CurrentPane). ok=false means
+// the section is skipped entirely: the candidate is not an active herdr
+// workspace, or no driver is wired. A query failure or timeout degrades to
+// an unavailable note; no focused pane degrades to a "no active pane" note.
+// Unlike the footer hint (hintsFor in internal/tui/model.go), this section
+// normalizes both an empty AgentStatus and an explicit "unknown" to the same
+// "unknown" display text — the preview always shows a definite line under
+// the heading rather than distinguishing "not reported" from "reported as
+// unknown".
+func (r *defaultRenderer) renderAgentStatusSection(ctx context.Context, cand source.Candidate) (string, bool) {
+	workspaceID := cand.Meta["workspace_id"]
+	if workspaceID == "" || r.driver == nil {
+		return "", false
+	}
+	lines := []string{"agent status"}
+	pane, err := r.currentPanePreview(ctx)
+	if err != nil {
+		if errors.Is(err, source.ErrNoFocusedPane) {
+			lines = append(lines, "(no active pane)")
+			return strings.Join(lines, "\n"), true
+		}
+		lines = append(lines, "(agent status unavailable)")
+		return strings.Join(lines, "\n"), true
+	}
+	status := pane.AgentStatus
+	if status == "" {
+		status = "unknown"
+	}
+	lines = append(lines, fmt.Sprintf("  pane %s: %s", pane.ID, status))
 	return strings.Join(lines, "\n"), true
 }
 
@@ -387,6 +423,14 @@ func (r *defaultRenderer) readPanePreview(ctx context.Context, paneID string, li
 	qctx, cancel := context.WithTimeout(ctx, herdrPreviewTimeout)
 	defer cancel()
 	return r.driver.ReadPane(qctx, paneID, lines)
+}
+
+// currentPanePreview bounds a CurrentPane call by herdrPreviewTimeout, for
+// the agent_status section's static snapshot.
+func (r *defaultRenderer) currentPanePreview(ctx context.Context) (source.Pane, error) {
+	qctx, cancel := context.WithTimeout(ctx, herdrPreviewTimeout)
+	defer cancel()
+	return r.driver.CurrentPane(qctx)
 }
 
 // activePaneID returns the focused pane's id, falling back to the first pane.
