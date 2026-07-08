@@ -7,7 +7,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -96,105 +95,6 @@ func TestModel_CursorMoveIncrementsPreviewSeq(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatal("expected a non-nil preview request Cmd after cursor move")
-	}
-}
-
-// TestModel_Init_StartsTickWhenWorking (R5) proves Init returns a non-nil
-// Cmd — the working spinner's first tick — when the focused Herdr pane's
-// AgentStatus is "working" at construction time.
-func TestModel_Init_StartsTickWhenWorking(t *testing.T) {
-	t.Parallel()
-	pane := source.Pane{ID: "p1", AgentStatus: "working"}
-	m := NewModel(internalTestCands(), nil).WithCurrentPane(&pane)
-
-	cmd := m.Init()
-	if cmd == nil {
-		t.Fatal("expected a non-nil Cmd from Init when the focused status is working")
-	}
-}
-
-// TestModel_Update_TickAdvancesFrame (R5) proves a tickMsg advances
-// workingFrame and returns a non-nil Cmd (to reschedule) while the focused
-// status is still "working", and that View() reflects the next spinner
-// glyph for the advanced frame.
-func TestModel_Update_TickAdvancesFrame(t *testing.T) {
-	t.Parallel()
-	pane := source.Pane{ID: "p1", AgentStatus: "working"}
-	m := NewModel(internalTestCands(), nil).WithCurrentPane(&pane)
-	m.width = 100
-	m.height = 24
-	beforeFrame := m.workingFrame
-
-	updated, cmd := m.Update(tickMsg(time.Now()))
-	mm, ok := updated.(Model)
-	if !ok {
-		t.Fatalf("expected Model, got %T", updated)
-	}
-	wantFrame := (beforeFrame + 1) % len(workingSpinner)
-	if mm.workingFrame != wantFrame {
-		t.Errorf("workingFrame = %d, want %d", mm.workingFrame, wantFrame)
-	}
-	if cmd == nil {
-		t.Error("expected a non-nil Cmd to reschedule the tick while still working")
-	}
-	wantGlyph := workingSpinner[wantFrame]
-	if !strings.Contains(mm.View(), wantGlyph) {
-		t.Errorf("View() after tick does not contain the next glyph %q:\n%s", wantGlyph, mm.View())
-	}
-}
-
-// TestModel_Update_TickStopsOnNonWorking (R5) proves a tickMsg returns a nil
-// Cmd once the focused status is no longer "working" — the spinner freezes
-// on its current glyph instead of rescheduling forever.
-func TestModel_Update_TickStopsOnNonWorking(t *testing.T) {
-	t.Parallel()
-	pane := source.Pane{ID: "p1", AgentStatus: "working"}
-	m := NewModel(internalTestCands(), nil).WithCurrentPane(&pane)
-	m.width = 100
-	m.height = 24
-
-	// Simulate the focused pane's status flipping between the previous tick
-	// and this one (e.g. the agent finished while a tick was in flight).
-	pane.AgentStatus = "done"
-
-	_, cmd := m.Update(tickMsg(time.Now()))
-	if cmd != nil {
-		t.Error("expected a nil Cmd once the focused status is no longer working")
-	}
-}
-
-// TestModel_PreviewStatusLine_StaysStaticAcrossFrames (R5) proves the
-// preview pane's "status:" line stays byte-identical across working-spinner
-// frames — the animation is scoped to the footer only, never the async
-// preview body.
-func TestModel_PreviewStatusLine_StaysStaticAcrossFrames(t *testing.T) {
-	t.Parallel()
-	pane := source.Pane{ID: "p1", AgentStatus: "working"}
-	m := newModel(internalTestCands(), stubRenderer{}, context.TODO()).WithCurrentPane(&pane)
-	m.width = 100
-	m.height = 24
-	m.previewLoading = false
-	m.previewText = "agent status\n  status: working"
-
-	var statusLines []string
-	cur := m
-	for i := 0; i < 3; i++ {
-		body := cur.previewBody(paneContentWidth(60))
-		for _, line := range strings.Split(body, "\n") {
-			if strings.Contains(line, "status:") {
-				statusLines = append(statusLines, line)
-			}
-		}
-		updated, _ := cur.Update(tickMsg(time.Now()))
-		cur = updated.(Model)
-	}
-	if len(statusLines) != 3 {
-		t.Fatalf("expected 3 status lines (one per frame), got %d: %v", len(statusLines), statusLines)
-	}
-	for i := 1; i < len(statusLines); i++ {
-		if statusLines[i] != statusLines[0] {
-			t.Errorf("preview status line changed across frames: frame0=%q frame%d=%q", statusLines[0], i, statusLines[i])
-		}
 	}
 }
 
@@ -1067,38 +967,6 @@ func TestModel_PreviewPreservesRealRendererANSIEndToEnd(t *testing.T) {
 	view := m.View()
 	if !strings.Contains(view, "\x1b[") {
 		t.Errorf("View() stripped real renderer ANSI end-to-end, got: %q", view)
-	}
-}
-
-// TestView_StatusWorking_ReferencesGreenAndSurfaceHex proves the previously
-// dead colorGreen/colorSurface palette tokens (R2) are now actually
-// referenced in a real render path: a focused pane with AgentStatus
-// "working" must cause the "working" text to render in colorGreen
-// (statusStyle) and the surrounding "focused:" segment to carry a
-// colorSurface background (surfaceStyle), both end-to-end through View().
-func TestView_StatusWorking_ReferencesGreenAndSurfaceHex(t *testing.T) {
-	prev := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	defer lipgloss.SetColorProfile(prev)
-
-	pane := source.Pane{ID: "p1", AgentStatus: "working"}
-	m := NewModel(internalTestCands(), nil).WithCurrentPane(&pane)
-	m.width = 100
-	m.height = 24
-
-	view := m.View()
-	// ANSI truecolor escapes carry decimal RGB, not the literal hex string,
-	// so render each style against a throwaway marker and check for its
-	// real escape prefix rather than hand-computing the hex-to-decimal
-	// conversion (which termenv's gamma-aware color matching may round
-	// slightly differently anyway).
-	greenPrefix := ansiEscapePrefix(palette.statusWorkingStyle)
-	surfacePrefix := ansiEscapePrefix(palette.surfaceStyle)
-	if !strings.Contains(view, greenPrefix) {
-		t.Errorf("View() = %q, want colorGreen (statusWorkingStyle, escape %q) referenced for working status", view, greenPrefix)
-	}
-	if !strings.Contains(view, surfacePrefix) {
-		t.Errorf("View() = %q, want colorSurface (surfaceStyle, escape %q) referenced for working status", view, surfacePrefix)
 	}
 }
 
@@ -2199,7 +2067,7 @@ func TestRenderList_NoEntryTypeTags(t *testing.T) {
 // since selectWithTarget always no-ops both bindings in that case.
 func TestHintsFor_NoCurrentPane_ExcludesTabPaneHints(t *testing.T) {
 	t.Parallel()
-	got := hintsFor(commandOnlyCandidate(), false, "")
+	got := hintsFor(commandOnlyCandidate(), false)
 	for _, want := range []string{"enter open", "esc cancel", "ctrl+l layout"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("hintsFor() = %q, want to contain %q", got, want)
@@ -2212,46 +2080,13 @@ func TestHintsFor_NoCurrentPane_ExcludesTabPaneHints(t *testing.T) {
 	}
 }
 
-// TestHintsFor_EmptyAgentStatus_NoFocusedSegment proves an empty AgentStatus
-// (older Herdr, or a non-agent shell pane) produces unchanged hints — no
-// "focused:" segment — per the design's footer contract, which deliberately
-// keeps empty distinct from the explicit "unknown" status.
-func TestHintsFor_EmptyAgentStatus_NoFocusedSegment(t *testing.T) {
-	t.Parallel()
-	got := hintsFor(commandOnlyCandidate(), true, "")
-	if strings.Contains(got, "focused:") {
-		t.Errorf("hintsFor() = %q, want no focused: segment for an empty AgentStatus", got)
-	}
-	want := hintsFor(commandOnlyCandidate(), true, "")
-	if got != want {
-		t.Errorf("hintsFor() with empty AgentStatus changed the base hints: got %q want %q", got, want)
-	}
-}
-
-// TestHintsFor_UnknownAgentStatus_ShowsFocusedUnknown proves an explicit
-// "unknown" AgentStatus renders as "focused: unknown", joined before the
-// existing hint string — the design deliberately keeps this explicit rather
-// than hiding it like the empty case.
-func TestHintsFor_UnknownAgentStatus_ShowsFocusedUnknown(t *testing.T) {
-	t.Parallel()
-	got := hintsFor(commandOnlyCandidate(), true, "unknown")
-	if !strings.Contains(got, "focused: unknown") {
-		t.Errorf("hintsFor() = %q, want to contain %q", got, "focused: unknown")
-	}
-	for _, want := range []string{"enter open", "t tab", "p pane", "esc cancel", "ctrl+l layout"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("hintsFor() = %q, want to still contain %q", got, want)
-		}
-	}
-}
-
 // TestHintsFor_CurrentPaneCommandOnly_IncludesTabPaneHints proves hintsFor
 // includes ALL hints — enter/ctrl+t/ctrl+p/esc/ctrl+l — when shep IS
 // running inside a Herdr pane AND the highlighted candidate is a
 // Command-only workspace, the only entry selectWithTarget actually launches.
 func TestHintsFor_CurrentPaneCommandOnly_IncludesTabPaneHints(t *testing.T) {
 	t.Parallel()
-	got := hintsFor(commandOnlyCandidate(), true, "")
+	got := hintsFor(commandOnlyCandidate(), true)
 	for _, want := range []string{"enter open", "t tab", "p pane", "esc cancel", "ctrl+l layout"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("hintsFor() = %q, want to contain %q", got, want)
@@ -2275,7 +2110,7 @@ func TestHintsFor_CurrentPaneNonCommandOnly_ExcludesTabPaneHints(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := hintsFor(tt.cand, true, "")
+			got := hintsFor(tt.cand, true)
 			for _, want := range []string{"enter open", "esc cancel", "ctrl+l layout"} {
 				if !strings.Contains(got, want) {
 					t.Errorf("hintsFor() = %q, want to contain %q", got, want)
@@ -2393,30 +2228,6 @@ func TestRenderFooter_NarrowWidth_PrefersHintsOverLabel(t *testing.T) {
 	}
 }
 
-// TestRenderFooter_StripsANSIFromAgentStatus (R1 review follow-up) proves an
-// AgentStatus value carrying embedded ANSI/control escape sequences never
-// reaches the rendered footer verbatim. AgentStatus is a raw string decoded
-// straight from Herdr's JSON with no sanitization guarantee, so a malicious
-// or buggy agent must not be able to inject escape sequences (e.g. an OSC 52
-// clipboard write) into shep's own terminal output via that field. Forces
-// TrueColor so statusStyle's own legitimate SGR codes are actually emitted,
-// proving the assertion isn't vacuously true because color output is off.
-func TestRenderFooter_StripsANSIFromAgentStatus(t *testing.T) {
-	prev := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	defer lipgloss.SetColorProfile(prev)
-
-	const injected = "\x1b]52;c;ZXZpbA==\x07"
-	pane := source.Pane{ID: "p1", AgentStatus: "working" + injected}
-	m := NewModel(internalTestCands(), nil).WithCurrentPane(&pane)
-	m.width = 100
-
-	footer := m.renderFooter()
-	if strings.Contains(footer, injected) {
-		t.Errorf("footer contains raw injected escape bytes from AgentStatus: %q", footer)
-	}
-}
-
 // TestStyleStatusLine_StripsANSIFromRawStatus (R1 review follow-up) proves
 // styleStatusLine strips embedded ANSI/control escape sequences from the raw
 // status word before wrapping it in statusStyle(...).Render(...) — the
@@ -2436,26 +2247,60 @@ func TestStyleStatusLine_StripsANSIFromRawStatus(t *testing.T) {
 	}
 }
 
-// TestModel_Update_TickWrapsFrameAtSpinnerLength (R3 review follow-up)
-// proves handleTick wraps workingFrame back to 0 via modulo when it is
-// already at the last spinner index, instead of leaving it at
-// len(workingSpinner) (which would then index workingSpinner[10] out of
-// range on the very next display read). Existing tick tests only exercise
-// the 0 -> 1 transition, never the wraparound edge.
-func TestModel_Update_TickWrapsFrameAtSpinnerLength(t *testing.T) {
-	t.Parallel()
-	pane := source.Pane{ID: "p1", AgentStatus: "working"}
-	m := NewModel(internalTestCands(), nil).WithCurrentPane(&pane)
-	m.width = 100
-	m.height = 24
-	m.workingFrame = len(workingSpinner) - 1
+// TestStyleSectionHeadings_ColorsKnownHeadingLines proves styleSectionHeadings
+// recolors the preview renderer's exact section-heading lines ("workspace",
+// "agent status", "active pane") via palette.headingStyle, leaving all other
+// lines byte-identical.
+func TestStyleSectionHeadings_ColorsKnownHeadingLines(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(prev)
 
-	updated, _ := m.Update(tickMsg(time.Now()))
-	mm, ok := updated.(Model)
-	if !ok {
-		t.Fatalf("expected Model, got %T", updated)
+	headingPrefix := ansiEscapePrefix(palette.headingStyle)
+	text := "workspace\n  tab 1: main * (2 panes)\n\nagent status\n  status: working\n\nactive pane\n$ ls"
+
+	out := styleSectionHeadings(text)
+	for _, heading := range []string{"workspace", "agent status", "active pane"} {
+		styled := palette.headingStyle.Render(heading)
+		if !strings.Contains(out, styled) {
+			t.Errorf("styleSectionHeadings() = %q, want heading %q rendered as %q", out, heading, styled)
+		}
 	}
-	if mm.workingFrame != 0 {
-		t.Errorf("workingFrame = %d, want 0 (wrapped from %d)", mm.workingFrame, len(workingSpinner)-1)
+	if !strings.Contains(out, headingPrefix) {
+		t.Errorf("styleSectionHeadings() = %q, want the heading style escape %q present", out, headingPrefix)
+	}
+	for _, unchanged := range []string{"  tab 1: main * (2 panes)", "  status: working", "$ ls"} {
+		if !strings.Contains(out, unchanged) {
+			t.Errorf("styleSectionHeadings() = %q, want non-heading line %q preserved unchanged", out, unchanged)
+		}
+	}
+}
+
+// TestStyleSectionHeadings_ColorsGitPrefix proves styleSectionHeadings
+// recolors just the "git: " prefix of the inline git summary line (a single
+// line, unlike the standalone section headings above) via
+// palette.headingStyle, leaving the summary text itself unstyled.
+func TestStyleSectionHeadings_ColorsGitPrefix(t *testing.T) {
+	t.Parallel()
+	text := "git: main +1~0-0"
+	out := styleSectionHeadings(text)
+	wantPrefix := palette.headingStyle.Render("git: ")
+	if !strings.HasPrefix(out, wantPrefix) {
+		t.Errorf("styleSectionHeadings() = %q, want prefix %q", out, wantPrefix)
+	}
+	if !strings.HasSuffix(out, "main +1~0-0") {
+		t.Errorf("styleSectionHeadings() = %q, want summary text preserved unchanged", out)
+	}
+}
+
+// TestStyleSectionHeadings_NoHeadingLines_ReturnsTextUnchanged proves text
+// with no recognized heading line (e.g. the "identity" section, whose first
+// line is the candidate's own label rather than a fixed heading string) is
+// returned byte-identical.
+func TestStyleSectionHeadings_NoHeadingLines_ReturnsTextUnchanged(t *testing.T) {
+	t.Parallel()
+	text := "my-project\npath: /a/b\nsource: workspaces"
+	if out := styleSectionHeadings(text); out != text {
+		t.Errorf("styleSectionHeadings() = %q, want unchanged %q", out, text)
 	}
 }

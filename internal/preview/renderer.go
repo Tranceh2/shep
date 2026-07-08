@@ -258,11 +258,10 @@ func (r *defaultRenderer) renderWorkspaceSection(ctx context.Context, cand sourc
 // the section is skipped entirely: the candidate is not an active herdr
 // workspace, or no driver is wired. A query failure or timeout degrades to
 // an unavailable note; no focused pane degrades to a "no active pane" note.
-// Unlike the footer hint (hintsFor in internal/tui/model.go), this section
-// normalizes both an empty AgentStatus and an explicit "unknown" to the same
-// "unknown" display text — the preview always shows a definite line under
-// the heading rather than distinguishing "not reported" from "reported as
-// unknown".
+// This section normalizes both an empty AgentStatus and an explicit
+// "unknown" to the same "unknown" display text — the preview always shows a
+// definite line under the heading rather than distinguishing "not reported"
+// from "reported as unknown".
 func (r *defaultRenderer) renderAgentStatusSection(ctx context.Context, cand source.Candidate) (string, bool) {
 	workspaceID := cand.Meta["workspace_id"]
 	if workspaceID == "" || r.driver == nil {

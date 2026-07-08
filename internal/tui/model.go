@@ -29,7 +29,6 @@ import (
 	"errors"
 	"strconv"
 	"strings"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -167,25 +166,7 @@ type Model struct {
 	// implementation) — a mechanism distinct from the removed Result.Warning
 	// field. Empty after any successful render or on selection change.
 	previewErr string
-
-	// workingFrame indexes workingSpinner for the footer's scoped working
-	// animation (R5): advanced by one on every tickMsg while
-	// shouldAnimateWorking() is true. Never touches previewText/previewSeq —
-	// the preview pane's "status:" line stays a static snapshot regardless
-	// of how many frames have ticked.
-	workingFrame int
 }
-
-// tickMsg drives the footer's scoped working-status spinner (R5). Sent by
-// workingTickCmd via tea.Tick and handled in Update; a one-shot timer, so
-// the animation only keeps running as long as Update keeps returning a new
-// workingTickCmd (see shouldAnimateWorking).
-type tickMsg time.Time
-
-// workingSpinner is the Braille spinner glyph cycle shown after "focused:
-// working" in the footer while the focused pane's agent_status is
-// "working". Indexed by workingFrame % len(workingSpinner).
-var workingSpinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 // previewResponseMsg carries the result of an async preview render. seq must
 // match the model's current previewSeq or the response is stale and ignored.
@@ -278,31 +259,14 @@ func (m Model) WithCurrentPane(p *source.Pane) Model {
 // Init kicks off the first async preview render for the initially
 // highlighted candidate (cursor 0) when a Renderer is wired. Its Cmd is
 // tagged with the model's initial previewSeq (0) so the resulting
-// previewResponseMsg is accepted, not treated as stale. It also seeds the
-// footer's working-spinner tick (R5) when the focused pane's status is
-// already "working" at construction time — batched alongside the preview
-// Cmd via tea.Batch when both apply.
+// previewResponseMsg is accepted, not treated as stale.
 func (m Model) Init() tea.Cmd {
-	var pCmd tea.Cmd
 	if m.renderer != nil {
 		if cand, ok := m.currentCandidate(); ok {
-			pCmd = m.previewCmd(m.previewSeq, cand)
+			return m.previewCmd(m.previewSeq, cand)
 		}
 	}
-	var tCmd tea.Cmd
-	if m.shouldAnimateWorking() {
-		tCmd = m.workingTickCmd()
-	}
-	switch {
-	case pCmd != nil && tCmd != nil:
-		return tea.Batch(pCmd, tCmd)
-	case pCmd != nil:
-		return pCmd
-	case tCmd != nil:
-		return tCmd
-	default:
-		return nil
-	}
+	return nil
 }
 
 // Update handles key presses, window sizing and async preview responses. It
@@ -316,69 +280,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case previewResponseMsg:
 		return m.handlePreviewResponse(msg), nil
-	case tickMsg:
-		return m.handleTick()
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
 	return m, nil
-}
-
-// handleTick advances the footer's working-spinner frame (R5) and
-// reschedules the next tick only while shouldAnimateWorking() is still
-// true — a status transition away from "working" between ticks freezes the
-// spinner on its current glyph instead of continuing to reschedule. Never
-// touches previewText/previewSeq: the preview pane's "status:" line stays a
-// static snapshot regardless of how many frames have ticked.
-func (m Model) handleTick() (tea.Model, tea.Cmd) {
-	m.workingFrame = (m.workingFrame + 1) % len(workingSpinner)
-	if m.shouldAnimateWorking() {
-		return m, m.workingTickCmd()
-	}
-	return m, nil
-}
-
-// workingTickCmd schedules the next footer spinner frame 120ms out.
-// tea.Tick is one-shot, so the animation loop only continues as long as
-// handleTick keeps returning a fresh workingTickCmd (see shouldAnimateWorking).
-func (m Model) workingTickCmd() tea.Cmd {
-	return tea.Tick(120*time.Millisecond, func(t time.Time) tea.Msg {
-		return tickMsg(t)
-	})
-}
-
-// focusedAgentStatus returns the raw agent_status of the Herdr pane shep is
-// running inside (m.currentPane), or "" when there is no current pane.
-func (m Model) focusedAgentStatus() string {
-	if m.currentPane == nil {
-		return ""
-	}
-	return m.currentPane.AgentStatus
-}
-
-// shouldAnimateWorking reports whether the footer spinner should keep
-// ticking: there is a current pane and its focused status is exactly
-// "working" (R5). Any other status, an empty status, or no current pane
-// stops the animation.
-func (m Model) shouldAnimateWorking() bool {
-	return m.focusedAgentStatus() == "working"
-}
-
-// focusedAgentStatusDisplay returns the text hintsFor embeds after
-// "focused: " in the footer: the raw status, with the current
-// workingSpinner glyph appended when status == "working" (R5). Any other
-// status renders unchanged — only the working state animates. AgentStatus
-// is decoded straight from Herdr's JSON with no sanitization guarantee, so
-// the raw value is run through ansi.Strip (R1) before it ever reaches
-// hintsFor's plain-text composition or renderFooter's
-// statusStyle(...).Render(...) call — otherwise an untrusted status value
-// could inject escape sequences into shep's own terminal output.
-func (m Model) focusedAgentStatusDisplay() string {
-	status := ansi.Strip(m.focusedAgentStatus())
-	if status == "working" {
-		return status + " " + workingSpinner[m.workingFrame%len(workingSpinner)]
-	}
-	return status
 }
 
 // handlePreviewResponse applies a completed async render, discarding it as
@@ -709,28 +614,13 @@ const footerSeparator = " / "
 // would silently no-op (a group/template/plain entry, or no current pane at
 // all) would be misleading, so those hints are hidden entirely rather than
 // shown dimmed.
-// focusedStatusLabel is the display label rendered after "focused: " in the
-// footer ("" when there is no current pane). It is NOT necessarily the raw
-// agent_status enum value: the real call site (renderFooter) passes
-// focusedAgentStatusDisplay()'s output, which appends an animated
-// workingSpinner glyph suffix (e.g. "working ⠋") while the focused pane's
-// status is "working" (R5). Empty and a bare "unknown" are deliberately
-// distinct here (unlike the agent_status preview section, which normalizes
-// both to "unknown" text): an empty label means older Herdr or a non-agent
-// pane and produces no "focused:" segment at all, while an explicit
-// "unknown" means Herdr itself could not classify the pane and is shown as
-// such rather than hidden.
-func hintsFor(cand source.Candidate, hasCurrentPane bool, focusedStatusLabel string) string {
+func hintsFor(cand source.Candidate, hasCurrentPane bool) string {
 	segments := []string{formatHint("enter", "open")}
 	if hasCurrentPane && candidateIsCommandOnly(cand) {
 		segments = append(segments, formatHint("t", "tab"), formatHint("p", "pane"))
 	}
 	segments = append(segments, formatHint("esc", "cancel"), formatHint("ctrl+l", "layout"))
-	hints := strings.Join(segments, footerSeparator)
-	if focusedStatusLabel != "" {
-		hints = "focused: " + focusedStatusLabel + footerSeparator + hints
-	}
-	return hints
+	return strings.Join(segments, footerSeparator)
 }
 
 // formatHint builds one "<key> <label>" footer hint segment. Every hint
@@ -754,28 +644,13 @@ func formatHint(key, label string) string {
 // minPortraitHeight — never has to change.
 func (m Model) renderFooter() string {
 	cand, _ := m.currentCandidate()
-	agentStatus := m.focusedAgentStatus()
-	displayStatus := m.focusedAgentStatusDisplay()
-	hints := hintsFor(cand, m.currentPane != nil, displayStatus)
+	hints := hintsFor(cand, m.currentPane != nil)
 	label := m.footerText()
 	if m.width > 0 {
 		budget := m.width - lipgloss.Width(footerSeparator) - lipgloss.Width(hints)
 		label = truncateToWidth(label, budget)
 	}
-	// R1/R2: color the "focused: <status>" segment via statusStyle (e.g.
-	// green for "working") and set it off with surfaceStyle's background —
-	// the single render path (besides the preview status line, see
-	// styleStatusLine) that references the previously-dead colorGreen/
-	// colorSurface tokens. hintsFor already built this exact plain
-	// substring, so a targeted replace layers styling on top without
-	// duplicating the hint-composition logic.
-	styledHints := hints
-	if agentStatus != "" {
-		plainFocused := "focused: " + displayStatus
-		styledFocused := palette.surfaceStyle.Render("focused: " + statusStyle(agentStatus).Render(displayStatus))
-		styledHints = strings.Replace(hints, plainFocused, styledFocused, 1)
-	}
-	full := palette.mutedStyle.Render(label) + footerSeparator + palette.mutedStyle.Render(styledHints)
+	full := palette.mutedStyle.Render(label) + footerSeparator + palette.mutedStyle.Render(hints)
 	return lipgloss.NewStyle().Width(m.width).Render(truncateToWidth(full, m.width))
 }
 
@@ -1201,7 +1076,51 @@ func (m Model) previewBody(width int) string {
 	}
 	text := truncateLinesToWidth(m.previewText, width)
 	text = styleStatusLine(text)
+	text = styleSectionHeadings(text)
 	return lipgloss.NewStyle().Width(width).Render(text)
+}
+
+// sectionHeadingLines are the literal, exact heading lines the preview
+// renderer's built-in sections emit to group related content under a title
+// (internal/preview/renderer.go's renderWorkspaceSection,
+// renderAgentStatusSection, renderActivePaneSection). Recognized by exact
+// line match, mirroring styleStatusLine's own prefix-match approach, so
+// this helper recolors them without preview needing an internal/tui import
+// (preview stays TUI-agnostic — see its package doc).
+var sectionHeadingLines = map[string]bool{
+	"workspace":    true,
+	"agent status": true,
+	"active pane":  true,
+}
+
+// gitHeadingPrefix is the literal prefix renderer.go's gitLine section
+// writes before the git summary text — a single inline line ("git: <summary>")
+// rather than a standalone heading line like the sections above, so it is
+// recognized by prefix (mirroring statusLinePrefix) instead of an exact
+// line match.
+const gitHeadingPrefix = "git: "
+
+// styleSectionHeadings recolors the preview pane's section heading lines
+// (palette.headingStyle): the "workspace"/"agent status"/"active pane"
+// exact heading lines, and the "git: " line's own prefix. Operates on
+// already-truncated raw text (same truncate-then-style ordering as
+// styleStatusLine/styleLinePrefix) so truncateLinesToWidth's raw rune
+// budget is never eaten by injected ANSI bytes. The "identity" section has
+// no fixed heading line of its own (its first line is the candidate's own
+// label) and the "dir" section renders no heading at all, so neither has a
+// literal heading string to match here without changing their existing
+// output shape.
+func styleSectionHeadings(text string) string {
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		switch {
+		case sectionHeadingLines[line]:
+			lines[i] = palette.headingStyle.Render(line)
+		case strings.HasPrefix(line, gitHeadingPrefix):
+			lines[i] = palette.headingStyle.Render(gitHeadingPrefix) + strings.TrimPrefix(line, gitHeadingPrefix)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // statusLinePrefix is the literal prefix renderAgentStatusSection
@@ -1217,10 +1136,10 @@ const statusLinePrefix = "  status: "
 // truncate-then-style ordering as styleLinePrefix) so truncateLinesToWidth's
 // raw rune budget is never eaten by injected ANSI bytes. Lines without the
 // statusLinePrefix are left untouched. The extracted status word is run
-// through ansi.Strip (R1) before statusStyle(...).Render(...): it traces
-// back to the same untrusted, Herdr-reported AgentStatus value as the
-// footer (see focusedAgentStatusDisplay), so it must not be able to inject
-// escape sequences into the preview pane either.
+// through ansi.Strip (R1) before statusStyle(...).Render(...): it is an
+// untrusted, Herdr-reported AgentStatus value decoded straight from JSON
+// with no sanitization guarantee, so it must not be able to inject escape
+// sequences into the preview pane.
 func styleStatusLine(text string) string {
 	lines := strings.Split(text, "\n")
 	for i, line := range lines {

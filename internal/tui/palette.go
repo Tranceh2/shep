@@ -11,7 +11,6 @@ import "github.com/charmbracelet/lipgloss"
 // Catppuccin Mocha palette values.
 const (
 	colorBase    = "#1e1e2e" // base background
-	colorSurface = "#313244" // surface (muted blocks)
 	colorText    = "#cdd6f4" // base text
 	colorMuted   = "#6c7086" // overlay/muted text
 	colorAccent  = "#89b4fa" // blue accent (cursor / highlight)
@@ -20,6 +19,7 @@ const (
 	colorBorder  = "#585b70" // Surface2 — subtle frame around list/preview panes
 	colorYellow  = "#f9e2af" // yellow — blocked agent status
 	colorOverlay = "#9399b2" // Overlay2 — unknown agent status
+	colorMauve   = "#cba6f7" // mauve accent — preview pane section headings
 )
 
 var palette = struct {
@@ -31,12 +31,12 @@ var palette = struct {
 	previewLoadingStyle lipgloss.Style
 	previewErrStyle     lipgloss.Style
 	borderStyle         lipgloss.Style
-	surfaceStyle        lipgloss.Style
 	statusIdleStyle     lipgloss.Style
 	statusWorkingStyle  lipgloss.Style
 	statusBlockedStyle  lipgloss.Style
 	statusDoneStyle     lipgloss.Style
 	statusUnknownStyle  lipgloss.Style
+	headingStyle        lipgloss.Style
 }{
 	// query line: bold accent text so the live filter stands out.
 	queryStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorAccent)).Bold(true),
@@ -65,25 +65,25 @@ var palette = struct {
 	// frame dimensions) so width/height chrome math has a single source of
 	// truth instead of drifting between two independently-tuned borders.
 	borderStyle: lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(colorBorder)).Padding(0, 1),
-	// surfaceStyle: a subtle background block, used to set off the footer's
-	// "focused: <status>" segment from the rest of the hint line.
-	surfaceStyle: lipgloss.NewStyle().Background(lipgloss.Color(colorSurface)),
-	// Per-status styles applied via statusStyle: same mapping in both the
-	// preview "status:" line and the footer "focused:" segment (R1).
+	// Per-status styles applied via statusStyle, backing the preview
+	// "status:" line (see styleStatusLine in model.go).
 	statusIdleStyle:    lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted)),
 	statusWorkingStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorGreen)).Bold(true),
 	statusBlockedStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorYellow)).Bold(true),
 	statusDoneStyle:    lipgloss.NewStyle().Foreground(lipgloss.Color(colorAccent)),
 	statusUnknownStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorOverlay)),
+	// headingStyle recolors the preview pane's section-heading lines (see
+	// styleSectionHeadings in model.go): bold mauve, consistent with the
+	// Catppuccin Mocha palette's other accent tones.
+	headingStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(colorMauve)).Bold(true),
 }
 
 // statusStyle maps an agent_status value ("idle", "working", "blocked",
 // "done") to its dedicated Catppuccin Mocha style. Any other value —
 // including the explicit "unknown" status Herdr itself may report, and any
-// unrecognized string — falls back to statusUnknownStyle. Both the preview
-// "status:" line (see styleStatusLine in model.go) and the footer "focused:"
-// segment (see renderFooter) style through this single function so the two
-// never drift.
+// unrecognized string — falls back to statusUnknownStyle. The preview
+// "status:" line (see styleStatusLine in model.go) styles through this
+// single function.
 func statusStyle(status string) lipgloss.Style {
 	switch status {
 	case "idle":
