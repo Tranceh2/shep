@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
+	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/preview"
 	"github.com/tranceh2/shep/internal/source"
 )
@@ -49,32 +50,57 @@ func internalTestCands() []source.Candidate {
 	}
 }
 
-// commandOnlyCandidate is a Command-only workspace fixture: a plain
-// `command = "..."` entry that is neither a group nor a template — the only
-// entry type candidateIsCommandOnly reports true for, and therefore the
-// only one selectWithTarget/hintsFor treat as tab/pane-launchable.
+// commandOnlyCandidate is a command-type [[workspaces]] fixture: a plain
+// `command = "..."` entry that is neither a group nor a template — one of the
+// entry types source.SupportsCurrentWorkspaceTarget reports true for, and
+// therefore one selectWithTarget/hintsFor treat as tab/pane-launchable.
 func commandOnlyCandidate() source.Candidate {
 	return source.Candidate{
 		Path: "/cmd", NormalizedPath: "/cmd", Label: "allsafe start",
-		Meta: map[string]string{"command": "allsafe start"},
+		Source: config.SourceWorkspaces,
+		Meta:   map[string]string{"command": "allsafe start"},
 	}
 }
 
 // groupCandidate is a group workspace fixture (Meta["group"] == "true"): not
-// Command-only, so it cannot be launched via ctrl+t/ctrl+p.
+// target-supported, so it cannot be launched via ctrl+t/ctrl+p.
 func groupCandidate() source.Candidate {
 	return source.Candidate{
 		Path: "/grp", NormalizedPath: "/grp", Label: "ECORP",
-		Meta: map[string]string{"group": "true"},
+		Source: config.SourceWorkspaces,
+		Meta:   map[string]string{"group": "true"},
 	}
 }
 
-// templateCandidate is a template workspace fixture (Meta["template"] !=
-// ""): not Command-only, so it cannot be launched via ctrl+t/ctrl+p.
+// templateCandidate is a template workspace fixture (Meta["template"] != ""):
+// not target-supported, so it cannot be launched via ctrl+t/ctrl+p.
 func templateCandidate() source.Candidate {
 	return source.Candidate{
 		Path: "/tpl", NormalizedPath: "/tpl", Label: "k8s-ecorp",
-		Meta: map[string]string{"template": "k8s"},
+		Source: config.SourceWorkspaces,
+		Meta:   map[string]string{"template": "k8s"},
+	}
+}
+
+// zoxideCandidate is a zoxide-sourced fixture: a plain path that is
+// target-supported (opened as a plain shell in a new tab/pane).
+func zoxideCandidate() source.Candidate {
+	return source.Candidate{Path: "/zx", NormalizedPath: "/zx", Label: "zx-proj", Source: config.SourceZoxide}
+}
+
+// projectsCandidate is a projects-sourced fixture: a plain path that is
+// target-supported (opened as a plain shell in a new tab/pane).
+func projectsCandidate() source.Candidate {
+	return source.Candidate{Path: "/proj", NormalizedPath: "/proj", Label: "proj", Source: config.SourceProjects}
+}
+
+// herdrCandidate is an already-open Herdr workspace fixture: not
+// target-supported (it is resumed, not opened-new), so ctrl+t/ctrl+p no-op.
+func herdrCandidate() source.Candidate {
+	return source.Candidate{
+		Path: "/hw", NormalizedPath: "/hw", Label: "open-ws",
+		Source: config.SourceHerdr,
+		Meta:   map[string]string{"workspace_id": "wA"},
 	}
 }
 
@@ -1751,57 +1777,107 @@ func cloneCandidates(in []source.Candidate) []source.Candidate {
 
 // --- --target=tab|pane TUI bindings (ctrl+t / ctrl+p) ---
 
-// TestHandleKey_CtrlT_SetsTabTargetSelectsAndQuits proves ctrl+t, when shep
-// is running inside a Herdr pane (currentPane != nil) and the highlighted
-// candidate is a Command-only workspace, selects the highlighted candidate
-// exactly like enter, records "tab" as the chosen launch target, and quits.
-func TestHandleKey_CtrlT_SetsTabTargetSelectsAndQuits(t *testing.T) {
-	t.Parallel()
-	pane := source.Pane{ID: "p1"}
-	m := NewModel([]source.Candidate{commandOnlyCandidate()}, nil).WithCurrentPane(&pane)
-
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
-	mm, ok := updated.(Model)
-	if !ok {
-		t.Fatalf("expected Model, got %T", updated)
-	}
-	if mm.ChosenTarget() != "tab" {
-		t.Errorf("ChosenTarget() = %q, want %q", mm.ChosenTarget(), "tab")
-	}
-	if cmd == nil {
-		t.Fatal("expected a quit Cmd after ctrl+t")
-	}
-	if _, isQuit := cmd().(tea.QuitMsg); !isQuit {
-		t.Errorf("expected cmd() to be tea.QuitMsg, got %T", cmd())
-	}
-	if _, ok := mm.Selected(); !ok {
-		t.Error("expected ctrl+t to also select the highlighted candidate, like enter")
+// targetSupportCases is the R3 allow/exclude matrix shared by the ctrl+t/
+// ctrl+p binding, hint, and footer tests: command workspaces, zoxide, and
+// projects support a current-workspace target; herdr (already-open),
+// template, and group entries do not. All three consumers share
+// source.SupportsCurrentWorkspaceTarget, so this is the single contract.
+func targetSupportCases() []struct {
+	name        string
+	cand        source.Candidate
+	wantSucceed bool
+} {
+	return []struct {
+		name        string
+		cand        source.Candidate
+		wantSucceed bool
+	}{
+		{"command workspace", commandOnlyCandidate(), true},
+		{"zoxide", zoxideCandidate(), true},
+		{"projects", projectsCandidate(), true},
+		{"herdr already-open", herdrCandidate(), false},
+		{"template workspace", templateCandidate(), false},
+		{"group workspace", groupCandidate(), false},
 	}
 }
 
-// TestHandleKey_CtrlP_SetsPaneTargetSelectsAndQuits mirrors the ctrl+t test
-// for ctrl+p / "pane".
-func TestHandleKey_CtrlP_SetsPaneTargetSelectsAndQuits(t *testing.T) {
+// TestHandleKey_CtrlT_TargetSupportMatrix (R3) proves ctrl+t succeeds
+// (selects, sets chosenTarget="tab", quits) only for target-supported
+// candidates — command workspaces, zoxide, projects — and is a no-op (no
+// target, no quit, no selection) for herdr, template, and group entries.
+func TestHandleKey_CtrlT_TargetSupportMatrix(t *testing.T) {
 	t.Parallel()
 	pane := source.Pane{ID: "p1"}
-	m := NewModel([]source.Candidate{commandOnlyCandidate()}, nil).WithCurrentPane(&pane)
+	for _, tt := range targetSupportCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			m := NewModel([]source.Candidate{tt.cand}, nil).WithCurrentPane(&pane)
+			updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+			mm, ok := updated.(Model)
+			if !ok {
+				t.Fatalf("expected Model, got %T", updated)
+			}
+			if tt.wantSucceed {
+				if mm.ChosenTarget() != "tab" {
+					t.Errorf("ChosenTarget = %q, want tab", mm.ChosenTarget())
+				}
+				if cmd == nil {
+					t.Error("expected a quit Cmd for a supported candidate")
+				}
+				if _, ok := mm.Selected(); !ok {
+					t.Error("expected ctrl+t to select the highlighted candidate")
+				}
+			} else {
+				if mm.ChosenTarget() != "" {
+					t.Errorf("ChosenTarget = %q, want empty for an unsupported candidate", mm.ChosenTarget())
+				}
+				if cmd != nil {
+					t.Error("expected a nil Cmd (no quit) for an unsupported candidate")
+				}
+				if _, ok := mm.Selected(); ok {
+					t.Error("expected no selection for an unsupported candidate")
+				}
+			}
+		})
+	}
+}
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
-	mm, ok := updated.(Model)
-	if !ok {
-		t.Fatalf("expected Model, got %T", updated)
-	}
-	if mm.ChosenTarget() != "pane" {
-		t.Errorf("ChosenTarget() = %q, want %q", mm.ChosenTarget(), "pane")
-	}
-	if cmd == nil {
-		t.Fatal("expected a quit Cmd after ctrl+p")
-	}
-	if _, isQuit := cmd().(tea.QuitMsg); !isQuit {
-		t.Errorf("expected cmd() to be tea.QuitMsg, got %T", cmd())
-	}
-	if _, ok := mm.Selected(); !ok {
-		t.Error("expected ctrl+p to also select the highlighted candidate, like enter")
+// TestHandleKey_CtrlP_TargetSupportMatrix mirrors the ctrl+t matrix for
+// ctrl+p / "pane".
+func TestHandleKey_CtrlP_TargetSupportMatrix(t *testing.T) {
+	t.Parallel()
+	pane := source.Pane{ID: "p1"}
+	for _, tt := range targetSupportCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			m := NewModel([]source.Candidate{tt.cand}, nil).WithCurrentPane(&pane)
+			updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+			mm, ok := updated.(Model)
+			if !ok {
+				t.Fatalf("expected Model, got %T", updated)
+			}
+			if tt.wantSucceed {
+				if mm.ChosenTarget() != "pane" {
+					t.Errorf("ChosenTarget = %q, want pane", mm.ChosenTarget())
+				}
+				if cmd == nil {
+					t.Error("expected a quit Cmd for a supported candidate")
+				}
+				if _, ok := mm.Selected(); !ok {
+					t.Error("expected ctrl+p to select the highlighted candidate")
+				}
+			} else {
+				if mm.ChosenTarget() != "" {
+					t.Errorf("ChosenTarget = %q, want empty for an unsupported candidate", mm.ChosenTarget())
+				}
+				if cmd != nil {
+					t.Error("expected a nil Cmd (no quit) for an unsupported candidate")
+				}
+				if _, ok := mm.Selected(); ok {
+					t.Error("expected no selection for an unsupported candidate")
+				}
+			}
+		})
 	}
 }
 
@@ -1892,141 +1968,6 @@ func TestHandleKey_CtrlP_NoCurrentPane_IsNoOp(t *testing.T) {
 	}
 }
 
-// TestHandleKey_CtrlT_NonCommandOnlyEntry_IsNoOp proves ctrl+t is a no-op —
-// no selection, no chosenTarget, no quit — when shep IS running inside a
-// Herdr pane (currentPane != nil) but the highlighted candidate cannot be
-// launched as a tab/pane target: a group workspace or a template workspace.
-// Before this guard, ctrl+t on either entry set chosenTarget and quit the
-// TUI, only for App.launchInCurrentWorkspace to fail afterward with
-// "requires an entry with a command" — this proves the TUI now stays put
-// silently instead.
-func TestHandleKey_CtrlT_NonCommandOnlyEntry_IsNoOp(t *testing.T) {
-	t.Parallel()
-	pane := source.Pane{ID: "p1"}
-	tests := []struct {
-		name string
-		cand source.Candidate
-	}{
-		{"group", groupCandidate()},
-		{"template", templateCandidate()},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			m := NewModel([]source.Candidate{tt.cand}, nil).WithCurrentPane(&pane)
-
-			updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
-			mm, ok := updated.(Model)
-			if !ok {
-				t.Fatalf("expected Model, got %T", updated)
-			}
-			if mm.ChosenTarget() != "" {
-				t.Errorf("ChosenTarget() = %q, want empty for a non-Command-only entry", mm.ChosenTarget())
-			}
-			if cmd != nil {
-				t.Error("expected a nil Cmd (no quit) when ctrl+t fires on a non-Command-only entry")
-			}
-			if _, ok := mm.Selected(); ok {
-				t.Error("expected no selection when ctrl+t fires on a non-Command-only entry")
-			}
-		})
-	}
-}
-
-// TestHandleKey_CtrlP_NonCommandOnlyEntry_IsNoOp mirrors the ctrl+t no-op
-// test above for ctrl+p / "pane".
-func TestHandleKey_CtrlP_NonCommandOnlyEntry_IsNoOp(t *testing.T) {
-	t.Parallel()
-	pane := source.Pane{ID: "p1"}
-	tests := []struct {
-		name string
-		cand source.Candidate
-	}{
-		{"group", groupCandidate()},
-		{"template", templateCandidate()},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			m := NewModel([]source.Candidate{tt.cand}, nil).WithCurrentPane(&pane)
-
-			updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
-			mm, ok := updated.(Model)
-			if !ok {
-				t.Fatalf("expected Model, got %T", updated)
-			}
-			if mm.ChosenTarget() != "" {
-				t.Errorf("ChosenTarget() = %q, want empty for a non-Command-only entry", mm.ChosenTarget())
-			}
-			if cmd != nil {
-				t.Error("expected a nil Cmd (no quit) when ctrl+p fires on a non-Command-only entry")
-			}
-			if _, ok := mm.Selected(); ok {
-				t.Error("expected no selection when ctrl+p fires on a non-Command-only entry")
-			}
-		})
-	}
-}
-
-// --- candidateIsCommandOnly ---
-
-// TestCandidateIsCommandOnly_CommandOnlyWorkspace proves a plain command
-// entry (no group/template) reports true.
-func TestCandidateIsCommandOnly_CommandOnlyWorkspace(t *testing.T) {
-	t.Parallel()
-	if !candidateIsCommandOnly(commandOnlyCandidate()) {
-		t.Error("expected candidateIsCommandOnly() = true for a Command-only workspace")
-	}
-}
-
-// TestCandidateIsCommandOnly_GroupWorkspace proves a group workspace reports
-// false, even though App-side "group" entries never carry a command anyway
-// — the check must still hold if one somehow did (see the edge case test).
-func TestCandidateIsCommandOnly_GroupWorkspace(t *testing.T) {
-	t.Parallel()
-	if candidateIsCommandOnly(groupCandidate()) {
-		t.Error("expected candidateIsCommandOnly() = false for a group workspace")
-	}
-}
-
-// TestCandidateIsCommandOnly_TemplateWorkspace proves a template workspace
-// reports false.
-func TestCandidateIsCommandOnly_TemplateWorkspace(t *testing.T) {
-	t.Parallel()
-	if candidateIsCommandOnly(templateCandidate()) {
-		t.Error("expected candidateIsCommandOnly() = false for a template workspace")
-	}
-}
-
-// TestCandidateIsCommandOnly_PlainSource proves a plain source entry (no
-// command Meta at all) reports false.
-func TestCandidateIsCommandOnly_PlainSource(t *testing.T) {
-	t.Parallel()
-	if candidateIsCommandOnly(source.Candidate{Path: "/plain", Label: "plain"}) {
-		t.Error("expected candidateIsCommandOnly() = false for a plain source entry")
-	}
-}
-
-// TestCandidateIsCommandOnly_CommandAndGroup_Edge proves a candidate with
-// both command and group Meta set reports false (group wins).
-func TestCandidateIsCommandOnly_CommandAndGroup_Edge(t *testing.T) {
-	t.Parallel()
-	cand := source.Candidate{Meta: map[string]string{"command": "x", "group": "true"}}
-	if candidateIsCommandOnly(cand) {
-		t.Error("expected candidateIsCommandOnly() = false when group is also set")
-	}
-}
-
-// TestCandidateIsCommandOnly_CommandAndTemplate_Edge proves a candidate with
-// both command and template Meta set reports false (template wins).
-func TestCandidateIsCommandOnly_CommandAndTemplate_Edge(t *testing.T) {
-	t.Parallel()
-	cand := source.Candidate{Meta: map[string]string{"command": "x", "template": "y"}}
-	if candidateIsCommandOnly(cand) {
-		t.Error("expected candidateIsCommandOnly() = false when template is also set")
-	}
-}
-
 // --- renderList has no entry type tags ---
 
 // TestRenderList_NoEntryTypeTags proves the rendered list never carries a
@@ -2080,34 +2021,14 @@ func TestHintsFor_NoCurrentPane_ExcludesTabPaneHints(t *testing.T) {
 	}
 }
 
-// TestHintsFor_CurrentPaneCommandOnly_IncludesTabPaneHints proves hintsFor
-// includes ALL hints — enter/ctrl+t/ctrl+p/esc/ctrl+l — when shep IS
-// running inside a Herdr pane AND the highlighted candidate is a
-// Command-only workspace, the only entry selectWithTarget actually launches.
-func TestHintsFor_CurrentPaneCommandOnly_IncludesTabPaneHints(t *testing.T) {
+// TestHintsFor_CurrentPane_TargetSupportMatrix (R3) proves hintsFor includes
+// the ctrl+t/ctrl+p hints only for target-supported candidates (command
+// workspaces, zoxide, projects) and omits them for herdr, template, and
+// group entries — selectWithTarget would no-op the binding on the latter, so
+// advertising it would be misleading. enter/esc/ctrl+l always appear.
+func TestHintsFor_CurrentPane_TargetSupportMatrix(t *testing.T) {
 	t.Parallel()
-	got := hintsFor(commandOnlyCandidate(), true)
-	for _, want := range []string{"enter open", "t tab", "p pane", "esc cancel", "ctrl+l layout"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("hintsFor() = %q, want to contain %q", got, want)
-		}
-	}
-}
-
-// TestHintsFor_CurrentPaneNonCommandOnly_ExcludesTabPaneHints proves hintsFor
-// still omits ctrl+t/ctrl+p when shep IS running inside a Herdr pane but the
-// highlighted candidate is a group or template workspace — selectWithTarget
-// would no-op the binding on either, so advertising it would be misleading.
-func TestHintsFor_CurrentPaneNonCommandOnly_ExcludesTabPaneHints(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name string
-		cand source.Candidate
-	}{
-		{"group", groupCandidate()},
-		{"template", templateCandidate()},
-	}
-	for _, tt := range tests {
+	for _, tt := range targetSupportCases() {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got := hintsFor(tt.cand, true)
@@ -2116,9 +2037,17 @@ func TestHintsFor_CurrentPaneNonCommandOnly_ExcludesTabPaneHints(t *testing.T) {
 					t.Errorf("hintsFor() = %q, want to contain %q", got, want)
 				}
 			}
-			for _, absent := range []string{"t tab", "p pane"} {
-				if strings.Contains(got, absent) {
-					t.Errorf("hintsFor() = %q, want no %q hint (non-Command-only entry)", got, absent)
+			if tt.wantSucceed {
+				for _, want := range []string{"t tab", "p pane"} {
+					if !strings.Contains(got, want) {
+						t.Errorf("hintsFor() = %q, want to contain %q for a supported candidate", got, want)
+					}
+				}
+			} else {
+				for _, absent := range []string{"t tab", "p pane"} {
+					if strings.Contains(got, absent) {
+						t.Errorf("hintsFor() = %q, want no %q hint for an unsupported candidate", got, absent)
+					}
 				}
 			}
 		})
@@ -2142,43 +2071,28 @@ func TestRenderFooter_NoCurrentPane_ExcludesTabPaneHints(t *testing.T) {
 	}
 }
 
-// TestRenderFooter_CurrentPaneCommandOnly_IncludesTabPaneHints proves
-// renderFooter shows ctrl+t/ctrl+p when shep is running inside a Herdr pane
-// and the highlighted candidate is Command-only.
-func TestRenderFooter_CurrentPaneCommandOnly_IncludesTabPaneHints(t *testing.T) {
+// TestRenderFooter_CurrentPane_TargetSupportMatrix (R3) proves renderFooter
+// shows the ctrl+t/ctrl+p hints only for target-supported candidates (command
+// workspaces, zoxide, projects) and omits them for herdr, template, and group
+// entries — end-to-end through renderFooter, not just hintsFor in isolation.
+func TestRenderFooter_CurrentPane_TargetSupportMatrix(t *testing.T) {
 	t.Parallel()
 	pane := source.Pane{ID: "p1"}
-	m := NewModel([]source.Candidate{commandOnlyCandidate()}, nil).WithCurrentPane(&pane)
-	m.width = 100
-
-	footer := m.renderFooter()
-	if !strings.Contains(footer, "t tab") || !strings.Contains(footer, "p pane") {
-		t.Errorf("expected footer to show ctrl+t/ctrl+p hints for a Command-only entry, got: %q", footer)
-	}
-}
-
-// TestRenderFooter_CurrentPaneNonCommandOnly_ExcludesTabPaneHints proves
-// renderFooter hides ctrl+t/ctrl+p when the highlighted candidate is a group
-// or template workspace, even with a current pane set.
-func TestRenderFooter_CurrentPaneNonCommandOnly_ExcludesTabPaneHints(t *testing.T) {
-	t.Parallel()
-	pane := source.Pane{ID: "p1"}
-	tests := []struct {
-		name string
-		cand source.Candidate
-	}{
-		{"group", groupCandidate()},
-		{"template", templateCandidate()},
-	}
-	for _, tt := range tests {
+	for _, tt := range targetSupportCases() {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			m := NewModel([]source.Candidate{tt.cand}, nil).WithCurrentPane(&pane)
 			m.width = 100
 
 			footer := m.renderFooter()
-			if strings.Contains(footer, "t tab") || strings.Contains(footer, "p pane") {
-				t.Errorf("expected no ctrl+t/ctrl+p hints for a non-Command-only entry, got: %q", footer)
+			if tt.wantSucceed {
+				if !strings.Contains(footer, "t tab") || !strings.Contains(footer, "p pane") {
+					t.Errorf("expected footer to show ctrl+t/ctrl+p hints for a supported candidate, got: %q", footer)
+				}
+			} else {
+				if strings.Contains(footer, "t tab") || strings.Contains(footer, "p pane") {
+					t.Errorf("expected no ctrl+t/ctrl+p hints for an unsupported candidate, got: %q", footer)
+				}
 			}
 		})
 	}

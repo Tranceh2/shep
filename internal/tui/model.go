@@ -17,10 +17,11 @@
 // (never persisted). Below both panes, a full-width footer line always
 // shows the highlighted candidate's complete text plus context-sensitive
 // keybinding hints (hintsFor), even when the list column truncates its own
-// row — the ctrl+t/ctrl+p hint only appears for a Command-only workspace
-// (see candidateIsCommandOnly), and it is the sole indicator of which
-// entries can be opened as a Herdr tab/pane; list rows carry no per-entry
-// type marker. The palette is Catppuccin Mocha, centralised in palette.go
+// row — the ctrl+t/ctrl+p hint only appears for a target-supported
+// candidate (see source.SupportsCurrentWorkspaceTarget), and it is the sole
+// indicator of which entries can be opened as a Herdr tab/pane; list rows
+// carry no per-entry type marker. The palette is Catppuccin Mocha,
+// centralised in palette.go
 // so colors live in one place.
 package tui
 
@@ -359,25 +360,26 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // selectWithTarget handles ctrl+t ("tab") and ctrl+p ("pane"): when shep is
 // running inside a Herdr pane (currentPane != nil), there is a highlighted
-// candidate to launch (filtered is non-empty), and that candidate is a
-// Command-only workspace (candidateIsCommandOnly), it selects the
-// highlighted candidate exactly like enter, records target as the chosen
-// launch target (read back via ChosenTarget), and quits. It is a no-op —
-// the binding is disabled — when currentPane is nil (the tab/pane launch
-// targets require shep to already be running inside a Herdr workspace pane;
-// see App.launchInCurrentWorkspace), when filtered is empty (no candidate is
+// candidate to launch (filtered is non-empty), and that candidate supports a
+// current-workspace target (source.SupportsCurrentWorkspaceTarget — command
+// workspaces, zoxide, projects), it selects the highlighted candidate
+// exactly like enter, records target as the chosen launch target (read back
+// via ChosenTarget), and quits. It is a no-op — the binding is disabled —
+// when currentPane is nil (the tab/pane launch targets require shep to
+// already be running inside a Herdr workspace pane; see
+// App.launchInCurrentWorkspace), when filtered is empty (no candidate is
 // highlighted, mirroring enter's own len(m.filtered) > 0 guard — without
 // this, chosenTarget would be set for a launch that never had a candidate),
-// or when the highlighted candidate is not Command-only (a group/template/
-// plain entry has no command to launch — App.launchInCurrentWorkspace would
-// otherwise fail with "requires an entry with a command" after the TUI has
+// or when the highlighted candidate is not target-supported (an already-open
+// herdr workspace, a template/group entry, or a plain path with no command —
+// App.launchInCurrentWorkspace would otherwise reject it after the TUI has
 // already quit, which reads as a crash instead of simply staying put).
 func (m Model) selectWithTarget(target string) (tea.Model, tea.Cmd) {
 	if m.currentPane == nil || len(m.filtered) == 0 {
 		return m, nil
 	}
 	cand, ok := m.currentCandidate()
-	if !ok || !candidateIsCommandOnly(cand) {
+	if !ok || !source.SupportsCurrentWorkspaceTarget(cand) {
 		return m, nil
 	}
 	m.selected = m.cursor
@@ -609,14 +611,15 @@ const footerSeparator = " / "
 // footer for cand. enter/esc/ctrl+l are always live, so they always appear.
 // ctrl+t (open a new Herdr tab) and ctrl+p (split a new Herdr pane) only
 // appear when BOTH shep is running inside a Herdr pane (hasCurrentPane) AND
-// cand is a Command-only workspace (candidateIsCommandOnly) — the only kind
-// of entry selectWithTarget actually launches. Advertising a binding that
-// would silently no-op (a group/template/plain entry, or no current pane at
-// all) would be misleading, so those hints are hidden entirely rather than
-// shown dimmed.
+// cand supports a current-workspace target (source.SupportsCurrentWorkspaceTarget
+// — command workspaces, zoxide, projects) — the only entries selectWithTarget
+// actually launches. Advertising a binding that would silently no-op (an
+// already-open herdr workspace, a group/template entry, a plain path, or no
+// current pane at all) would be misleading, so those hints are hidden
+// entirely rather than shown dimmed.
 func hintsFor(cand source.Candidate, hasCurrentPane bool) string {
 	segments := []string{formatHint("enter", "open")}
-	if hasCurrentPane && candidateIsCommandOnly(cand) {
+	if hasCurrentPane && source.SupportsCurrentWorkspaceTarget(cand) {
 		segments = append(segments, formatHint("t", "tab"), formatHint("p", "pane"))
 	}
 	segments = append(segments, formatHint("esc", "cancel"), formatHint("ctrl+l", "layout"))
@@ -959,17 +962,6 @@ func candidateDisplayText(c source.Candidate) string {
 		row += " (missing)"
 	}
 	return row
-}
-
-// candidateIsCommandOnly reports whether cand is a Command-only workspace —
-// a plain `command = "..."` entry that is neither a group (Meta["group"] ==
-// "true") nor a template (Meta["template"] != ""). This is the only kind of
-// entry that can actually be opened as a Herdr tab/pane target
-// (App.launchInCurrentWorkspace requires a command); selectWithTarget and
-// hintsFor both use this to keep the ctrl+t/ctrl+p binding — and its footer
-// hint — a no-op/hidden on any entry that can't honour it.
-func candidateIsCommandOnly(cand source.Candidate) bool {
-	return cand.Meta["command"] != "" && cand.Meta["group"] != "true" && cand.Meta["template"] == ""
 }
 
 // footerText returns the full, untruncated display text for the currently
