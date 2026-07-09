@@ -1252,7 +1252,8 @@ func TestOpen_TargetTab_TemplateEntry_Errors(t *testing.T) {
 
 // TestOpen_TargetTab_PlainPathHasNoCommand_Errors (end-to-end via --path):
 // --target=tab on a plain path with no command/template/group is rejected,
-// because there is no command to run in the new tab.
+// because there is no command to run (and no zoxide/projects path) in the
+// new tab.
 func TestOpen_TargetTab_PlainPathHasNoCommand_Errors(t *testing.T) {
 	cfg := config.Defaults()
 	dir := t.TempDir()
@@ -1262,8 +1263,8 @@ func TestOpen_TargetTab_PlainPathHasNoCommand_Errors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error for --target=tab on a plain path")
 	}
-	if !strings.Contains(errOut, "requires an entry with a command") {
-		t.Errorf("stderr = %q, want the 'requires an entry with a command' message", errOut)
+	if !strings.Contains(errOut, "requires an entry with a command") || !strings.Contains(errOut, "or a zoxide/projects path") {
+		t.Errorf("stderr = %q, want the broadened 'requires an entry with a command (or a zoxide/projects path)' message", errOut)
 	}
 	if len(driver.created) != 0 || len(driver.ran) != 0 {
 		t.Errorf("no tab/pane mutation must occur for a plain path; created=%v ran=%v", driver.created, driver.ran)
@@ -1399,5 +1400,64 @@ func TestOpen_TargetPane_ApplyFailureRollsBackAndErrors(t *testing.T) {
 	wantClose := "run:split-p:herdr pane close split-p"
 	if driver.ran[1] != wantClose {
 		t.Errorf("expected rollback close %q, got %q", wantClose, driver.ran[1])
+	}
+}
+
+// TestOpen_TargetTab_HerdrCandidate_Errors (R4): an already-open herdr
+// workspace candidate is rejected for --target=tab with an "already open"
+// message and never reaches CreateTab/SplitPane — it must be resumed via
+// --target=workspace, not opened-new inside the current workspace.
+func TestOpen_TargetTab_HerdrCandidate_Errors(t *testing.T) {
+	cand := source.Candidate{Source: config.SourceHerdr, Path: "/hw", Label: "open-ws", Meta: map[string]string{"workspace_id": "wA"}}
+	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
+	driver := insidePaneDriver(pane)
+	errOut, err := runLaunchDirect(t, cand, "tab", &pane, driver)
+	if err == nil {
+		t.Fatal("expected an error for --target=tab on an already-open herdr workspace")
+	}
+	if !strings.Contains(errOut, "already open") {
+		t.Errorf("stderr = %q, want an 'already open' message", errOut)
+	}
+	if len(driver.created) != 0 || len(driver.ran) != 0 {
+		t.Errorf("no tab/pane mutation must occur for an already-open herdr workspace; created=%v ran=%v", driver.created, driver.ran)
+	}
+}
+
+// TestOpen_TargetTab_ZoxideCandidate_Opens (R4): a zoxide candidate (no
+// command) opened with --target=tab creates a new tab in the current
+// workspace as a plain shell — disallowTarget allows it, and the empty
+// command means no RunPane fires.
+func TestOpen_TargetTab_ZoxideCandidate_Opens(t *testing.T) {
+	cand := source.Candidate{Source: config.SourceZoxide, Path: "/zx", Label: "zx-proj"}
+	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
+	driver := insidePaneDriver(pane)
+	errOut, err := runLaunchDirect(t, cand, "tab", &pane, driver)
+	if err != nil {
+		t.Fatalf("launch --target=tab zoxide: %v (stderr=%q)", err, errOut)
+	}
+	if len(driver.created) != 1 || driver.created[0] != "tab:wA:/cur:zx-proj:focus" {
+		t.Errorf("expected one focused CreateTab for the zoxide candidate, got %v", driver.created)
+	}
+	if len(driver.ran) != 0 {
+		t.Errorf("a zoxide candidate has no command; expected no RunPane, got %v", driver.ran)
+	}
+}
+
+// TestOpen_TargetPane_ProjectsCandidate_Opens (R4): a projects candidate (no
+// command) opened with --target=pane splits a new pane in the current
+// workspace as a plain shell.
+func TestOpen_TargetPane_ProjectsCandidate_Opens(t *testing.T) {
+	cand := source.Candidate{Source: config.SourceProjects, Path: "/proj", Label: "proj"}
+	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
+	driver := insidePaneDriver(pane)
+	errOut, err := runLaunchDirect(t, cand, "pane", &pane, driver)
+	if err != nil {
+		t.Fatalf("launch --target=pane projects: %v (stderr=%q)", err, errOut)
+	}
+	if len(driver.created) != 1 || driver.created[0] != "split:cur-p:right:0.5:/cur:focus" {
+		t.Errorf("expected one focused right split for the projects candidate, got %v", driver.created)
+	}
+	if len(driver.ran) != 0 {
+		t.Errorf("a projects candidate has no command; expected no RunPane, got %v", driver.ran)
 	}
 }

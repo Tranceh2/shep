@@ -42,11 +42,12 @@ A selector cascade short-circuits an exact match, accelerates with fzf when
 installed, and falls back to an interactive TUI. With multiple candidates and
 no selection, shep prints the candidates and exits 1.
 
-The --target flag selects WHERE a Command-only workspace entry opens:
+The --target flag selects WHERE a candidate opens:
 workspace (default) creates/focuses a standalone Herdr workspace; tab opens it
 as a new tab in the Herdr workspace shep is running inside; pane splits it into
 a new pane beside the current one. tab and pane require shep to be running
-inside a Herdr pane and only support Command-only entries.`,
+inside a Herdr pane and support command-type workspace entries, zoxide, and
+projects (already-open herdr workspaces, templates, and groups are rejected).`,
 		Args: cobra.MaximumNArgs(1),
 		// PreRunE (not PersistentPreRunE) so the root's inherited
 		// PersistentPreRunE still loads config + probes first; this hook then
@@ -71,7 +72,7 @@ inside a Herdr pane and only support Command-only entries.`,
 	cmd.Flags().StringVar(&pathFlag, "path", "",
 		"open the given absolute path directly, bypassing query resolution (used by the Television cable)")
 	cmd.Flags().StringVar(&targetFlag, "target", "workspace",
-		"where to open a Command-only entry: workspace (default), tab, or pane")
+		"where to open an entry: workspace (default), tab, or pane")
 	return cmd
 }
 
@@ -393,15 +394,18 @@ func splitNonEmpty(s, sep string) []string {
 //   - "workspace" (the default and historical behaviour): FocusOrCreate a
 //     standalone Herdr workspace and Apply the resolved template on creation.
 //   - "tab": open the candidate as a NEW TAB inside the Herdr workspace shep
-//     is currently running in (currentPane), then run its command in that
-//     tab's root pane. Requires a Command-only entry and a non-nil currentPane.
+//     is currently running in (currentPane), then run its command (if any) in
+//     that tab's root pane. Requires a target-supported entry and a non-nil
+//     currentPane.
 //   - "pane": split a NEW PANE off the current one and run the command there.
 //     Same requirements as "tab".
 //
-// tab and pane only support Command-only entries (Meta["command"] set, no
-// template, no group): they run a single command in the new container and have
-// no way to materialise a multi-tab/multi-pane template inside someone else's
-// workspace. group/template/plain entries surface a clear error instead.
+// tab and pane only support entries that can target the current workspace
+// (source.SupportsCurrentWorkspaceTarget: command workspaces, zoxide,
+// projects): they open a single new tab/pane and have no way to materialise a
+// multi-tab/multi-pane template inside someone else's workspace. Already-open
+// herdr workspaces, group/template entries, and plain paths surface a clear
+// error instead.
 func (a *App) launch(ctx context.Context, cand source.Candidate, target string, currentPane *source.Pane, out, errOut io.Writer) error {
 	if cand.Missing {
 		fmt.Fprintf(errOut, "path does not exist: %s\n", displayPath(cand))
@@ -453,14 +457,19 @@ func (a *App) launchWorkspace(ctx context.Context, driver source.HerdrDriver, ca
 }
 
 // launchInCurrentWorkspace realises the "tab" and "pane" targets: open the
-// candidate's command inside a new tab or a new pane of the Herdr workspace
-// shep is currently running in (currentPane), instead of creating a brand-new
-// standalone workspace. Only Command-only entries are supported; group,
-// template, and plain-path entries surface a clear error.
+// candidate inside a new tab or a new pane of the Herdr workspace shep is
+// currently running in (currentPane), instead of creating a brand-new
+// standalone workspace. Only entries that support a current-workspace target
+// (source.SupportsCurrentWorkspaceTarget — command workspaces, zoxide,
+// projects) reach here; already-open herdr workspaces, group/template
+// entries, and plain paths surface a clear error via disallowTarget.
 //
-// The command is run through templates.Apply with a synthetic Command-only
-// template, so the close_on_exit shell-chaining wrap is the single tested
-// code path shared with the workspace target's simple-Command branch.
+// The command (if any) is run through templates.Apply with a synthetic
+// template built from Meta["command"] (+ close_on_exit), so the
+// shell-chaining wrap is the single tested code path shared with the
+// workspace target's simple-command branch. A command-less candidate
+// (zoxide/projects) applies an empty TemplateConfig — a plain shell, no
+// RunPane.
 func (a *App) launchInCurrentWorkspace(ctx context.Context, driver source.HerdrDriver, cand source.Candidate, target string, currentPane *source.Pane, errOut io.Writer) error {
 	if currentPane == nil {
 		fmt.Fprintf(errOut, "--target=%s requires shep to be running inside a herdr workspace pane\n", target)
@@ -520,24 +529,30 @@ func (a *App) launchInCurrentWorkspace(ctx context.Context, driver source.HerdrD
 }
 
 // disallowTarget returns a non-empty user-facing error string when the
-// candidate is not a Command-only entry and therefore cannot be opened via the
-// tab/pane targets, or "" when it is allowed. The three disallowed shapes each
-// get a distinct, specific message so the user knows exactly what to fix:
-// template entries, group workspaces, and plain paths (no command at all).
+// candidate cannot be opened via the tab/pane targets, or "" when it is
+// allowed. The allowed set is exactly source.SupportsCurrentWorkspaceTarget
+// (command workspaces, zoxide, projects); each disallowed shape gets a
+// distinct, specific message so the user knows exactly what to fix: an
+// already-open herdr workspace (resume it via --target=workspace instead), a
+// template entry, a group workspace, or an entry with no command (and no
+// zoxide/projects path to fall back on).
 func disallowTarget(cand source.Candidate, target string) string {
+	if source.SupportsCurrentWorkspaceTarget(cand) {
+		return ""
+	}
 	name := cand.Label
 	if name == "" {
 		name = displayPath(cand)
 	}
 	switch {
+	case cand.Source == config.SourceHerdr:
+		return fmt.Sprintf("--target=%s cannot open workspace %s: it is already open (use --target=workspace to focus it)", target, cand.Meta["workspace_id"])
 	case cand.Meta["template"] != "":
 		return fmt.Sprintf("--target=%s only supports command-only entries; entry %q uses a template", target, name)
 	case cand.Meta["group"] == "true":
 		return fmt.Sprintf("--target=%s requires an entry with a command, got group workspace %q", target, name)
-	case cand.Meta["command"] == "":
-		return fmt.Sprintf("--target=%s requires an entry with a command, entry %q has no command", target, name)
 	default:
-		return ""
+		return fmt.Sprintf("--target=%s requires an entry with a command (or a zoxide/projects path), entry %q has no command", target, name)
 	}
 }
 
