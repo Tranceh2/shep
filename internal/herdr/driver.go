@@ -318,13 +318,29 @@ type paneCurrentEnvelope struct {
 	} `json:"result"`
 }
 
-// FocusOrCreate implements HI-3: focus an existing workspace whose pane cwd /
-// foreground_cwd normalises to the candidate's path, else create a new focused
-// workspace. The candidate carries its own NormalizedPath (filled by the
-// resolver); when empty we normalise on the fly against cand.Path. A freshly
-// created workspace's root tab id/pane id are returned so the caller can
-// apply a template.
+// FocusOrCreate resumes or opens a workspace for cand, deciding solely from
+// the candidate's source — Dedup is the single source of truth for "already
+// open", so this method never scans open panes/workspaces to look for a
+// CWD/label match:
+//   - A herdr-sourced candidate (an already-open workspace surfaced by the
+//     herdr provider) is resumed by focusing its Meta["workspace_id"]; no
+//     create, and no workspace/pane list probe is issued.
+//   - Any other candidate (zoxide, projects, a [[workspaces]] config entry,
+//     or a direct --path) creates a new focused workspace.
+//
+// The candidate carries its own NormalizedPath (filled by the resolver); when
+// empty we normalise on the fly against cand.Path so the create label fallback
+// (filepath.Base of a clean path) is stable. A freshly created workspace's
+// root tab id/pane id are returned so the caller can apply a template.
 func (d *Driver) FocusOrCreate(ctx context.Context, cand source.Candidate) (source.FocusResult, error) {
+	if cand.Source == config.SourceHerdr {
+		id := cand.Meta["workspace_id"]
+		if _, err := d.run.Run(ctx, d.binary, "workspace", "focus", id); err != nil {
+			return source.FocusResult{}, fmt.Errorf("herdr workspace focus %s: %w", id, err)
+		}
+		return source.FocusResult{WorkspaceID: id, Action: source.HerdrActionFocused}, nil
+	}
+
 	needle := cand.NormalizedPath
 	if needle == "" {
 		n, err := pathutil.Normalize(cand.Path)
@@ -333,35 +349,6 @@ func (d *Driver) FocusOrCreate(ctx context.Context, cand source.Candidate) (sour
 		}
 		needle = n
 	}
-
-	workspaces, panes, err := d.loadState(ctx)
-	if err != nil {
-		return source.FocusResult{}, err
-	}
-
-	// A [[workspaces]]-config candidate's identity is its label, not merely
-	// "any workspace at this directory": sibling config entries may share a
-	// path (e.g. a allsafe-launcher entry alongside a plain-shell entry at
-	// the same repo root). Matching by label+cwd together prevents focusing
-	// an unrelated same-path workspace; if no such match exists we go
-	// straight to create instead of falling back to a CWD-only match, which
-	// would reintroduce that exact mismatch. Any other source (zoxide,
-	// projects, herdr, or a workspaces candidate with an empty label) keeps
-	// the original CWD-only match unchanged.
-	if cand.Source == config.SourceWorkspaces && cand.Label != "" {
-		if id := matchWorkspaceByLabelAndCWD(workspaces, panes, cand.Label, needle); id != "" {
-			if _, err := d.run.Run(ctx, d.binary, "workspace", "focus", id); err != nil {
-				return source.FocusResult{}, fmt.Errorf("herdr workspace focus %s: %w", id, err)
-			}
-			return source.FocusResult{WorkspaceID: id, Action: source.HerdrActionFocused}, nil
-		}
-	} else if id := matchWorkspaceByCWD(panes, needle); id != "" {
-		if _, err := d.run.Run(ctx, d.binary, "workspace", "focus", id); err != nil {
-			return source.FocusResult{}, fmt.Errorf("herdr workspace focus %s: %w", id, err)
-		}
-		return source.FocusResult{WorkspaceID: id, Action: source.HerdrActionFocused}, nil
-	}
-
 	label := cand.Label
 	if label == "" {
 		label = filepath.Base(needle)
@@ -593,78 +580,6 @@ func rawPaneToPane(p rawPane) source.Pane {
 		Focused:       p.Focused,
 		AgentStatus:   p.AgentStatus,
 	}
-}
-
-// paneMatchesCWD reports whether pane p's CWD or ForegroundCWD normalizes
-// to the same filesystem entry as needle (the candidate's normalized path).
-// Returns false on any normalize error or stat mismatch — duplicate of the
-// inner loop previously inlined in matchWorkspaceByCWD and
-// matchWorkspaceByLabelAndCWD, extracted to keep case-fold matching in one
-// place.
-func paneMatchesCWD(p rawPane, needle string) bool {
-	for _, candidate := range []string{p.CWD, p.ForegroundCWD} {
-		if candidate == "" {
-			continue
-		}
-		n, err := pathutil.Normalize(candidate)
-		if err != nil {
-			continue
-		}
-		if pathutil.SameDir(n, needle) {
-			return true
-		}
-	}
-	return false
-}
-
-// matchWorkspaceByCWD returns the workspace_id of the first pane whose cwd or
-// foreground_cwd refers to the same directory as needle — using
-// pathutil.SameDir (filesystem identity via device+inode), not a string
-// comparison, so a differently-cased duplicate on a case-insensitive
-// filesystem (macOS APFS default, Windows) still matches. Returns "" when no
-// pane matches.
-func matchWorkspaceByCWD(panes []rawPane, needle string) string {
-	for _, p := range panes {
-		if paneMatchesCWD(p, needle) {
-			return p.WorkspaceID
-		}
-	}
-	return ""
-}
-
-// matchWorkspaceByLabelAndCWD returns the workspace_id of a workspace whose
-// Label equals label (exact string match — label identifies which
-// [[workspaces]] config entry a candidate belongs to, so two entries at the
-// SAME directory but with different explicit names must stay distinct
-// identities) AND at least one of its panes' cwd/foreground_cwd refers to
-// the same directory as needle (pathutil.SameDir — filesystem identity via
-// device+inode, so a differently-cased duplicate on a case-insensitive
-// filesystem still matches). Both conditions must hold on the SAME
-// workspace; the cwd check alone also guards against Herdr ever returning
-// two workspaces with the same label at genuinely different paths. Returns
-// "" when no workspace satisfies both conditions.
-func matchWorkspaceByLabelAndCWD(workspaces []rawWorkspace, panes []rawPane, label, needle string) string {
-	if label == "" {
-		return ""
-	}
-	labeled := make(map[string]bool, len(workspaces))
-	for _, w := range workspaces {
-		if w.Label == label {
-			labeled[w.WorkspaceID] = true
-		}
-	}
-	if len(labeled) == 0 {
-		return ""
-	}
-	for _, p := range panes {
-		if !labeled[p.WorkspaceID] {
-			continue
-		}
-		if paneMatchesCWD(p, needle) {
-			return p.WorkspaceID
-		}
-	}
-	return ""
 }
 
 // ListTabs enumerates the tabs of the named workspace via
