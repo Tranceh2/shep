@@ -42,16 +42,18 @@ func Normalize(input string) (string, error) {
 // Dedup normalises each candidate and removes path collisions, keeping the
 // first-seen candidate whenever another already-kept candidate matches on
 // BOTH filesystem identity (pathutil.SameDir — device+inode, not a string
-// comparison) AND label. That composite check preserves explicitly named
-// workspaces that target the same path (e.g. "ECORP" and "k8s-ecorp" at
-// /srv/ecorp) as distinct candidates while still collapsing true
-// duplicates — including two candidates whose paths differ only in case on
-// a case-insensitive filesystem (e.g. a Herdr-sourced "ECORP" and a
-// zoxide-sourced "ecorp" that are the SAME real directory) — from
-// different providers. The returned slice reuses the input order for the
-// survivors so provider order from the registry is preserved. Candidates
-// carry a defensive copy of Meta from the source package; this function
-// only sets NormalizedPath on the survivors.
+// comparison) AND label (compared case-insensitively via strings.EqualFold).
+// That composite check preserves explicitly named workspaces that target
+// the same path (e.g. "ECORP" and "k8s-ecorp" at /srv/ecorp) as distinct
+// candidates — EqualFold only ignores case, so genuinely different names
+// still stay distinct — while still collapsing true duplicates from
+// different providers, including two candidates whose paths and/or labels
+// differ only in case on a case-insensitive filesystem (e.g. a Herdr-sourced
+// "ECORP" and a zoxide-sourced "ecorp" that are the SAME real directory).
+// The returned slice reuses the input order for the survivors so provider
+// order from the registry is preserved. Candidates carry a defensive copy
+// of Meta from the source package; this function only sets NormalizedPath
+// on the survivors.
 //
 // This is an O(N^2) scan rather than an O(1) map lookup, because SameDir
 // cannot be expressed as a map key (it depends on a Stat syscall, not just
@@ -72,7 +74,7 @@ func Dedup(candidates []source.Candidate) []source.Candidate {
 		}
 		duplicate := false
 		for _, kept := range out {
-			if kept.Label == c.Label && pathutil.SameDir(kept.NormalizedPath, norm) {
+			if strings.EqualFold(kept.Label, c.Label) && pathutil.SameDir(kept.NormalizedPath, norm) {
 				duplicate = true
 				break
 			}

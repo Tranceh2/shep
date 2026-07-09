@@ -96,6 +96,34 @@ func TestDedup_CaseFoldCollapse(t *testing.T) {
 	}
 }
 
+// TestDedup_CaseFoldLabelCollapse is the bug-reproduction test: two
+// candidates pointing at the exact same literal path (SameDir's byte-equal
+// fast path, no filesystem case-insensitivity involved) whose auto-derived
+// Labels differ only in case (e.g. a Herdr candidate labeled "ECORP" and a
+// zoxide candidate at the same path labeled "ecorp") must collapse to one
+// entry. Before the fix, the `kept.Label == c.Label` comparison was
+// case-sensitive, so these two visually-duplicate rows for the same real
+// directory survived Dedup untouched.
+func TestDedup_CaseFoldLabelCollapse(t *testing.T) {
+	tmp := t.TempDir()
+	real := filepath.Join(tmp, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cands := []source.Candidate{
+		{Path: real, Label: "ECORP", Source: "herdr"},
+		{Path: real, Label: "ecorp", Source: "zoxide"},
+	}
+	out := Dedup(cands)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 after case-insensitive label dedup, got %d: %+v", len(out), out)
+	}
+	if out[0].Source != "herdr" {
+		t.Errorf("expected first-seen survivor (herdr), got %q", out[0].Source)
+	}
+}
+
 // TestDedup_SamePathDifferentLabelPreserved (requirement: explicitly named
 // workspaces targeting the same path must survive as distinct candidates)
 // confirms two candidates with the SAME normalised path but DIFFERENT labels
