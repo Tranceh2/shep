@@ -53,6 +53,28 @@ func (c Candidate) Clone() Candidate {
 	return out
 }
 
+// SupportsCurrentWorkspaceTarget reports whether cand can be opened as a new
+// tab or pane inside the Herdr workspace shep is currently running in (the
+// ctrl+t / ctrl+p targets). zoxide and projects candidates always can (they
+// are plain paths launched as a shell); a [[workspaces]] candidate can only
+// when it carries a command and is neither a group nor a template — a
+// multi-tab/multi-pane template has no business materialising inside someone
+// else's workspace, and a group drills into a nested picker instead. herdr
+// candidates are already-open workspaces (resume, not open-new), and any other
+// source (e.g. a direct --path) lacks a command to run, so neither can target
+// the current workspace. This is the single source of truth shared by the TUI
+// footer hints/bindings and the command-layer disallowTarget gate.
+func SupportsCurrentWorkspaceTarget(c Candidate) bool {
+	switch c.Source {
+	case config.SourceZoxide, config.SourceProjects:
+		return true
+	case config.SourceWorkspaces:
+		return c.Meta["command"] != "" && c.Meta["group"] != "true" && c.Meta["template"] == ""
+	default:
+		return false
+	}
+}
+
 // Provider enumerates candidates from one source family. Providers hold a
 // config/probes snapshot captured at construction, so List takes only a
 // context (matching the design contract).

@@ -67,6 +67,43 @@ func TestCandidate_Clone(t *testing.T) {
 	}
 }
 
+// TestSupportsCurrentWorkspaceTarget is the shared predicate backing the
+// ctrl+t/ctrl+p TUI bindings and the command-layer disallowTarget gate: it
+// reports whether a candidate can be opened as a new tab/pane inside the
+// Herdr workspace shep is running in. zoxide/projects always can; a
+// [[workspaces]] entry can only when it carries a command and is neither a
+// group nor a template; herdr (already-open), plain paths, and unknown
+// sources never can.
+func TestSupportsCurrentWorkspaceTarget(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		cand Candidate
+		want bool
+	}{
+		{name: "command-only workspace", cand: Candidate{Source: config.SourceWorkspaces, Meta: map[string]string{"command": "nvim"}}, want: true},
+		{name: "zoxide", cand: Candidate{Source: config.SourceZoxide}, want: true},
+		{name: "projects", cand: Candidate{Source: config.SourceProjects}, want: true},
+		{name: "group workspace excluded", cand: Candidate{Source: config.SourceWorkspaces, Meta: map[string]string{"group": "true"}}, want: false},
+		{name: "template workspace excluded", cand: Candidate{Source: config.SourceWorkspaces, Meta: map[string]string{"template": "k8s"}}, want: false},
+		{name: "plain workspace no command excluded", cand: Candidate{Source: config.SourceWorkspaces}, want: false},
+		{name: "empty-command workspace excluded", cand: Candidate{Source: config.SourceWorkspaces, Meta: map[string]string{"command": ""}}, want: false},
+		{name: "herdr already-open excluded", cand: Candidate{Source: config.SourceHerdr, Meta: map[string]string{"workspace_id": "wA"}}, want: false},
+		{name: "command plus group edge excluded", cand: Candidate{Source: config.SourceWorkspaces, Meta: map[string]string{"command": "nvim", "group": "true"}}, want: false},
+		{name: "command plus template edge excluded", cand: Candidate{Source: config.SourceWorkspaces, Meta: map[string]string{"command": "nvim", "template": "k8s"}}, want: false},
+		{name: "unknown source excluded", cand: Candidate{Source: "path"}, want: false},
+		{name: "nil meta command-only workspace", cand: Candidate{Source: config.SourceWorkspaces, Meta: map[string]string{"command": "yazi", "close_on_exit": "true"}}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := SupportsCurrentWorkspaceTarget(tt.cand); got != tt.want {
+				t.Errorf("SupportsCurrentWorkspaceTarget(%+v) = %v, want %v", tt.cand, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestHerdrProvider_NilDriverEmpty exercises the "driver absent" path: the
 // provider lists no candidates and never panics.
 func TestHerdrProvider_NilDriverEmpty(t *testing.T) {
