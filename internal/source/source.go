@@ -97,11 +97,13 @@ type HerdrDriver interface {
 	// resolved from the workspace's panes (workspaces do not carry a cwd in
 	// the Herdr JSON envelope).
 	ListWorkspaces(ctx context.Context) ([]Workspace, error)
-	// FocusOrCreate focuses an existing workspace whose pane cwd /
-	// foreground_cwd normalises to the candidate's path, or creates a new
-	// focused workspace via `herdr workspace create --cwd --label --focus`.
-	// The returned result carries the workspace + root tab + root pane so
-	// callers can apply a template against a freshly created workspace.
+	// FocusOrCreate decides focus-or-create solely from cand: if
+	// cand.Source == config.SourceHerdr it focuses the workspace identified by
+	// cand.Meta["workspace_id"], otherwise it creates a new focused workspace
+	// via `herdr workspace create --cwd --label --focus`. No pane/workspace
+	// scan is performed to find a CWD or label match. The returned result
+	// carries the workspace + root tab + root pane so callers can apply a
+	// template against a freshly created workspace.
 	FocusOrCreate(ctx context.Context, cand Candidate) (FocusResult, error)
 	// ListTabs returns the tabs of the named workspace via
 	// `herdr tab list --workspace <id>`. Used by the workspace preview section.

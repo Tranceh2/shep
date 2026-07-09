@@ -33,8 +33,8 @@ func (a *App) openCmd() *cobra.Command {
 		Use:   "open [query]",
 		Short: "Open a project with Herdr (or print its path when Herdr is absent)",
 		Long: `shep open resolves a query to a single project candidate and asks Herdr
-to focus an existing workspace whose pane cwd matches, or to create a new
-focused workspace. When Herdr is not installed or its daemon is unreachable,
+to focus it if it is already an open workspace, or to create a new focused
+workspace otherwise. When Herdr is not installed or its daemon is unreachable,
 shep prints the resolved absolute path and exits 0 so the caller can still
 reach the project through any shell cd / file manager.
 
@@ -557,8 +557,8 @@ func disallowTarget(cand source.Candidate, target string) string {
 }
 
 // candidateFromPath builds a candidate for the --path flag (and the bare "."
-// query) and normalises it so the Herdr focus-by-cwd match has a canonical
-// key to compare against. The path is stat'd here so a non-existent target
+// query) and normalises it so Dedup has a canonical key to compare against
+// other candidates' paths. The path is stat'd here so a non-existent target
 // is marked Missing exactly like a configured workspace whose path vanished:
 // launch() then fails clearly for that selection instead of silently
 // printing the path (a false success) or falling back to a herdr warning.
