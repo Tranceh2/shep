@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/pathutil"
 	"github.com/tranceh2/shep/internal/source"
 )
@@ -48,12 +49,18 @@ func Normalize(input string) (string, error) {
 // candidates — EqualFold only ignores case, so genuinely different names
 // still stay distinct — while still collapsing true duplicates from
 // different providers, including two candidates whose paths and/or labels
-// differ only in case on a case-insensitive filesystem (e.g. a Herdr-sourced
-// "ECORP" and a zoxide-sourced "ecorp" that are the SAME real directory).
-// The returned slice reuses the input order for the survivors so provider
-// order from the registry is preserved. Candidates carry a defensive copy
-// of Meta from the source package; this function only sets NormalizedPath
-// on the survivors.
+// differ only in case on a case-insensitive filesystem (e.g. a
+// workspaces-sourced "ECORP" and a zoxide-sourced "ecorp" that are the SAME
+// real directory).
+//
+// herdr-sourced candidates are EXEMPT from this collapse: each models an
+// already-open Herdr workspace (the "resume" option), and two of them may
+// legitimately share a label+path. Any pair where either candidate is
+// herdr-sourced is skipped, so an open workspace is never hidden behind a
+// non-herdr "open new" candidate at the same path. The returned slice reuses
+// the input order for the survivors so provider order from the registry is
+// preserved. Candidates carry a defensive copy of Meta from the source
+// package; this function only sets NormalizedPath on the survivors.
 //
 // This is an O(N^2) scan rather than an O(1) map lookup, because SameDir
 // cannot be expressed as a map key (it depends on a Stat syscall, not just
@@ -74,6 +81,16 @@ func Dedup(candidates []source.Candidate) []source.Candidate {
 		}
 		duplicate := false
 		for _, kept := range out {
+			// herdr-sourced candidates model already-open Herdr workspaces
+			// (the "resume" option). Two may legitimately share a label+path
+			// (two open workspaces at the same repo), and a herdr workspace
+			// must never be collapsed against a non-herdr "open new" candidate
+			// either — doing so would hide the resume option from the picker.
+			// So any pair touching a herdr candidate is exempt; the existing
+			// label+path check is preserved verbatim for every other pair.
+			if kept.Source == config.SourceHerdr || c.Source == config.SourceHerdr {
+				continue
+			}
 			if strings.EqualFold(kept.Label, c.Label) && pathutil.SameDir(kept.NormalizedPath, norm) {
 				duplicate = true
 				break

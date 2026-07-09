@@ -71,7 +71,9 @@ func TestDedup_SymlinkCollapse(t *testing.T) {
 // (case-insensitive, e.g. macOS APFS default / Windows). This is gated to
 // darwin/windows because a case-sensitive filesystem (most Linux/ext4)
 // genuinely has two distinct directories here — SameDir correctly reports
-// false in that case, so asserting collapse would be wrong off-darwin.
+// false in that case, so asserting collapse would be wrong off-darwin. Both
+// candidates are non-herdr so the herdr exemption (R2) does not apply and the
+// collapse this test targets still happens.
 func TestDedup_CaseFoldCollapse(t *testing.T) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
 		t.Skip("case-insensitive collapse only guaranteed on darwin/windows")
@@ -84,26 +86,28 @@ func TestDedup_CaseFoldCollapse(t *testing.T) {
 	lower := filepath.Join(tmp, "ecorp")
 
 	cands := []source.Candidate{
-		{Path: upper, Label: "ECORP", Source: "herdr"},
+		{Path: upper, Label: "ECORP", Source: "workspaces"},
 		{Path: lower, Label: "ECORP", Source: "zoxide"},
 	}
 	out := Dedup(cands)
 	if len(out) != 1 {
 		t.Fatalf("expected 1 after case-fold dedup, got %d: %+v", len(out), out)
 	}
-	if out[0].Source != "herdr" {
-		t.Errorf("expected first-seen survivor (herdr), got %q", out[0].Source)
+	if out[0].Source != "workspaces" {
+		t.Errorf("expected first-seen survivor (workspaces), got %q", out[0].Source)
 	}
 }
 
 // TestDedup_CaseFoldLabelCollapse is the bug-reproduction test: two
 // candidates pointing at the exact same literal path (SameDir's byte-equal
 // fast path, no filesystem case-insensitivity involved) whose auto-derived
-// Labels differ only in case (e.g. a Herdr candidate labeled "ECORP" and a
+// Labels differ only in case (e.g. a workspaces candidate labeled "ECORP" and a
 // zoxide candidate at the same path labeled "ecorp") must collapse to one
 // entry. Before the fix, the `kept.Label == c.Label` comparison was
 // case-sensitive, so these two visually-duplicate rows for the same real
-// directory survived Dedup untouched.
+// directory survived Dedup untouched. Both candidates are non-herdr so the
+// herdr exemption (R2) does not apply and the collapse this test targets
+// still happens.
 func TestDedup_CaseFoldLabelCollapse(t *testing.T) {
 	tmp := t.TempDir()
 	real := filepath.Join(tmp, "real")
@@ -112,15 +116,15 @@ func TestDedup_CaseFoldLabelCollapse(t *testing.T) {
 	}
 
 	cands := []source.Candidate{
-		{Path: real, Label: "ECORP", Source: "herdr"},
+		{Path: real, Label: "ECORP", Source: "workspaces"},
 		{Path: real, Label: "ecorp", Source: "zoxide"},
 	}
 	out := Dedup(cands)
 	if len(out) != 1 {
 		t.Fatalf("expected 1 after case-insensitive label dedup, got %d: %+v", len(out), out)
 	}
-	if out[0].Source != "herdr" {
-		t.Errorf("expected first-seen survivor (herdr), got %q", out[0].Source)
+	if out[0].Source != "workspaces" {
+		t.Errorf("expected first-seen survivor (workspaces), got %q", out[0].Source)
 	}
 }
 
@@ -151,8 +155,10 @@ func TestDedup_SamePathDifferentLabelPreserved(t *testing.T) {
 // from the registry is the visible tiebreaker. A true duplicate (same path
 // AND same label) is collapsed; the first-seen survivor wins.
 func TestDedup_OrderPreserved(t *testing.T) {
+	// All three are non-herdr so the herdr exemption (R2) does not apply and
+	// the first-seen duplicate collapse this test targets still happens.
 	cands := []source.Candidate{
-		{Path: "/a", Label: "first", Source: "herdr"},
+		{Path: "/a", Label: "first", Source: "zoxide"},
 		{Path: "/b", Label: "second", Source: "zoxide"},
 		{Path: "/a", Label: "first", Source: "workspaces"},
 	}
@@ -183,6 +189,74 @@ func TestDedup_DefensiveCopy(t *testing.T) {
 	out[0].Meta["k"] = "mutated"
 	if cands[0].Meta["k"] == "mutated" {
 		t.Error("Dedup returned shared Meta reference")
+	}
+}
+
+// TestDedup_HerdrExempt (R2) proves Dedup never collapses a pair when either
+// candidate is herdr-sourced, while ordinary non-herdr duplicates still
+// collapse first-seen. herdr candidates model already-open Herdr workspaces:
+// two of them may legitimately share a label+path (two open workspaces at the
+// same repo), so collapsing either against anything would hide a real
+// "resume" option from the picker.
+func TestDedup_HerdrExempt(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	foo := filepath.Join(tmp, "foo")
+	if err := os.Mkdir(foo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name string
+		in   []source.Candidate
+		want []string // surviving Sources, in order
+	}{
+		{
+			name: "two herdr at same label+path kept both ordered",
+			in: []source.Candidate{
+				{Path: foo, Label: "foo", Source: config.SourceHerdr, Meta: map[string]string{"workspace_id": "wA"}},
+				{Path: foo, Label: "foo", Source: config.SourceHerdr, Meta: map[string]string{"workspace_id": "wB"}},
+			},
+			want: []string{config.SourceHerdr, config.SourceHerdr},
+		},
+		{
+			name: "herdr plus zoxide at same label+path kept both",
+			in: []source.Candidate{
+				{Path: foo, Label: "foo", Source: config.SourceHerdr, Meta: map[string]string{"workspace_id": "wA"}},
+				{Path: foo, Label: "foo", Source: config.SourceZoxide},
+			},
+			want: []string{config.SourceHerdr, config.SourceZoxide},
+		},
+		{
+			name: "zoxide plus zoxide still first-wins",
+			in: []source.Candidate{
+				{Path: foo, Label: "foo", Source: config.SourceZoxide},
+				{Path: foo, Label: "foo", Source: config.SourceZoxide},
+			},
+			want: []string{config.SourceZoxide},
+		},
+		{
+			name: "herdr-only preserves all in order",
+			in: []source.Candidate{
+				{Path: foo, Label: "foo", Source: config.SourceHerdr, Meta: map[string]string{"workspace_id": "wA"}},
+				{Path: foo, Label: "foo", Source: config.SourceHerdr, Meta: map[string]string{"workspace_id": "wB"}},
+				{Path: foo, Label: "foo", Source: config.SourceHerdr, Meta: map[string]string{"workspace_id": "wC"}},
+			},
+			want: []string{config.SourceHerdr, config.SourceHerdr, config.SourceHerdr},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			out := Dedup(tt.in)
+			if len(out) != len(tt.want) {
+				t.Fatalf("Dedup produced %d candidates, want %d: %+v", len(out), len(tt.want), out)
+			}
+			for i, c := range out {
+				if c.Source != tt.want[i] {
+					t.Errorf("Dedup[%d].Source = %q, want %q", i, c.Source, tt.want[i])
+				}
+			}
+		})
 	}
 }
 
@@ -394,12 +468,13 @@ func (fakeWorkspacesDriver) CurrentPane(context.Context) (source.Pane, error) {
 	return source.Pane{}, errors.New("fakeWorkspacesDriver does not implement CurrentPane")
 }
 
-// TestDedup_PriorityOrderOwnsDuplicatePath proves general.sources order owns
-// duplicate paths when both providers produce candidates with the same label:
-// when two providers return the same normalised path + label, the candidate
-// from the highest-priority provider (earliest in general.sources) survives
-// and the lower-priority duplicate is dropped.
-func TestDedup_PriorityOrderOwnsDuplicatePath(t *testing.T) {
+// TestDedup_HerdrExempt_AcrossRegistry (R2, end-to-end through the real
+// collect→dedup pipeline) proves a herdr-sourced candidate and a
+// [[workspaces]] candidate at the same path+label survive as TWO distinct
+// candidates regardless of general.sources order, instead of the pre-R2
+// collapse-to-one. This is the picker-level guarantee that "resume an
+// already-open workspace" and "open a new one" stay unambiguous.
+func TestDedup_HerdrExempt_AcrossRegistry(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
 	foo := filepath.Join(tmp, "foo")
@@ -410,45 +485,40 @@ func TestDedup_PriorityOrderOwnsDuplicatePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve foo: %v", err)
 	}
-	// Both providers surface the path with the same label "foo" so the
-	// composite norm+label key matches and priority dedup applies.
+	// Both providers surface the same path with the same label "foo" so the
+	// pair WOULD have collapsed pre-R2; R2's herdr exemption keeps both.
 	herdrCand := source.Workspace{ID: "wfoo", Label: "foo", CWD: foo}
 
-	cases := []struct {
-		name      string
-		order     []string
-		wantOwner string
-	}{
-		{name: "herdr first owns duplicate", order: []string{config.SourceHerdr, config.SourceWorkspaces}, wantOwner: config.SourceHerdr},
-		{name: "workspaces first owns duplicate", order: []string{config.SourceWorkspaces, config.SourceHerdr}, wantOwner: config.SourceWorkspaces},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			cfg := config.Defaults()
-			cfg.General.Sources = tc.order
-			cfg.Workspaces = []config.WorkspaceConfig{{Name: "foo", Path: foo}}
-			r := source.NewRegistry(cfg, config.Probes{Herdr: true},
-				fakeWorkspacesDriver{workspaces: []source.Workspace{herdrCand}})
-			raw, err := r.Collect(context.Background())
-			if err != nil {
-				t.Fatalf("collect: %v", err)
+	for _, order := range [][]string{
+		{config.SourceHerdr, config.SourceWorkspaces},
+		{config.SourceWorkspaces, config.SourceHerdr},
+	} {
+		cfg := config.Defaults()
+		cfg.General.Sources = order
+		cfg.Workspaces = []config.WorkspaceConfig{{Name: "foo", Path: foo}}
+		r := source.NewRegistry(cfg, config.Probes{Herdr: true},
+			fakeWorkspacesDriver{workspaces: []source.Workspace{herdrCand}})
+		raw, err := r.Collect(context.Background())
+		if err != nil {
+			t.Fatalf("collect (order=%v): %v", order, err)
+		}
+		out := Dedup(raw)
+
+		herdrCount, wsCount := 0, 0
+		for _, c := range out {
+			if c.NormalizedPath != fooResolved {
+				continue
 			}
-			out := Dedup(raw)
-			var survivor source.Candidate
-			foos := 0
-			for _, c := range out {
-				if c.NormalizedPath == fooResolved {
-					foos++
-					survivor = c
-				}
+			switch c.Source {
+			case config.SourceHerdr:
+				herdrCount++
+			case config.SourceWorkspaces:
+				wsCount++
 			}
-			if foos != 1 {
-				t.Fatalf("expected foo once after dedup, got %d: %+v", foos, out)
-			}
-			if survivor.Source != tc.wantOwner {
-				t.Errorf("dedup owner: source=%q want %q (order=%v)", survivor.Source, tc.wantOwner, tc.order)
-			}
-		})
+		}
+		if herdrCount != 1 || wsCount != 1 {
+			t.Errorf("order=%v: expected 1 herdr + 1 workspaces candidate at foo, got herdr=%d workspaces=%d (out=%+v)",
+				order, herdrCount, wsCount, out)
+		}
 	}
 }
