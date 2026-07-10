@@ -51,11 +51,12 @@ type openDriver struct {
 	currentCalled    bool
 	currentPaneDelay time.Duration
 
-	renamed []string
-	ran     []string
-	created []string // "tab:<ws>:<cwd>:<label>:<focus>" / "split:<pane>:<dir>:<ratio>:<cwd>:<focus>"
-	focused []string
-	runErr  error
+	renamed     []string
+	ran         []string
+	created     []string // "tab:<ws>:<cwd>:<label>:<focus>" / "split:<pane>:<dir>:<ratio>:<cwd>:<focus>"
+	focused     []string
+	focusTabErr error
+	runErr      error
 	// runErrOnFirstCall, when non-nil, is returned only for the first RunPane
 	// call (the Apply-internal run); every subsequent call succeeds
 	// regardless of runErr. Used to script an Apply failure followed by a
@@ -113,7 +114,7 @@ func (d *openDriver) RunPane(_ context.Context, paneID, command string) error {
 }
 func (d *openDriver) FocusTab(_ context.Context, tabID string) error {
 	d.focused = append(d.focused, "focus-tab:"+tabID)
-	return nil
+	return d.focusTabErr
 }
 func (d *openDriver) CurrentPane(ctx context.Context) (source.Pane, error) {
 	d.currentCalled = true
@@ -1459,5 +1460,103 @@ func TestOpen_TargetPane_ProjectsCandidate_Opens(t *testing.T) {
 	}
 	if len(driver.ran) != 0 {
 		t.Errorf("a projects candidate has no command; expected no RunPane, got %v", driver.ran)
+	}
+}
+
+// --- launchChildTab (tree-expand R4) ---
+
+// TestOpen_LaunchHerdrTabFocusesTab (6.1/R4): a synthesized SourceHerdrTab
+// child candidate routes Enter to driver.FocusTab with its Meta["tab_id"],
+// bypassing FocusOrCreate entirely — the child row identifies an
+// already-open tab inside an already-open workspace, so there is nothing to
+// focus-or-create at the workspace level.
+func TestOpen_LaunchHerdrTabFocusesTab(t *testing.T) {
+	cand := source.Candidate{
+		Source: config.SourceHerdrTab,
+		Label:  "api",
+		Path:   "/svc/api",
+		Meta:   map[string]string{"workspace_id": "wA", "tab_id": "t1"},
+	}
+	driver := insidePaneDriver(source.Pane{ID: "cur-p", WorkspaceID: "wA", CWD: "/cur"})
+	errOut, err := runLaunchDirect(t, cand, "workspace", nil, driver)
+	if err != nil {
+		t.Fatalf("launch child tab: %v (stderr=%q)", err, errOut)
+	}
+	if len(driver.focused) != 1 || driver.focused[0] != "focus-tab:t1" {
+		t.Errorf("expected FocusTab(t1), got %v", driver.focused)
+	}
+	if driver.lastCand.Path != "" {
+		t.Errorf("FocusOrCreate must not be called for a child tab candidate; got candidate %+v", driver.lastCand)
+	}
+}
+
+// TestOpen_LaunchHerdrWorkspaceStillFocusOrCreate (6.1/R4 regression): a
+// normal SourceHerdr (parent workspace) candidate must still go through the
+// unchanged FocusOrCreate path — this proves the new cand.Source ==
+// SourceHerdrTab branch in App.launch does not shadow the existing herdr
+// workspace contract (shep-resolver-resume-vs-new).
+func TestOpen_LaunchHerdrWorkspaceStillFocusOrCreate(t *testing.T) {
+	cand := source.Candidate{Source: config.SourceHerdr, Path: "/hw", Label: "open-ws", Meta: map[string]string{"workspace_id": "wA"}}
+	driver := insidePaneDriver(source.Pane{ID: "cur-p", WorkspaceID: "wA", CWD: "/cur"})
+	errOut, err := runLaunchDirect(t, cand, "workspace", nil, driver)
+	if err != nil {
+		t.Fatalf("launch parent workspace: %v (stderr=%q)", err, errOut)
+	}
+	if driver.lastCand.Path != cand.Path {
+		t.Errorf("expected FocusOrCreate to be called with the parent candidate, got %+v", driver.lastCand)
+	}
+	if len(driver.focused) != 0 {
+		t.Errorf("FocusTab must not be called for a parent workspace candidate; got %v", driver.focused)
+	}
+}
+
+// TestOpen_LaunchHerdrTab_MissingTabIDErrors (6.1 triangulation): a child
+// candidate missing Meta["tab_id"] (should not happen in practice, but
+// launchChildTab must not blindly call FocusTab("")) surfaces a clear error
+// and exit code 1 instead of calling the driver with an empty id.
+func TestOpen_LaunchHerdrTab_MissingTabIDErrors(t *testing.T) {
+	cand := source.Candidate{
+		Source: config.SourceHerdrTab,
+		Label:  "api",
+		Path:   "/svc/api",
+		Meta:   map[string]string{"workspace_id": "wA"},
+	}
+	driver := insidePaneDriver(source.Pane{ID: "cur-p", WorkspaceID: "wA", CWD: "/cur"})
+	errOut, err := runLaunchDirect(t, cand, "workspace", nil, driver)
+	if err == nil {
+		t.Fatal("expected an error for a child candidate with no tab_id")
+	}
+	if !errors.Is(err, errExitOne) {
+		t.Errorf("expected errExitOne, got %v", err)
+	}
+	if len(driver.focused) != 0 {
+		t.Errorf("FocusTab must not be called without a tab_id; got %v", driver.focused)
+	}
+	if errOut == "" {
+		t.Error("expected a warning written to stderr")
+	}
+}
+
+// TestOpen_LaunchHerdrTab_FocusTabErrorSurfacesExitOne (6.1 triangulation):
+// a driver.FocusTab failure surfaces a warning and errExitOne — no resource
+// was created, so there is nothing to roll back.
+func TestOpen_LaunchHerdrTab_FocusTabErrorSurfacesExitOne(t *testing.T) {
+	cand := source.Candidate{
+		Source: config.SourceHerdrTab,
+		Label:  "api",
+		Path:   "/svc/api",
+		Meta:   map[string]string{"workspace_id": "wA", "tab_id": "t1"},
+	}
+	driver := insidePaneDriver(source.Pane{ID: "cur-p", WorkspaceID: "wA", CWD: "/cur"})
+	driver.focusTabErr = errors.New("herdr tab focus: boom")
+	errOut, err := runLaunchDirect(t, cand, "workspace", nil, driver)
+	if err == nil {
+		t.Fatal("expected an error when driver.FocusTab fails")
+	}
+	if !errors.Is(err, errExitOne) {
+		t.Errorf("expected errExitOne, got %v", err)
+	}
+	if !strings.Contains(errOut, "herdr tab focus") {
+		t.Errorf("stderr = %q, want it to mention the FocusTab failure", errOut)
 	}
 }

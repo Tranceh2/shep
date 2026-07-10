@@ -418,6 +418,16 @@ func (a *App) launch(ctx context.Context, cand source.Candidate, target string, 
 		return nil
 	}
 
+	// A synthesized tree-expand child row (SourceHerdrTab) identifies an
+	// ALREADY-OPEN tab inside an ALREADY-OPEN workspace: it routes straight
+	// to FocusTab and bypasses the --target switch entirely (there is no
+	// "workspace"/"tab"/"pane" choice for a candidate that is itself a tab).
+	// Checked before the switch below so it can never fall through to
+	// launchWorkspace/launchInCurrentWorkspace.
+	if cand.Source == config.SourceHerdrTab {
+		return a.launchChildTab(ctx, driver, cand, errOut)
+	}
+
 	switch target {
 	case "tab", "pane":
 		return a.launchInCurrentWorkspace(ctx, driver, cand, target, currentPane, errOut)
@@ -426,6 +436,26 @@ func (a *App) launch(ctx context.Context, cand source.Candidate, target string, 
 		// guards at the cobra layer): the historical FocusOrCreate + Apply path.
 		return a.launchWorkspace(ctx, driver, cand, out, errOut)
 	}
+}
+
+// launchChildTab routes Enter on a synthesized SourceHerdrTab child row
+// (tree-expand, R4) to driver.FocusTab, never touching FocusOrCreate: the
+// child row already identifies an open tab in an open workspace, so there is
+// nothing to focus-or-create at the workspace level. There is no rollback on
+// failure — unlike launchInCurrentWorkspace's CreateTab/SplitPane, no
+// resource is created here, so a warning plus errExitOne is the complete
+// failure contract.
+func (a *App) launchChildTab(ctx context.Context, driver source.HerdrDriver, cand source.Candidate, errOut io.Writer) error {
+	tabID := cand.Meta["tab_id"]
+	if tabID == "" {
+		fmt.Fprintln(errOut, "warning: herdr tab focus: missing tab id")
+		return errExitOne
+	}
+	if err := driver.FocusTab(ctx, tabID); err != nil {
+		fmt.Fprintf(errOut, "warning: herdr tab focus failed: %v\n", err)
+		return errExitOne
+	}
+	return nil
 }
 
 // launchWorkspace is the historical "workspace" target: focus-or-create a
