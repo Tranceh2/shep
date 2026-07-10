@@ -167,6 +167,19 @@ type Model struct {
 	// implementation) — a mechanism distinct from the removed Result.Warning
 	// field. Empty after any successful render or on selection change.
 	previewErr string
+
+	// baseCandidates is the immutable flat candidate set a tree-wired model
+	// (NewModelWithTree) was constructed from. applyFilter's tree branch
+	// ranks and re-derives m.candidates from this slice on every keystroke
+	// instead of mutating it, so an empty query can always restore the
+	// original flat rows with zero drift. nil for a plain NewModel/
+	// NewModelWithLayout model (tree is also nil there — see applyFilter).
+	baseCandidates []source.Candidate
+	// tree fetches and caches a Herdr workspace's tabs/panes so applyFilter
+	// can synthesize child rows under a matching SourceHerdr parent. nil
+	// means tree-expand is inactive and applyFilter uses the flat behavior
+	// unchanged (see applyFlatFilter).
+	tree *TreeExpander
 }
 
 // previewResponseMsg carries the result of an async preview render. seq must
@@ -193,6 +206,27 @@ func NewModel(candidates []source.Candidate, renderer preview.Renderer) Model {
 // picker's session-only starting orientation.
 func NewModelWithLayout(candidates []source.Candidate, renderer preview.Renderer, layout Layout) Model {
 	return newModelWithLayout(candidates, renderer, context.TODO(), layout)
+}
+
+// NewModelWithTree builds a tree-expand-aware model: candidates is the flat
+// base row set (retained as baseCandidates so an empty query can always
+// restore it), and tree fetches/caches each SourceHerdr candidate's
+// tabs/panes so applyFilter can synthesize matching child rows under it on a
+// non-empty query (R1-R3). A nil tree degrades to identical flat behavior
+// (see applyFilter), so this constructor is always safe to call even when
+// the caller has no HerdrDriver wired.
+func NewModelWithTree(candidates []source.Candidate, renderer preview.Renderer, tree *TreeExpander, layout Layout) Model {
+	return newModelWithTreeLayout(candidates, renderer, context.TODO(), tree, layout)
+}
+
+// newModelWithTreeLayout composes newModelWithLayout (no duplicated flat
+// construction logic) and attaches baseCandidates/tree on top.
+func newModelWithTreeLayout(candidates []source.Candidate, renderer preview.Renderer, renderCtx context.Context, tree *TreeExpander, layout Layout) Model {
+	m := newModelWithLayout(candidates, renderer, renderCtx, layout)
+	m.baseCandidates = make([]source.Candidate, len(candidates))
+	copy(m.baseCandidates, candidates)
+	m.tree = tree
+	return m
 }
 
 func newModel(candidates []source.Candidate, renderer preview.Renderer, renderCtx context.Context) Model {
@@ -405,7 +439,10 @@ func (m *Model) toggleLayoutOrientation() {
 // out of order can never flash the wrong candidate's text), bumps
 // previewSeq (invalidating any in-flight render for the old candidate),
 // flips on the loading indicator, and returns the Cmd for the new async
-// render. A nil renderer or an unchanged highlight returns a nil Cmd.
+// render. A nil renderer or an unchanged highlight returns a nil Cmd. A
+// SourceHerdrTab child row (tree-expand, R3) also returns a nil Cmd: its
+// preview is always the built-in summary (see previewBody), never an async
+// render, so no in-flight request is ever queued for it.
 func (m *Model) syncPreviewAfterSelectionChange(prevKey string) tea.Cmd {
 	if m.renderer == nil {
 		return nil
@@ -421,8 +458,12 @@ func (m *Model) syncPreviewAfterSelectionChange(prevKey string) tea.Cmd {
 		m.previewLoading = false
 		return nil
 	}
-	m.previewLoading = true
 	cand, _ := m.currentCandidate()
+	if cand.Source == config.SourceHerdrTab {
+		m.previewLoading = false
+		return nil
+	}
+	m.previewLoading = true
 	return m.previewCmd(m.previewSeq, cand)
 }
 
@@ -505,7 +546,17 @@ func (m Model) currentPreviewKey() string {
 //
 // The cursor is clamped back into range at the end so an empty result never
 // leaves a dangling cursor.
+//
+// A tree-wired model (m.tree != nil, via NewModelWithTree) delegates to
+// applyTreeFilter instead: an empty query restores the flat baseCandidates
+// (R1) and a non-empty query splices matching synthesized Herdr-tab child
+// rows in under their parent (R2). Every other model (m.tree == nil) keeps
+// this exact flat behavior unchanged.
 func (m *Model) applyFilter() {
+	if m.tree != nil {
+		m.applyTreeFilter()
+		return
+	}
 	m.filtered = m.filtered[:0]
 	if m.query == "" {
 		for i := range m.candidates {
@@ -516,10 +567,115 @@ func (m *Model) applyFilter() {
 			m.filtered = append(m.filtered, mt.Index)
 		}
 	}
+	m.clampCursor()
+}
+
+// clampCursor pulls the cursor back into [0, len(filtered)) so an empty (or
+// shrunk) filtered result never leaves a dangling cursor. Factored out of
+// applyFilter so applyTreeFilter shares the exact same invariant.
+func (m *Model) clampCursor() {
 	if m.cursor >= len(m.filtered) {
 		m.cursor = max(len(m.filtered)-1, 0)
 	}
 }
+
+// applyTreeFilter is applyFilter's tree-expand branch (m.tree != nil). An
+// empty query restores the immutable baseCandidates with zero fetch (R1);
+// a non-empty query rebuilds m.candidates via expandTreeFilteredRows, which
+// ranks baseCandidates and splices matching child rows in under each
+// matching SourceHerdr parent (R2). filtered is always every index of the
+// freshly rebuilt m.candidates in order — expandTreeFilteredRows already
+// did the ranking, so no second fuzzy pass over the merged rows is needed.
+func (m *Model) applyTreeFilter() {
+	if m.query == "" {
+		m.restoreFlatCandidates()
+		return
+	}
+	m.candidates = m.expandTreeFilteredRows()
+	m.filtered = m.filtered[:0]
+	for i := range m.candidates {
+		m.filtered = append(m.filtered, i)
+	}
+	m.clampCursor()
+}
+
+// restoreFlatCandidates resets m.candidates to a fresh copy of baseCandidates
+// (never aliasing it, so a later applyTreeFilter splice cannot mutate the
+// original) and re-flattens filtered — the R1 empty-query contract.
+func (m *Model) restoreFlatCandidates() {
+	m.candidates = make([]source.Candidate, len(m.baseCandidates))
+	copy(m.candidates, m.baseCandidates)
+	m.filtered = m.filtered[:0]
+	for i := range m.candidates {
+		m.filtered = append(m.filtered, i)
+	}
+	m.clampCursor()
+}
+
+// expandTreeFilteredRows ranks baseCandidates by m.query against
+// treeParentSource — each SourceHerdr parent's haystack is its own
+// "label path" extended with every one of its already-synthesized
+// children's haystacks, so a workspace whose OWN label/path does not match
+// the query still ranks (and is kept in the filtered list) when one of its
+// open tabs does (R2's "single tab match expands only that tab" contract:
+// the parent W is kept even though only tab T1 matches). For each ranked
+// parent, its matching children (matchingChildren — re-filtered
+// independently so a non-matching sibling tab is excluded) are spliced in
+// directly after it.
+func (m *Model) expandTreeFilteredRows() []source.Candidate {
+	childrenByParent := m.fetchAllChildren()
+	ranked := fuzzy.FindFrom(m.query, treeParentSource{parents: m.baseCandidates, children: childrenByParent})
+	out := make([]source.Candidate, 0, len(ranked))
+	for _, mt := range ranked {
+		out = append(out, m.baseCandidates[mt.Index])
+		out = append(out, matchingChildren(m.query, childrenByParent[mt.Index])...)
+	}
+	return out
+}
+
+// fetchAllChildren returns, indexed like m.baseCandidates, the synthesized
+// child rows for every SourceHerdr parent whose TreeExpander.Fetch succeeds.
+// A non-Herdr candidate, or a Fetch miss (cache miss + driver error), leaves
+// that index nil — zero children for this filter pass (R6's
+// degrade-gracefully contract), never a crash or a stale/poisoned cache
+// entry. Called once per non-empty-query filter pass; repeated keystrokes
+// within TreeExpander's TTL window hit the cache instead of re-issuing
+// ListTabs/ListPanes (R6).
+func (m *Model) fetchAllChildren() [][]source.Candidate {
+	out := make([][]source.Candidate, len(m.baseCandidates))
+	for i, cand := range m.baseCandidates {
+		if cand.Source != config.SourceHerdr {
+			continue
+		}
+		tree, ok := m.tree.Fetch(m.renderCtx, cand.Meta["workspace_id"])
+		if !ok {
+			continue
+		}
+		out[i] = synthesizeChildren(cand.Meta["workspace_id"], cand.Path, tree.Tabs, tree.Panes)
+	}
+	return out
+}
+
+// treeParentSource adapts baseCandidates to fuzzy.Source for
+// expandTreeFilteredRows' ranking pass: each parent's haystack is its own
+// candidateSource haystack extended with every already-synthesized child's
+// haystack (same shape, reusing candidateSource for both), so a parent
+// ranks whenever it OR any of its children matches the query.
+type treeParentSource struct {
+	parents  []source.Candidate
+	children [][]source.Candidate
+}
+
+func (s treeParentSource) String(i int) string {
+	haystack := candidateSource(s.parents).String(i)
+	for _, c := range s.children[i] {
+		haystack += " " + candidateSource{c}.String(0)
+	}
+	return haystack
+}
+
+// Len reports the number of parents, satisfying fuzzy.Source.
+func (s treeParentSource) Len() int { return len(s.parents) }
 
 // candidateSource adapts []source.Candidate to fuzzy.Source so applyFilter can
 // match directly against each candidate's "label path" haystack without
@@ -1044,15 +1200,17 @@ func capPreviewBodyLines(body string, height int) string {
 
 // previewBody renders the preview pane content: "(no selection)" when
 // nothing is highlighted, a built-in label/path/source summary when no
-// Renderer is wired, a loading indicator while an async render is in flight,
-// a short error indicator when Render returned a real error, or the
-// rendered text.
+// Renderer is wired OR the highlighted row is a synthesized SourceHerdrTab
+// child (tree-expand, R3 — child rows never get an async render regardless
+// of whether a Renderer is wired for the parent rows), a loading indicator
+// while an async render is in flight, a short error indicator when Render
+// returned a real error, or the rendered text.
 func (m Model) previewBody(width int) string {
 	if len(m.filtered) == 0 {
 		return palette.mutedStyle.Width(width).Render(truncateToWidth("(no selection)", width))
 	}
-	if m.renderer == nil {
-		cand, _ := m.currentCandidate()
+	cand, _ := m.currentCandidate()
+	if m.renderer == nil || cand.Source == config.SourceHerdrTab {
 		lines := []string{
 			styleLinePrefix("label  ", cand.Label, width, palette.labelStyle),
 			styleLinePrefix("path   ", cand.Path, width, palette.labelStyle),
