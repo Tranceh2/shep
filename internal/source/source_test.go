@@ -92,6 +92,7 @@ func TestSupportsCurrentWorkspaceTarget(t *testing.T) {
 		{name: "command plus group edge excluded", cand: Candidate{Source: config.SourceWorkspaces, Meta: map[string]string{"command": "nvim", "group": "true"}}, want: false},
 		{name: "command plus template edge excluded", cand: Candidate{Source: config.SourceWorkspaces, Meta: map[string]string{"command": "nvim", "template": "k8s"}}, want: false},
 		{name: "unknown source excluded", cand: Candidate{Source: "path"}, want: false},
+		{name: "herdr tab child excluded", cand: Candidate{Source: config.SourceHerdrTab, Meta: map[string]string{"workspace_id": "wA", "tab_id": "t1"}}, want: false},
 		{name: "nil meta command-only workspace", cand: Candidate{Source: config.SourceWorkspaces, Meta: map[string]string{"command": "yazi", "close_on_exit": "true"}}, want: true},
 	}
 	for _, tt := range tests {

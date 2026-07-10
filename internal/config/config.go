@@ -34,6 +34,14 @@ const (
 	SourceProjects   = "projects"
 )
 
+// SourceHerdrTab identifies a synthesized child candidate for an already-open
+// Herdr tab, nested under its parent SourceHerdr workspace row by the TUI's
+// tree-expand feature. It is a TUI presentation concern only: it is
+// intentionally NOT a member of validSourceNames because users never
+// configure it directly in general.sources, and it never appears in the flat
+// Registry/Dedup/Match pipeline — only as a row synthesized inside the picker.
+const SourceHerdrTab = "herdr_tab"
+
 // defaultSourceOrder is used when general.sources is empty/absent.
 var defaultSourceOrder = []string{SourceHerdr, SourceWorkspaces, SourceZoxide, SourceProjects}
 
