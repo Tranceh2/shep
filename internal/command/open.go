@@ -106,12 +106,47 @@ func validateTarget(target string) error {
 // (queried once by runOpen before candidate resolution) and a.setChosenTarget
 // are threaded into the TUI selector so its footer hints/ctrl+t/ctrl+p
 // bindings can react to it and write a target override back onto a.
-func (a *App) selectorFactory() *selector.Cascade {
+func (a *App) selectorFactory(matches []source.Candidate) *selector.Cascade {
 	if a.selectorBuilder != nil {
 		return a.selectorBuilder()
 	}
 	cfg := a.Config()
-	return cascadeFor(cfg.General.Selector, a.buildPreviewRenderer(), a.currentPane, a.setChosenTarget, layoutFromConfig(cfg.TUI))
+	return cascadeFor(cfg.General.Selector, a.buildPreviewRenderer(), a.currentPane, a.setChosenTarget, a.buildTreeExpander(), matches, layoutFromConfig(cfg.TUI))
+}
+
+// buildTreeExpander wires a tui.TreeExpander over the active HerdrDriver,
+// reusing [preview].cache_ttl as the tree cache's lifetime — the same "how
+// fresh does workspace state need to be" question the preview cache already
+// answers, so tree-expand does not need its own overlapping TTL config
+// knob. Returns nil when no driver is configured; treeActiveFor can only
+// report true when matches already contains a SourceHerdr candidate, which
+// itself requires a driver to have produced it, so a nil tree here never
+// silently disables an otherwise-active cascade.
+func (a *App) buildTreeExpander() *tui.TreeExpander {
+	driver := a.Driver()
+	if driver == nil {
+		return nil
+	}
+	ttl := time.Duration(a.Config().Preview.CacheTTL)
+	return tui.NewTreeExpander(driver, ttl)
+}
+
+// treeActiveFor reports whether tree-expand should replace the normal
+// selector cascade for this resolution pass (R6): active only when there is
+// more than one candidate to choose from AND at least one is an
+// already-open SourceHerdr workspace. Fzf cannot render synthesized child
+// rows, so when this is true the cascade skips it entirely and routes
+// through the tree-aware TUI selector instead (see cascadeFor).
+func treeActiveFor(matches []source.Candidate) bool {
+	if len(matches) <= 1 {
+		return false
+	}
+	for _, c := range matches {
+		if c.Source == config.SourceHerdr {
+			return true
+		}
+	}
+	return false
 }
 
 // layoutFromConfig builds the tui.Layout consumed by the picker from the
@@ -155,12 +190,20 @@ func (a *App) buildPreviewRenderer() preview.Renderer {
 // and onTarget are threaded into the TUI selector (see newTUISelector); layout
 // is optional (variadic so existing callers keep compiling) and configures
 // the TUI's list/preview pane widths.
-func cascadeFor(sel string, renderer preview.Renderer, currentPane *source.Pane, onTarget func(string), layout ...tui.Layout) *selector.Cascade {
+//
+// When treeActiveFor(matches) reports true (R6), [general].selector is
+// ignored entirely: the cascade becomes [direct, tui_tree] — fzf is always
+// skipped (it cannot render synthesized Herdr-tab child rows) and the
+// tree-aware tuiTreeSelector (backed by tree) runs instead of the plain TUI.
+func cascadeFor(sel string, renderer preview.Renderer, currentPane *source.Pane, onTarget func(string), tree *tui.TreeExpander, matches []source.Candidate, layout ...tui.Layout) *selector.Cascade {
 	var l tui.Layout
 	if len(layout) > 0 {
 		l = layout[0]
 	}
 	direct := selector.Direct{}
+	if treeActiveFor(matches) {
+		return selector.New(direct, newTUITreeSelector(renderer, currentPane, onTarget, tree, l))
+	}
 	tuiSel := newTUISelector(renderer, currentPane, onTarget, l)
 	switch sel {
 	case config.SelectorFzf, config.SelectorAuto:
@@ -222,6 +265,58 @@ func (s tuiSelector) Select(ctx context.Context, candidates []source.Candidate, 
 		run = tui.Run
 	}
 	cand, target, ok, err := run(ctx, candidates, query, s.renderer, s.currentPane, s.layout)
+	if ok && s.onTarget != nil {
+		s.onTarget(target)
+	}
+	return cand, ok, err
+}
+
+// tuiTreeRunFunc matches tui.RunWithTree's signature so tests can substitute
+// a fake tree-aware picker without driving a real Bubble Tea program.
+type tuiTreeRunFunc func(ctx context.Context, candidates []source.Candidate, query string, renderer preview.Renderer, tree *tui.TreeExpander, currentPane *source.Pane, layout ...tui.Layout) (source.Candidate, string, bool, error)
+
+// tuiTreeSelector is tuiSelector's tree-expand-active counterpart (R6):
+// identical shape and callback contract, but drives tui.RunWithTree so the
+// picker can synthesize Herdr-tab child rows under a matching workspace
+// parent. cascadeFor only ever builds this selector in place of tuiSelector
+// (never alongside it) when treeActiveFor(matches) is true, and fzf is
+// never part of that cascade — it cannot render synthesized rows.
+type tuiTreeSelector struct {
+	renderer    preview.Renderer
+	layout      tui.Layout
+	currentPane *source.Pane
+	tree        *tui.TreeExpander
+	onTarget    func(string)
+	// run defaults to tui.RunWithTree; tests substitute a fake to simulate a
+	// pick (including a ctrl+t/ctrl+p target) without driving a real Bubble
+	// Tea program.
+	run tuiTreeRunFunc
+}
+
+// newTUITreeSelector builds a tuiTreeSelector carrying the given Renderer
+// (nil degrades to the picker's built-in candidate summary, same as
+// newTUISelector), the Herdr pane shep is currently running inside, a
+// target-override callback, the TreeExpander backing child-row synthesis,
+// and pane-width Layout.
+func newTUITreeSelector(renderer preview.Renderer, currentPane *source.Pane, onTarget func(string), tree *tui.TreeExpander, layout ...tui.Layout) *tuiTreeSelector {
+	var l tui.Layout
+	if len(layout) > 0 {
+		l = layout[0]
+	}
+	return &tuiTreeSelector{renderer: renderer, layout: l, currentPane: currentPane, tree: tree, onTarget: onTarget, run: tui.RunWithTree}
+}
+
+func (tuiTreeSelector) Name() string { return "tui_tree" }
+
+func (s tuiTreeSelector) Select(ctx context.Context, candidates []source.Candidate, query string) (source.Candidate, bool, error) {
+	if len(candidates) == 0 {
+		return source.Candidate{}, false, nil
+	}
+	run := s.run
+	if run == nil {
+		run = tui.RunWithTree
+	}
+	cand, target, ok, err := run(ctx, candidates, query, s.renderer, s.tree, s.currentPane, s.layout)
 	if ok && s.onTarget != nil {
 		s.onTarget(target)
 	}
@@ -323,7 +418,7 @@ func (a *App) resolveFromRegistry(cmd *cobra.Command, registry *source.Registry,
 	case 1:
 		pick = matches[0]
 	default:
-		cascade := a.selectorFactory()
+		cascade := a.selectorFactory(matches)
 		if cascade == nil {
 			printCandidates(out, all)
 			fmt.Fprintf(errOut, "ambiguous: %s (%d matches)\n", query, len(matches))

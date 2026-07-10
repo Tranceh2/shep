@@ -226,11 +226,45 @@ func TestCascadeFor_RoutesBySelector(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := cascadeFor(tc.sel, nil, nil, nil).Names()
+			got := cascadeFor(tc.sel, nil, nil, nil, nil, nil).Names()
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("selector %q: cascade names got %v want %v", tc.sel, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestCascadeFor_TreeActiveSkipsFzf (7.1/R6): when tree-expand is active
+// (multiple matches, at least one already-open herdr workspace), the
+// cascade skips fzf entirely — even when [general].selector requests it —
+// and uses the tree-aware tui_tree selector instead of tui, because fzf
+// cannot render synthesized child rows.
+func TestCascadeFor_TreeActiveSkipsFzf(t *testing.T) {
+	t.Parallel()
+	matches := []source.Candidate{
+		{Source: config.SourceHerdr, Path: "/hw", Label: "open-ws", Meta: map[string]string{"workspace_id": "wA"}},
+		{Source: config.SourceZoxide, Path: "/zx", Label: "zx"},
+	}
+	got := cascadeFor(config.SelectorFzf, nil, nil, nil, nil, matches).Names()
+	want := []string{"direct", "tui_tree"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("tree-active cascade names = %v, want %v (fzf must be skipped)", got, want)
+	}
+}
+
+// TestCascadeFor_SingleMatchIsNotTreeActive (7.1 triangulation): a single
+// herdr match is never ambiguous (direct already short-circuits it before a
+// cascade is even needed in practice), so tree-expand must not activate and
+// the normal cascade — including fzf, if configured — still applies.
+func TestCascadeFor_SingleMatchIsNotTreeActive(t *testing.T) {
+	t.Parallel()
+	matches := []source.Candidate{
+		{Source: config.SourceHerdr, Path: "/hw", Label: "open-ws", Meta: map[string]string{"workspace_id": "wA"}},
+	}
+	got := cascadeFor(config.SelectorFzf, nil, nil, nil, nil, matches).Names()
+	want := []string{"direct", "fzf", "tui"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("single-match cascade names = %v, want %v (tree-expand must not activate)", got, want)
 	}
 }
 

@@ -1361,24 +1361,53 @@ func Run(ctx context.Context, candidates []source.Candidate, query string, rende
 	m := newModelWithLayout(candidates, renderer, ctx, l).WithCurrentPane(currentPane)
 	m.query = query
 	m.applyFilter()
-	// refreshPreviewLoadingFlag is not re-called here: newModelWithLayout
-	// already set it from the full candidate list, and the only thing that
-	// could change it (applyFilter emptying the filtered set) is
-	// unobservable — previewBody short-circuits on len(filtered)==0 before
-	// reading previewLoading, and Init returns a nil Cmd when no candidate
-	// is highlighted.
-	// WithAltScreen is required: without it, Bubble Tea renders inline and
-	// repaints by moving the cursor up N lines on every update. Any render
-	// taller than the previous one (e.g. a long query trimming the match
-	// list, or a tall preview) desyncs that cursor math, which looks like
-	// the top of the screen scrolling away / content getting pushed off the
-	// terminal. The alt screen gives Bubble Tea an isolated full-screen
-	// buffer so it can always redraw the whole frame instead of patching
-	// deltas against terminal scrollback. This is not unit-testable: Bubble
-	// Tea's tea.ProgramOption values close over unexported Program fields
-	// with no exported inspector, so there is no way to assert this from
-	// outside the tea package. Verified manually: scrolling, long queries,
-	// and normal navigation no longer corrupt the visible frame.
+	return runProgram(ctx, m)
+}
+
+// RunWithTree is Run's tree-expand-active counterpart (R6): identical
+// contract, but the model is built via newModelWithTreeLayout so a
+// non-empty query can synthesize Herdr-tab child rows under a matching
+// SourceHerdr candidate (Model.applyFilter's tree branch). It is the
+// selector cascade's entry point when treeActiveFor reports true — the
+// picker cannot use Run there because a plain newModelWithLayout model has
+// no tree wired and would never expand anything.
+func RunWithTree(ctx context.Context, candidates []source.Candidate, query string, renderer preview.Renderer, tree *TreeExpander, currentPane *source.Pane, layout ...Layout) (source.Candidate, string, bool, error) {
+	var l Layout
+	if len(layout) > 0 {
+		l = layout[0]
+	}
+	m := newModelWithTreeLayout(candidates, renderer, ctx, tree, l).WithCurrentPane(currentPane)
+	m.query = query
+	m.applyFilter()
+	return runProgram(ctx, m)
+}
+
+// runProgram drives m through a real Bubble Tea program and turns its
+// terminated state into the (Candidate, target, ok, error) quadruple both
+// Run and RunWithTree return — the only difference between the two entry
+// points is which constructor built m, so the actual program loop lives
+// here once instead of being copy-pasted.
+//
+// refreshPreviewLoadingFlag is not re-called here: the constructor already
+// set it from the full candidate list, and the only thing that could
+// change it (applyFilter emptying the filtered set) is unobservable —
+// previewBody short-circuits on len(filtered)==0 before reading
+// previewLoading, and Init returns a nil Cmd when no candidate is
+// highlighted.
+//
+// WithAltScreen is required: without it, Bubble Tea renders inline and
+// repaints by moving the cursor up N lines on every update. Any render
+// taller than the previous one (e.g. a long query trimming the match list,
+// or a tall preview) desyncs that cursor math, which looks like the top of
+// the screen scrolling away / content getting pushed off the terminal. The
+// alt screen gives Bubble Tea an isolated full-screen buffer so it can
+// always redraw the whole frame instead of patching deltas against
+// terminal scrollback. This is not unit-testable: Bubble Tea's
+// tea.ProgramOption values close over unexported Program fields with no
+// exported inspector, so there is no way to assert this from outside the
+// tea package. Verified manually: scrolling, long queries, and normal
+// navigation no longer corrupt the visible frame.
+func runProgram(ctx context.Context, m Model) (source.Candidate, string, bool, error) {
 	p := tea.NewProgram(m, tea.WithContext(ctx), tea.WithAltScreen())
 	final, err := p.Run()
 	if err != nil {
