@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -146,5 +147,148 @@ func TestTreeExpander_ListPanesErrorDegradesGracefully(t *testing.T) {
 	}
 	if driver.listTabsN != 1 {
 		t.Errorf("ListTabs calls: got %d, want 1 (called before the failing ListPanes)", driver.listTabsN)
+	}
+}
+
+// --- Phase 4: pure child synthesis ---
+//
+// The design's Testing Strategy table names these tests
+// TestModelTree_QueryInsertsOnlyMatchingChildTabs, TestModelTree_CWDOnlyTabMatch,
+// TestModelTree_WorkspaceOnlyMatchStaysFlat and TestModelTree_ChildCandidateCarriesIDs
+// against a wired Model.applyFilter — but that wiring is Phase 5 (PR3, not yet
+// implemented). Adapted here to exercise the same behavior directly against
+// the pure functions Phase 5 will call: synthesizeChildren (the row builder)
+// and matchingChildren (the query filter, reusing model.go's own
+// candidateSource+fuzzy.FindFrom contract — no second matching
+// implementation). Test names are kept identical to the design so PR3's
+// verify phase can trace them back to the same requirement.
+
+// TestModelTree_QueryInsertsOnlyMatchingChildTabs (4.1/R2): a query matching
+// one tab's Label inserts only that tab's synthesized child; the sibling
+// tab is excluded.
+func TestModelTree_QueryInsertsOnlyMatchingChildTabs(t *testing.T) {
+	tabs := []source.Tab{
+		{ID: "t1", WorkspaceID: "w1", Label: "api"},
+		{ID: "t2", WorkspaceID: "w1", Label: "db"},
+	}
+	panes := []source.Pane{
+		{ID: "p1", WorkspaceID: "w1", TabID: "t1", CWD: "/svc/api"},
+		{ID: "p2", WorkspaceID: "w1", TabID: "t2", CWD: "/svc/db"},
+	}
+	children := synthesizeChildren("w1", "/svc", tabs, panes)
+
+	matched := matchingChildren("api", children)
+
+	if len(matched) != 1 {
+		t.Fatalf("matched children: got %d, want 1: %+v", len(matched), matched)
+	}
+	if matched[0].Label != "api" {
+		t.Errorf("matched child label: got %q, want %q", matched[0].Label, "api")
+	}
+}
+
+// TestModelTree_CWDOnlyTabMatch (4.1/R2): a tab with no Label still matches
+// via its resolved CWD, using the same "Label path" haystack shape as the
+// parent-level matcher (model.go's candidateSource).
+func TestModelTree_CWDOnlyTabMatch(t *testing.T) {
+	tabs := []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: ""}}
+	panes := []source.Pane{{ID: "p1", WorkspaceID: "w1", TabID: "t1", CWD: "/var/log"}}
+	children := synthesizeChildren("w1", "/svc", tabs, panes)
+
+	matched := matchingChildren("log", children)
+
+	if len(matched) != 1 {
+		t.Fatalf("expected CWD-only match, got %d children: %+v", len(matched), matched)
+	}
+	if matched[0].Path != "/var/log" {
+		t.Errorf("matched child path: got %q, want %q", matched[0].Path, "/var/log")
+	}
+}
+
+// TestModelTree_WorkspaceOnlyMatchStaysFlat (4.1/R2): a query that would
+// match the PARENT workspace row's own Label ("backend") shares no
+// characters with either child's haystack ("api /svc/api", "db /svc/db"),
+// so matchingChildren returns zero rows — no children are synthesized
+// for this filter pass.
+func TestModelTree_WorkspaceOnlyMatchStaysFlat(t *testing.T) {
+	tabs := []source.Tab{
+		{ID: "t1", WorkspaceID: "w1", Label: "api"},
+		{ID: "t2", WorkspaceID: "w1", Label: "db"},
+	}
+	panes := []source.Pane{
+		{ID: "p1", WorkspaceID: "w1", TabID: "t1", CWD: "/svc/api"},
+		{ID: "p2", WorkspaceID: "w1", TabID: "t2", CWD: "/svc/db"},
+	}
+	children := synthesizeChildren("w1", "/svc", tabs, panes)
+
+	matched := matchingChildren("backend", children)
+
+	if len(matched) != 0 {
+		t.Fatalf("expected zero matching children (workspace-only match), got %d: %+v", len(matched), matched)
+	}
+}
+
+// TestModelTree_ChildCandidateCarriesIDs (4.1/R3): a synthesized child row
+// carries Source=SourceHerdrTab and Meta[workspace_id]/Meta[tab_id] so
+// PR3's launchChildTab can route Enter to driver.FocusTab.
+func TestModelTree_ChildCandidateCarriesIDs(t *testing.T) {
+	tabs := []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}}
+	panes := []source.Pane{{ID: "p1", WorkspaceID: "w1", TabID: "t1", CWD: "/svc/api"}}
+
+	children := synthesizeChildren("w1", "/svc", tabs, panes)
+
+	if len(children) != 1 {
+		t.Fatalf("expected exactly one synthesized child, got %d", len(children))
+	}
+	child := children[0]
+	if child.Source != config.SourceHerdrTab {
+		t.Errorf("child.Source: got %q, want %q", child.Source, config.SourceHerdrTab)
+	}
+	if child.Meta["workspace_id"] != "w1" {
+		t.Errorf("child.Meta[workspace_id]: got %q, want %q", child.Meta["workspace_id"], "w1")
+	}
+	if child.Meta["tab_id"] != "t1" {
+		t.Errorf("child.Meta[tab_id]: got %q, want %q", child.Meta["tab_id"], "t1")
+	}
+}
+
+// TestPrimaryTabCWD_PrefersForegroundCWD (4.2 triangulation): when the
+// matching pane has a non-empty ForegroundCWD (a live foreground process),
+// it wins over the pane's own CWD.
+func TestPrimaryTabCWD_PrefersForegroundCWD(t *testing.T) {
+	tab := source.Tab{ID: "t1", WorkspaceID: "w1"}
+	panes := []source.Pane{
+		{ID: "p1", WorkspaceID: "w1", TabID: "t1", CWD: "/svc/api", ForegroundCWD: "/svc/api/cmd"},
+	}
+	got := primaryTabCWD(tab, panes, "/svc")
+	if got != "/svc/api/cmd" {
+		t.Errorf("primaryTabCWD: got %q, want ForegroundCWD %q", got, "/svc/api/cmd")
+	}
+}
+
+// TestPrimaryTabCWD_FallsBackToCWD (4.2 triangulation): an empty
+// ForegroundCWD falls back to the matching pane's CWD.
+func TestPrimaryTabCWD_FallsBackToCWD(t *testing.T) {
+	tab := source.Tab{ID: "t1", WorkspaceID: "w1"}
+	panes := []source.Pane{
+		{ID: "p1", WorkspaceID: "w1", TabID: "t1", CWD: "/svc/api", ForegroundCWD: ""},
+	}
+	got := primaryTabCWD(tab, panes, "/svc")
+	if got != "/svc/api" {
+		t.Errorf("primaryTabCWD: got %q, want CWD %q", got, "/svc/api")
+	}
+}
+
+// TestPrimaryTabCWD_FallsBackToParentPath (4.2 triangulation): a tab with
+// no matching pane in the slice at all falls back to parentPath, so a
+// synthesized row never renders an empty path.
+func TestPrimaryTabCWD_FallsBackToParentPath(t *testing.T) {
+	tab := source.Tab{ID: "t1", WorkspaceID: "w1"}
+	panes := []source.Pane{
+		{ID: "p9", WorkspaceID: "w1", TabID: "other-tab", CWD: "/unrelated"},
+	}
+	got := primaryTabCWD(tab, panes, "/svc")
+	if got != "/svc" {
+		t.Errorf("primaryTabCWD: got %q, want parentPath fallback %q", got, "/svc")
 	}
 }

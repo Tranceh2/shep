@@ -4,7 +4,9 @@ import (
 	"context"
 	"time"
 
+	"github.com/sahilm/fuzzy"
 	"github.com/tranceh2/shep/internal/cache"
+	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -66,4 +68,60 @@ func (e *TreeExpander) Fetch(ctx context.Context, workspaceID string) (workspace
 	tree := workspaceTree{Tabs: tabs, Panes: panes}
 	e.cache.Put(workspaceID, tree)
 	return tree, true
+}
+
+// synthesizeChildren builds one child source.Candidate per tab, nested
+// under workspaceID's parent workspace row. Each child's Path resolves via
+// primaryTabCWD; Meta carries workspace_id/tab_id so PR3's launchChildTab
+// can route Enter to driver.FocusTab without a second driver call.
+func synthesizeChildren(workspaceID, parentPath string, tabs []source.Tab, panes []source.Pane) []source.Candidate {
+	children := make([]source.Candidate, 0, len(tabs))
+	for _, tab := range tabs {
+		children = append(children, source.Candidate{
+			Label:  tab.Label,
+			Path:   primaryTabCWD(tab, panes, parentPath),
+			Source: config.SourceHerdrTab,
+			Meta: map[string]string{
+				"workspace_id": workspaceID,
+				"tab_id":       tab.ID,
+			},
+		})
+	}
+	return children
+}
+
+// primaryTabCWD resolves a tab's display path from its panes: the first
+// matching pane's ForegroundCWD when non-empty (a live foreground process),
+// else that pane's own CWD. When no pane in the slice belongs to tab at
+// all, it falls back to parentPath so a synthesized row never renders an
+// empty path.
+func primaryTabCWD(tab source.Tab, panes []source.Pane, parentPath string) string {
+	for _, p := range panes {
+		if p.TabID != tab.ID {
+			continue
+		}
+		if p.ForegroundCWD != "" {
+			return p.ForegroundCWD
+		}
+		return p.CWD
+	}
+	return parentPath
+}
+
+// matchingChildren filters children to those matching query, using the same
+// fuzzy.FindFrom + candidateSource haystack contract applyFilter already
+// uses for top-level candidates (model.go:515) — no second matching
+// implementation. An empty query matches every child, mirroring
+// applyFilter's own empty-query behavior. PR3 (Phase 5) wires this into the
+// tree filter path.
+func matchingChildren(query string, children []source.Candidate) []source.Candidate {
+	if query == "" {
+		return children
+	}
+	matches := fuzzy.FindFrom(query, candidateSource(children))
+	out := make([]source.Candidate, 0, len(matches))
+	for _, m := range matches {
+		out = append(out, children[m.Index])
+	}
+	return out
 }
