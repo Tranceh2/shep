@@ -6,9 +6,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/tranceh2/shep/internal/cache"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
 )
@@ -16,50 +16,32 @@ import (
 // Cache is a TTL-bounded in-memory cache of rendered preview Results, keyed by
 // the candidate path plus a hash of the renderer config. It keeps the selector
 // responsive when the cursor revisits a recently rendered candidate that uses a
-// slow preview.command.
+// slow preview.command. It wraps the shared internal/cache.Cache[T] generic
+// implementation, adding only the FromCache=true marking a cache hit needs.
 type Cache struct {
-	mu    sync.Mutex
-	ttl   time.Duration
-	items map[string]cacheItem
-}
-
-type cacheItem struct {
-	result  Result
-	expires time.Time
+	inner *cache.Cache[Result]
 }
 
 // NewCache builds a Cache with the given lifetime. A non-positive ttl means
 // entries never expire by time (the cache still de-duplicates within a render).
 func NewCache(ttl time.Duration) *Cache {
-	return &Cache{ttl: ttl, items: make(map[string]cacheItem)}
+	return &Cache{inner: cache.New[Result](ttl)}
 }
 
 // Get returns the cached Result for key with FromCache=true, or false when the
 // key is unknown or its TTL has elapsed (an expired entry is evicted).
 func (c *Cache) Get(key string) (Result, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	it, ok := c.items[key]
+	r, ok := c.inner.Get(key)
 	if !ok {
 		return Result{}, false
 	}
-	if c.ttl > 0 && time.Now().After(it.expires) {
-		delete(c.items, key)
-		return Result{}, false
-	}
-	it.result.FromCache = true
-	return it.result, true
+	r.FromCache = true
+	return r, true
 }
 
 // Put stores r under key with the configured TTL.
 func (c *Cache) Put(key string, r Result) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	exp := time.Time{}
-	if c.ttl > 0 {
-		exp = time.Now().Add(c.ttl)
-	}
-	c.items[key] = cacheItem{result: r, expires: exp}
+	c.inner.Put(key, r)
 }
 
 // PreviewCacheKey derives a stable cache key from the candidate's identity
