@@ -2,122 +2,83 @@
 // interactive fallback in the `shep open` selector cascade, used when there is
 // no exact match and fzf is unavailable.
 //
-// The model renders a left list of filtered candidates and a right preview
-// showing the highlighted candidate's rendered preview.Result (label/path/
-// source/git, or a declared [preview.commands.<name>], via the injected
-// preview.Renderer). Filtering uses github.com/sahilm/fuzzy, the same scored
-// matcher bubbles/list and gum use (Sublime Text/VSCode style): each candidate
-// is searched over its "label path", matches are returned best-match-first
-// (first-character, camelCase and separator boundaries, and adjacency all score
-// higher), and an empty query lists every candidate in original provider order.
-// Navigation uses up/down/ctrl+j/ctrl+k; plain "j"/"k" are typed into the
-// query (not bound to movement) so they filter like any other rune; enter
-// selects; esc/q/ctrl+c/ctrl+g cancels (Run then returns ErrCancelled);
-// ctrl+l toggles the landscape/portrait layout for the current session only
-// (never persisted). Below both panes, a full-width footer line always
-// shows the highlighted candidate's complete text plus context-sensitive
-// keybinding hints (hintsFor), even when the list column truncates its own
-// row — the ctrl+t/ctrl+p hint only appears for a target-supported
-// candidate (see source.SupportsCurrentWorkspaceTarget), and it is the sole
-// indicator of which entries can be opened as a Herdr tab/pane; list rows
-// carry no per-entry type marker. The palette is Catppuccin Mocha,
-// centralised in palette.go
-// so colors live in one place.
+// The picker renders a single flat, progressively-disclosed list on the left
+// (active Herdr workspaces, discovered projects, zoxide directories, and
+// configured [[workspaces]] entries, in the configured general.sources order
+// — differentiated only by each row's icon/color per source, with Herdr
+// workspaces able to expand into their open tabs and, per tab, its panes)
+// and a contextual, scrollable preview on the right. Filtering uses
+// github.com/sahilm/fuzzy (see rows.go's fuzzyMatches): within a source,
+// candidates are kept in their ORIGINAL PROVIDER ORDER — a query only
+// decides visibility, never re-ranks — so parent order never jumps around
+// as the user types (see buildRows' doc comment for the full contract).
+// Tab/Shift+Tab cycles keyboard focus between the list and the preview pane
+// (FocusList/FocusPreview — see the Focus ring in keys.go); while the
+// preview is focused, arrow/page keys scroll it (via bubbles/viewport)
+// instead of moving the list cursor, and any printable rune returns focus
+// to the list and resumes the live filter. Enter opens a candidate/tab/pane
+// row; Left/Right expand/collapse a Herdr workspace's tab/pane children —
+// both are List-only actions, as is ctrl+l (cycles the session-only layout
+// override: auto -> landscape -> portrait -> auto). "?" opens a modal,
+// scrollable help overlay (FocusHelp) from either List or Preview,
+// remembering which one so "?"/Esc restores it on close (a resize to a
+// list-only size while Preview was remembered degrades that memory to List
+// — see degradeFocusIfPreviewUnavailable); esc/ctrl+c/ctrl+g cancels (Run
+// then returns ErrCancelled), except Esc first clears a non-empty query
+// (returning to FocusList) before ever cancelling. "q" is an ordinary query
+// character, not a cancel key. The active color theme (see theme.go)
+// resolves from $NO_COLOR, then
+// $SHEP_THEME, then Layout.Theme (config.TUIConfig.Theme), then Catppuccin
+// Mocha.
 package tui
 
 import (
 	"context"
 	"errors"
-	"strconv"
-	"strings"
 
+	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
-	"github.com/sahilm/fuzzy"
-	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/preview"
 	"github.com/tranceh2/shep/internal/source"
 )
 
-// Layout configures the picker's list/preview pane widths and orientation
-// (config.TUIConfig). ListWidth/PreviewWidth are each "auto" (or empty) or a
-// percentage string like "60%"; see config.ParsePercent. Orientation is
-// LayoutLandscape (default, the zero value) or LayoutPortrait — Television's
-// own naming for the same side-by-side vs stacked concept, kept consistent
-// since shep already integrates with Television.
+// Layout configures the picker's list/preview pane widths, orientation
+// override, and color theme (config.TUIConfig). ListWidth/PreviewWidth are
+// each "auto" (or empty) or a percentage string like "60%"; see
+// config.ParsePercent. Orientation is "" (auto — the responsive width-based
+// mode described in resolvedMode/nextResponsiveMode applies), LayoutLandscape,
+// or LayoutPortrait — Television's own naming for the same side-by-side vs
+// stacked concept, kept consistent since shep already integrates with
+// Television. Theme is a theme.go theme name (or empty for the default
+// resolution chain: $NO_COLOR > $SHEP_THEME > Theme > "mocha").
 type Layout struct {
 	ListWidth    string
 	PreviewWidth string
 	Orientation  string
+	Theme        string
+	// SourceOrder is the configured group iteration order (config's
+	// general.sources, in declaration order — the same order
+	// source.Registry.Enabled() already collects candidates in). Threaded
+	// through the same Layout vehicle as Theme/widths so the picker's row
+	// order matches the configured provider order instead of a hardcoded
+	// literal. Empty falls back to rows.go's defaultSourceOrder.
+	SourceOrder []string
+	// Icons selects the fallback tier (IconsNerd/IconsUnicode/IconsASCII)
+	// for the picker's own semantic icons — see icons.go's resolveIconSet
+	// and Model.icons(). Empty defaults to IconsUnicode, byte-identical to
+	// the picker's pre-Phase-8 hardcoded glyphs.
+	Icons string
 }
 
-// Orientation values for Layout.Orientation. LayoutLandscape (the zero
-// value) is the side-by-side split; LayoutPortrait stacks the list pane
-// above the preview pane, both spanning the full terminal width.
+// Orientation values for Layout.Orientation. The empty string means "auto":
+// the responsive width-based mode (see nextResponsiveMode) picks landscape
+// vs. portrait vs. list-only from the reported terminal size, with
+// hysteresis so a borderline resize never flaps between modes every frame.
 const (
 	LayoutLandscape = "landscape"
 	LayoutPortrait  = "portrait"
 )
-
-// minPreviewWidth is the terminal width (PL-11) below which the preview
-// panel is hidden entirely to avoid breaking the layout.
-const minPreviewWidth = 80
-
-// minPreviewHeight is the terminal height below which the preview panel is
-// hidden entirely, mirroring minPreviewWidth: a very short terminal cannot
-// fit a bordered two-pane layout without clipping either pane.
-const minPreviewHeight = 8
-
-// minListH and minPrevH are the height-axis minimum floors used when
-// splitting a portrait layout's vertical share, analogous to minList/
-// minPrev on the width axis but sized for ROWS instead of terminal COLUMNS.
-// Reusing minList/minPrev (20/10) unchanged for the height axis was the
-// root cause of the portrait-overflow bug: those floors were tuned so a
-// landscape pane keeps enough columns for readable text, not enough rows —
-// any terminal height in [8, 29] hit them and rendered a fixed ~29-line
-// block regardless of the actual reported height.
-//
-// minListH covers the list pane's own chrome (border top/bottom + query
-// line — chromeRows) plus 3 candidate rows. It must stay above chromeRows+2:
-// renderList's scroll-window logic only activates when maxRows (= listH -
-// chromeRows) is > 2 — at maxRows <= 2 it falls through to rendering every
-// candidate unbounded instead of capping — so minListH = chromeRows+3 keeps
-// maxRows at 3, just above that edge case, while still leaving room for a
-// few visible candidate rows.
-const minListH = chromeRows + 3
-
-// minPrevH reuses minPreviewHeight: it is already the terminal's own real
-// minimum height for a preview pane to render sensibly (previewChromeRows'
-// border-only chrome plus 1 body line — see capPreviewBodyLines'
-// height-previewChromeRows accounting), independent of
-// whether that height budget comes from the full terminal (landscape, where
-// both panes share m.height) or a height-axis split share (portrait, where
-// the preview only gets prevH).
-const minPrevH = minPreviewHeight
-
-// minPortraitHeight is the raw terminal height (m.height, before View's
-// footer-line subtraction) below which portrait mode falls back to the
-// list-only single-pane layout — the same fallback landscape already uses
-// via minPreviewHeight — instead of attempting a stacked split that cannot
-// honour minListH+minPrevH without overflowing. Derived as minListH+
-// minPrevH+1 (mirroring clampWidths'/clampSizes' own list+prev+1 overflow
-// invariant) applied to the budget portrait actually receives (m.height-1,
-// one row reserved for the footer), so +1 again for that reserved row.
-const minPortraitHeight = minListH + minPrevH + 2
-
-// chromeRows is the fixed vertical overhead of the list pane deducted from
-// the reported terminal height before capping visible candidate rows: the
-// border's top+bottom edges plus the query line above the candidate rows.
-// Without this deduction the last row(s) would render past the bottom
-// border and never be visible even when scrolled all the way down.
-const chromeRows = 4
-
-// previewChromeRows is the fixed vertical overhead of the preview pane
-// deducted from the pane's outer height before capping body lines: 2
-// (border top+bottom). The preview pane has no header or help line — see
-// renderPreview — so the body gets the full remaining budget.
-const previewChromeRows = 2
 
 // ErrCancelled is the quiet cancellation sentinel returned by Run when the
 // user quits without selecting (esc/ctrl+c/ctrl+g). Callers use errors.Is to
@@ -125,107 +86,183 @@ const previewChromeRows = 2
 // with a nil error) so they can exit without printing anything.
 var ErrCancelled = errors.New("cancelled")
 
-// Model is the Bubble Tea model for the shep picker. It owns the candidate
-// list, the filtered view, the query text, the cursor and the final pick.
+// Focus identifies which pane currently owns keyboard input for
+// navigation/scrolling: FocusList (the default) routes up/down/left/right to
+// the row cursor and query editing; FocusPreview routes them to the preview
+// viewport's scroll position instead; FocusHelp is the modal "?" help
+// overlay — it is NOT a member of the Tab/Shift+Tab ring (see focusRing in
+// keys.go), it only opens from FocusList/FocusPreview (recording that state
+// in Model.prevFocus) and only closes via "?" or Esc, restoring prevFocus.
+type Focus int
+
+const (
+	FocusList Focus = iota
+	FocusPreview
+	FocusHelp
+)
+
+// Model is the Bubble Tea model for the shep picker.
 type Model struct {
+	// candidates is the flat, ungrouped candidate set as supplied by the
+	// caller (== baseCandidates for a tree-wired model — see
+	// newModelWithTreeLayout).
 	candidates []source.Candidate
-	filtered   []int // indices into candidates
-	query      string
-	cursor     int
-	width      int
-	height     int
-	selected   int // -1 until a candidate is chosen
-	cancelled  bool
-	layout     Layout
+	// baseCandidates is the immutable flat set a tree-wired model
+	// (NewModelWithTree) was constructed from; nil for a plain
+	// NewModel/NewModelWithLayout model (no tree, no children ever
+	// synthesized — see fetchAllChildren).
+	baseCandidates []source.Candidate
+	// tree fetches/caches a Herdr workspace's tabs+panes so buildRows can
+	// synthesize RowTab/RowPane children. nil means tree-expand is
+	// inactive: every group's candidates render flat with no descendants.
+	tree *TreeExpander
+
+	// rows is the current visible, grouped row list — the single source of
+	// truth for rendering and navigation. Rebuilt by applyFilter whenever
+	// the query, expand/collapse state, or tree contents change.
+	rows   []Row
+	cursor int // index into rows
+
+	query  string
+	width  int
+	height int
+	// mode is the resolved responsive display mode ("wide"/"stacked"/
+	// "list-only"), recomputed on every tea.WindowSizeMsg (see
+	// nextResponsiveMode) — never inside View, which must stay a pure
+	// projection of already-settled state.
+	mode string
+
+	selected    source.Candidate
+	hasSelected bool
+	cancelled   bool
+	layout      Layout
+	theme       Theme
+	styles      styleSet
 
 	// currentPane is the Herdr pane shep is running inside, queried once by
 	// the caller and threaded in via WithCurrentPane. nil means "no current
-	// pane" (shep is not running inside a Herdr workspace pane, or the query
-	// failed): the footer's ctrl+t/ctrl+p hints are hidden entirely and
-	// handleKey ignores both bindings in that case (see selectWithTarget).
+	// pane": the footer's ctrl+t/ctrl+p hints are hidden and handleKey
+	// ignores both bindings (see selectWithTarget).
 	currentPane *source.Pane
 	// chosenTarget records which target the user picked via ctrl+t ("tab")
-	// or ctrl+p ("pane"). Empty means no override: enter was pressed (or the
-	// run was cancelled), and the caller's --target flag value applies
-	// unchanged. Set by selectWithTarget, read back via ChosenTarget once
-	// Run returns.
+	// or ctrl+p ("pane"). Empty means enter was pressed (or the run was
+	// cancelled), so the caller's --target flag value applies unchanged.
 	chosenTarget string
 
-	// renderer produces the preview pane content asynchronously. nil is valid
-	// (tests, or wiring not yet available) and degrades to a built-in
-	// label/path/source summary with no async requests.
+	// renderer produces the preview pane content asynchronously for a
+	// RowCandidate row. nil degrades to a built-in label/path/source
+	// summary with no async requests.
 	renderer  preview.Renderer
 	renderCtx context.Context
-	// previewSeq tags every in-flight preview render. A previewResponseMsg
-	// whose seq no longer matches is stale (the user moved on) and is
-	// discarded (PL-11).
-	previewSeq     int
-	previewText    string
-	previewLoading bool
-	// previewErr holds a short user-visible message when Render itself
-	// returned a real error (context cancellation, or any future Renderer
-	// implementation) — a mechanism distinct from the removed Result.Warning
-	// field. Empty after any successful render or on selection change.
+	// previewSeq tags every in-flight preview render (candidate or pane
+	// buffer); a response whose seq no longer matches is stale and
+	// discarded.
+	previewSeq  int
+	previewText string
+	// previewSections stores the structured Result.Sections from the last
+	// successful async candidate render, so preview_body.go can consume
+	// each section by Kind without parsing the joined text. nil when no
+	// render has resolved (loading), when the renderer returned no Sections
+	// (safe degradation to compact identity), or when the current row is
+	// not a RowCandidate (RowPane uses panePreviewMsg, which is raw text).
+	previewSections []preview.Section
+	previewLoading  bool
+	// previewErr holds a short user-visible message when Render (or
+	// TreeExpander.ReadPane) itself returned a real error. Empty after any
+	// successful render or on selection change.
 	previewErr string
 
-	// baseCandidates is the immutable flat candidate set a tree-wired model
-	// (NewModelWithTree) was constructed from. applyFilter's tree branch
-	// ranks and re-derives m.candidates from this slice on every keystroke
-	// instead of mutating it, so an empty query can always restore the
-	// original flat rows with zero drift. nil for a plain NewModel/
-	// NewModelWithLayout model (tree is also nil there — see applyFilter).
-	baseCandidates []source.Candidate
-	// tree fetches and caches a Herdr workspace's tabs/panes so applyFilter
-	// can synthesize child rows under a matching SourceHerdr parent. nil
-	// means tree-expand is inactive and applyFilter uses the flat behavior
-	// unchanged (see applyFlatFilter).
-	tree *TreeExpander
+	// expandedWorkspaces is the set of Herdr workspace_ids the user
+	// manually expanded (Left/Right/Enter on a RowCandidate) at an empty
+	// query — progressive disclosure: an empty query never shows any
+	// workspace's tabs/panes unless the user asked for them (see
+	// expandedChildren in rows.go).
+	expandedWorkspaces map[string]bool
+	// sourceOrder is the resolved row-group iteration order (see
+	// Layout.SourceOrder), threaded straight into every rowBuildInput by
+	// applyFilter.
+	sourceOrder []string
+
+	// focus is which pane currently owns up/down/left/right/page navigation.
+	focus Focus
+	// prevFocus is the focus state (FocusList or FocusPreview) recorded the
+	// moment "?" opens FocusHelp, so closing help ("?" or Esc) restores
+	// keyboard focus to wherever the user actually was instead of always
+	// snapping back to the list.
+	prevFocus Focus
+	// viewport backs the preview pane's internal scroll position. Its
+	// Width/Height/Content are refreshed every Update call (syncViewport) —
+	// transient, never itself the source of truth for preview text — so
+	// only YOffset (mutated while focus==FocusPreview) needs to persist
+	// across renders.
+	viewport viewport.Model
+	// helpViewport backs the "?" help overlay's own scroll position,
+	// independent of the preview pane's viewport. Its Width/Height/Content
+	// are refreshed every Update call (syncHelpViewport) so the help body
+	// text is never silently clipped at a short terminal height — only
+	// YOffset (mutated while focus==FocusHelp) needs to persist.
+	helpViewport viewport.Model
+
+	// spinner animates the "loading…" preview indicator. spinnerRunning
+	// guards against scheduling more than one tick loop: a fresh
+	// spinner.Tick() Cmd is only ever issued on the false->true edge of
+	// previewLoading (see syncPreviewAfterSelectionChange/handleSpinnerTick),
+	// and the loop self-terminates (returns no further Cmd) the moment
+	// previewLoading goes false, rather than ticking forever in the
+	// background.
+	spinner        spinner.Model
+	spinnerRunning bool
 }
 
-// previewResponseMsg carries the result of an async preview render. seq must
-// match the model's current previewSeq or the response is stale and ignored.
+// previewResponseMsg carries the result of an async candidate preview
+// render. seq must match the model's current previewSeq or the response is
+// stale and ignored.
 type previewResponseMsg struct {
 	seq    int
 	result preview.Result
 	err    error
 }
 
-// NewModel builds a model over the supplied candidates. The filtered view is
-// initialised to every candidate in order; width/height are populated by the
-// first WindowSizeMsg. renderer may be nil, in which case the preview pane
-// shows a static label/path/source summary instead of an async render.
+// panePreviewMsg carries the result of an async RowPane buffer capture
+// (TreeExpander.ReadPane). seq must match the model's current previewSeq or
+// the response is stale and ignored — identical contract to
+// previewResponseMsg, kept as a distinct type so Update's type switch stays
+// exhaustive and self-documenting about which preview path produced it.
+type panePreviewMsg struct {
+	seq  int
+	text string
+	err  error
+}
+
+// NewModel builds a model over the supplied candidates. renderer may be nil,
+// in which case the preview pane shows a static built-in summary instead of
+// an async render.
 func NewModel(candidates []source.Candidate, renderer preview.Renderer) Model {
 	return newModel(candidates, renderer, context.TODO())
 }
 
 // NewModelWithLayout builds a model like NewModel but with an explicit
-// Layout (list/preview widths and orientation) — e.g. the caller's loaded
-// config.TUIConfig threaded through layoutFromConfig. This lets a caller
-// construct and drive a Model (Update/View) directly, without going through
-// the full Run bubbletea program loop, when it only needs to seed the
-// picker's session-only starting orientation.
+// Layout (list/preview widths, orientation override, and theme).
 func NewModelWithLayout(candidates []source.Candidate, renderer preview.Renderer, layout Layout) Model {
 	return newModelWithLayout(candidates, renderer, context.TODO(), layout)
 }
 
 // NewModelWithTree builds a tree-expand-aware model: candidates is the flat
-// base row set (retained as baseCandidates so an empty query can always
-// restore it), and tree fetches/caches each SourceHerdr candidate's
-// tabs/panes so applyFilter can synthesize matching child rows under it on a
-// non-empty query (R1-R3). A nil tree degrades to identical flat behavior
-// (see applyFilter), so this constructor is always safe to call even when
-// the caller has no HerdrDriver wired.
+// base row set (retained as baseCandidates), and tree fetches/caches each
+// SourceHerdr candidate's tabs/panes so buildRows can synthesize matching
+// RowTab/RowPane children. A nil tree degrades to identical flat-per-group
+// behavior, so this constructor is always safe to call even when the caller
+// has no HerdrDriver wired.
 func NewModelWithTree(candidates []source.Candidate, renderer preview.Renderer, tree *TreeExpander, layout Layout) Model {
 	return newModelWithTreeLayout(candidates, renderer, context.TODO(), tree, layout)
 }
 
-// newModelWithTreeLayout composes newModelWithLayout (no duplicated flat
-// construction logic) and attaches baseCandidates/tree on top.
 func newModelWithTreeLayout(candidates []source.Candidate, renderer preview.Renderer, renderCtx context.Context, tree *TreeExpander, layout Layout) Model {
 	m := newModelWithLayout(candidates, renderer, renderCtx, layout)
 	m.baseCandidates = make([]source.Candidate, len(candidates))
 	copy(m.baseCandidates, candidates)
 	m.tree = tree
+	m.applyFilter()
 	return m
 }
 
@@ -237,93 +274,128 @@ func newModelWithLayout(candidates []source.Candidate, renderer preview.Renderer
 	if renderCtx == nil {
 		renderCtx = context.TODO()
 	}
+	theme := resolveTheme(layout.Theme)
+	styles := newPalette(theme)
 	m := Model{
-		candidates: make([]source.Candidate, len(candidates)),
-		filtered:   make([]int, len(candidates)),
-		selected:   -1,
-		renderer:   renderer,
-		renderCtx:  renderCtx,
-		layout:     layout,
+		candidates:         make([]source.Candidate, len(candidates)),
+		selected:           source.Candidate{},
+		renderer:           renderer,
+		renderCtx:          renderCtx,
+		layout:             layout,
+		theme:              theme,
+		styles:             styles,
+		expandedWorkspaces: map[string]bool{},
+		sourceOrder:        layout.SourceOrder,
+		spinner:            spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(styles.previewLoadingStyle)),
+		// mode starts "" (unknown/not yet sized): View treats "" the same
+		// as modeWide (side-by-side, using the same width<=0 fallback
+		// splitSizes already applies) until the first real
+		// tea.WindowSizeMsg arrives and nextResponsiveMode takes over —
+		// matching the previous picker's "landscape by default in a
+		// headless/test context" behavior.
 	}
 	copy(m.candidates, candidates)
-	for i := range candidates {
-		m.filtered[i] = i
-	}
+	m.applyFilter()
 	m.refreshPreviewLoadingFlag()
 	return m
 }
 
 // Selected returns the chosen candidate and ok=true after enter is pressed.
 // ok=false means the user cancelled or has not selected yet.
-func (m Model) Selected() (source.Candidate, bool) {
-	if m.selected < 0 || m.selected >= len(m.filtered) {
-		return source.Candidate{}, false
-	}
-	idx := m.filtered[m.selected]
-	if idx < 0 || idx >= len(m.candidates) {
-		return source.Candidate{}, false
-	}
-	return m.candidates[idx], true
-}
+func (m Model) Selected() (source.Candidate, bool) { return m.selected, m.hasSelected }
 
 // Cancelled reports whether the user quit without selecting
-// (esc/q/ctrl+c/ctrl+g).
+// (esc/ctrl+c/ctrl+g).
 func (m Model) Cancelled() bool { return m.cancelled }
 
 // Layout returns the model's current session-only Layout (list/preview
-// widths and orientation), reflecting any live ctrl+l toggle. It never
-// reads back from — or writes to — the config.TUIConfig the caller may have
-// built it from; see toggleLayoutOrientation.
+// widths, orientation override, theme), reflecting any live ctrl+l toggle.
+// It never reads back from — or writes to — the config.TUIConfig the caller
+// may have built it from.
 func (m Model) Layout() Layout { return m.layout }
 
+// icons resolves this Model's configured icon fallback tier from
+// Layout.Icons — see resolveIconSet. Computed on demand (not cached as a
+// Model field) so every existing test/production construction path,
+// including a bare Model{} literal with a zero-value Layout, resolves the
+// same backward-compatible IconsUnicode default without needing to be
+// updated for Phase 8.
+func (m Model) icons() IconSet {
+	return resolveIconSet(m.layout.Icons)
+}
+
 // ChosenTarget returns the target the user picked via ctrl+t ("tab") or
-// ctrl+p ("pane"). Empty means no override — enter was pressed, or the run
-// was cancelled — so the caller's --target flag value applies unchanged.
+// ctrl+p ("pane"). Empty means enter was pressed, or the run was cancelled.
 func (m Model) ChosenTarget() string { return m.chosenTarget }
 
 // WithCurrentPane returns a copy of m with currentPane set to p. Run calls
 // this to thread the Herdr pane shep is running inside into the model
-// before driving it, so the footer hints and ctrl+t/ctrl+p bindings can
-// react to it without extending every existing NewModel/NewModelWithLayout
-// call site (most of which never need a current pane at all).
+// before driving it.
 func (m Model) WithCurrentPane(p *source.Pane) Model {
 	m.currentPane = p
 	return m
 }
 
 // Init kicks off the first async preview render for the initially
-// highlighted candidate (cursor 0) when a Renderer is wired. Its Cmd is
-// tagged with the model's initial previewSeq (0) so the resulting
-// previewResponseMsg is accepted, not treated as stale.
+// highlighted row when a Renderer (or tree, for a pane row) is wired.
 func (m Model) Init() tea.Cmd {
-	if m.renderer != nil {
-		if cand, ok := m.currentCandidate(); ok {
-			return m.previewCmd(m.previewSeq, cand)
-		}
-	}
-	return nil
+	return m.initialPreviewCmd()
 }
 
-// Update handles key presses, window sizing and async preview responses. It
-// mutates a copy of the model and returns it; the Bubble Tea runtime
-// replaces the model with the returned value.
+// Update handles key presses, window sizing, and async preview responses.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		return m, nil
+		m.mode = nextResponsiveMode(m, m.mode)
+		m.degradeFocusIfPreviewUnavailable()
 	case previewResponseMsg:
-		return m.handlePreviewResponse(msg), nil
+		m = m.handlePreviewResponse(msg)
+	case panePreviewMsg:
+		m = m.handlePanePreviewResponse(msg)
+	case spinner.TickMsg:
+		m, cmd = m.handleSpinnerTick(msg)
 	case tea.KeyMsg:
-		return m.handleKey(msg)
+		var next tea.Model
+		next, cmd = m.handleKey(msg)
+		m = next.(Model)
 	}
-	return m, nil
+	m.syncViewport()
+	m.syncHelpViewport()
+	return m, cmd
 }
 
-// handlePreviewResponse applies a completed async render, discarding it as
-// stale when its seq no longer matches the model's current previewSeq (the
-// user has since highlighted a different candidate) — PL-11.
+// degradeFocusIfPreviewUnavailable corrects m.focus/m.prevFocus after a
+// resize that just resolved to modeListOnly (no preview pane at all): a
+// stale FocusPreview would otherwise strand the user — cycleFocusForward/
+// Backward are no-op in modeListOnly (nothing to Tab back to) and
+// handlePreviewFocusedKey keeps routing every key regardless of m.mode, so
+// Down/Enter/Tab would all be silently swallowed. Called only from the
+// tea.WindowSizeMsg branch of Update, right after m.mode is recomputed.
+//
+// Two cases:
+//   - m.focus == FocusPreview: refocus straight to FocusList.
+//   - m.focus == FocusHelp with m.prevFocus == FocusPreview: the overlay
+//     stays open (a resize must never silently close Help), but the
+//     recorded prevFocus is degraded to FocusList so closing Help
+//     afterwards ("?"/Esc) restores an available focus instead of the
+//     now-stale FocusPreview.
+func (m *Model) degradeFocusIfPreviewUnavailable() {
+	if m.mode != modeListOnly {
+		return
+	}
+	if m.focus == FocusPreview {
+		m.focus = FocusList
+	}
+	if m.focus == FocusHelp && m.prevFocus == FocusPreview {
+		m.prevFocus = FocusList
+	}
+}
+
+// handlePreviewResponse applies a completed async candidate render,
+// discarding it as stale when its seq no longer matches previewSeq.
 func (m Model) handlePreviewResponse(msg previewResponseMsg) Model {
 	if msg.seq != m.previewSeq {
 		return m
@@ -332,1027 +404,50 @@ func (m Model) handlePreviewResponse(msg previewResponseMsg) Model {
 	if msg.err != nil {
 		m.previewErr = "preview error"
 		m.previewText = ""
+		m.previewSections = nil
 		return m
 	}
 	m.previewErr = ""
 	m.previewText = msg.result.Text
+	m.previewSections = msg.result.Sections
 	return m
 }
 
-// handleKey applies one key press. Enter/esc/quit exit immediately; the
-// remaining navigation/filter keys mutate cursor/query state and then, if the
-// highlighted candidate changed, enqueue a fresh async preview render so
-// cursor movement never blocks on preview generation (PL-11).
-func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "enter":
-		if len(m.filtered) > 0 {
-			m.selected = m.cursor
-			return m, tea.Quit
-		}
-		return m, nil
-	case "esc", "q", "ctrl+c", "ctrl+g":
-		m.cancelled = true
-		return m, tea.Quit
-	case "ctrl+l":
-		m.toggleLayoutOrientation()
-		return m, nil
-	case "ctrl+t":
-		return m.selectWithTarget("tab")
-	case "ctrl+p":
-		return m.selectWithTarget("pane")
+// handlePanePreviewResponse applies a completed async RowPane buffer
+// capture, discarding it as stale when its seq no longer matches
+// previewSeq — identical contract to handlePreviewResponse.
+func (m Model) handlePanePreviewResponse(msg panePreviewMsg) Model {
+	if msg.seq != m.previewSeq {
+		return m
 	}
+	m.previewLoading = false
+	if msg.err != nil {
+		m.previewErr = ""
+		m.previewText = ""
+		return m
+	}
+	m.previewText = msg.text
+	return m
+}
 
-	prevKey := m.currentPreviewKey()
-	switch msg.String() {
-	// ctrl+j/ctrl+k navigate the cursor; plain "j"/"k" are intentionally NOT
-	// listed here so they fall through to the default case and get typed into
-	// the query instead of moving the cursor.
-	case "down", "ctrl+j":
-		if len(m.filtered) > 0 && m.cursor < len(m.filtered)-1 {
-			m.cursor++
-		}
-	case "up", "ctrl+k":
-		if m.cursor > 0 {
-			m.cursor--
-		}
-	case "backspace":
-		if len(m.query) > 0 {
-			m.query = m.query[:len(m.query)-1]
-			m.applyFilter()
-		}
-	default:
-		// Any other printable rune is appended to the query and re-filters.
-		if isPrintable(msg.String()) {
-			m.query += msg.String()
-			m.applyFilter()
-		}
+// handleSpinnerTick advances the loading spinner while spinnerNeeded() is
+// still true (a preview render in flight, or a visible working-status pane
+// icon), and lets the tick loop die (returns a nil Cmd) the moment neither
+// condition holds — the single mechanism preventing more than one live tick
+// loop (see spinnerRunning's doc comment).
+func (m Model) handleSpinnerTick(msg spinner.TickMsg) (Model, tea.Cmd) {
+	if !m.spinnerNeeded() {
+		m.spinnerRunning = false
+		return m, nil
 	}
-	cmd := m.syncPreviewAfterSelectionChange(prevKey)
+	var cmd tea.Cmd
+	m.spinner, cmd = m.spinner.Update(msg)
 	return m, cmd
-}
-
-// selectWithTarget handles ctrl+t ("tab") and ctrl+p ("pane"): when shep is
-// running inside a Herdr pane (currentPane != nil), there is a highlighted
-// candidate to launch (filtered is non-empty), and that candidate supports a
-// current-workspace target (source.SupportsCurrentWorkspaceTarget — command
-// workspaces, zoxide, projects), it selects the highlighted candidate
-// exactly like enter, records target as the chosen launch target (read back
-// via ChosenTarget), and quits. It is a no-op — the binding is disabled —
-// when currentPane is nil (the tab/pane launch targets require shep to
-// already be running inside a Herdr workspace pane; see
-// App.launchInCurrentWorkspace), when filtered is empty (no candidate is
-// highlighted, mirroring enter's own len(m.filtered) > 0 guard — without
-// this, chosenTarget would be set for a launch that never had a candidate),
-// or when the highlighted candidate is not target-supported (an already-open
-// herdr workspace, a template/group entry, or a plain path with no command —
-// App.launchInCurrentWorkspace would otherwise reject it after the TUI has
-// already quit, which reads as a crash instead of simply staying put).
-func (m Model) selectWithTarget(target string) (tea.Model, tea.Cmd) {
-	if m.currentPane == nil || len(m.filtered) == 0 {
-		return m, nil
-	}
-	cand, ok := m.currentCandidate()
-	if !ok || !source.SupportsCurrentWorkspaceTarget(cand) {
-		return m, nil
-	}
-	m.selected = m.cursor
-	m.chosenTarget = target
-	return m, tea.Quit
-}
-
-// toggleLayoutOrientation flips m.layout.Orientation between landscape and
-// portrait for the current session only (ctrl+l). This never touches the
-// loaded config.TUIConfig — Model only ever holds the Layout value it was
-// constructed with, so there is nothing here to persist back to disk.
-func (m *Model) toggleLayoutOrientation() {
-	if m.layout.Orientation == LayoutPortrait {
-		m.layout.Orientation = LayoutLandscape
-		return
-	}
-	m.layout.Orientation = LayoutPortrait
-}
-
-// syncPreviewAfterSelectionChange compares the highlighted candidate before
-// and after a key mutated cursor/query state. When the highlight changed, it
-// clears the previous candidate's previewText (so a stale render arriving
-// out of order can never flash the wrong candidate's text), bumps
-// previewSeq (invalidating any in-flight render for the old candidate),
-// flips on the loading indicator, and returns the Cmd for the new async
-// render. A nil renderer or an unchanged highlight returns a nil Cmd. A
-// SourceHerdrTab child row (tree-expand, R3) also returns a nil Cmd: its
-// preview is always the built-in summary (see previewBody), never an async
-// render, so no in-flight request is ever queued for it.
-func (m *Model) syncPreviewAfterSelectionChange(prevKey string) tea.Cmd {
-	if m.renderer == nil {
-		return nil
-	}
-	newKey := m.currentPreviewKey()
-	if newKey == prevKey {
-		return nil
-	}
-	m.previewSeq++
-	m.previewText = ""
-	m.previewErr = ""
-	if newKey == "" {
-		m.previewLoading = false
-		return nil
-	}
-	cand, _ := m.currentCandidate()
-	if cand.Source == config.SourceHerdrTab {
-		m.previewLoading = false
-		return nil
-	}
-	m.previewLoading = true
-	return m.previewCmd(m.previewSeq, cand)
-}
-
-// previewCmd builds the async Bubble Tea Cmd that renders cand through the
-// injected Renderer and reports back as previewResponseMsg tagged with seq,
-// so a stale in-flight render (from a since-abandoned cursor position) can be
-// discarded by Update.
-func (m Model) previewCmd(seq int, cand source.Candidate) tea.Cmd {
-	renderer := m.renderer
-	renderCtx := m.renderCtx
-	return func() tea.Msg {
-		res, err := renderer.Render(renderCtx, cand)
-		return previewResponseMsg{seq: seq, result: res, err: err}
-	}
-}
-
-// refreshPreviewLoadingFlag sets previewLoading to match whether a renderer
-// is wired and a candidate is currently highlighted. Used at construction so
-// the first frame shows the loading indicator immediately when an async
-// render for the initial cursor is in flight.
-func (m *Model) refreshPreviewLoadingFlag() {
-	if m.renderer == nil {
-		m.previewLoading = false
-		return
-	}
-	_, ok := m.currentCandidate()
-	m.previewLoading = ok
-}
-
-// currentCandidate returns the candidate under the cursor in the filtered
-// view, or ok=false when there is nothing to highlight (empty filter result).
-func (m Model) currentCandidate() (source.Candidate, bool) {
-	if len(m.filtered) == 0 {
-		return source.Candidate{}, false
-	}
-	idx := m.cursor
-	if idx < 0 || idx >= len(m.filtered) {
-		idx = 0
-	}
-	ci := m.filtered[idx]
-	if ci < 0 || ci >= len(m.candidates) {
-		return source.Candidate{}, false
-	}
-	return m.candidates[ci], true
-}
-
-// currentPreviewKey identifies the highlighted candidate for before/after
-// comparisons: the normalised path when present, else the raw path, else ""
-// when nothing is highlighted.
-func (m Model) currentPreviewKey() string {
-	cand, ok := m.currentCandidate()
-	if !ok {
-		return ""
-	}
-	if cand.NormalizedPath != "" {
-		return cand.NormalizedPath
-	}
-	return cand.Path
-}
-
-// applyFilter recomputes the filtered indices from the query.
-//
-// With no query every candidate is kept in its original (provider) order:
-// ranking is meaningless when nothing was typed, and existing UX/tests depend on
-// the un-ranked order.
-//
-// With a query, candidates are ranked by github.com/sahilm/fuzzy — the same
-// scored matcher bubbles/list and gum use (Sublime Text/VSCode style). Each
-// candidate is searched over its "label path" haystack (via candidateSource, so
-// no intermediate []string is allocated per keystroke) and fuzzy.FindFrom
-// returns matches already sorted best-match-first (first-character,
-// camelCase-boundary, separator-boundary and adjacency matches all score
-// higher, with penalties for unmatched and leading characters). We do NOT
-// re-sort: the library order is the contract.
-//
-// sahilm/fuzzy matches case-insensitively via equalFold (see its fuzzy.go) while
-// still using the haystack's real case for camelCase scoring, so we intentionally
-// do NOT strings.ToLower anything — lowercasing would erase the camelCase signal
-// that is the main reason for adopting this matcher.
-//
-// The cursor is clamped back into range at the end so an empty result never
-// leaves a dangling cursor.
-//
-// A tree-wired model (m.tree != nil, via NewModelWithTree) delegates to
-// applyTreeFilter instead: an empty query restores the flat baseCandidates
-// (R1) and a non-empty query splices matching synthesized Herdr-tab child
-// rows in under their parent (R2). Every other model (m.tree == nil) keeps
-// this exact flat behavior unchanged.
-func (m *Model) applyFilter() {
-	if m.tree != nil {
-		m.applyTreeFilter()
-		return
-	}
-	m.filtered = m.filtered[:0]
-	if m.query == "" {
-		for i := range m.candidates {
-			m.filtered = append(m.filtered, i)
-		}
-	} else {
-		for _, mt := range fuzzy.FindFrom(m.query, candidateSource(m.candidates)) {
-			m.filtered = append(m.filtered, mt.Index)
-		}
-	}
-	m.clampCursor()
-}
-
-// clampCursor pulls the cursor back into [0, len(filtered)) so an empty (or
-// shrunk) filtered result never leaves a dangling cursor. Factored out of
-// applyFilter so applyTreeFilter shares the exact same invariant.
-func (m *Model) clampCursor() {
-	if m.cursor >= len(m.filtered) {
-		m.cursor = max(len(m.filtered)-1, 0)
-	}
-}
-
-// applyTreeFilter is applyFilter's tree-expand branch (m.tree != nil). An
-// empty query restores the immutable baseCandidates with zero fetch (R1);
-// a non-empty query rebuilds m.candidates via expandTreeFilteredRows, which
-// ranks baseCandidates and splices matching child rows in under each
-// matching SourceHerdr parent (R2). filtered is always every index of the
-// freshly rebuilt m.candidates in order — expandTreeFilteredRows already
-// did the ranking, so no second fuzzy pass over the merged rows is needed.
-func (m *Model) applyTreeFilter() {
-	if m.query == "" {
-		m.restoreFlatCandidates()
-		return
-	}
-	m.candidates = m.expandTreeFilteredRows()
-	m.filtered = m.filtered[:0]
-	for i := range m.candidates {
-		m.filtered = append(m.filtered, i)
-	}
-	m.clampCursor()
-}
-
-// restoreFlatCandidates resets m.candidates to a fresh copy of baseCandidates
-// (never aliasing it, so a later applyTreeFilter splice cannot mutate the
-// original) and re-flattens filtered — the R1 empty-query contract.
-func (m *Model) restoreFlatCandidates() {
-	m.candidates = make([]source.Candidate, len(m.baseCandidates))
-	copy(m.candidates, m.baseCandidates)
-	m.filtered = m.filtered[:0]
-	for i := range m.candidates {
-		m.filtered = append(m.filtered, i)
-	}
-	m.clampCursor()
-}
-
-// expandTreeFilteredRows ranks baseCandidates by m.query against
-// treeParentSource — each SourceHerdr parent's haystack is its own
-// "label path" extended with every one of its already-synthesized
-// children's haystacks, so a workspace whose OWN label/path does not match
-// the query still ranks (and is kept in the filtered list) when one of its
-// open tabs does (R2's "single tab match expands only that tab" contract:
-// the parent W is kept even though only tab T1 matches). For each ranked
-// parent, its matching children (matchingChildren — re-filtered
-// independently so a non-matching sibling tab is excluded) are spliced in
-// directly after it.
-func (m *Model) expandTreeFilteredRows() []source.Candidate {
-	childrenByParent := m.fetchAllChildren()
-	ranked := fuzzy.FindFrom(m.query, treeParentSource{parents: m.baseCandidates, children: childrenByParent})
-	out := make([]source.Candidate, 0, len(ranked))
-	for _, mt := range ranked {
-		out = append(out, m.baseCandidates[mt.Index])
-		out = append(out, matchingChildren(m.query, childrenByParent[mt.Index])...)
-	}
-	return out
-}
-
-// fetchAllChildren returns, indexed like m.baseCandidates, the synthesized
-// child rows for every SourceHerdr parent whose TreeExpander.Fetch succeeds.
-// A non-Herdr candidate, or a Fetch miss (cache miss + driver error), leaves
-// that index nil — zero children for this filter pass (R6's
-// degrade-gracefully contract), never a crash or a stale/poisoned cache
-// entry. Called once per non-empty-query filter pass; repeated keystrokes
-// within TreeExpander's TTL window hit the cache instead of re-issuing
-// ListTabs/ListPanes (R6).
-func (m *Model) fetchAllChildren() [][]source.Candidate {
-	out := make([][]source.Candidate, len(m.baseCandidates))
-	for i, cand := range m.baseCandidates {
-		if cand.Source != config.SourceHerdr {
-			continue
-		}
-		tree, ok := m.tree.Fetch(m.renderCtx, cand.Meta["workspace_id"])
-		if !ok {
-			continue
-		}
-		out[i] = synthesizeChildren(cand.Meta["workspace_id"], cand.Path, tree.Tabs, tree.Panes)
-	}
-	return out
-}
-
-// treeParentSource adapts baseCandidates to fuzzy.Source for
-// expandTreeFilteredRows' ranking pass: each parent's haystack is its own
-// candidateSource haystack extended with every already-synthesized child's
-// haystack (same shape, reusing candidateSource for both), so a parent
-// ranks whenever it OR any of its children matches the query.
-type treeParentSource struct {
-	parents  []source.Candidate
-	children [][]source.Candidate
-}
-
-func (s treeParentSource) String(i int) string {
-	haystack := candidateSource(s.parents).String(i)
-	for _, c := range s.children[i] {
-		haystack += " " + candidateSource{c}.String(0)
-	}
-	return haystack
-}
-
-// Len reports the number of parents, satisfying fuzzy.Source.
-func (s treeParentSource) Len() int { return len(s.parents) }
-
-// candidateSource adapts []source.Candidate to fuzzy.Source so applyFilter can
-// match directly against each candidate's "label path" haystack without
-// allocating an intermediate []string on every keystroke. It preserves the
-// exact same haystack the previous boolean matcher used (label + " " + path),
-// so the UX of matching against either field is unchanged.
-type candidateSource []source.Candidate
-
-// String returns the searchable haystack for candidate i: its label and path
-// joined by a space. The original (mixed) case is kept on purpose so
-// sahilm/fuzzy can award camelCase-boundary bonuses.
-func (cs candidateSource) String(i int) string {
-	c := cs[i]
-	return c.Label + " " + c.Path
-}
-
-// Len reports the number of candidates, satisfying fuzzy.Source.
-func (cs candidateSource) Len() int { return len(cs) }
-
-// isPrintable returns true for single-rune printable input that should extend
-// the query. We avoid pulling in unicode classes for the v1 picker.
-func isPrintable(s string) bool {
-	if s == "" || len([]rune(s)) != 1 {
-		return false
-	}
-	r := []rune(s)[0]
-	return r >= 0x20 && r != 0x7f
-}
-
-// View renders the two-pane UI plus a full-width footer line: a left
-// candidate list with the cursor and a right preview of the highlighted
-// candidate, each wrapped in a rounded border (palette.borderStyle), and
-// below both a single footer line spanning the FULL terminal width showing
-// the currently highlighted candidate's full, untruncated icon+label/path
-// (footerText) — inspired by Atuin's "always show the full command"
-// pattern, useful because the list column can be narrow and truncate rows.
-// Widths auto-balance based on the reported window size (falling back to
-// 60/40 when no size yet); the border's frame size is subtracted from each
-// pane's allotted width so content never overflows its own border. The
-// footer reserves exactly 1 line: the pane budget fed to renderList/
-// renderPreview (paneHeight, via a shallow copy so chromeRows/
-// capPreviewBodyLines accounting is unaffected otherwise) is m.height-1, not
-// m.height, so the panes shrink to make room rather than the footer
-// overflowing the reported terminal height. Below minPreviewWidth columns or
-// minPreviewHeight rows the preview pane is hidden entirely (PL-11) so a
-// narrow or very short terminal never breaks the layout. Portrait mode uses
-// its own, higher threshold (minPortraitHeight) instead of minPreviewHeight:
-// stacking list+preview needs room for BOTH panes' own minimum floors
-// (minListH+minPrevH), which landscape's side-by-side share of the full
-// m.height does not.
-func (m Model) View() string {
-	paneHeight := m.height
-	if paneHeight > 0 {
-		paneHeight--
-	}
-	paneModel := m
-	paneModel.height = paneHeight
-
-	minHeightForPreview := minPreviewHeight
-	if m.layout.Orientation == LayoutPortrait {
-		minHeightForPreview = minPortraitHeight
-	}
-	hidePreview := (m.width > 0 && m.width < minPreviewWidth) ||
-		(m.height > 0 && m.height < minHeightForPreview)
-
-	footer := m.renderFooter()
-
-	var body string
-	switch {
-	case hidePreview:
-		body = paneBoxStyle(paneHeight).Render(paneModel.renderList(paneContentWidth(m.width)))
-	case m.layout.Orientation == LayoutPortrait:
-		body = paneModel.renderPortrait()
-	default:
-		listW, prevW := splitWidths(m.width, m.layout)
-		listPane := paneBoxStyle(paneHeight).Render(paneModel.renderList(paneContentWidth(listW)))
-		previewPane := paneBoxStyle(paneHeight).Render(paneModel.renderPreview(paneContentWidth(prevW)))
-		body = lipgloss.JoinHorizontal(lipgloss.Top, listPane, gap(), previewPane)
-	}
-	return lipgloss.JoinVertical(lipgloss.Left, body, footer)
-}
-
-// footerSeparator joins the candidate label and the keybinding hints in the
-// footer line, and (via hintsFor) each individual hint segment within that
-// hints string — a single compact separator throughout the footer line.
-const footerSeparator = " / "
-
-// hintsFor returns the context-sensitive keybinding hints shown in the
-// footer for cand. enter/esc/ctrl+l are always live, so they always appear.
-// ctrl+t (open a new Herdr tab) and ctrl+p (split a new Herdr pane) only
-// appear when BOTH shep is running inside a Herdr pane (hasCurrentPane) AND
-// cand supports a current-workspace target (source.SupportsCurrentWorkspaceTarget
-// — command workspaces, zoxide, projects) — the only entries selectWithTarget
-// actually launches. Advertising a binding that would silently no-op (an
-// already-open herdr workspace, a group/template entry, a plain path, or no
-// current pane at all) would be misleading, so those hints are hidden
-// entirely rather than shown dimmed.
-func hintsFor(cand source.Candidate, hasCurrentPane bool) string {
-	segments := []string{formatHint("enter", "open")}
-	if hasCurrentPane && source.SupportsCurrentWorkspaceTarget(cand) {
-		segments = append(segments, formatHint("t", "tab"), formatHint("p", "pane"))
-	}
-	segments = append(segments, formatHint("esc", "cancel"), formatHint("ctrl+l", "layout"))
-	return strings.Join(segments, footerSeparator)
-}
-
-// formatHint builds one "<key> <label>" footer hint segment. Every hint
-// drops the "ctrl+" prefix for letter keys (e.g. "t tab", not "ctrl+t tab")
-// but keeps it for ctrl+l (the layout toggle is a two-key chord, unlike the
-// single-letter t/p bindings) — R4's exact contract, applied uniformly here
-// instead of repeating each literal segment inline.
-func formatHint(key, label string) string {
-	return key + " " + label
-}
-
-// renderFooter builds the full-width footer line: the currently highlighted
-// candidate's full text (footerText) followed by the context-sensitive
-// keybinding hints (hintsFor), separated by footerSeparator. When the full
-// line would overflow m.width, the hints are kept intact (they are the
-// actionable part) and the label is truncated instead — the reverse of
-// naively truncating the whole composed string, which would eat into the
-// hints first since they come last. Merged into the single existing footer
-// line (rather than a separate line) so the panes' height budget math —
-// carefully tuned around exactly one reserved footer row, see
-// minPortraitHeight — never has to change.
-func (m Model) renderFooter() string {
-	cand, _ := m.currentCandidate()
-	hints := hintsFor(cand, m.currentPane != nil)
-	label := m.footerText()
-	if m.width > 0 {
-		budget := m.width - lipgloss.Width(footerSeparator) - lipgloss.Width(hints)
-		label = truncateToWidth(label, budget)
-	}
-	full := palette.mutedStyle.Render(label) + footerSeparator + palette.mutedStyle.Render(hints)
-	return lipgloss.NewStyle().Width(m.width).Render(truncateToWidth(full, m.width))
-}
-
-// renderPortrait stacks the list pane above the preview pane, each spanning
-// the full terminal width — Television's "portrait" layout naming. list_
-// width/preview_width are reinterpreted as the size share along the height
-// (split) axis: the percent-parsing/overflow-reconciliation core (splitSizes)
-// is genuinely axis-agnostic (it only ever operates on an opaque "total" int
-// and returns two shares summing to total-1), so it is reused unchanged here
-// fed m.height instead of m.width — no new percent-parsing code. It IS fed
-// its own height-axis minimum floors (minListH/minPrevH) instead of
-// splitWidths' minList/minPrev: those are column-width floors and produced a
-// fixed, overflowing pane split when reused unchanged for rows (see
-// minListH's doc comment).
-func (m Model) renderPortrait() string {
-	listH, prevH := splitSizes(m.height, m.layout, minListH, minPrevH)
-	listModel := m
-	listModel.height = listH
-	prevModel := m
-	prevModel.height = prevH
-	listPane := paneBoxStyle(listH).Render(listModel.renderList(paneContentWidth(m.width)))
-	previewPane := paneBoxStyle(prevH).Render(prevModel.renderPreview(paneContentWidth(m.width)))
-	return lipgloss.JoinVertical(lipgloss.Left, listPane, previewPane)
-}
-
-// splitWidths divides the total reported width into list/preview pane
-// budgets (outer widths, before border+padding is subtracted), honouring
-// layout.ListWidth/PreviewWidth when set to a percentage (config.ParsePercent).
-// With only one set as a percentage, that field is authoritative and the
-// other gets the remainder (width minus the 1-column gap between panes) so
-// the two panes always sum to exactly width-1. With neither set (both
-// "auto"/empty, the zero value), the original 3/5 heuristic applies
-// unchanged. With both set, config.Load's validateTUI already rejects a
-// combination that would overflow the terminal; splitBothPercent still
-// reconciles defensively here for a Layout built outside that validated
-// path (e.g. constructed directly in tests or future callers). Each budget
-// still needs paneContentWidth to get the actual content width fed to
-// renderList/renderPreview.
-//
-// This function is axis-agnostic in principle (it only ever operates on an
-// opaque "total" int and returns two shares summing to total-1); splitSizes
-// below is the actual axis-agnostic core, parameterized on the minimum floor
-// pair so a caller splitting a HEIGHT (portrait) is never forced through
-// splitWidths' width-tuned minList/minPrev floors — see minListH's doc
-// comment for why that reuse-unchanged used to overflow.
-func splitWidths(width int, layout Layout) (int, int) {
-	return splitSizes(width, layout, minList, minPrev)
-}
-
-// splitSizes is the axis-agnostic core: it computes list/preview shares of
-// total from layout's percent config, then clamps to whichever minimum
-// floor pair the caller supplies via clampSizes — minList/minPrev (width
-// axis, splitWidths) or minListH/minPrevH (height axis, renderPortrait).
-// Column-width floors and row-height floors are NOT interchangeable (their
-// confusion was the portrait-overflow bug this parameterization fixes), so
-// every caller must supply floors tuned for its own axis.
-func splitSizes(total int, layout Layout, minA, minB int) (int, int) {
-	if total <= 0 {
-		total = 80
-	}
-	listFrac, listOK := config.PercentOrAuto(layout.ListWidth)
-	prevFrac, prevOK := config.PercentOrAuto(layout.PreviewWidth)
-
-	var a, b int
-	switch {
-	case listOK && prevOK:
-		a, b = splitBothPercent(total, listFrac, prevFrac)
-	case listOK:
-		a = int(float64(total) * listFrac)
-		b = total - a - 1
-	case prevOK:
-		b = int(float64(total) * prevFrac)
-		a = total - b - 1
-	default:
-		a = total * 3 / 5
-		b = total - a - 1
-	}
-	return clampSizes(total, a, b, minA, minB)
-}
-
-// minList and minPrev are the width-axis minimum pane floors (columns),
-// used by splitWidths/clampWidths for landscape splits. See minListH/
-// minPrevH for the height-axis equivalents used by portrait.
-const minList = 20
-const minPrev = 10
-
-// clampWidths enforces the 20/10 minimum pane widths and the invariant that
-// list+gap+prev never exceeds the reported terminal width. A one-sided
-// extreme percentage (e.g. list_width=95%) leaves almost nothing for the
-// derived remainder, which the naive minimum floor would then bump up
-// without shrinking the oversized side back down, overflowing the
-// terminal; this reconciles the two by shrinking whichever pane is above
-// its own floor first (list, then preview) to make room. When width itself
-// is too small to fit both floors plus the gap, the floors still win and
-// the result may overflow — an unavoidable floor case on a very narrow
-// terminal, not a regression from this reconciliation.
-func clampWidths(width, list, prev int) (int, int) {
-	return clampSizes(width, list, prev, minList, minPrev)
-}
-
-// clampSizes is the axis-agnostic core previously hardcoded inside
-// clampWidths as minList/minPrev: it enforces the supplied minA/minB
-// minimum floors and the invariant that a+gap+b never exceeds total,
-// reconciling any overflow by shrinking whichever share is still above its
-// own floor (a first, then b) to make room. When total itself is too small
-// to fit both floors plus the gap, the floors still win and the result may
-// overflow — an unavoidable floor case on a very narrow terminal/height,
-// not a regression from this reconciliation. Callers pick the floor pair
-// for their axis: minList/minPrev (columns, clampWidths) or minListH/
-// minPrevH (rows, renderPortrait via splitSizes).
-func clampSizes(total, a, b, minA, minB int) (int, int) {
-	if a < minA {
-		a = minA
-	}
-	if b < minB {
-		b = minB
-	}
-	if overflow := a + b + 1 - total; overflow > 0 {
-		if room := a - minA; room > 0 {
-			shrink := room
-			if shrink > overflow {
-				shrink = overflow
-			}
-			a -= shrink
-			overflow -= shrink
-		}
-		if overflow > 0 {
-			if room := b - minB; room > 0 {
-				shrink := room
-				if shrink > overflow {
-					shrink = overflow
-				}
-				b -= shrink
-			}
-		}
-	}
-	return a, b
-}
-
-// splitBothPercent computes list/preview widths when both list_width and
-// preview_width are configured percentages. listFrac is scaled down
-// proportionally whenever the two fractions would sum past 1 (100%); prev
-// is then always derived as the remainder (width-list-1), so the two
-// bordered panes plus the 1-column gap between them never exceed the
-// reported terminal width.
-func splitBothPercent(width int, listFrac, prevFrac float64) (int, int) {
-	if total := listFrac + prevFrac; total > 1 {
-		listFrac /= total
-	}
-	list := int(float64(width) * listFrac)
-	prev := width - list - 1
-	return list, prev
-}
-
-// paneContentWidth converts a pane's outer width budget into the inner
-// content width available once palette.borderStyle's border+padding are
-// subtracted. Both panes share the same borderStyle, so this is the single
-// site where border chrome is subtracted from width — no per-pane drift.
-func paneContentWidth(outer int) int {
-	inner := outer - palette.borderStyle.GetHorizontalFrameSize()
-	if inner < 1 {
-		inner = 1
-	}
-	return inner
-}
-
-// paneBoxStyle returns palette.borderStyle with a fixed content height so a
-// pane's outer border sits at exactly outerHeight rows regardless of how
-// many lines the pane's own content naturally renders — the fix for the
-// preview (and list) pane border growing/shrinking with the highlighted
-// candidate's content instead of staying anchored at its assigned budget
-// (the full pane height in landscape, or the splitSizes share in portrait).
-//
-// lipgloss.Style.Render applies Height() BEFORE the border is drawn (pads/
-// aligns the content to `height` lines, then wraps it in the border), so
-// the height passed to Height() must be the CONTENT height, i.e.
-// outerHeight minus the border's own vertical frame size (2 rows: top+
-// bottom, palette.borderStyle has no vertical padding). Height() only PADS
-// short content — it never truncates long content (lipgloss's
-// alignTextVertical returns oversized input unchanged) — so callers must
-// independently guarantee their content never exceeds outerHeight-2 lines
-// (see capPreviewBodyLines for the preview pane; renderList's maxRows cap
-// already does this for the list pane).
-//
-// outerHeight<=0 means unknown (headless/test contexts without a
-// WindowSizeMsg): the unmodified borderStyle is returned so panes still
-// render at their natural content height, matching every other height<=0
-// fallback in this file (see capPreviewBodyLines, View's hidePreview check).
-func paneBoxStyle(outerHeight int) lipgloss.Style {
-	if outerHeight <= 0 {
-		return palette.borderStyle
-	}
-	inner := outerHeight - palette.borderStyle.GetVerticalFrameSize()
-	if inner < 1 {
-		inner = 1
-	}
-	return palette.borderStyle.Height(inner)
-}
-
-func gap() string { return " " }
-
-// renderQueryLine builds the top query line: the live filter text
-// (palette.queryStyle) on the left and the match count — len(filtered), a
-// plain decimal in palette.mutedStyle — right-aligned on the right (R3),
-// when both fit within width. At a width too narrow to fit both, the count
-// is dropped entirely and the query text alone is truncated with an
-// ellipsis: the query is what the user is actively typing and must never be
-// silently cut in favor of the count.
-func renderQueryLine(query string, filteredCount, width int) string {
-	queryText := "> " + query
-	countText := strconv.Itoa(filteredCount)
-	if width < lipgloss.Width(queryText)+1+lipgloss.Width(countText) {
-		return palette.queryStyle.Width(width).Render(truncateToWidth(queryText, width))
-	}
-	line := rightPadToWidth(palette.queryStyle.Render(queryText), palette.mutedStyle.Render(countText), width)
-	return lipgloss.NewStyle().Width(width).Render(line)
-}
-
-// rightPadToWidth pads spaces between left and right so the combined line
-// occupies exactly width visible cells, right-aligning right against the
-// line's end. Used by renderQueryLine's match-count row.
-func rightPadToWidth(left, right string, width int) string {
-	pad := width - lipgloss.Width(left) - lipgloss.Width(right)
-	if pad < 0 {
-		pad = 0
-	}
-	return left + strings.Repeat(" ", pad) + right
-}
-
-// renderList draws the filtered candidates with a cursor marker and the query
-// line at the top. Every rendered line is explicitly padded to width so the
-// list pane never drifts from the split computed by View (previously rows
-// used a style-level hardcoded width instead of the width passed in here).
-func (m Model) renderList(width int) string {
-	var b strings.Builder
-	b.WriteString(renderQueryLine(m.query, len(m.filtered), width))
-	b.WriteString("\n")
-	if len(m.filtered) == 0 {
-		b.WriteString(palette.mutedStyle.Width(width).Render(truncateToWidth("  no matches", width)))
-		b.WriteString("\n")
-		return b.String()
-	}
-	// Cap visible rows to a sane height when we know it, deducting chromeRows
-	// (border top/bottom + query line) so the border never clips the last
-	// visible candidate.
-	full := m.filtered
-	maxRows := m.height
-	if maxRows > 0 {
-		maxRows -= chromeRows
-	}
-	if maxRows <= 0 {
-		maxRows = len(full)
-	}
-	// offset is the absolute index (into m.filtered) of the first visible
-	// row. Tracking it here lets the cursor check below compare the correct
-	// absolute index instead of the slice-relative index, which previously
-	// made the cursor disappear whenever the list scrolled.
-	offset := 0
-	visible := full
-	if len(full) > maxRows && maxRows > 2 {
-		offset = clamp(m.cursor-maxRows/2, 0, len(full)-maxRows)
-		visible = full[offset:]
-		if len(visible) > maxRows {
-			visible = visible[:maxRows]
-		}
-	}
-	for i, candIdx := range visible {
-		c := m.candidates[candIdx]
-		marker := "  "
-		row := candidateDisplayText(c)
-		if i+offset == m.cursor {
-			marker = " >"
-		}
-		// Truncate the full rendered text to width before styling: lipgloss's
-		// Width() word-wraps rather than truncates, so a candidate whose
-		// icon+label/path exceeds the pane's content width would otherwise
-		// wrap into 2+ physical terminal lines that the height budget above
-		// never accounts for (only counting logical candidates), silently
-		// pushing content past m.height and scrolling the top of the TUI off
-		// screen.
-		line := truncateToWidth(marker+" "+row, width)
-		if i+offset == m.cursor {
-			b.WriteString(palette.cursorStyle.Width(width).Render(line))
-		} else {
-			b.WriteString(palette.rowStyle.Width(width).Render(line))
-		}
-		b.WriteString("\n")
-	}
-	return b.String()
-}
-
-// candidateDisplayText builds the full, untruncated "icon label-or-path
-// (missing)" text for one candidate — the same construction renderList uses
-// for each row, factored out so the footer (which must show the currently
-// highlighted candidate's FULL text, not a width-truncated row) can reuse it
-// without duplicating the icon/label-or-path/missing-suffix logic.
-func candidateDisplayText(c source.Candidate) string {
-	row := c.Label
-	if row == "" {
-		row = c.Path
-	}
-	if c.Icon != "" {
-		row = c.Icon + " " + row
-	}
-	if c.Missing {
-		row += " (missing)"
-	}
-	return row
-}
-
-// footerText returns the full, untruncated display text for the currently
-// highlighted candidate (icon+label-or-path+missing-suffix, via
-// candidateDisplayText), or a muted "(no selection)" placeholder when the
-// filtered set is empty — matching previewBody's own empty-state text.
-func (m Model) footerText() string {
-	cand, ok := m.currentCandidate()
-	if !ok {
-		return "(no selection)"
-	}
-	return candidateDisplayText(cand)
-}
-
-// truncateToWidth trims s so it never exceeds maxW cells of visible width,
-// appending an ellipsis ("…") when truncation occurs. A non-positive maxW
-// returns s unchanged. Delegates to ansi.Truncate (charmbracelet/x/ansi),
-// which is ANSI-escape-aware (never severs a color/style code mid-sequence)
-// and measures wide characters (nerd font icons, emoji, East-Asian glyphs)
-// as their real cell width instead of naively counting runes. This matters
-// even though every shep built-in preview section returns plain text: a
-// user-declared [preview.commands.<name>] custom command is outside shep's
-// control and can still emit ANSI color codes, which naive rune counting
-// would miscount and potentially cut mid-escape-sequence. Used to keep the
-// query line — and any preview line — on a single row instead of wrapping
-// and pushing the list off screen.
-func truncateToWidth(s string, maxW int) string {
-	if maxW <= 0 {
-		return s
-	}
-	return ansi.Truncate(s, maxW, "…")
-}
-
-// renderPreview shows the highlighted candidate's rendered preview. There is
-// no header or help line — the keybinding hints live in the single footer
-// line (see hintsFor) so the preview pane's full budget goes to content.
-// When the terminal height is known, the body is capped to m.height -
-// previewChromeRows lines so a long output (e.g. dir or active pane content)
-// never expands infinitely and breaks JoinHorizontal / pushes the search box
-// off screen.
-func (m Model) renderPreview(width int) string {
-	body := m.previewBody(width)
-	return capPreviewBodyLines(body, m.height)
-}
-
-// capPreviewBodyLines truncates body so it never exceeds the preview pane's
-// fixed body-line budget, appending an ellipsis line in place of the last
-// surviving line when truncation occurs. height is the pane's own outer
-// height budget (m.height — already the correct per-pane budget in both
-// landscape and portrait; see View/renderPortrait), the same value fed to
-// paneBoxStyle for the border. A non-positive height (unknown) returns body
-// unchanged so previews still render fully in headless/test contexts.
-//
-// The body budget is height minus the border's 2 rows (top+bottom, see
-// paneBoxStyle) — renderPreview has no header/help chrome around the body.
-// Capping strictly to this budget is what lets paneBoxStyle's Height()
-// modifier safely PAD shorter bodies up to the same budget without ever
-// having to truncate: Height() never truncates oversized content on its
-// own (see paneBoxStyle's doc comment), so this cap is the only thing
-// standing between a long preview body and the pane overflowing past its
-// fixed bottom border.
-func capPreviewBodyLines(body string, height int) string {
-	if height <= 0 {
-		return body
-	}
-	maxLines := height - previewChromeRows
-	if maxLines < 1 {
-		maxLines = 1
-	}
-	lines := strings.Split(body, "\n")
-	if len(lines) <= maxLines {
-		return body
-	}
-	if maxLines == 1 {
-		return "…"
-	}
-	truncated := append(lines[:maxLines-1], "…")
-	return strings.Join(truncated, "\n")
-}
-
-// previewBody renders the preview pane content: "(no selection)" when
-// nothing is highlighted, a built-in label/path/source summary when no
-// Renderer is wired OR the highlighted row is a synthesized SourceHerdrTab
-// child (tree-expand, R3 — child rows never get an async render regardless
-// of whether a Renderer is wired for the parent rows), a loading indicator
-// while an async render is in flight, a short error indicator when Render
-// returned a real error, or the rendered text.
-func (m Model) previewBody(width int) string {
-	if len(m.filtered) == 0 {
-		return palette.mutedStyle.Width(width).Render(truncateToWidth("(no selection)", width))
-	}
-	cand, _ := m.currentCandidate()
-	if m.renderer == nil || cand.Source == config.SourceHerdrTab {
-		lines := []string{
-			styleLinePrefix("label  ", cand.Label, width, palette.labelStyle),
-			styleLinePrefix("path   ", cand.Path, width, palette.labelStyle),
-			styleLinePrefix("source ", cand.Source, width, palette.labelStyle),
-		}
-		return lipgloss.NewStyle().Width(width).Render(strings.Join(lines, "\n"))
-	}
-	if m.previewLoading {
-		return palette.previewLoadingStyle.Width(width).Render(truncateToWidth("loading…", width))
-	}
-	if m.previewErr != "" {
-		return palette.previewErrStyle.Width(width).Render(truncateToWidth(m.previewErr, width))
-	}
-	text := truncateLinesToWidth(m.previewText, width)
-	text = styleStatusLine(text)
-	text = styleSectionHeadings(text)
-	return lipgloss.NewStyle().Width(width).Render(text)
-}
-
-// sectionHeadingLines are the literal, exact heading lines the preview
-// renderer's built-in sections emit to group related content under a title
-// (internal/preview/renderer.go's renderWorkspaceSection,
-// renderAgentStatusSection, renderActivePaneSection). Recognized by exact
-// line match, mirroring styleStatusLine's own prefix-match approach, so
-// this helper recolors them without preview needing an internal/tui import
-// (preview stays TUI-agnostic — see its package doc).
-var sectionHeadingLines = map[string]bool{
-	"workspace":    true,
-	"agent status": true,
-	"active pane":  true,
-}
-
-// gitHeadingPrefix is the literal prefix renderer.go's gitLine section
-// writes before the git summary text — a single inline line ("git: <summary>")
-// rather than a standalone heading line like the sections above, so it is
-// recognized by prefix (mirroring statusLinePrefix) instead of an exact
-// line match.
-const gitHeadingPrefix = "git: "
-
-// styleSectionHeadings recolors the preview pane's section heading lines
-// (palette.headingStyle): the "workspace"/"agent status"/"active pane"
-// exact heading lines, and the "git: " line's own prefix. Operates on
-// already-truncated raw text (same truncate-then-style ordering as
-// styleStatusLine/styleLinePrefix) so truncateLinesToWidth's raw rune
-// budget is never eaten by injected ANSI bytes. The "identity" section has
-// no fixed heading line of its own (its first line is the candidate's own
-// label) and the "dir" section renders no heading at all, so neither has a
-// literal heading string to match here without changing their existing
-// output shape.
-func styleSectionHeadings(text string) string {
-	lines := strings.Split(text, "\n")
-	for i, line := range lines {
-		switch {
-		case sectionHeadingLines[line]:
-			lines[i] = palette.headingStyle.Render(line)
-		case strings.HasPrefix(line, gitHeadingPrefix):
-			lines[i] = palette.headingStyle.Render(gitHeadingPrefix) + strings.TrimPrefix(line, gitHeadingPrefix)
-		}
-	}
-	return strings.Join(lines, "\n")
-}
-
-// statusLinePrefix is the literal prefix renderAgentStatusSection
-// (internal/preview/renderer.go) writes before the raw status word. Matched
-// here so the TUI can recolor just that word (via statusStyle, R1) without
-// touching the shared preview renderer — which must keep emitting plain
-// text, since it also backs the Television-safe `shep preview` CLI output
-// (see internal/command/preview.go's stripANSI default).
-const statusLinePrefix = "  status: "
-
-// styleStatusLine recolors the agent_status preview line's status word via
-// statusStyle, operating on already-truncated raw text (same
-// truncate-then-style ordering as styleLinePrefix) so truncateLinesToWidth's
-// raw rune budget is never eaten by injected ANSI bytes. Lines without the
-// statusLinePrefix are left untouched. The extracted status word is run
-// through ansi.Strip (R1) before statusStyle(...).Render(...): it is an
-// untrusted, Herdr-reported AgentStatus value decoded straight from JSON
-// with no sanitization guarantee, so it must not be able to inject escape
-// sequences into the preview pane.
-func styleStatusLine(text string) string {
-	lines := strings.Split(text, "\n")
-	for i, line := range lines {
-		if !strings.HasPrefix(line, statusLinePrefix) {
-			continue
-		}
-		status := ansi.Strip(strings.TrimPrefix(line, statusLinePrefix))
-		lines[i] = statusLinePrefix + statusStyle(status).Render(status)
-	}
-	return strings.Join(lines, "\n")
-}
-
-// truncateLinesToWidth splits text on "\n" and truncates each individual
-// line to width via truncateToWidth before rejoining. Used before any
-// lipgloss.NewStyle().Width(width).Render(text) call so that call can only
-// ever pad, never word-wrap: every logical line is already guaranteed to
-// fit within width, keeping capPreviewBodyLines' logical-line-count cap
-// accurate for the actual rendered height.
-func truncateLinesToWidth(text string, width int) string {
-	lines := strings.Split(text, "\n")
-	for i, line := range lines {
-		lines[i] = truncateToWidth(line, width)
-	}
-	return strings.Join(lines, "\n")
-}
-
-// styleLinePrefix builds a "<prefix><value>" line, truncates it to width as
-// RAW text first (so the rune budget is never eaten by ANSI escape bytes),
-// then applies style to whatever portion of prefix survived the truncation.
-// Truncating before styling — rather than styling the prefix and truncating
-// the already-styled result — keeps the visible width exact and guarantees
-// no ANSI escape sequence is ever cut in half.
-func styleLinePrefix(prefix, value string, width int, style lipgloss.Style) string {
-	line := truncateToWidth(prefix+value, width)
-	runes := []rune(line)
-	prefixLen := len([]rune(prefix))
-	if prefixLen > len(runes) {
-		prefixLen = len(runes)
-	}
-	return style.Render(string(runes[:prefixLen])) + string(runes[prefixLen:])
-}
-
-func clamp(v, lo, hi int) int {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
 }
 
 // Run drives the model through a Bubble Tea program and returns the selected
 // candidate plus the target the user chose (ctrl+t => "tab", ctrl+p =>
-// "pane", or "" for the default via enter). The query seeds the live filter
-// so users get a head-start (the fzf path forwards a query the same way).
-// renderer backs the async preview pane (nil degrades to the built-in
-// summary). currentPane is the Herdr pane shep is running inside (nil when
-// not running inside one), threaded into the model so the footer hints and
-// ctrl+t/ctrl+p bindings can react to it. It is the entry point used by the
-// selector's TUI selector. A cancelled run (esc/ctrl+c/ctrl+g) returns
-// ErrCancelled rather than a plain ok=false so callers can exit quietly
-// instead of treating it as "selector unavailable".
+// "pane", or "" for the default via enter).
 func Run(ctx context.Context, candidates []source.Candidate, query string, renderer preview.Renderer, currentPane *source.Pane, layout ...Layout) (source.Candidate, string, bool, error) {
 	var l Layout
 	if len(layout) > 0 {
@@ -1364,13 +459,10 @@ func Run(ctx context.Context, candidates []source.Candidate, query string, rende
 	return runProgram(ctx, m)
 }
 
-// RunWithTree is Run's tree-expand-active counterpart (R6): identical
-// contract, but the model is built via newModelWithTreeLayout so a
-// non-empty query can synthesize Herdr-tab child rows under a matching
-// SourceHerdr candidate (Model.applyFilter's tree branch). It is the
-// selector cascade's entry point when treeActiveFor reports true — the
-// picker cannot use Run there because a plain newModelWithLayout model has
-// no tree wired and would never expand anything.
+// RunWithTree is Run's tree-expand-active counterpart: identical contract,
+// but the model is built via newModelWithTreeLayout so a non-empty query (or
+// a manual expand) can synthesize Herdr tab/pane child rows under a matching
+// SourceHerdr candidate.
 func RunWithTree(ctx context.Context, candidates []source.Candidate, query string, renderer preview.Renderer, tree *TreeExpander, currentPane *source.Pane, layout ...Layout) (source.Candidate, string, bool, error) {
 	var l Layout
 	if len(layout) > 0 {
@@ -1384,29 +476,13 @@ func RunWithTree(ctx context.Context, candidates []source.Candidate, query strin
 
 // runProgram drives m through a real Bubble Tea program and turns its
 // terminated state into the (Candidate, target, ok, error) quadruple both
-// Run and RunWithTree return — the only difference between the two entry
-// points is which constructor built m, so the actual program loop lives
-// here once instead of being copy-pasted.
-//
-// refreshPreviewLoadingFlag is not re-called here: the constructor already
-// set it from the full candidate list, and the only thing that could
-// change it (applyFilter emptying the filtered set) is unobservable —
-// previewBody short-circuits on len(filtered)==0 before reading
-// previewLoading, and Init returns a nil Cmd when no candidate is
-// highlighted.
+// Run and RunWithTree return.
 //
 // WithAltScreen is required: without it, Bubble Tea renders inline and
-// repaints by moving the cursor up N lines on every update. Any render
-// taller than the previous one (e.g. a long query trimming the match list,
-// or a tall preview) desyncs that cursor math, which looks like the top of
-// the screen scrolling away / content getting pushed off the terminal. The
-// alt screen gives Bubble Tea an isolated full-screen buffer so it can
-// always redraw the whole frame instead of patching deltas against
-// terminal scrollback. This is not unit-testable: Bubble Tea's
-// tea.ProgramOption values close over unexported Program fields with no
-// exported inspector, so there is no way to assert this from outside the
-// tea package. Verified manually: scrolling, long queries, and normal
-// navigation no longer corrupt the visible frame.
+// repaints by moving the cursor up N lines on every update, which desyncs
+// against any render taller than the previous one. This is not
+// unit-testable (tea.ProgramOption values close over unexported Program
+// fields); verified manually.
 func runProgram(ctx context.Context, m Model) (source.Candidate, string, bool, error) {
 	p := tea.NewProgram(m, tea.WithContext(ctx), tea.WithAltScreen())
 	final, err := p.Run()
@@ -1418,8 +494,7 @@ func runProgram(ctx context.Context, m Model) (source.Candidate, string, bool, e
 
 // finalizeRun turns a terminated model's end state into Run's return
 // quadruple. Factored out so cancellation handling is unit-testable without
-// driving a real Bubble Tea program (Run itself always talks to a real
-// tea.Program).
+// driving a real Bubble Tea program.
 func finalizeRun(m Model) (source.Candidate, string, bool, error) {
 	if m.Cancelled() {
 		return source.Candidate{}, "", false, ErrCancelled

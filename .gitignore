@@ -32,3 +32,5 @@ vendor/
 
 # Codegraph local index
 .codegraph/
+# Local AI runtime state
+.atl/

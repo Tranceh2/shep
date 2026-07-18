@@ -32,9 +32,32 @@ type Renderer interface {
 // served from the in-memory cache. Any ANSI-carrying section is safe to
 // truncate: see internal/tui/model.go's truncateToWidth, which is ANSI-aware
 // (charmbracelet/x/ansi.Truncate) and never cuts mid-escape sequence.
+//
+// Sections carries the same content as Text, but split into structured,
+// typed blocks so the TUI can consume each section by Kind without parsing
+// the joined text. Sections is populated by defaultRenderer.Render in the
+// same order as the blocks are joined into Text; a custom Renderer that
+// returns only Text (no Sections) is safe — the TUI degrades to a compact
+// identity display rather than parsing untrusted text. Each Section's Kind
+// is the configured section name (config.PreviewIdentity, config.PreviewGit,
+// etc.) or the custom command name — never inferred from the payload text.
+// Section.Text is the complete section block and may contain arbitrary blank
+// lines or heading-like content; it is preserved byte-for-byte.
 type Result struct {
 	Text      string
+	Sections  []Section
 	FromCache bool
+}
+
+// Section is one structured block of the preview renderer's output. Kind is
+// the configured section name (config.PreviewIdentity, config.PreviewGit,
+// config.PreviewWorkspace, config.PreviewActivePane, config.PreviewAgentStatus,
+// config.PreviewDir, or a custom command name). Text is the complete section
+// block — it may contain blank lines and heading-like content, and is
+// preserved byte-for-byte by the TUI recomposition.
+type Section struct {
+	Kind string
+	Text string
 }
 
 // defaultRenderer resolves the ordered section list per candidate (workspace
@@ -96,9 +119,11 @@ func (r *defaultRenderer) Render(ctx context.Context, cand source.Candidate) (Re
 
 	names := resolvePreviewNames(r.cfg, cand)
 	var blocks []string
+	var sections []Section
 	for _, name := range names {
 		if block, ok := r.renderSection(ctx, cand, name); ok {
 			blocks = append(blocks, block)
+			sections = append(sections, Section{Kind: name, Text: block})
 		}
 	}
 	// Every configured section can legitimately contribute nothing (a
@@ -107,9 +132,11 @@ func (r *defaultRenderer) Render(ctx context.Context, cand source.Candidate) (Re
 	// that case: fall back to the built-in identity section so there is
 	// always clean, useful output instead of a silent empty success.
 	if len(blocks) == 0 {
-		blocks = append(blocks, renderIdentity(cand))
+		identity := renderIdentity(cand)
+		blocks = append(blocks, identity)
+		sections = append(sections, Section{Kind: config.PreviewIdentity, Text: identity})
 	}
-	res := Result{Text: strings.Join(blocks, "\n\n")}
+	res := Result{Text: strings.Join(blocks, "\n\n"), Sections: sections}
 	r.cache.Put(key, res)
 	return res, nil
 }
@@ -287,31 +314,33 @@ func (r *defaultRenderer) renderAgentStatusSection(ctx context.Context, cand sou
 
 // renderActivePaneSection renders the active pane's captured terminal
 // buffer, capped at cfg.Preview.MaxLines. ok=false means the section is
-// skipped (non-herdr candidate or no driver).
+// skipped entirely (non-herdr candidate, no driver, no panes, read error,
+// or empty/whitespace-only buffer). An unavailable or empty capture never
+// produces a heading-only section — the TUI must not show an empty "Active
+// pane" block (R3-001 fix). Non-TUI consumers (shep preview) also see the
+// section omitted, since there is no useful content to display.
 func (r *defaultRenderer) renderActivePaneSection(ctx context.Context, cand source.Candidate) (string, bool) {
 	workspaceID := cand.Meta["workspace_id"]
 	if workspaceID == "" || r.driver == nil {
 		return "", false
 	}
-	lines := []string{"active pane"}
 	panes, err := r.listPanesPreview(ctx, workspaceID)
 	if err != nil {
-		lines = append(lines, "(active pane unavailable)")
-		return strings.Join(lines, "\n"), true
+		return "", false
 	}
 	paneID := activePaneID(panes)
 	if paneID == "" {
-		lines = append(lines, "(no active pane)")
-		return strings.Join(lines, "\n"), true
+		return "", false
 	}
 	buf, err := r.readPanePreview(ctx, paneID, r.cfg.Preview.MaxLines)
 	if err != nil {
-		lines = append(lines, "(active pane unavailable)")
-		return strings.Join(lines, "\n"), true
+		return "", false
 	}
-	if buf != "" {
-		lines = append(lines, capLines(buf, r.cfg.Preview.MaxLines))
+	if strings.TrimSpace(buf) == "" {
+		return "", false
 	}
+	lines := []string{"active pane"}
+	lines = append(lines, capLines(buf, r.cfg.Preview.MaxLines))
 	return strings.Join(lines, "\n"), true
 }
 

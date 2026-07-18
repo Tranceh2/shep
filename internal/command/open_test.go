@@ -51,12 +51,14 @@ type openDriver struct {
 	currentCalled    bool
 	currentPaneDelay time.Duration
 
-	renamed     []string
-	ran         []string
-	created     []string // "tab:<ws>:<cwd>:<label>:<focus>" / "split:<pane>:<dir>:<ratio>:<cwd>:<focus>"
-	focused     []string
-	focusTabErr error
-	runErr      error
+	renamed      []string
+	ran          []string
+	created      []string // "tab:<ws>:<cwd>:<label>:<focus>" / "split:<pane>:<dir>:<ratio>:<cwd>:<focus>"
+	focused      []string
+	focusTabErr  error
+	createTabErr error
+	splitPaneErr error
+	runErr       error
 	// runErrOnFirstCall, when non-nil, is returned only for the first RunPane
 	// call (the Apply-internal run); every subsequent call succeeds
 	// regardless of runErr. Used to script an Apply failure followed by a
@@ -93,6 +95,9 @@ func (d *openDriver) ReadPane(context.Context, string, int) (string, error) {
 	return "", errors.New("openDriver does not implement ReadPane")
 }
 func (d *openDriver) CreateTab(_ context.Context, workspaceID, cwd, label string, focus bool) (source.Tab, source.Pane, error) {
+	if d.createTabErr != nil {
+		return source.Tab{}, source.Pane{}, d.createTabErr
+	}
 	d.created = append(d.created, "tab:"+workspaceID+":"+cwd+":"+label+":"+openFocusStr(focus))
 	return source.Tab{ID: "new-t"}, source.Pane{ID: "new-p"}, nil
 }
@@ -101,6 +106,9 @@ func (d *openDriver) RenameTab(_ context.Context, tabID, label string) error {
 	return nil
 }
 func (d *openDriver) SplitPane(_ context.Context, paneID, direction string, ratio float64, cwd string, focus bool) (source.Pane, error) {
+	if d.splitPaneErr != nil {
+		return source.Pane{}, d.splitPaneErr
+	}
 	d.created = append(d.created, "split:"+paneID+":"+direction+":"+strconv.FormatFloat(ratio, 'f', -1, 64)+":"+cwd+":"+openFocusStr(focus))
 	return source.Pane{ID: "split-p"}, nil
 }
@@ -883,10 +891,35 @@ func TestOpen_TemplateSkippedOnFocused(t *testing.T) {
 // live ctrl+l toggle starts from the user's configured default orientation.
 func TestLayoutFromConfig_ThreadsOrientationAndWidths(t *testing.T) {
 	t.Parallel()
-	got := layoutFromConfig(config.TUIConfig{ListWidth: "70%", PreviewWidth: "auto", Layout: config.TUILayoutPortrait})
+	got := layoutFromConfig(config.TUIConfig{ListWidth: "70%", PreviewWidth: "auto", Layout: config.TUILayoutPortrait}, nil)
 	want := tui.Layout{ListWidth: "70%", PreviewWidth: "auto", Orientation: tui.LayoutPortrait}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("layoutFromConfig = %+v, want %+v", got, want)
+	}
+}
+
+// TestLayoutFromConfig_ThreadsIcons proves layoutFromConfig carries
+// cfg.TUI.Icons into tui.Layout.Icons verbatim, so the picker's configured
+// icon fallback tier (Phase 8) reaches the resolved Model.
+func TestLayoutFromConfig_ThreadsIcons(t *testing.T) {
+	t.Parallel()
+	got := layoutFromConfig(config.TUIConfig{Icons: config.TUIIconsASCII}, nil)
+	want := tui.Layout{Icons: tui.IconsASCII}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("layoutFromConfig = %+v, want %+v", got, want)
+	}
+}
+
+// TestLayoutFromConfig_ThreadsSourceOrder proves layoutFromConfig carries
+// [general].sources into tui.Layout.SourceOrder verbatim, so the picker's
+// row order matches the configured provider order instead of a hardcoded
+// literal.
+func TestLayoutFromConfig_ThreadsSourceOrder(t *testing.T) {
+	t.Parallel()
+	sources := []string{config.SourceProjects, config.SourceHerdr}
+	got := layoutFromConfig(config.TUIConfig{}, sources)
+	if !reflect.DeepEqual(got.SourceOrder, sources) {
+		t.Errorf("layoutFromConfig SourceOrder = %v, want %v", got.SourceOrder, sources)
 	}
 }
 
@@ -895,7 +928,7 @@ func TestLayoutFromConfig_ThreadsOrientationAndWidths(t *testing.T) {
 // (landscape default), not an arbitrary string.
 func TestLayoutFromConfig_EmptyLayoutDefaultsToZeroOrientation(t *testing.T) {
 	t.Parallel()
-	got := layoutFromConfig(config.TUIConfig{})
+	got := layoutFromConfig(config.TUIConfig{}, nil)
 	if got.Orientation != "" {
 		t.Errorf("layoutFromConfig empty layout: Orientation = %q, want empty", got.Orientation)
 	}
@@ -1086,7 +1119,7 @@ func TestOpenLayoutToggle_ConfigUnchangedAfterCtrlL(t *testing.T) {
 	cfg.TUI = config.TUIConfig{ListWidth: "70%", PreviewWidth: "auto", Layout: config.TUILayoutLandscape}
 	originalTUI := cfg.TUI
 
-	layout := layoutFromConfig(cfg.TUI)
+	layout := layoutFromConfig(cfg.TUI, cfg.General.Sources)
 	cands := []source.Candidate{{Path: "/a", Label: "a"}}
 	m := tui.NewModelWithLayout(cands, nil, layout)
 
@@ -1098,7 +1131,7 @@ func TestOpenLayoutToggle_ConfigUnchangedAfterCtrlL(t *testing.T) {
 
 	// Sanity: the toggle DID flip the model's own session-only orientation
 	// (proving this test actually exercises the mutation path), while...
-	toggled := layoutFromConfig(config.TUIConfig{Layout: config.TUILayoutPortrait})
+	toggled := layoutFromConfig(config.TUIConfig{Layout: config.TUILayoutPortrait}, nil)
 	if mm.Layout().Orientation != toggled.Orientation {
 		t.Fatalf("setup: expected ctrl+l to flip Model's orientation to portrait, got %+v", mm.Layout())
 	}
@@ -1438,6 +1471,54 @@ func TestOpen_TargetPane_ApplyFailureRollsBackAndErrors(t *testing.T) {
 	}
 }
 
+// TestOpen_TargetTab_CreateTabFails_Errors (R3-003 regression): a
+// driver.CreateTab failure must surface a non-nil errExitOne so the process
+// exits 1, instead of silently swallowing the error and exiting 0. No
+// RunPane/Apply call must follow a CreateTab failure since there is no
+// container tab/pane to apply the template into.
+func TestOpen_TargetTab_CreateTabFails_Errors(t *testing.T) {
+	cfg, _ := commandWorkspaceCfg(t, "ops", "k9s", false)
+	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
+	driver := insidePaneDriver(pane)
+	driver.createTabErr = errors.New("herdr daemon unreachable")
+	_, errOut, err := runOpen(t, cfg, driver, nil, "--target", "tab", "ops")
+	if err == nil {
+		t.Fatal("expected an error when CreateTab fails")
+	}
+	if !errors.Is(err, errExitOne) {
+		t.Errorf("expected errExitOne, got %v", err)
+	}
+	if !strings.Contains(errOut, "warning: herdr tab create failed") {
+		t.Errorf("stderr = %q, want it to mention tab create failed", errOut)
+	}
+	if len(driver.ran) != 0 {
+		t.Errorf("no RunPane call must occur after a CreateTab failure, got %v", driver.ran)
+	}
+}
+
+// TestOpen_TargetPane_SplitPaneFails_Errors mirrors the tab test for
+// --target=pane, confirming a driver.SplitPane failure also surfaces
+// errExitOne instead of a silent nil (R3-003 regression).
+func TestOpen_TargetPane_SplitPaneFails_Errors(t *testing.T) {
+	cfg, _ := commandWorkspaceCfg(t, "ops", "k9s", false)
+	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
+	driver := insidePaneDriver(pane)
+	driver.splitPaneErr = errors.New("herdr daemon unreachable")
+	_, errOut, err := runOpen(t, cfg, driver, nil, "--target", "pane", "ops")
+	if err == nil {
+		t.Fatal("expected an error when SplitPane fails")
+	}
+	if !errors.Is(err, errExitOne) {
+		t.Errorf("expected errExitOne, got %v", err)
+	}
+	if !strings.Contains(errOut, "warning: herdr pane split failed") {
+		t.Errorf("stderr = %q, want it to mention pane split failed", errOut)
+	}
+	if len(driver.ran) != 0 {
+		t.Errorf("no RunPane call must occur after a SplitPane failure, got %v", driver.ran)
+	}
+}
+
 // TestOpen_TargetTab_HerdrCandidate_Errors (R4): an already-open herdr
 // workspace candidate is rejected for --target=tab with an "already open"
 // message and never reaches CreateTab/SplitPane — it must be resumed via
@@ -1521,6 +1602,32 @@ func TestOpen_LaunchHerdrTabFocusesTab(t *testing.T) {
 	}
 	if driver.lastCand.Path != "" {
 		t.Errorf("FocusOrCreate must not be called for a child tab candidate; got candidate %+v", driver.lastCand)
+	}
+}
+
+// TestOpen_LaunchHerdrPaneFocusesContainingTab (adaptive-picker redesign):
+// a synthesized SourceHerdrPane grandchild candidate ALSO routes Enter to
+// driver.FocusTab with its Meta["tab_id"] — Herdr has no per-pane focus
+// command (see internal/herdr.Driver.FocusTab's own doc comment), so
+// focusing the containing tab is the safest truthful action for a pane row,
+// and it reuses launchChildTab unchanged (only Meta["tab_id"] is read).
+func TestOpen_LaunchHerdrPaneFocusesContainingTab(t *testing.T) {
+	cand := source.Candidate{
+		Source: config.SourceHerdrPane,
+		Label:  "p1 (working)",
+		Path:   "/svc/api",
+		Meta:   map[string]string{"workspace_id": "wA", "tab_id": "t1", "pane_id": "p1"},
+	}
+	driver := insidePaneDriver(source.Pane{ID: "cur-p", WorkspaceID: "wA", CWD: "/cur"})
+	errOut, err := runLaunchDirect(t, cand, "workspace", nil, driver)
+	if err != nil {
+		t.Fatalf("launch child pane: %v (stderr=%q)", err, errOut)
+	}
+	if len(driver.focused) != 1 || driver.focused[0] != "focus-tab:t1" {
+		t.Errorf("expected FocusTab(t1) for a pane row, got %v", driver.focused)
+	}
+	if driver.lastCand.Path != "" {
+		t.Errorf("FocusOrCreate must not be called for a child pane candidate; got candidate %+v", driver.lastCand)
 	}
 }
 

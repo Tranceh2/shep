@@ -1,0 +1,10 @@
+Search: type to filter…                                                                 7 candidates
+╭──────────────────────────────────────────────────────────╮ ╭─────────────────────────────────────╮
+│ ▌   ▸ backend                                            │ │ label  backend                      │
+│    ▸ frontend                                            │ │ path   /srv/backend                 │
+│    notes                                                 │ │                                     │
+│    tmp                                                   │ │                                     │
+│    Downloads                                             │ │                                     │
+│                                                          │ │                                     │
+╰──────────────────────────────────────────────────────────╯ ╰─────────────────────────────────────╯
+/srv/backend  enter open / tab focus preview / esc cancel / ? help

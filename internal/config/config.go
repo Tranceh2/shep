@@ -42,6 +42,18 @@ const (
 // Registry/Dedup/Match pipeline — only as a row synthesized inside the picker.
 const SourceHerdrTab = "herdr_tab"
 
+// SourceHerdrPane identifies a synthesized grandchild candidate for a pane
+// inside an already-open Herdr tab, nested two levels under its SourceHerdr
+// workspace row by the TUI's tree-expand feature. Like SourceHerdrTab, it is
+// a TUI presentation concern only — never user-configured, never part of the
+// flat Registry pipeline. A SourceHerdrPane candidate's Meta always carries
+// "tab_id" (its containing tab) alongside "pane_id" and "workspace_id",
+// because Herdr has no "focus this exact pane" command: opening a pane row
+// resolves to focusing its containing tab (see internal/herdr.Driver.FocusTab
+// and internal/command/open.go's launch), so every consumer of a pane row
+// must be able to reach the tab id without a second lookup.
+const SourceHerdrPane = "herdr_pane"
+
 // defaultSourceOrder is used when general.sources is empty/absent.
 var defaultSourceOrder = []string{SourceHerdr, SourceWorkspaces, SourceZoxide, SourceProjects}
 
@@ -153,6 +165,52 @@ type TUIConfig struct {
 	ListWidth    string `toml:"list_width,omitempty"`
 	PreviewWidth string `toml:"preview_width,omitempty"`
 	Layout       string `toml:"layout,omitempty"`
+	// Theme names the picker's semantic color theme: one of "mocha",
+	// "macchiato", "frappe", "latte", or "plain" (no color, textual markers
+	// only). Empty defers to the $SHEP_THEME environment variable, then
+	// "mocha". $NO_COLOR (any non-empty value), when set, always wins over
+	// both this field and $SHEP_THEME — see internal/tui/theme.go.
+	Theme string `toml:"theme,omitempty"`
+	// Icons selects the fallback tier for the picker's OWN semantic icons
+	// (pane agent-status markers and row expand/tab/pane markers): one of
+	// "nerd" (Nerd Font Private Use Area glyphs, requires a patched terminal
+	// font), "unicode" (plain Unicode symbols — the picker's original
+	// hardcoded glyphs, safe on any UTF-8 terminal), or "ascii" (7-bit ASCII
+	// only, for terminals/locales that cannot render Unicode). Empty
+	// defaults to "unicode" — see internal/tui/icons.go. Does NOT affect
+	// [sources.<name>].icon, which is a raw user-configured string rendered
+	// verbatim regardless of this setting.
+	Icons string `toml:"icons,omitempty"`
+}
+
+// TUI theme names for [tui].theme. These mirror Catppuccin's four flavors
+// plus a "plain" no-color mode; see internal/tui/theme.go for the resolution
+// precedence ($NO_COLOR > $SHEP_THEME > this field > "mocha").
+const (
+	TUIThemeMocha     = "mocha"
+	TUIThemeMacchiato = "macchiato"
+	TUIThemeFrappe    = "frappe"
+	TUIThemeLatte     = "latte"
+	TUIThemePlain     = "plain"
+)
+
+var validTUIThemes = map[string]bool{
+	TUIThemeMocha: true, TUIThemeMacchiato: true, TUIThemeFrappe: true,
+	TUIThemeLatte: true, TUIThemePlain: true,
+}
+
+// TUI icon fallback tier names for [tui].icons, mirrored in
+// internal/tui/icons.go's IconsNerd/IconsUnicode/IconsASCII constants so
+// config validation and the TUI resolve the exact same set without an
+// import cycle (config cannot import tui).
+const (
+	TUIIconsNerd    = "nerd"
+	TUIIconsUnicode = "unicode"
+	TUIIconsASCII   = "ascii"
+)
+
+var validTUIIcons = map[string]bool{
+	TUIIconsNerd: true, TUIIconsUnicode: true, TUIIconsASCII: true,
 }
 
 // TUI layout orientation values for [tui].layout. TUILayoutLandscape (empty/
@@ -887,6 +945,14 @@ func validateTUI(t TUIConfig) error {
 	}
 	if err := validateTUILayout(t.Layout); err != nil {
 		return err
+	}
+	if t.Theme != "" && !validTUIThemes[t.Theme] {
+		return fmt.Errorf("tui.theme: %q must be one of %s, %s, %s, %s, %s",
+			t.Theme, TUIThemeMocha, TUIThemeMacchiato, TUIThemeFrappe, TUIThemeLatte, TUIThemePlain)
+	}
+	if t.Icons != "" && !validTUIIcons[t.Icons] {
+		return fmt.Errorf("tui.icons: %q must be one of %s, %s, %s",
+			t.Icons, TUIIconsNerd, TUIIconsUnicode, TUIIconsASCII)
 	}
 	return nil
 }

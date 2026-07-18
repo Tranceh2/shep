@@ -1,0 +1,24 @@
+╭──────────────────────────────────────────────────────────────╮
+│ >                                                          7 │
+│  ▾ Workspaces                                                │
+│  > ▸ backend                                                 │
+│    ▸ frontend                                                │
+│  ▾ Projects                                                  │
+│    shep                                                      │
+│    dotfiles                                                  │
+│  ▾ Directories                                               │
+│    tmp                                                       │
+│    Downloads                                                 │
+│  ▾ Configured                                                │
+│    notes                                                     │
+│                                                              │
+│                                                              │
+│                                                              │
+│                                                              │
+│                                                              │
+│                                                              │
+│                                                              │
+│                                                              │
+│                                                              │
+╰──────────────────────────────────────────────────────────────╯
+enter open / tab focus preview / esc cancel / ? help

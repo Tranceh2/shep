@@ -329,8 +329,8 @@ func TestResolvePreviewNames_CaseFoldMatches(t *testing.T) {
 // fakePreviewDriver is a controllable HerdrDriver for workspace/active_pane
 // section tests.
 type fakePreviewDriver struct {
-	tabs             []source.Tab
-	panes            []source.Pane
+	tabs  []source.Tab
+	panes []source.Pane
 	// tabsByWorkspace/panesByWorkspace, when non-nil, let a single fake
 	// serve DIFFERENT tabs/panes per workspaceID — needed to reproduce the
 	// cache-collision bug for herdr candidates that share a cwd (multiple
@@ -685,7 +685,12 @@ func TestRenderAgentStatusSection_SectionDisabled(t *testing.T) {
 }
 
 // TestRender_ActivePaneSection_TimesOutGracefully mirrors the workspace
-// timeout test for the active_pane section.
+// timeout test for the active_pane section, except active_pane's timeout
+// contract is stricter than workspace's: renderActivePaneSection returns
+// ok=false on any read error/timeout (R3-001), so the section must be
+// omitted entirely — no "(active pane unavailable)" placeholder heading —
+// and Render falls back to the built-in identity section since active_pane
+// was the only configured section.
 func TestRender_ActivePaneSection_TimesOutGracefully(t *testing.T) {
 	t.Parallel()
 
@@ -693,13 +698,25 @@ func TestRender_ActivePaneSection_TimesOutGracefully(t *testing.T) {
 	driver := &fakePreviewDriver{block: true}
 	r := NewRenderer(cfg, config.Probes{}, nil, nil, WithHerdrDriver(driver))
 	start := time.Now()
-	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
+	res, err := r.Render(context.Background(), herdrCandidate("foo", "/x", "wA"))
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
 	elapsed := time.Since(start)
 	if elapsed > 400*time.Millisecond {
 		t.Fatalf("active_pane preview took %v, want bounded by herdr timeouts", elapsed)
 	}
-	if !strings.Contains(got, "unavailable") {
-		t.Errorf("missing unavailable note on timeout: %q", got)
+	want := "foo\npath: /x\nsource: herdr"
+	if res.Text != want {
+		t.Errorf("active_pane section must be omitted on timeout (identity fallback expected), not rendered with a placeholder:\n got %q\nwant %q", res.Text, want)
+	}
+	for _, s := range res.Sections {
+		if s.Kind == config.PreviewActivePane {
+			t.Errorf("Sections must not contain an active_pane entry on timeout, got %+v", res.Sections)
+		}
+	}
+	if len(res.Sections) != 1 || res.Sections[0].Kind != config.PreviewIdentity {
+		t.Errorf("expected only the identity fallback section, got %+v", res.Sections)
 	}
 }
 

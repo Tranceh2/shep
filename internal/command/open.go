@@ -111,7 +111,7 @@ func (a *App) selectorFactory(matches []source.Candidate) *selector.Cascade {
 		return a.selectorBuilder()
 	}
 	cfg := a.Config()
-	return cascadeFor(cfg.General.Selector, a.buildPreviewRenderer(), a.currentPane, a.setChosenTarget, a.buildTreeExpander(), matches, layoutFromConfig(cfg.TUI))
+	return cascadeFor(cfg.General.Selector, a.buildPreviewRenderer(), a.currentPane, a.setChosenTarget, a.buildTreeExpander(), matches, layoutFromConfig(cfg.TUI, cfg.General.Sources))
 }
 
 // buildTreeExpander wires a tui.TreeExpander over the active HerdrDriver,
@@ -153,12 +153,21 @@ func treeActiveFor(matches []source.Candidate) bool {
 // loaded [tui] config, threading list_width/preview_width and the layout
 // orientation through the same way. This is the user's configured DEFAULT
 // orientation for the session — the live ctrl+l keybinding may flip it
-// in-memory afterwards without ever writing back to cfg.
-func layoutFromConfig(t config.TUIConfig) tui.Layout {
+// in-memory afterwards without ever writing back to cfg. sources is
+// [general].sources (already normalized non-empty by config.Load()), threaded
+// through as Layout.SourceOrder so the picker's row order matches the
+// configured provider order instead of a hardcoded literal — the same order
+// source.Registry.Enabled() already collects candidates in. t.Icons threads
+// through as Layout.Icons, selecting the picker's own icon fallback tier
+// (nerd/unicode/ascii — see internal/tui/icons.go).
+func layoutFromConfig(t config.TUIConfig, sources []string) tui.Layout {
 	return tui.Layout{
 		ListWidth:    t.ListWidth,
 		PreviewWidth: t.PreviewWidth,
 		Orientation:  t.Layout,
+		Theme:        t.Theme,
+		SourceOrder:  sources,
+		Icons:        t.Icons,
 	}
 }
 
@@ -513,13 +522,21 @@ func (a *App) launch(ctx context.Context, cand source.Candidate, target string, 
 		return nil
 	}
 
-	// A synthesized tree-expand child row (SourceHerdrTab) identifies an
-	// ALREADY-OPEN tab inside an ALREADY-OPEN workspace: it routes straight
-	// to FocusTab and bypasses the --target switch entirely (there is no
-	// "workspace"/"tab"/"pane" choice for a candidate that is itself a tab).
-	// Checked before the switch below so it can never fall through to
+	// A synthesized tree-expand child row — either a tab (SourceHerdrTab) or
+	// a pane (SourceHerdrPane) — identifies an ALREADY-OPEN tab (or a pane
+	// inside one) in an ALREADY-OPEN workspace: it routes straight to
+	// FocusTab and bypasses the --target switch entirely (there is no
+	// "workspace"/"tab"/"pane" choice for a candidate that is itself a
+	// tab/pane). A pane row reuses the exact same FocusTab call as a tab
+	// row: Herdr has no "focus this exact pane" command (see
+	// internal/herdr.Driver.FocusTab's own doc comment), so the safest
+	// truthful action for Enter on a pane is focusing its containing tab —
+	// launchChildTab already only reads Meta["tab_id"], which every
+	// synthesized pane candidate carries alongside its own pane_id (see
+	// internal/tui/tree.go's synthesizeWorkspaceChildren). Checked before
+	// the switch below so it can never fall through to
 	// launchWorkspace/launchInCurrentWorkspace.
-	if cand.Source == config.SourceHerdrTab {
+	if cand.Source == config.SourceHerdrTab || cand.Source == config.SourceHerdrPane {
 		return a.launchChildTab(ctx, driver, cand, errOut)
 	}
 
@@ -617,14 +634,14 @@ func (a *App) launchInCurrentWorkspace(ctx context.Context, driver source.HerdrD
 		tab, pane, err := driver.CreateTab(ctx, currentPane.WorkspaceID, cwd, cand.Label, true)
 		if err != nil {
 			fmt.Fprintf(errOut, "warning: herdr tab create failed: %v\n", err)
-			return nil
+			return errExitOne
 		}
 		containerTabID, containerPaneID = tab.ID, pane.ID
 	case "pane":
 		pane, err := driver.SplitPane(ctx, currentPane.ID, "right", 0.5, cwd, true)
 		if err != nil {
 			fmt.Fprintf(errOut, "warning: herdr pane split failed: %v\n", err)
-			return nil
+			return errExitOne
 		}
 		containerTabID, containerPaneID = currentPane.TabID, pane.ID
 	default:

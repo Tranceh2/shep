@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/sahilm/fuzzy"
 	"github.com/tranceh2/shep/internal/cache"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
@@ -24,7 +23,7 @@ type workspaceTree struct {
 }
 
 // TreeExpander fetches and caches a workspace's tabs/panes so the picker
-// can synthesize child tab rows without a driver round-trip on every
+// can synthesize child tab/pane rows without a driver round-trip on every
 // keystroke that still matches the same workspace.
 type TreeExpander struct {
 	driver  source.HerdrDriver
@@ -70,14 +69,42 @@ func (e *TreeExpander) Fetch(ctx context.Context, workspaceID string) (workspace
 	return tree, true
 }
 
-// synthesizeChildren builds one child source.Candidate per tab, nested
-// under workspaceID's parent workspace row. Each child's Path resolves via
-// primaryTabCWD; Meta carries workspace_id/tab_id so PR3's launchChildTab
-// can route Enter to driver.FocusTab without a second driver call.
-func synthesizeChildren(workspaceID, parentPath string, tabs []source.Tab, panes []source.Pane) []source.Candidate {
-	children := make([]source.Candidate, 0, len(tabs))
+// panePreviewTimeout bounds a single ReadPane call issued for a highlighted
+// RowPane's "existing visual capture" preview section — independent of
+// treeExpanderTimeout (which only bounds the ListTabs/ListPanes pair) since
+// reading a pane's captured buffer is a different, separately-timed
+// round-trip and must never block the keystroke loop either.
+const panePreviewTimeout = 150 * time.Millisecond
+
+// ReadPane returns paneID's captured terminal buffer (capped at lines
+// trailing lines; lines <= 0 means the daemon default), bounded by
+// panePreviewTimeout. Exposed on TreeExpander (rather than requiring Model
+// to hold a second HerdrDriver reference) so a highlighted RowPane's preview
+// can show its real captured content — the "existing visual capture where
+// available" contract — using the exact same driver TreeExpander already
+// holds for ListTabs/ListPanes.
+func (e *TreeExpander) ReadPane(ctx context.Context, paneID string, lines int) (string, error) {
+	qctx, cancel := context.WithTimeout(ctx, panePreviewTimeout)
+	defer cancel()
+	return e.driver.ReadPane(qctx, paneID, lines)
+}
+
+// synthesizeWorkspaceChildren builds the full two-level (tab, then its own
+// panes) child tree for one Herdr workspace, ready for rows.go's buildRows.
+// Each tab candidate's Path resolves via primaryTabCWD; each pane candidate's
+// Path is its own CWD/ForegroundCWD and its Label is the bare pane id (no
+// appended status text — the corrective round moved agent status out of the
+// label entirely; see render.go's rowDisplayText/agentStatusIcon, which
+// render it as an icon derived from Meta["agent_status"] instead). Every
+// synthesized candidate's Meta carries every id an ancestor might need
+// (workspace_id always; tab_id on both tabs and panes; pane_id and
+// agent_status only on panes) so a pane row's Enter can route straight to
+// driver.FocusTab(tab_id) without a second lookup — Herdr has no per-pane
+// focus command (see internal/herdr.Driver.FocusTab).
+func synthesizeWorkspaceChildren(workspaceID, parentPath string, tabs []source.Tab, panes []source.Pane) workspaceChildren {
+	out := workspaceChildren{Tabs: make([]tabChildren, 0, len(tabs))}
 	for _, tab := range tabs {
-		children = append(children, source.Candidate{
+		tabCand := source.Candidate{
 			Label:  tab.Label,
 			Path:   primaryTabCWD(tab, panes, parentPath),
 			Source: config.SourceHerdrTab,
@@ -85,9 +112,31 @@ func synthesizeChildren(workspaceID, parentPath string, tabs []source.Tab, panes
 				"workspace_id": workspaceID,
 				"tab_id":       tab.ID,
 			},
-		})
+		}
+		var paneCands []source.Candidate
+		for _, p := range panes {
+			if p.TabID != tab.ID {
+				continue
+			}
+			path := p.ForegroundCWD
+			if path == "" {
+				path = p.CWD
+			}
+			paneCands = append(paneCands, source.Candidate{
+				Label:  p.ID,
+				Path:   path,
+				Source: config.SourceHerdrPane,
+				Meta: map[string]string{
+					"workspace_id": workspaceID,
+					"tab_id":       tab.ID,
+					"pane_id":      p.ID,
+					"agent_status": p.AgentStatus,
+				},
+			})
+		}
+		out.Tabs = append(out.Tabs, tabChildren{Tab: tabCand, Panes: paneCands})
 	}
-	return children
+	return out
 }
 
 // primaryTabCWD resolves a tab's display path from its panes: the first
@@ -106,22 +155,4 @@ func primaryTabCWD(tab source.Tab, panes []source.Pane, parentPath string) strin
 		return p.CWD
 	}
 	return parentPath
-}
-
-// matchingChildren filters children to those matching query, using the same
-// fuzzy.FindFrom + candidateSource haystack contract applyFilter already
-// uses for top-level candidates (model.go:515) — no second matching
-// implementation. An empty query matches every child, mirroring
-// applyFilter's own empty-query behavior. PR3 (Phase 5) wires this into the
-// tree filter path.
-func matchingChildren(query string, children []source.Candidate) []source.Candidate {
-	if query == "" {
-		return children
-	}
-	matches := fuzzy.FindFrom(query, candidateSource(children))
-	out := make([]source.Candidate, 0, len(matches))
-	for _, m := range matches {
-		out = append(out, children[m.Index])
-	}
-	return out
 }

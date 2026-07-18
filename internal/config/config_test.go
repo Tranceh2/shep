@@ -1161,6 +1161,131 @@ func TestLoad_RejectsInvalidTUILayoutValue(t *testing.T) {
 	}
 }
 
+// TestLoad_TUITheme_DefaultsEmptyAndAccepted confirms an absent
+// [tui].theme parses to the empty string (internal/tui.resolveTheme treats
+// empty as "defer to $SHEP_THEME, then mocha") without failing validation.
+func TestLoad_TUITheme_DefaultsEmptyAndAccepted(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(path, []byte("[tui]\nlist_width = \"auto\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := cfg.TUI.Theme; got != "" {
+		t.Errorf("tui.theme default: got %q, want empty", got)
+	}
+}
+
+// TestLoad_AcceptsValidTUIThemeValues confirms every documented theme name
+// parses and loads without error.
+func TestLoad_AcceptsValidTUIThemeValues(t *testing.T) {
+	t.Parallel()
+	for _, val := range []string{TUIThemeMocha, TUIThemeMacchiato, TUIThemeFrappe, TUIThemeLatte, TUIThemePlain} {
+		t.Run(val, func(t *testing.T) {
+			t.Parallel()
+			tmp := t.TempDir()
+			path := filepath.Join(tmp, "config.toml")
+			doc := "[tui]\ntheme = \"" + val + "\"\n"
+			if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("load %q: %v", val, err)
+			}
+			if got := cfg.TUI.Theme; got != val {
+				t.Errorf("tui.theme: got %q want %q", got, val)
+			}
+		})
+	}
+}
+
+// TestLoad_RejectsInvalidTUIThemeValue confirms an unknown [tui].theme
+// value fails Load fast with an error naming the bad value.
+func TestLoad_RejectsInvalidTUIThemeValue(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.toml")
+	const doc = "[tui]\ntheme = \"solarized\"\n"
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for invalid tui.theme value")
+	}
+	if !strings.Contains(err.Error(), "solarized") {
+		t.Errorf("error must name the bad value %q, got: %v", "solarized", err)
+	}
+}
+
+// TestLoad_TUIIcons_DefaultsEmptyAndAccepted confirms an absent [tui].icons
+// parses to the empty string (internal/tui.resolveIconSet treats empty as
+// "unicode", the picker's original hardcoded glyphs) without failing
+// validation.
+func TestLoad_TUIIcons_DefaultsEmptyAndAccepted(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(path, []byte("[tui]\nlist_width = \"auto\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := cfg.TUI.Icons; got != "" {
+		t.Errorf("tui.icons default: got %q, want empty", got)
+	}
+}
+
+// TestLoad_AcceptsValidTUIIconsValues confirms every documented icon
+// fallback tier name parses and loads without error.
+func TestLoad_AcceptsValidTUIIconsValues(t *testing.T) {
+	t.Parallel()
+	for _, val := range []string{TUIIconsNerd, TUIIconsUnicode, TUIIconsASCII} {
+		t.Run(val, func(t *testing.T) {
+			t.Parallel()
+			tmp := t.TempDir()
+			path := filepath.Join(tmp, "config.toml")
+			doc := "[tui]\nicons = \"" + val + "\"\n"
+			if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("load %q: %v", val, err)
+			}
+			if got := cfg.TUI.Icons; got != val {
+				t.Errorf("tui.icons: got %q want %q", got, val)
+			}
+		})
+	}
+}
+
+// TestLoad_RejectsInvalidTUIIconsValue confirms an unknown [tui].icons value
+// fails Load fast with an error naming the bad value.
+func TestLoad_RejectsInvalidTUIIconsValue(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.toml")
+	const doc = "[tui]\nicons = \"emoji\"\n"
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for invalid tui.icons value")
+	}
+	if !strings.Contains(err.Error(), "emoji") {
+		t.Errorf("error must name the bad value %q, got: %v", "emoji", err)
+	}
+}
+
 // TestLoad_TemplateFocusTabNode_Parses confirms the new top-level focus schema
 // `focus = { tab = "...", node = "..." }` parses into TemplateConfig.Focus.
 // focus.tab refers to [[templates.<name>.tabs]].name; focus.node refers to a

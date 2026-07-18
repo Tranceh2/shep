@@ -1,0 +1,24 @@
+Search: type to filter…                             7 candidates
+╭──────────────────────────────────────────────────────────────╮
+│ ▌   ▸ backend                                                │
+│    ▸ frontend                                                │
+│    notes                                                     │
+│    tmp                                                       │
+│    Downloads                                                 │
+│    shep                                                      │
+│    dotfiles                                                  │
+│                                                              │
+│                                                              │
+│                                                              │
+│                                                              │
+│                                                              │
+│                                                              │
+│                                                              │
+│                                                              │
+│                                                              │
+│                                                              │
+│                                                              │
+│                                                              │
+│                                                              │
+╰──────────────────────────────────────────────────────────────╯
+…v/backend  enter open / tab focus preview / esc cancel / ? help

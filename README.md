@@ -227,13 +227,26 @@ shep init                   # write a path-agnostic example config
    immediately (no prompt).
 2. **fzf** — when fzf is on PATH, candidates are piped through it; the query
    is pre-seeded.
-3. **TUI** — the embedded Bubble Tea fuzzy picker (subsequence filter over
-   label + path, preview pane, Catppuccin Mocha palette) is the universal
-   fallback. Keys: arrows or `ctrl+j`/`ctrl+k` to move, `enter` to select,
-   `esc`/`q`/`ctrl+c`/`ctrl+g` to cancel, `ctrl+l` to toggle landscape/
-   portrait layout for the current session. Below both panes, a full-width
-   footer line always shows the highlighted candidate's complete icon+label/
-   path, even when the list column is too narrow to show it in full.
+3. **TUI** — the embedded Bubble Tea picker is the universal fallback. It
+   groups candidates by kind (active Herdr **Workspaces**, discovered
+   **Projects**, recent **Directories** from zoxide, and statically
+   **Configured** `[[workspaces]]` entries), each its own collapsible group;
+   a Herdr workspace can expand into its open tabs and, per tab, its panes.
+   Typing fuzzy-filters (subsequence match over label + path): a match on a
+   tab or pane keeps its parent workspace visible and auto-expands only the
+   matching branch — sibling tabs/panes that don't match stay hidden, and a
+   descendant-only match is marked distinctly from a direct one. Keys:
+   arrows or `ctrl+j`/`ctrl+k` to move, `left`/`right` to collapse/expand a
+   group or workspace, `enter` to open a row (or toggle a group header),
+   `tab`/`shift+tab` to switch focus between the list and the preview pane
+   (arrows/page keys then scroll the preview instead of moving the cursor;
+   typing a letter jumps back to the list and resumes the search), `esc`/
+   `q`/`ctrl+c`/`ctrl+g` to cancel, `ctrl+l` to cycle the layout
+   (auto/landscape/portrait) for the current session, and `?` for a full
+   keybinding reference. The layout adapts to the terminal size (wide:
+   side-by-side panes; medium: stacked; very narrow: list only), and the
+   color theme follows `$NO_COLOR` > `$SHEP_THEME` > `[tui].theme` > a
+   Catppuccin Mocha default (see below).
 
 After selecting, `shep` asks Herdr to focus an existing workspace whose pane
 cwd normalises to the candidate path, or to create a new focused workspace
@@ -269,24 +282,37 @@ opens the highlighted candidate as a new tab, `Ctrl+P` as a new pane, and
    workspace.
 
 When shep is not running inside a Herdr pane, the TUI's `Ctrl+T`/`Ctrl+P`
-hints render dimmed and the keys are no-ops; `shep open --target=tab|pane`
+footer hints are omitted and the keys are no-ops; `shep open --target=tab|pane`
 returns a clear error instead. Targeting a template or group entry with
 `--target=tab|pane` also returns a clear, specific error naming the entry.
+Note: a synthesized tab/pane row (an already-open Herdr tab, or a pane
+inside one) is never a `Ctrl+T`/`Ctrl+P` target either — `Enter` is the only
+supported action there, and it focuses the row's containing tab (Herdr has
+no command to focus one exact pane).
 
-### `[tui]` pane sizing and layout
+### `[tui]` pane sizing, layout, and theme
 
 ```toml
 [tui]
 list_width = "auto"     # "auto" or a percentage like "60%"
 preview_width = "60%"
-layout = "landscape"     # "landscape" (side-by-side, default) or "portrait" (stacked)
+layout = "landscape"     # "landscape" (side-by-side), "portrait" (stacked), or omit for responsive auto
+theme = "mocha"          # "mocha", "macchiato", "frappe", "latte", or "plain" (no color); omit to defer to $SHEP_THEME
 ```
 
 `list_width`/`preview_width` mean "share of the split axis" in both
 orientations: width in `landscape`, height in `portrait` (list on top,
-preview below, both full terminal width). Press `ctrl+l` while the picker is
-open to toggle between `landscape` and `portrait` for the current session
-only — it never writes back to `config.toml`.
+preview below, both full terminal width). Omitting `layout` lets the picker
+pick landscape/portrait/list-only from the reported terminal size (with a
+small hysteresis margin so a resize near a breakpoint never flickers between
+modes); press `ctrl+l` while the picker is open to cycle
+auto → landscape → portrait → auto for the current session only — it never
+writes back to `config.toml`. `theme` resolves with `$NO_COLOR` (any
+non-empty value) always winning first, then `$SHEP_THEME`, then this field,
+then Catppuccin Mocha; `plain` (or `$NO_COLOR`) drops every color escape
+sequence and relies on textual/structural markers (bold, underline, a `>`/`~`
+row marker) instead, so the picker stays fully usable over a plain terminal
+or when Nerd Fonts/24-bit color aren't available.
 
 ## Workspace previews
 
