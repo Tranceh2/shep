@@ -19,20 +19,6 @@ const minPreviewWidth = 80
 // hidden entirely, mirroring minPreviewWidth on the row axis.
 const minPreviewHeight = 8
 
-// minListH/minPrevH are the height-axis minimum pane floors (rows) used when
-// splitting a stacked layout's vertical share — see minList/minPrev for the
-// width-axis equivalents used by a wide (side-by-side) layout. minListH
-// covers the list pane's own chrome (chromeRows) plus 3 candidate rows;
-// minPrevH reuses minPreviewHeight, the terminal's own real minimum for a
-// usable preview pane.
-const minListH = chromeRows + 3
-const minPrevH = minPreviewHeight
-
-// minPortraitHeight is the raw terminal height below which a stacked layout
-// falls back to list-only instead of attempting a split that cannot honour
-// minListH+minPrevH without overflowing.
-const minPortraitHeight = minListH + minPrevH + 2
-
 // chromeRows is the fixed vertical overhead of the list pane deducted from
 // the reported terminal height before capping visible rows: the border's
 // top+bottom edges (2). The old query line that used to live inside the list
@@ -55,9 +41,8 @@ const footerSeparator = " / "
 // View renders the responsive two-pane (or single-pane) UI plus a compact,
 // contextual footer line. The active mode (m.mode, computed on
 // tea.WindowSizeMsg — see nextResponsiveMode) decides the shape: modeWide
-// splits list/preview side by side, modeStacked stacks them, modeListOnly
-// shows only the list. The "?" help overlay (m.focus == FocusHelp) replaces
-// the body entirely when active.
+// splits list/preview side by side, modeListOnly shows only the list. The "?"
+// help overlay (m.focus == FocusHelp) replaces the body entirely when active.
 func (m Model) View() string {
 	if m.focus == FocusHelp {
 		return lipgloss.JoinVertical(lipgloss.Left, m.renderHelp(), m.renderFooter())
@@ -78,8 +63,6 @@ func (m Model) View() string {
 	switch m.mode {
 	case modeListOnly:
 		body = m.paneBoxStyle(paneHeight, true).Render(paneModel.renderList(m.paneContentWidth(m.width)))
-	case modeStacked:
-		body = paneModel.renderStacked()
 	default: // modeWide, or "" (unknown/headless default — see model.go)
 		listW, prevW := splitWidths(m.width, m.layout)
 		listPane := m.paneBoxStyle(paneHeight, m.focus == FocusList).Render(paneModel.renderList(m.paneContentWidth(listW)))
@@ -88,17 +71,6 @@ func (m Model) View() string {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, listPane, gap(), previewPane)
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
-}
-
-// renderStacked stacks the list pane above the preview pane, each spanning
-// the full terminal width (modeStacked).
-func (m Model) renderStacked() string {
-	listH, prevH := splitSizes(m.height, m.layout, minListH, minPrevH)
-	listModel := m
-	listModel.height = listH
-	listPane := m.paneBoxStyle(listH, m.focus == FocusList).Render(listModel.renderList(m.paneContentWidth(m.width)))
-	previewPane := m.paneBoxStyle(prevH, m.focus == FocusPreview).Render(m.viewport.View())
-	return lipgloss.JoinVertical(lipgloss.Left, listPane, previewPane)
 }
 
 // renderList draws the visible grouped/nested rows with a cursor marker,
@@ -169,9 +141,15 @@ func (m Model) renderHeader(width int) string {
 
 	n := len(m.baseFlatCandidates())
 	var right string
-	if m.query != "" {
+	switch {
+	case m.query != "" && len(m.visibleSourceCounts()) > 1:
+		// A query with matches from more than one source: the per-source
+		// breakdown explains WHERE the matches came from, which the plain
+		// "M of N" total cannot — see visibleSourceCounts.
+		right = m.styles.mutedStyle.Render(formatSourceCounts(m.visibleSourceCounts()))
+	case m.query != "":
 		right = m.styles.mutedStyle.Render(strconv.Itoa(m.visibleTopLevelCount()) + " of " + strconv.Itoa(n))
-	} else {
+	default:
 		right = m.styles.mutedStyle.Render(strconv.Itoa(n) + " candidates")
 	}
 
@@ -179,6 +157,59 @@ func (m Model) renderHeader(width int) string {
 		return lipgloss.NewStyle().Width(width).Render(truncateToWidth(left, width))
 	}
 	return lipgloss.NewStyle().Width(width).Render(rightPadToWidth(left, right, width))
+}
+
+// sourceCount is one source's visible top-level match count, used by
+// visibleSourceCounts/formatSourceCounts for the header's per-source
+// breakdown.
+type sourceCount struct {
+	source string
+	count  int
+}
+
+// visibleSourceCounts returns, for a non-empty query, the visible RowCandidate
+// match count per source that contributed at least one match, in the
+// resolved source order (see resolvedSourceOrder) — so the breakdown reads
+// left-to-right in the same order the rows themselves appear. Empty for an
+// empty query (every candidate is shown; there is nothing to break down).
+func (m Model) visibleSourceCounts() []sourceCount {
+	if m.query == "" {
+		return nil
+	}
+	counts := make(map[string]int)
+	for _, r := range m.rows {
+		if r.Kind == RowCandidate {
+			counts[r.Candidate.Source]++
+		}
+	}
+	var out []sourceCount
+	for _, src := range m.resolvedSourceOrder() {
+		if n := counts[src]; n > 0 {
+			out = append(out, sourceCount{source: src, count: n})
+		}
+	}
+	return out
+}
+
+// resolvedSourceOrder returns m.sourceOrder when configured, else
+// defaultSourceOrder (rows.go) — the same fallback buildRows' own
+// effectiveSourceOrder applies, kept as a Model-level accessor for callers
+// (like visibleSourceCounts) that only have a Model, not a rowBuildInput.
+func (m Model) resolvedSourceOrder() []string {
+	if len(m.sourceOrder) > 0 {
+		return m.sourceOrder
+	}
+	return defaultSourceOrder
+}
+
+// formatSourceCounts joins a per-source breakdown into a single compact
+// header segment, e.g. "herdr 2, zoxide 1".
+func formatSourceCounts(counts []sourceCount) string {
+	parts := make([]string, len(counts))
+	for i, c := range counts {
+		parts[i] = c.source + " " + strconv.Itoa(c.count)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // visibleTopLevelCount counts visible RowCandidate rows only (top-level
@@ -379,8 +410,34 @@ func (m Model) kindPrefix(row Row) string {
 	case RowPane:
 		prefix = set.PanePrefix + " "
 	}
+	if m.isActiveFocusRow(row) {
+		prefix = set.ActiveMarker + " " + prefix
+	}
 	indent := strings.Repeat("  ", row.Depth)
 	return indent + prefix
+}
+
+// isActiveFocusRow reports whether row identifies the Herdr tab/pane shep is
+// currently running inside (m.currentPane), so kindPrefix can mark it with a
+// visible active-focus indicator (IconSet.ActiveMarker). A RowPane matches on
+// its own pane_id; a RowTab matches on tab_id (the containing tab) — the same
+// "focus the containing tab" truthful-action Herdr's per-pane-focus gap
+// forces on launchChildTab, now made visible in the row list too: selecting a
+// pane can only ever focus its parent tab, never claim to focus the exact
+// pane. Never true for a RowCandidate — the indicator is scoped to
+// synthesized tab/pane rows.
+func (m Model) isActiveFocusRow(row Row) bool {
+	if m.currentPane == nil {
+		return false
+	}
+	switch row.Kind {
+	case RowPane:
+		return m.currentPane.ID != "" && row.Candidate.Meta["pane_id"] == m.currentPane.ID
+	case RowTab:
+		return m.currentPane.TabID != "" && row.Candidate.Meta["tab_id"] == m.currentPane.TabID
+	default:
+		return false
+	}
 }
 
 // rowDisplayText returns the primary and secondary display text for a
@@ -394,7 +451,11 @@ func (m Model) kindPrefix(row Row) string {
 // A RowPane is the one exception: primary is the pane's real CWD/foreground
 // path (the most useful thing to scan a list of panes by), prefixed with its
 // agent-status icon (see agentStatusIcon) when one applies; secondary is the
-// pane's own id (Candidate.Label) as a muted disambiguator.
+// pane's own id (Candidate.Label) as a muted disambiguator, followed by (see
+// workspaceContext) a concise "in <workspace>" parent-workspace context when
+// the candidate carries one — so a path/label match on a tab or pane row
+// explains WHERE it is open, not just what it is. A RowTab gets the same
+// parent-context secondary (it otherwise has none).
 func (m Model) rowDisplayText(row Row) (primary, secondary string) {
 	c := row.Candidate
 	label := c.Label
@@ -411,7 +472,11 @@ func (m Model) rowDisplayText(row Row) (primary, secondary string) {
 			primary = icon + " " + primary
 		}
 		primary = m.kindPrefix(row) + primary
-		return primary, label
+		secondary = label
+		if ctx := workspaceContext(c); ctx != "" {
+			secondary += " · " + ctx
+		}
+		return primary, secondary
 	}
 
 	primary = label
@@ -422,7 +487,23 @@ func (m Model) rowDisplayText(row Row) (primary, secondary string) {
 		primary += " (missing)"
 	}
 	primary = m.kindPrefix(row) + primary
-	return primary, ""
+	if row.Kind == RowTab {
+		secondary = workspaceContext(c)
+	}
+	return primary, secondary
+}
+
+// workspaceContext returns a concise "in <workspace>" parent-context string
+// when c carries Meta["workspace_label"] (every synthesized tab/pane
+// candidate does — see internal/tui/tree.go's synthesizeWorkspaceChildren),
+// else "". Shared by RowTab and RowPane so a query match on either row's
+// path/label always explains which parent workspace it belongs to.
+func workspaceContext(c source.Candidate) string {
+	label := c.Meta["workspace_label"]
+	if label == "" {
+		return ""
+	}
+	return "in " + label
 }
 
 // agentStatusIcon returns the styled glyph for a pane row's agent_status,
@@ -518,18 +599,12 @@ func clamp(v, lo, hi int) int {
 func gap() string { return " " }
 
 // splitWidths divides the total reported width into list/preview pane
-// budgets, honouring layout.ListWidth/PreviewWidth when set to a percentage.
+// budgets, honouring layout.ListWidth/PreviewWidth when set to a percentage,
+// then clamps to minList/minPrev (the wide side-by-side layout's minimum pane
+// floors).
 func splitWidths(width int, layout Layout) (int, int) {
-	return splitSizes(width, layout, minList, minPrev)
-}
-
-// splitSizes is the axis-agnostic core: it computes list/preview shares of
-// total from layout's percent config, then clamps to whichever minimum
-// floor pair the caller supplies — minList/minPrev (width axis) or
-// minListH/minPrevH (height axis, renderStacked).
-func splitSizes(total int, layout Layout, minA, minB int) (int, int) {
-	if total <= 0 {
-		total = 80
+	if width <= 0 {
+		width = 80
 	}
 	listFrac, listOK := config.PercentOrAuto(layout.ListWidth)
 	prevFrac, prevOK := config.PercentOrAuto(layout.PreviewWidth)
@@ -537,24 +612,25 @@ func splitSizes(total int, layout Layout, minA, minB int) (int, int) {
 	var a, b int
 	switch {
 	case listOK && prevOK:
-		a, b = splitBothPercent(total, listFrac, prevFrac)
+		a, b = splitBothPercent(width, listFrac, prevFrac)
 	case listOK:
-		a = int(float64(total) * listFrac)
-		b = total - a - 1
+		a = int(float64(width) * listFrac)
+		b = width - a - 1
 	case prevOK:
-		b = int(float64(total) * prevFrac)
-		a = total - b - 1
+		b = int(float64(width) * prevFrac)
+		a = width - b - 1
 	default:
-		a = total * 3 / 5
-		b = total - a - 1
+		a = width * 3 / 5
+		b = width - a - 1
 	}
-	return clampSizes(total, a, b, minA, minB)
+	return clampSizes(width, a, b)
 }
 
-// clampSizes enforces minA/minB minimum floors and the invariant that
-// a+gap+b never exceeds total, reconciling any overflow by shrinking
+// clampSizes enforces the minList/minPrev minimum floors and the invariant
+// that a+gap+b never exceeds total, reconciling any overflow by shrinking
 // whichever share is still above its own floor (a first, then b).
-func clampSizes(total, a, b, minA, minB int) (int, int) {
+func clampSizes(total, a, b int) (int, int) {
+	minA, minB := minList, minPrev
 	if a < minA {
 		a = minA
 	}

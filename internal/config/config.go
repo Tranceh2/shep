@@ -34,26 +34,6 @@ const (
 	SourceProjects   = "projects"
 )
 
-// SourceHerdrTab identifies a synthesized child candidate for an already-open
-// Herdr tab, nested under its parent SourceHerdr workspace row by the TUI's
-// tree-expand feature. It is a TUI presentation concern only: it is
-// intentionally NOT a member of validSourceNames because users never
-// configure it directly in general.sources, and it never appears in the flat
-// Registry/Dedup/Match pipeline — only as a row synthesized inside the picker.
-const SourceHerdrTab = "herdr_tab"
-
-// SourceHerdrPane identifies a synthesized grandchild candidate for a pane
-// inside an already-open Herdr tab, nested two levels under its SourceHerdr
-// workspace row by the TUI's tree-expand feature. Like SourceHerdrTab, it is
-// a TUI presentation concern only — never user-configured, never part of the
-// flat Registry pipeline. A SourceHerdrPane candidate's Meta always carries
-// "tab_id" (its containing tab) alongside "pane_id" and "workspace_id",
-// because Herdr has no "focus this exact pane" command: opening a pane row
-// resolves to focusing its containing tab (see internal/herdr.Driver.FocusTab
-// and internal/command/open.go's launch), so every consumer of a pane row
-// must be able to reach the tab id without a second lookup.
-const SourceHerdrPane = "herdr_pane"
-
 // defaultSourceOrder is used when general.sources is empty/absent.
 var defaultSourceOrder = []string{SourceHerdr, SourceWorkspaces, SourceZoxide, SourceProjects}
 
@@ -158,9 +138,10 @@ type DefaultsConfig struct {
 
 // TUIConfig configures the Bubble Tea picker's pane sizing and orientation.
 // ListWidth/PreviewWidth are either "auto" or a percentage string like
-// "60%"; see ParsePercent. Layout is TUILayoutLandscape (default when empty)
-// or TUILayoutPortrait — in both orientations ListWidth/PreviewWidth mean
-// "share of the split axis" (width in landscape, height in portrait).
+// "60%"; see ParsePercent. Layout is TUILayoutLandscape (default when empty
+// means auto-responsive) — the only orientation the picker resolves to a
+// distinct mode now (it forces side-by-side wide mode). The stacked "portrait"
+// layout was removed and is rejected at validation.
 type TUIConfig struct {
 	ListWidth    string `toml:"list_width,omitempty"`
 	PreviewWidth string `toml:"preview_width,omitempty"`
@@ -173,9 +154,8 @@ type TUIConfig struct {
 	Theme string `toml:"theme,omitempty"`
 	// Icons selects the fallback tier for the picker's OWN semantic icons
 	// (pane agent-status markers and row expand/tab/pane markers): one of
-	// "nerd" (Nerd Font Private Use Area glyphs, requires a patched terminal
-	// font), "unicode" (plain Unicode symbols — the picker's original
-	// hardcoded glyphs, safe on any UTF-8 terminal), or "ascii" (7-bit ASCII
+	// "unicode" (plain Unicode symbols — the picker's original hardcoded
+	// glyphs, safe on any UTF-8 terminal), or "ascii" (7-bit ASCII
 	// only, for terminals/locales that cannot render Unicode). Empty
 	// defaults to "unicode" — see internal/tui/icons.go. Does NOT affect
 	// [sources.<name>].icon, which is a raw user-configured string rendered
@@ -200,28 +180,27 @@ var validTUIThemes = map[string]bool{
 }
 
 // TUI icon fallback tier names for [tui].icons, mirrored in
-// internal/tui/icons.go's IconsNerd/IconsUnicode/IconsASCII constants so
-// config validation and the TUI resolve the exact same set without an
-// import cycle (config cannot import tui).
+// internal/tui/icons.go's IconsUnicode/IconsASCII constants so config
+// validation and the TUI resolve the exact same set without an import cycle
+// (config cannot import tui). The "nerd" tier was removed (only unicode and
+// ascii remain); validateTUI rejects it explicitly rather than silently
+// falling back.
 const (
-	TUIIconsNerd    = "nerd"
 	TUIIconsUnicode = "unicode"
 	TUIIconsASCII   = "ascii"
 )
 
 var validTUIIcons = map[string]bool{
-	TUIIconsNerd: true, TUIIconsUnicode: true, TUIIconsASCII: true,
+	TUIIconsUnicode: true, TUIIconsASCII: true,
 }
 
 // TUI layout orientation values for [tui].layout. TUILayoutLandscape (empty/
-// default) splits the list/preview panes side by side; TUILayoutPortrait
-// stacks the list pane above the preview pane. Named after Television's own
-// landscape/portrait convention for the same concept, since shep already
-// integrates with Television.
-const (
-	TUILayoutLandscape = "landscape"
-	TUILayoutPortrait  = "portrait"
-)
+// default means auto-responsive) is the only orientation the picker resolves
+// to a distinct mode now: it forces side-by-side wide mode (still subject to
+// the terminal-height floor). The stacked "portrait" layout was removed (only
+// wide and list-only modes remain), so [tui].layout = "portrait" is rejected
+// at validation.
+const TUILayoutLandscape = "landscape"
 
 // SourcesConfig configures the four built-in source providers. Only these
 // four tables are recognised; there is no support for arbitrary
@@ -951,22 +930,31 @@ func validateTUI(t TUIConfig) error {
 			t.Theme, TUIThemeMocha, TUIThemeMacchiato, TUIThemeFrappe, TUIThemeLatte, TUIThemePlain)
 	}
 	if t.Icons != "" && !validTUIIcons[t.Icons] {
-		return fmt.Errorf("tui.icons: %q must be one of %s, %s, %s",
-			t.Icons, TUIIconsNerd, TUIIconsUnicode, TUIIconsASCII)
+		switch t.Icons {
+		case "nerd":
+			return fmt.Errorf("tui.icons: %q was removed (only %s and %s are supported)", t.Icons, TUIIconsUnicode, TUIIconsASCII)
+		default:
+			return fmt.Errorf("tui.icons: %q must be one of %s, %s",
+				t.Icons, TUIIconsUnicode, TUIIconsASCII)
+		}
 	}
 	return nil
 }
 
-// validateTUILayout enforces that [tui].layout is empty (defaults to
-// landscape) or one of the documented orientation values, failing Load fast
-// with the bad value named in the error — consistent with validateWidthField
-// above.
+// validateTUILayout enforces that [tui].layout is empty (auto) or "landscape",
+// failing Load fast with the bad value named in the error — consistent with
+// validateWidthField above. The removed "portrait" (stacked) layout is rejected
+// with its own clear message so a stale config fails fast instead of silently
+// degrading.
 func validateTUILayout(layout string) error {
 	switch layout {
-	case "", TUILayoutLandscape, TUILayoutPortrait:
+	case "", TUILayoutLandscape:
 		return nil
+	case "portrait":
+		return fmt.Errorf("tui.layout: %q was removed (only %q or empty/auto is supported; the stacked layout was deleted)",
+			layout, TUILayoutLandscape)
 	}
-	return fmt.Errorf("tui.layout: %q must be %q or %q", layout, TUILayoutLandscape, TUILayoutPortrait)
+	return fmt.Errorf("tui.layout: %q must be %q or empty (auto)", layout, TUILayoutLandscape)
 }
 
 func validateWidthField(field, value string) error {

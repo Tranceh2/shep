@@ -372,10 +372,12 @@ func TestSelectWithTarget_RequiresCurrentPaneAndSupportedCandidate(t *testing.T)
 // TestSelectWithTarget_HerdrTabAndPaneRowsAreUnsupported proves that
 // ctrl+t/ctrl+p on a synthesized RowTab/RowPane are no-ops:
 // source.SupportsCurrentWorkspaceTarget only recognizes zoxide/projects/
-// command-workspaces, never config.SourceHerdrTab/SourceHerdrPane — the
-// "unsupported pane action semantics" contract. Enter (not ctrl+t/ctrl+p) is
-// the only supported action on a tab/pane row, and it routes (at the
-// command layer) to driver.FocusTab — never a per-pane focus call, because
+// command-workspaces, and a synthesized tab/pane candidate carries no Source
+// at all (see internal/tui/tree.go's synthesizeWorkspaceChildren) so it falls
+// through to the default false — the "unsupported pane action semantics"
+// contract. Enter (not ctrl+t/ctrl+p) is the only supported action on a
+// tab/pane row, and it routes (at the command layer) via the typed
+// RowActionFocusTab to driver.FocusTab — never a per-pane focus call, because
 // Herdr exposes none.
 func TestSelectWithTarget_HerdrTabAndPaneRowsAreUnsupported(t *testing.T) {
 	t.Parallel()
@@ -456,8 +458,9 @@ func TestSelectWithTarget_NoOpInFocusHelp(t *testing.T) {
 
 // --- ctrl+l layout cycling ---
 
-// TestCtrlL_CyclesAutoLandscapePortraitAuto proves the three-state cycle.
-func TestCtrlL_CyclesAutoLandscapePortraitAuto(t *testing.T) {
+// TestCtrlL_TogglesAutoLandscapeAuto proves the two-state toggle (the
+// stacked/portrait third state was removed along with the stacked layout).
+func TestCtrlL_TogglesAutoLandscapeAuto(t *testing.T) {
 	t.Parallel()
 	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
 	if m.layout.Orientation != "" {
@@ -468,12 +471,39 @@ func TestCtrlL_CyclesAutoLandscapePortraitAuto(t *testing.T) {
 		t.Errorf("after 1st ctrl+l: orientation = %q, want landscape", m.layout.Orientation)
 	}
 	m, _ = update(t, m, key("ctrl+l"))
-	if m.layout.Orientation != LayoutPortrait {
-		t.Errorf("after 2nd ctrl+l: orientation = %q, want portrait", m.layout.Orientation)
-	}
-	m, _ = update(t, m, key("ctrl+l"))
 	if m.layout.Orientation != "" {
-		t.Errorf("after 3rd ctrl+l: orientation = %q, want back to auto", m.layout.Orientation)
+		t.Errorf("after 2nd ctrl+l: orientation = %q, want back to auto", m.layout.Orientation)
+	}
+}
+
+// TestCtrlL_RecomputesModeImmediately proves that toggling the orientation
+// override recomputes m.mode in the same key handling step, instead of
+// leaving the cached mode stale until the next tea.WindowSizeMsg. A narrow
+// terminal (modeListOnly) forcing landscape via ctrl+l must show the
+// side-by-side layout right away — not only after a subsequent resize.
+func TestCtrlL_RecomputesModeImmediately(t *testing.T) {
+	t.Parallel()
+	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
+	m, _ = update(t, m, sizeMsg(64, 24)) // narrow: resolves modeListOnly
+	if m.mode != modeListOnly {
+		t.Fatalf("setup: expected mode = modeListOnly at a narrow width, got %v", m.mode)
+	}
+	m, _ = update(t, m, key("ctrl+l")) // force landscape
+	if m.layout.Orientation != LayoutLandscape {
+		t.Fatalf("setup: expected orientation forced to landscape, got %q", m.layout.Orientation)
+	}
+	if m.mode != modeWide {
+		t.Errorf("mode after ctrl+l = %q, want modeWide immediately (must not wait for a WindowSizeMsg)", m.mode)
+	}
+
+	// Toggling back to auto at the same narrow width must revert mode to
+	// modeListOnly immediately too, not stay stuck on modeWide.
+	m, _ = update(t, m, key("ctrl+l")) // back to auto
+	if m.layout.Orientation != "" {
+		t.Fatalf("setup: expected orientation back to auto, got %q", m.layout.Orientation)
+	}
+	if m.mode != modeListOnly {
+		t.Errorf("mode after 2nd ctrl+l = %q, want modeListOnly immediately (auto at a narrow width)", m.mode)
 	}
 }
 

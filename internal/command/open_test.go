@@ -234,7 +234,7 @@ func TestCascadeFor_RoutesBySelector(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := cascadeFor(tc.sel, nil, nil, nil, nil, nil).Names()
+			got := cascadeFor(tc.sel, nil, nil, nil, nil, nil, nil).Names()
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("selector %q: cascade names got %v want %v", tc.sel, got, tc.want)
 			}
@@ -253,7 +253,7 @@ func TestCascadeFor_TreeActiveSkipsFzf(t *testing.T) {
 		{Source: config.SourceHerdr, Path: "/hw", Label: "open-ws", Meta: map[string]string{"workspace_id": "wA"}},
 		{Source: config.SourceZoxide, Path: "/zx", Label: "zx"},
 	}
-	got := cascadeFor(config.SelectorFzf, nil, nil, nil, nil, matches).Names()
+	got := cascadeFor(config.SelectorFzf, nil, nil, nil, nil, nil, matches).Names()
 	want := []string{"direct", "tui_tree"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("tree-active cascade names = %v, want %v (fzf must be skipped)", got, want)
@@ -269,7 +269,7 @@ func TestCascadeFor_SingleMatchIsNotTreeActive(t *testing.T) {
 	matches := []source.Candidate{
 		{Source: config.SourceHerdr, Path: "/hw", Label: "open-ws", Meta: map[string]string{"workspace_id": "wA"}},
 	}
-	got := cascadeFor(config.SelectorFzf, nil, nil, nil, nil, matches).Names()
+	got := cascadeFor(config.SelectorFzf, nil, nil, nil, nil, nil, matches).Names()
 	want := []string{"direct", "fzf", "tui"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("single-match cascade names = %v, want %v (tree-expand must not activate)", got, want)
@@ -891,8 +891,8 @@ func TestOpen_TemplateSkippedOnFocused(t *testing.T) {
 // live ctrl+l toggle starts from the user's configured default orientation.
 func TestLayoutFromConfig_ThreadsOrientationAndWidths(t *testing.T) {
 	t.Parallel()
-	got := layoutFromConfig(config.TUIConfig{ListWidth: "70%", PreviewWidth: "auto", Layout: config.TUILayoutPortrait}, nil)
-	want := tui.Layout{ListWidth: "70%", PreviewWidth: "auto", Orientation: tui.LayoutPortrait}
+	got := layoutFromConfig(config.TUIConfig{ListWidth: "70%", PreviewWidth: "auto", Layout: config.TUILayoutLandscape}, nil)
+	want := tui.Layout{ListWidth: "70%", PreviewWidth: "auto", Orientation: tui.LayoutLandscape}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("layoutFromConfig = %+v, want %+v", got, want)
 	}
@@ -940,7 +940,7 @@ func TestLayoutFromConfig_EmptyLayoutDefaultsToZeroOrientation(t *testing.T) {
 // silently defaulting to nil.
 func TestNewTUISelector_StoresRenderer(t *testing.T) {
 	r := fakePreviewRenderer{}
-	s := newTUISelector(r, nil, nil)
+	s := newTUISelector(r, nil, nil, nil)
 	if s.renderer == nil {
 		t.Fatal("expected tuiSelector to carry a non-nil renderer")
 	}
@@ -955,9 +955,9 @@ func TestNewTUISelector_StoresRenderer(t *testing.T) {
 func TestTUISelector_Select_ForwardsChosenTargetToApp(t *testing.T) {
 	t.Parallel()
 	app := New()
-	sel := newTUISelector(nil, nil, app.setChosenTarget)
-	sel.run = func(_ context.Context, candidates []source.Candidate, _ string, _ preview.Renderer, _ *source.Pane, _ ...tui.Layout) (source.Candidate, string, bool, error) {
-		return candidates[0], "tab", true, nil
+	sel := newTUISelector(nil, nil, app.setChosenTarget, app.setChosenAction)
+	sel.run = func(_ context.Context, candidates []source.Candidate, _ string, _ preview.Renderer, _ *source.Pane, _ ...tui.Layout) (source.Candidate, tui.RowAction, string, bool, error) {
+		return candidates[0], tui.RowActionOpen, "tab", true, nil
 	}
 
 	cand := source.Candidate{Path: "/x", Label: "x"}
@@ -971,6 +971,35 @@ func TestTUISelector_Select_ForwardsChosenTargetToApp(t *testing.T) {
 	if app.chosenTarget != "tab" {
 		t.Errorf("app.chosenTarget = %q, want %q after a simulated ctrl+t pick", app.chosenTarget, "tab")
 	}
+	if app.chosenAction != tui.RowActionOpen {
+		t.Errorf("app.chosenAction = %v, want RowActionOpen forwarded from the pick", app.chosenAction)
+	}
+}
+
+// TestTUISelector_Select_ForwardsChosenActionToApp proves the TUI→App action
+// bridge: when the (fake) tree-aware picker resolves a RowActionFocusTab pick
+// (Enter on a synthesized tab/pane row), tuiSelector.Select invokes onAction
+// with it, exactly as selectorFactory wires onAction to App.setChosenAction,
+// so a.chosenAction carries RowActionFocusTab after Select returns — the
+// typed signal launch dispatches on instead of the candidate's Source string.
+func TestTUISelector_Select_ForwardsChosenActionToApp(t *testing.T) {
+	t.Parallel()
+	app := New()
+	sel := newTUISelector(nil, nil, app.setChosenTarget, app.setChosenAction)
+	sel.run = func(_ context.Context, candidates []source.Candidate, _ string, _ preview.Renderer, _ *source.Pane, _ ...tui.Layout) (source.Candidate, tui.RowAction, string, bool, error) {
+		return candidates[0], tui.RowActionFocusTab, "", true, nil
+	}
+
+	pick, ok, err := sel.Select(context.Background(), []source.Candidate{{Path: "/x", Label: "x"}}, "")
+	if err != nil || !ok {
+		t.Fatalf("Select() = ok=%v err=%v, want ok=true nil error", ok, err)
+	}
+	if pick.Label != "x" {
+		t.Fatalf("Select() = %+v, want the candidate selected", pick)
+	}
+	if app.chosenAction != tui.RowActionFocusTab {
+		t.Errorf("app.chosenAction = %v, want RowActionFocusTab forwarded from a synthesized-row pick", app.chosenAction)
+	}
 }
 
 // TestTUISelector_Select_EnterLeavesChosenTargetEmpty proves a plain enter
@@ -981,9 +1010,9 @@ func TestTUISelector_Select_EnterLeavesChosenTargetEmpty(t *testing.T) {
 	t.Parallel()
 	app := New()
 	app.chosenTarget = "pane" // simulate stale state from a prior invocation
-	sel := newTUISelector(nil, nil, app.setChosenTarget)
-	sel.run = func(_ context.Context, candidates []source.Candidate, _ string, _ preview.Renderer, _ *source.Pane, _ ...tui.Layout) (source.Candidate, string, bool, error) {
-		return candidates[0], "", true, nil
+	sel := newTUISelector(nil, nil, app.setChosenTarget, app.setChosenAction)
+	sel.run = func(_ context.Context, candidates []source.Candidate, _ string, _ preview.Renderer, _ *source.Pane, _ ...tui.Layout) (source.Candidate, tui.RowAction, string, bool, error) {
+		return candidates[0], tui.RowActionOpen, "", true, nil
 	}
 
 	if _, ok, err := sel.Select(context.Background(), []source.Candidate{{Path: "/x", Label: "x"}}, ""); err != nil || !ok {
@@ -1001,9 +1030,9 @@ func TestTUISelector_Select_CancelledNeverInvokesOnTarget(t *testing.T) {
 	t.Parallel()
 	app := New()
 	app.chosenTarget = "tab"
-	sel := newTUISelector(nil, nil, app.setChosenTarget)
-	sel.run = func(_ context.Context, _ []source.Candidate, _ string, _ preview.Renderer, _ *source.Pane, _ ...tui.Layout) (source.Candidate, string, bool, error) {
-		return source.Candidate{}, "pane", false, tui.ErrCancelled
+	sel := newTUISelector(nil, nil, app.setChosenTarget, app.setChosenAction)
+	sel.run = func(_ context.Context, _ []source.Candidate, _ string, _ preview.Renderer, _ *source.Pane, _ ...tui.Layout) (source.Candidate, tui.RowAction, string, bool, error) {
+		return source.Candidate{}, tui.RowActionOpen, "pane", false, tui.ErrCancelled
 	}
 
 	if _, ok, err := sel.Select(context.Background(), []source.Candidate{{Path: "/x", Label: "x"}}, ""); ok || !errors.Is(err, tui.ErrCancelled) {
@@ -1107,8 +1136,8 @@ func TestApp_BuildPreviewRenderer_ThreadsHerdrDriver(t *testing.T) {
 // [tui] layout set, run through layoutFromConfig, feeding a constructed
 // tui.Model, driven through the live ctrl+l toggle — never mutates the
 // original config.Config/config.TUIConfig value the config was loaded into.
-// model.go's toggleLayoutOrientation only flips Model's own in-memory Layout
-// copy (unit-tested in isolation by TestHandleKey_CtrlL_TogglesLandscapePortrait
+// model.go's cycleOrientationOverride only flips Model's own in-memory Layout
+// copy (unit-tested in isolation by TestCtrlL_TogglesAutoLandscapeAuto
 // and TestLayoutFromConfig_ThreadsOrientationAndWidths), but neither of those
 // proves the two links actually compose correctly in the real wiring
 // `shep open` uses; this test proves that "session-only, never persisted"
@@ -1130,10 +1159,13 @@ func TestOpenLayoutToggle_ConfigUnchangedAfterCtrlL(t *testing.T) {
 	}
 
 	// Sanity: the toggle DID flip the model's own session-only orientation
-	// (proving this test actually exercises the mutation path), while...
-	toggled := layoutFromConfig(config.TUIConfig{Layout: config.TUILayoutPortrait}, nil)
+	// (proving this test actually exercises the mutation path) — starting
+	// from landscape, a single ctrl+l toggles back to auto (the stacked/
+	// portrait third state was removed along with the stacked layout) —
+	// while...
+	toggled := layoutFromConfig(config.TUIConfig{Layout: ""}, nil)
 	if mm.Layout().Orientation != toggled.Orientation {
-		t.Fatalf("setup: expected ctrl+l to flip Model's orientation to portrait, got %+v", mm.Layout())
+		t.Fatalf("setup: expected ctrl+l to flip Model's orientation to auto, got %+v", mm.Layout())
 	}
 	// ...the original config.TUIConfig value stays completely unchanged.
 	if cfg.TUI != originalTUI {
@@ -1344,7 +1376,7 @@ func TestOpen_TargetTab_PlainPathHasNoCommand_Errors(t *testing.T) {
 // normal resolution flow would intercept — e.g. a group workspace, which
 // resolveFromRegistry always drills into and therefore never forwards to
 // launch. It returns stderr and the launch error.
-func runLaunchDirect(t *testing.T, cand source.Candidate, target string, currentPane *source.Pane, driver *openDriver) (string, error) {
+func runLaunchDirect(t *testing.T, cand source.Candidate, action tui.RowAction, target string, currentPane *source.Pane, driver *openDriver) (string, error) {
 	t.Helper()
 	var out, errOut bytes.Buffer
 	app := New(WithStreams(&out, &errOut))
@@ -1352,7 +1384,7 @@ func runLaunchDirect(t *testing.T, cand source.Candidate, target string, current
 	app.herdrDriverInjected = true
 	app.cfg = config.Defaults()
 	app.probes = config.Probes{Herdr: true, Git: true}
-	err := app.launch(context.Background(), cand, target, currentPane, &out, &errOut)
+	err := app.launch(context.Background(), cand, action, target, currentPane, &out, &errOut)
 	return errOut.String(), err
 }
 
@@ -1365,7 +1397,7 @@ func TestLaunch_TargetTab_GroupWorkspace_Errors(t *testing.T) {
 	cand := source.Candidate{Path: "/g", Label: "groupentry", Meta: map[string]string{"group": "true"}}
 	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", CWD: "/cur"}
 	driver := insidePaneDriver(pane)
-	errOut, err := runLaunchDirect(t, cand, "tab", &pane, driver)
+	errOut, err := runLaunchDirect(t, cand, tui.RowActionOpen, "tab", &pane, driver)
 	if err == nil {
 		t.Fatal("expected an error for --target=tab on a group workspace")
 	}
@@ -1405,7 +1437,7 @@ func TestRunOpen_CurrentPaneTimeout(t *testing.T) {
 // targets share the precondition.
 func TestLaunch_TargetPane_NoCurrentPane_Errors(t *testing.T) {
 	cand := source.Candidate{Path: "/x", Label: "ops", Meta: map[string]string{"command": "k9s"}}
-	errOut, err := runLaunchDirect(t, cand, "pane", nil, &openDriver{detect: true})
+	errOut, err := runLaunchDirect(t, cand, tui.RowActionOpen, "pane", nil, &openDriver{detect: true})
 	if err == nil {
 		t.Fatal("expected an error for --target=pane with no current pane")
 	}
@@ -1527,7 +1559,7 @@ func TestOpen_TargetTab_HerdrCandidate_Errors(t *testing.T) {
 	cand := source.Candidate{Source: config.SourceHerdr, Path: "/hw", Label: "open-ws", Meta: map[string]string{"workspace_id": "wA"}}
 	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
 	driver := insidePaneDriver(pane)
-	errOut, err := runLaunchDirect(t, cand, "tab", &pane, driver)
+	errOut, err := runLaunchDirect(t, cand, tui.RowActionOpen, "tab", &pane, driver)
 	if err == nil {
 		t.Fatal("expected an error for --target=tab on an already-open herdr workspace")
 	}
@@ -1547,7 +1579,7 @@ func TestOpen_TargetTab_ZoxideCandidate_Opens(t *testing.T) {
 	cand := source.Candidate{Source: config.SourceZoxide, Path: "/zx", Label: "zx-proj"}
 	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
 	driver := insidePaneDriver(pane)
-	errOut, err := runLaunchDirect(t, cand, "tab", &pane, driver)
+	errOut, err := runLaunchDirect(t, cand, tui.RowActionOpen, "tab", &pane, driver)
 	if err != nil {
 		t.Fatalf("launch --target=tab zoxide: %v (stderr=%q)", err, errOut)
 	}
@@ -1566,7 +1598,7 @@ func TestOpen_TargetPane_ProjectsCandidate_Opens(t *testing.T) {
 	cand := source.Candidate{Source: config.SourceProjects, Path: "/proj", Label: "proj"}
 	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
 	driver := insidePaneDriver(pane)
-	errOut, err := runLaunchDirect(t, cand, "pane", &pane, driver)
+	errOut, err := runLaunchDirect(t, cand, tui.RowActionOpen, "pane", &pane, driver)
 	if err != nil {
 		t.Fatalf("launch --target=pane projects: %v (stderr=%q)", err, errOut)
 	}
@@ -1578,22 +1610,22 @@ func TestOpen_TargetPane_ProjectsCandidate_Opens(t *testing.T) {
 	}
 }
 
-// --- launchChildTab (tree-expand R4) ---
+// --- launchChildTab (typed RowAction dispatch) ---
 
-// TestOpen_LaunchHerdrTabFocusesTab (6.1/R4): a synthesized SourceHerdrTab
-// child candidate routes Enter to driver.FocusTab with its Meta["tab_id"],
-// bypassing FocusOrCreate entirely — the child row identifies an
-// already-open tab inside an already-open workspace, so there is nothing to
-// focus-or-create at the workspace level.
-func TestOpen_LaunchHerdrTabFocusesTab(t *testing.T) {
+// TestOpen_LaunchFocusTabActionRoutesToFocusTab: a synthesized child row
+// (RowActionFocusTab) routes Enter to driver.FocusTab with its Meta["tab_id"],
+// bypassing FocusOrCreate entirely — the child row identifies an already-open
+// tab inside an already-open workspace, so there is nothing to focus-or-create
+// at the workspace level. The dispatch is the TUI-owned typed RowAction, not
+// the candidate's Source string (the child carries no Source).
+func TestOpen_LaunchFocusTabActionRoutesToFocusTab(t *testing.T) {
 	cand := source.Candidate{
-		Source: config.SourceHerdrTab,
-		Label:  "api",
-		Path:   "/svc/api",
-		Meta:   map[string]string{"workspace_id": "wA", "tab_id": "t1"},
+		Label: "api",
+		Path:  "/svc/api",
+		Meta:  map[string]string{"workspace_id": "wA", "tab_id": "t1"},
 	}
 	driver := insidePaneDriver(source.Pane{ID: "cur-p", WorkspaceID: "wA", CWD: "/cur"})
-	errOut, err := runLaunchDirect(t, cand, "workspace", nil, driver)
+	errOut, err := runLaunchDirect(t, cand, tui.RowActionFocusTab, "workspace", nil, driver)
 	if err != nil {
 		t.Fatalf("launch child tab: %v (stderr=%q)", err, errOut)
 	}
@@ -1601,25 +1633,50 @@ func TestOpen_LaunchHerdrTabFocusesTab(t *testing.T) {
 		t.Errorf("expected FocusTab(t1), got %v", driver.focused)
 	}
 	if driver.lastCand.Path != "" {
-		t.Errorf("FocusOrCreate must not be called for a child tab candidate; got candidate %+v", driver.lastCand)
+		t.Errorf("FocusOrCreate must not be called for a focus-tab action; got candidate %+v", driver.lastCand)
 	}
 }
 
-// TestOpen_LaunchHerdrPaneFocusesContainingTab (adaptive-picker redesign):
-// a synthesized SourceHerdrPane grandchild candidate ALSO routes Enter to
-// driver.FocusTab with its Meta["tab_id"] — Herdr has no per-pane focus
-// command (see internal/herdr.Driver.FocusTab's own doc comment), so
-// focusing the containing tab is the safest truthful action for a pane row,
-// and it reuses launchChildTab unchanged (only Meta["tab_id"] is read).
-func TestOpen_LaunchHerdrPaneFocusesContainingTab(t *testing.T) {
+// TestOpen_LaunchFocusTabAction_RoutesOnActionNotSource triangulates the
+// dispatch contract: a candidate that LOOKS like a normal zoxide entry (a real
+// provider Source) still routes to FocusTab when the typed action is
+// RowActionFocusTab. This proves launch decides on the RowAction, never on the
+// candidate's Source string — the whole point of moving tree-only launch
+// semantics out of the config.SourceHerdrTab/SourceHerdrPane constants.
+func TestOpen_LaunchFocusTabAction_RoutesOnActionNotSource(t *testing.T) {
 	cand := source.Candidate{
-		Source: config.SourceHerdrPane,
-		Label:  "p1 (working)",
+		Source: config.SourceZoxide,
+		Label:  "looks-like-zoxide",
 		Path:   "/svc/api",
-		Meta:   map[string]string{"workspace_id": "wA", "tab_id": "t1", "pane_id": "p1"},
+		Meta:   map[string]string{"tab_id": "t9"},
 	}
 	driver := insidePaneDriver(source.Pane{ID: "cur-p", WorkspaceID: "wA", CWD: "/cur"})
-	errOut, err := runLaunchDirect(t, cand, "workspace", nil, driver)
+	errOut, err := runLaunchDirect(t, cand, tui.RowActionFocusTab, "tab", &source.Pane{ID: "cur-p", WorkspaceID: "wA", CWD: "/cur"}, driver)
+	if err != nil {
+		t.Fatalf("launch focus-tab action: %v (stderr=%q)", err, errOut)
+	}
+	if len(driver.focused) != 1 || driver.focused[0] != "focus-tab:t9" {
+		t.Errorf("expected FocusTab(t9) despite the zoxide Source, got %v", driver.focused)
+	}
+	if len(driver.created) != 0 {
+		t.Errorf("CreateTab must not be called for a focus-tab action even with target=tab; got %v", driver.created)
+	}
+}
+
+// TestOpen_LaunchFocusTabAction_PaneRowFocusesContainingTab: a pane row
+// (RowActionFocusTab with a pane_id) ALSO routes Enter to driver.FocusTab with
+// its Meta["tab_id"] — Herdr has no per-pane focus command (see
+// internal/herdr.Driver.FocusTab's own doc comment), so focusing the
+// containing tab is the safest truthful action for a pane row, and it reuses
+// launchChildTab unchanged (only Meta["tab_id"] is read).
+func TestOpen_LaunchFocusTabAction_PaneRowFocusesContainingTab(t *testing.T) {
+	cand := source.Candidate{
+		Label: "p1",
+		Path:  "/svc/api",
+		Meta:  map[string]string{"workspace_id": "wA", "tab_id": "t1", "pane_id": "p1"},
+	}
+	driver := insidePaneDriver(source.Pane{ID: "cur-p", WorkspaceID: "wA", CWD: "/cur"})
+	errOut, err := runLaunchDirect(t, cand, tui.RowActionFocusTab, "workspace", nil, driver)
 	if err != nil {
 		t.Fatalf("launch child pane: %v (stderr=%q)", err, errOut)
 	}
@@ -1627,19 +1684,19 @@ func TestOpen_LaunchHerdrPaneFocusesContainingTab(t *testing.T) {
 		t.Errorf("expected FocusTab(t1) for a pane row, got %v", driver.focused)
 	}
 	if driver.lastCand.Path != "" {
-		t.Errorf("FocusOrCreate must not be called for a child pane candidate; got candidate %+v", driver.lastCand)
+		t.Errorf("FocusOrCreate must not be called for a focus-tab action; got candidate %+v", driver.lastCand)
 	}
 }
 
-// TestOpen_LaunchHerdrWorkspaceStillFocusOrCreate (6.1/R4 regression): a
-// normal SourceHerdr (parent workspace) candidate must still go through the
-// unchanged FocusOrCreate path — this proves the new cand.Source ==
-// SourceHerdrTab branch in App.launch does not shadow the existing herdr
+// TestOpen_LaunchHerdrWorkspaceStillFocusOrCreate (regression): a normal
+// SourceHerdr (parent workspace) candidate selected with RowActionOpen still
+// goes through the unchanged FocusOrCreate path — this proves the
+// RowActionFocusTab branch in App.launch does not shadow the existing herdr
 // workspace contract (shep-resolver-resume-vs-new).
 func TestOpen_LaunchHerdrWorkspaceStillFocusOrCreate(t *testing.T) {
 	cand := source.Candidate{Source: config.SourceHerdr, Path: "/hw", Label: "open-ws", Meta: map[string]string{"workspace_id": "wA"}}
 	driver := insidePaneDriver(source.Pane{ID: "cur-p", WorkspaceID: "wA", CWD: "/cur"})
-	errOut, err := runLaunchDirect(t, cand, "workspace", nil, driver)
+	errOut, err := runLaunchDirect(t, cand, tui.RowActionOpen, "workspace", nil, driver)
 	if err != nil {
 		t.Fatalf("launch parent workspace: %v (stderr=%q)", err, errOut)
 	}
@@ -1651,21 +1708,21 @@ func TestOpen_LaunchHerdrWorkspaceStillFocusOrCreate(t *testing.T) {
 	}
 }
 
-// TestOpen_LaunchHerdrTab_MissingTabIDErrors (6.1 triangulation): a child
-// candidate missing Meta["tab_id"] (should not happen in practice, but
-// launchChildTab must not blindly call FocusTab("")) surfaces a clear error
-// and exit code 1 instead of calling the driver with an empty id.
-func TestOpen_LaunchHerdrTab_MissingTabIDErrors(t *testing.T) {
+// TestOpen_LaunchFocusTabAction_MissingTabIDErrors (triangulation): a
+// focus-tab action whose candidate is missing Meta["tab_id"] (should not
+// happen in practice, but launchChildTab must not blindly call FocusTab(""))
+// surfaces a clear error and exit code 1 instead of calling the driver with an
+// empty id.
+func TestOpen_LaunchFocusTabAction_MissingTabIDErrors(t *testing.T) {
 	cand := source.Candidate{
-		Source: config.SourceHerdrTab,
-		Label:  "api",
-		Path:   "/svc/api",
-		Meta:   map[string]string{"workspace_id": "wA"},
+		Label: "api",
+		Path:  "/svc/api",
+		Meta:  map[string]string{"workspace_id": "wA"},
 	}
 	driver := insidePaneDriver(source.Pane{ID: "cur-p", WorkspaceID: "wA", CWD: "/cur"})
-	errOut, err := runLaunchDirect(t, cand, "workspace", nil, driver)
+	errOut, err := runLaunchDirect(t, cand, tui.RowActionFocusTab, "workspace", nil, driver)
 	if err == nil {
-		t.Fatal("expected an error for a child candidate with no tab_id")
+		t.Fatal("expected an error for a focus-tab action with no tab_id")
 	}
 	if !errors.Is(err, errExitOne) {
 		t.Errorf("expected errExitOne, got %v", err)
@@ -1678,19 +1735,18 @@ func TestOpen_LaunchHerdrTab_MissingTabIDErrors(t *testing.T) {
 	}
 }
 
-// TestOpen_LaunchHerdrTab_FocusTabErrorSurfacesExitOne (6.1 triangulation):
+// TestOpen_LaunchFocusTabAction_FocusTabErrorSurfacesExitOne (triangulation):
 // a driver.FocusTab failure surfaces a warning and errExitOne — no resource
 // was created, so there is nothing to roll back.
-func TestOpen_LaunchHerdrTab_FocusTabErrorSurfacesExitOne(t *testing.T) {
+func TestOpen_LaunchFocusTabAction_FocusTabErrorSurfacesExitOne(t *testing.T) {
 	cand := source.Candidate{
-		Source: config.SourceHerdrTab,
-		Label:  "api",
-		Path:   "/svc/api",
-		Meta:   map[string]string{"workspace_id": "wA", "tab_id": "t1"},
+		Label: "api",
+		Path:  "/svc/api",
+		Meta:  map[string]string{"workspace_id": "wA", "tab_id": "t1"},
 	}
 	driver := insidePaneDriver(source.Pane{ID: "cur-p", WorkspaceID: "wA", CWD: "/cur"})
 	driver.focusTabErr = errors.New("herdr tab focus: boom")
-	errOut, err := runLaunchDirect(t, cand, "workspace", nil, driver)
+	errOut, err := runLaunchDirect(t, cand, tui.RowActionFocusTab, "workspace", nil, driver)
 	if err == nil {
 		t.Fatal("expected an error when driver.FocusTab fails")
 	}

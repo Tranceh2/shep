@@ -52,9 +52,6 @@ func (m Model) previewPaneContentSize() (int, int) {
 	switch m.mode {
 	case modeListOnly:
 		return 0, 0
-	case modeStacked:
-		_, prevH := splitSizes(paneHeight, m.layout, minListH, minPrevH)
-		return m.paneContentWidth(m.width), previewBodyHeight(prevH)
 	default: // modeWide, or "" (unknown/headless — matches View's own default)
 		_, prevW := splitWidths(m.width, m.layout)
 		return m.paneContentWidth(prevW), previewBodyHeight(paneHeight)

@@ -142,8 +142,7 @@ func TestRowDisplayText_PaneRow_PathPrimarySecondaryPaneID(t *testing.T) {
 		row := Row{
 			Kind: RowPane,
 			Candidate: source.Candidate{
-				Label: "p1", Path: "/srv/api", Source: config.SourceHerdrPane,
-				Meta: map[string]string{"agent_status": status},
+				Label: "p1", Path: "/srv/api", Meta: map[string]string{"agent_status": status},
 			},
 		}
 		primary, secondary := m.rowDisplayText(row)
@@ -169,12 +168,10 @@ func TestRowDisplayText_PaneRow_NoStatusMeansNoIcon(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	withStatus := Row{Kind: RowPane, Candidate: source.Candidate{
-		Label: "p1", Path: "/srv/api", Source: config.SourceHerdrPane,
-		Meta: map[string]string{"agent_status": "idle"},
+		Label: "p1", Path: "/srv/api", Meta: map[string]string{"agent_status": "idle"},
 	}}
 	withoutStatus := Row{Kind: RowPane, Candidate: source.Candidate{
-		Label: "p1", Path: "/srv/api", Source: config.SourceHerdrPane,
-		Meta: map[string]string{},
+		Label: "p1", Path: "/srv/api", Meta: map[string]string{},
 	}}
 	primaryWith, _ := m.rowDisplayText(withStatus)
 	primaryWithout, _ := m.rowDisplayText(withoutStatus)
@@ -202,8 +199,7 @@ func TestSpinner_WorkingStatusPaneRowArmsWithoutPreviewLoading(t *testing.T) {
 	m.rows = []Row{{
 		Kind: RowPane,
 		Candidate: source.Candidate{
-			Label: "p1", Path: "/srv/api", Source: config.SourceHerdrPane,
-			Meta: map[string]string{"agent_status": "working"},
+			Label: "p1", Path: "/srv/api", Meta: map[string]string{"agent_status": "working"},
 		},
 	}}
 	if !m.anyVisibleRowWorking() {
@@ -233,8 +229,7 @@ func TestSpinner_DeArmsOnceNeitherConditionHolds(t *testing.T) {
 	m.rows = []Row{{
 		Kind: RowPane,
 		Candidate: source.Candidate{
-			Label: "p1", Path: "/srv/api", Source: config.SourceHerdrPane,
-			Meta: map[string]string{"agent_status": "working"},
+			Label: "p1", Path: "/srv/api", Meta: map[string]string{"agent_status": "working"},
 		},
 	}}
 	// Still working: the loop must keep rescheduling.
@@ -251,8 +246,7 @@ func TestSpinner_DeArmsOnceNeitherConditionHolds(t *testing.T) {
 	mm.rows = []Row{{
 		Kind: RowPane,
 		Candidate: source.Candidate{
-			Label: "p1", Path: "/srv/api", Source: config.SourceHerdrPane,
-			Meta: map[string]string{"agent_status": "done"},
+			Label: "p1", Path: "/srv/api", Meta: map[string]string{"agent_status": "done"},
 		},
 	}}
 	mm2, cmd := mm.handleSpinnerTick(spinner.TickMsg{})

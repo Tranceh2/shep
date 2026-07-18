@@ -18,8 +18,8 @@
 // instead of moving the list cursor, and any printable rune returns focus
 // to the list and resumes the live filter. Enter opens a candidate/tab/pane
 // row; Left/Right expand/collapse a Herdr workspace's tab/pane children —
-// both are List-only actions, as is ctrl+l (cycles the session-only layout
-// override: auto -> landscape -> portrait -> auto). "?" opens a modal,
+// both are List-only actions, as is ctrl+l (toggles the session-only layout
+// override: auto -> landscape -> auto). "?" opens a modal,
 // scrollable help overlay (FocusHelp) from either List or Preview,
 // remembering which one so "?"/Esc restores it on close (a resize to a
 // list-only size while Preview was remembered degrades that memory to List
@@ -47,11 +47,10 @@ import (
 // override, and color theme (config.TUIConfig). ListWidth/PreviewWidth are
 // each "auto" (or empty) or a percentage string like "60%"; see
 // config.ParsePercent. Orientation is "" (auto — the responsive width-based
-// mode described in resolvedMode/nextResponsiveMode applies), LayoutLandscape,
-// or LayoutPortrait — Television's own naming for the same side-by-side vs
-// stacked concept, kept consistent since shep already integrates with
-// Television. Theme is a theme.go theme name (or empty for the default
-// resolution chain: $NO_COLOR > $SHEP_THEME > Theme > "mocha").
+// mode described in nextResponsiveMode applies) or LayoutLandscape (forces
+// wide/side-by-side mode). The stacked "portrait" orientation was removed.
+// Theme is a theme.go theme name (or empty for the default resolution chain:
+// $NO_COLOR > $SHEP_THEME > Theme > "mocha").
 type Layout struct {
 	ListWidth    string
 	PreviewWidth string
@@ -64,21 +63,20 @@ type Layout struct {
 	// order matches the configured provider order instead of a hardcoded
 	// literal. Empty falls back to rows.go's defaultSourceOrder.
 	SourceOrder []string
-	// Icons selects the fallback tier (IconsNerd/IconsUnicode/IconsASCII)
-	// for the picker's own semantic icons — see icons.go's resolveIconSet
-	// and Model.icons(). Empty defaults to IconsUnicode, byte-identical to
+	// Icons selects the fallback tier (IconsUnicode/IconsASCII) for the
+	// picker's own semantic icons — see icons.go's resolveIconSet and
+	// Model.icons(). Empty defaults to IconsUnicode, byte-identical to
 	// the picker's pre-Phase-8 hardcoded glyphs.
 	Icons string
 }
 
 // Orientation values for Layout.Orientation. The empty string means "auto":
-// the responsive width-based mode (see nextResponsiveMode) picks landscape
-// vs. portrait vs. list-only from the reported terminal size, with
-// hysteresis so a borderline resize never flaps between modes every frame.
-const (
-	LayoutLandscape = "landscape"
-	LayoutPortrait  = "portrait"
-)
+// the responsive width-based mode (see nextResponsiveMode) picks wide vs.
+// list-only from the reported terminal size, with hysteresis so a borderline
+// resize never flaps between modes every frame. LayoutLandscape forces wide
+// mode (still subject to the terminal-height floor). The "portrait" (stacked)
+// orientation was removed.
+const LayoutLandscape = "landscape"
 
 // ErrCancelled is the quiet cancellation sentinel returned by Run when the
 // user quits without selecting (esc/ctrl+c/ctrl+g). Callers use errors.Is to
@@ -126,18 +124,19 @@ type Model struct {
 	query  string
 	width  int
 	height int
-	// mode is the resolved responsive display mode ("wide"/"stacked"/
-	// "list-only"), recomputed on every tea.WindowSizeMsg (see
-	// nextResponsiveMode) — never inside View, which must stay a pure
-	// projection of already-settled state.
+	// mode is the resolved responsive display mode ("wide"/"list-only"),
+	// recomputed on every tea.WindowSizeMsg (see nextResponsiveMode) — never
+	// inside View, which must stay a pure projection of already-settled
+	// state.
 	mode string
 
-	selected    source.Candidate
-	hasSelected bool
-	cancelled   bool
-	layout      Layout
-	theme       Theme
-	styles      styleSet
+	selected       source.Candidate
+	hasSelected    bool
+	selectedAction RowAction
+	cancelled      bool
+	layout         Layout
+	theme          Theme
+	styles         styleSet
 
 	// currentPane is the Herdr pane shep is running inside, queried once by
 	// the caller and threaded in via WithCurrentPane. nil means "no current
@@ -238,7 +237,7 @@ type panePreviewMsg struct {
 // in which case the preview pane shows a static built-in summary instead of
 // an async render.
 func NewModel(candidates []source.Candidate, renderer preview.Renderer) Model {
-	return newModel(candidates, renderer, context.TODO())
+	return newModelWithLayout(candidates, renderer, context.TODO(), Layout{})
 }
 
 // NewModelWithLayout builds a model like NewModel but with an explicit
@@ -264,10 +263,6 @@ func newModelWithTreeLayout(candidates []source.Candidate, renderer preview.Rend
 	m.tree = tree
 	m.applyFilter()
 	return m
-}
-
-func newModel(candidates []source.Candidate, renderer preview.Renderer, renderCtx context.Context) Model {
-	return newModelWithLayout(candidates, renderer, renderCtx, Layout{})
 }
 
 func newModelWithLayout(candidates []source.Candidate, renderer preview.Renderer, renderCtx context.Context, layout Layout) Model {
@@ -303,6 +298,13 @@ func newModelWithLayout(candidates []source.Candidate, renderer preview.Renderer
 // Selected returns the chosen candidate and ok=true after enter is pressed.
 // ok=false means the user cancelled or has not selected yet.
 func (m Model) Selected() (source.Candidate, bool) { return m.selected, m.hasSelected }
+
+// SelectedAction returns the typed RowAction of the row Enter was pressed on
+// (RowActionOpen for a normal candidate, RowActionFocusTab for a synthesized
+// tab/pane row). It is the typed launch signal the command layer dispatches
+// on, replacing the old candidate.Source string check. RowActionOpen before
+// any selection.
+func (m Model) SelectedAction() RowAction { return m.selectedAction }
 
 // Cancelled reports whether the user quit without selecting
 // (esc/ctrl+c/ctrl+g).
@@ -446,9 +448,10 @@ func (m Model) handleSpinnerTick(msg spinner.TickMsg) (Model, tea.Cmd) {
 }
 
 // Run drives the model through a Bubble Tea program and returns the selected
-// candidate plus the target the user chose (ctrl+t => "tab", ctrl+p =>
-// "pane", or "" for the default via enter).
-func Run(ctx context.Context, candidates []source.Candidate, query string, renderer preview.Renderer, currentPane *source.Pane, layout ...Layout) (source.Candidate, string, bool, error) {
+// candidate, the typed RowAction of the picked row (RowActionFocusTab for a
+// synthesized tab/pane row, RowActionOpen otherwise), and the target the user
+// chose (ctrl+t => "tab", ctrl+p => "pane", or "" for the default via enter).
+func Run(ctx context.Context, candidates []source.Candidate, query string, renderer preview.Renderer, currentPane *source.Pane, layout ...Layout) (source.Candidate, RowAction, string, bool, error) {
 	var l Layout
 	if len(layout) > 0 {
 		l = layout[0]
@@ -463,7 +466,7 @@ func Run(ctx context.Context, candidates []source.Candidate, query string, rende
 // but the model is built via newModelWithTreeLayout so a non-empty query (or
 // a manual expand) can synthesize Herdr tab/pane child rows under a matching
 // SourceHerdr candidate.
-func RunWithTree(ctx context.Context, candidates []source.Candidate, query string, renderer preview.Renderer, tree *TreeExpander, currentPane *source.Pane, layout ...Layout) (source.Candidate, string, bool, error) {
+func RunWithTree(ctx context.Context, candidates []source.Candidate, query string, renderer preview.Renderer, tree *TreeExpander, currentPane *source.Pane, layout ...Layout) (source.Candidate, RowAction, string, bool, error) {
 	var l Layout
 	if len(layout) > 0 {
 		l = layout[0]
@@ -475,30 +478,30 @@ func RunWithTree(ctx context.Context, candidates []source.Candidate, query strin
 }
 
 // runProgram drives m through a real Bubble Tea program and turns its
-// terminated state into the (Candidate, target, ok, error) quadruple both
-// Run and RunWithTree return.
+// terminated state into the (Candidate, RowAction, target, ok, error)
+// quintuple both Run and RunWithTree return.
 //
 // WithAltScreen is required: without it, Bubble Tea renders inline and
 // repaints by moving the cursor up N lines on every update, which desyncs
 // against any render taller than the previous one. This is not
 // unit-testable (tea.ProgramOption values close over unexported Program
 // fields); verified manually.
-func runProgram(ctx context.Context, m Model) (source.Candidate, string, bool, error) {
+func runProgram(ctx context.Context, m Model) (source.Candidate, RowAction, string, bool, error) {
 	p := tea.NewProgram(m, tea.WithContext(ctx), tea.WithAltScreen())
 	final, err := p.Run()
 	if err != nil {
-		return source.Candidate{}, "", false, err
+		return source.Candidate{}, RowActionOpen, "", false, err
 	}
 	return finalizeRun(final.(Model))
 }
 
 // finalizeRun turns a terminated model's end state into Run's return
-// quadruple. Factored out so cancellation handling is unit-testable without
+// quintuple. Factored out so cancellation handling is unit-testable without
 // driving a real Bubble Tea program.
-func finalizeRun(m Model) (source.Candidate, string, bool, error) {
+func finalizeRun(m Model) (source.Candidate, RowAction, string, bool, error) {
 	if m.Cancelled() {
-		return source.Candidate{}, "", false, ErrCancelled
+		return source.Candidate{}, RowActionOpen, "", false, ErrCancelled
 	}
 	res, ok := m.Selected()
-	return res, m.ChosenTarget(), ok, nil
+	return res, m.SelectedAction(), m.ChosenTarget(), ok, nil
 }

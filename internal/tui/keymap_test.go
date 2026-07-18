@@ -140,7 +140,7 @@ func TestHelpBodyText_MatchesApprovedContent(t *testing.T) {
 		"  ctrl+p                    open in a new pane of the current workspace (list or preview focus)",
 		"",
 		m.styles.helpHeadingStyle.Render("Layout"),
-		"  ctrl+l                    cycle layout: auto / landscape / portrait (list focus only)",
+		"  ctrl+l                    toggle layout: auto / landscape (list focus only)",
 		"",
 		m.styles.helpHeadingStyle.Render("Help (this screen)"),
 		"  up/down, ctrl+j/ctrl+k    scroll one line",

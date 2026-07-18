@@ -117,7 +117,7 @@ var keyMap = []keySection{
 	{
 		heading: "Layout",
 		bindings: []keyBinding{
-			{chord: keyChordCtrlL, help: "cycle layout: auto / landscape / portrait (list focus only)"},
+			{chord: keyChordCtrlL, help: "toggle layout: auto / landscape (list focus only)"},
 		},
 	},
 	{

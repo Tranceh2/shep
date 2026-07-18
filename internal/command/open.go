@@ -111,7 +111,7 @@ func (a *App) selectorFactory(matches []source.Candidate) *selector.Cascade {
 		return a.selectorBuilder()
 	}
 	cfg := a.Config()
-	return cascadeFor(cfg.General.Selector, a.buildPreviewRenderer(), a.currentPane, a.setChosenTarget, a.buildTreeExpander(), matches, layoutFromConfig(cfg.TUI, cfg.General.Sources))
+	return cascadeFor(cfg.General.Selector, a.buildPreviewRenderer(), a.currentPane, a.setChosenTarget, a.setChosenAction, a.buildTreeExpander(), matches, layoutFromConfig(cfg.TUI, cfg.General.Sources))
 }
 
 // buildTreeExpander wires a tui.TreeExpander over the active HerdrDriver,
@@ -159,7 +159,7 @@ func treeActiveFor(matches []source.Candidate) bool {
 // configured provider order instead of a hardcoded literal — the same order
 // source.Registry.Enabled() already collects candidates in. t.Icons threads
 // through as Layout.Icons, selecting the picker's own icon fallback tier
-// (nerd/unicode/ascii — see internal/tui/icons.go).
+// (unicode/ascii — see internal/tui/icons.go).
 func layoutFromConfig(t config.TUIConfig, sources []string) tui.Layout {
 	return tui.Layout{
 		ListWidth:    t.ListWidth,
@@ -195,25 +195,25 @@ func (a *App) buildPreviewRenderer() preview.Renderer {
 // cascadeFor builds the selector cascade for a [general].selector value.
 // builtin skips fzf and uses the Bubble Tea TUI; fzf and auto include fzf
 // (Fzf.Select no-ops when the binary is absent, so both fall back to the TUI).
-// Direct is always first so exact / single matches short-circuit. currentPane
-// and onTarget are threaded into the TUI selector (see newTUISelector); layout
-// is optional (variadic so existing callers keep compiling) and configures
-// the TUI's list/preview pane widths.
+// Direct is always first so exact / single matches short-circuit. currentPane,
+// onTarget and onAction are threaded into the TUI selector (see
+// newTUISelector); layout is optional (variadic so existing callers keep
+// compiling) and configures the TUI's list/preview pane widths.
 //
 // When treeActiveFor(matches) reports true (R6), [general].selector is
 // ignored entirely: the cascade becomes [direct, tui_tree] — fzf is always
 // skipped (it cannot render synthesized Herdr-tab child rows) and the
 // tree-aware tuiTreeSelector (backed by tree) runs instead of the plain TUI.
-func cascadeFor(sel string, renderer preview.Renderer, currentPane *source.Pane, onTarget func(string), tree *tui.TreeExpander, matches []source.Candidate, layout ...tui.Layout) *selector.Cascade {
+func cascadeFor(sel string, renderer preview.Renderer, currentPane *source.Pane, onTarget func(string), onAction func(tui.RowAction), tree *tui.TreeExpander, matches []source.Candidate, layout ...tui.Layout) *selector.Cascade {
 	var l tui.Layout
 	if len(layout) > 0 {
 		l = layout[0]
 	}
 	direct := selector.Direct{}
 	if treeActiveFor(matches) {
-		return selector.New(direct, newTUITreeSelector(renderer, currentPane, onTarget, tree, l))
+		return selector.New(direct, newTUITreeSelector(renderer, currentPane, onTarget, onAction, tree, l))
 	}
-	tuiSel := newTUISelector(renderer, currentPane, onTarget, l)
+	tuiSel := newTUISelector(renderer, currentPane, onTarget, onAction, l)
 	switch sel {
 	case config.SelectorFzf, config.SelectorAuto:
 		return selector.New(direct, selector.NewFzf(), tuiSel)
@@ -225,7 +225,7 @@ func cascadeFor(sel string, renderer preview.Renderer, currentPane *source.Pane,
 // tuiRunFunc matches tui.Run's signature so tests can substitute a fake
 // picker (scripting a ctrl+t/ctrl+p target) without driving a real Bubble Tea
 // program.
-type tuiRunFunc func(ctx context.Context, candidates []source.Candidate, query string, renderer preview.Renderer, currentPane *source.Pane, layout ...tui.Layout) (source.Candidate, string, bool, error)
+type tuiRunFunc func(ctx context.Context, candidates []source.Candidate, query string, renderer preview.Renderer, currentPane *source.Pane, layout ...tui.Layout) (source.Candidate, tui.RowAction, string, bool, error)
 
 // tuiSelector is the universal interactive fallback: it runs the embedded
 // Bubble Tea picker over the candidates, threading through the shared
@@ -244,6 +244,13 @@ type tuiSelector struct {
 	// runOpen instead reads it back via App.chosenTarget, set through this
 	// callback (App.setChosenTarget).
 	onTarget func(string)
+	// onAction receives the typed RowAction of the picked row once Select
+	// returns a successful pick — same out-of-band pattern as onTarget, for
+	// the same reason (Select's signature is fixed). runOpen reads it back
+	// via App.chosenAction (App.setChosenAction) and passes it to launch,
+	// which dispatches on the typed action instead of the candidate's Source
+	// string.
+	onAction func(tui.RowAction)
 	// run defaults to tui.Run; tests substitute a fake to simulate a
 	// ctrl+t/ctrl+p pick without driving a real Bubble Tea program.
 	run tuiRunFunc
@@ -252,15 +259,15 @@ type tuiSelector struct {
 // newTUISelector builds a tuiSelector carrying the given Renderer (nil is
 // valid in tests and degrades to the picker's built-in candidate summary),
 // the Herdr pane shep is currently running inside (nil when not running
-// inside one), a callback receiving the chosen target after a successful
-// pick, and pane-width Layout (zero value falls back to the built-in
-// heuristic).
-func newTUISelector(renderer preview.Renderer, currentPane *source.Pane, onTarget func(string), layout ...tui.Layout) *tuiSelector {
+// inside one), callbacks receiving the chosen target and typed RowAction
+// after a successful pick, and pane-width Layout (zero value falls back to
+// the built-in heuristic).
+func newTUISelector(renderer preview.Renderer, currentPane *source.Pane, onTarget func(string), onAction func(tui.RowAction), layout ...tui.Layout) *tuiSelector {
 	var l tui.Layout
 	if len(layout) > 0 {
 		l = layout[0]
 	}
-	return &tuiSelector{renderer: renderer, layout: l, currentPane: currentPane, onTarget: onTarget, run: tui.Run}
+	return &tuiSelector{renderer: renderer, layout: l, currentPane: currentPane, onTarget: onTarget, onAction: onAction, run: tui.Run}
 }
 
 func (tuiSelector) Name() string { return "tui" }
@@ -273,16 +280,21 @@ func (s tuiSelector) Select(ctx context.Context, candidates []source.Candidate, 
 	if run == nil {
 		run = tui.Run
 	}
-	cand, target, ok, err := run(ctx, candidates, query, s.renderer, s.currentPane, s.layout)
-	if ok && s.onTarget != nil {
-		s.onTarget(target)
+	cand, action, target, ok, err := run(ctx, candidates, query, s.renderer, s.currentPane, s.layout)
+	if ok {
+		if s.onTarget != nil {
+			s.onTarget(target)
+		}
+		if s.onAction != nil {
+			s.onAction(action)
+		}
 	}
 	return cand, ok, err
 }
 
 // tuiTreeRunFunc matches tui.RunWithTree's signature so tests can substitute
 // a fake tree-aware picker without driving a real Bubble Tea program.
-type tuiTreeRunFunc func(ctx context.Context, candidates []source.Candidate, query string, renderer preview.Renderer, tree *tui.TreeExpander, currentPane *source.Pane, layout ...tui.Layout) (source.Candidate, string, bool, error)
+type tuiTreeRunFunc func(ctx context.Context, candidates []source.Candidate, query string, renderer preview.Renderer, tree *tui.TreeExpander, currentPane *source.Pane, layout ...tui.Layout) (source.Candidate, tui.RowAction, string, bool, error)
 
 // tuiTreeSelector is tuiSelector's tree-expand-active counterpart (R6):
 // identical shape and callback contract, but drives tui.RunWithTree so the
@@ -296,6 +308,7 @@ type tuiTreeSelector struct {
 	currentPane *source.Pane
 	tree        *tui.TreeExpander
 	onTarget    func(string)
+	onAction    func(tui.RowAction)
 	// run defaults to tui.RunWithTree; tests substitute a fake to simulate a
 	// pick (including a ctrl+t/ctrl+p target) without driving a real Bubble
 	// Tea program.
@@ -304,15 +317,15 @@ type tuiTreeSelector struct {
 
 // newTUITreeSelector builds a tuiTreeSelector carrying the given Renderer
 // (nil degrades to the picker's built-in candidate summary, same as
-// newTUISelector), the Herdr pane shep is currently running inside, a
-// target-override callback, the TreeExpander backing child-row synthesis,
-// and pane-width Layout.
-func newTUITreeSelector(renderer preview.Renderer, currentPane *source.Pane, onTarget func(string), tree *tui.TreeExpander, layout ...tui.Layout) *tuiTreeSelector {
+// newTUISelector), the Herdr pane shep is currently running inside, target
+// and action callbacks, the TreeExpander backing child-row synthesis, and
+// pane-width Layout.
+func newTUITreeSelector(renderer preview.Renderer, currentPane *source.Pane, onTarget func(string), onAction func(tui.RowAction), tree *tui.TreeExpander, layout ...tui.Layout) *tuiTreeSelector {
 	var l tui.Layout
 	if len(layout) > 0 {
 		l = layout[0]
 	}
-	return &tuiTreeSelector{renderer: renderer, layout: l, currentPane: currentPane, tree: tree, onTarget: onTarget, run: tui.RunWithTree}
+	return &tuiTreeSelector{renderer: renderer, layout: l, currentPane: currentPane, tree: tree, onTarget: onTarget, onAction: onAction, run: tui.RunWithTree}
 }
 
 func (tuiTreeSelector) Name() string { return "tui_tree" }
@@ -325,9 +338,14 @@ func (s tuiTreeSelector) Select(ctx context.Context, candidates []source.Candida
 	if run == nil {
 		run = tui.RunWithTree
 	}
-	cand, target, ok, err := run(ctx, candidates, query, s.renderer, s.tree, s.currentPane, s.layout)
-	if ok && s.onTarget != nil {
-		s.onTarget(target)
+	cand, action, target, ok, err := run(ctx, candidates, query, s.renderer, s.tree, s.currentPane, s.layout)
+	if ok {
+		if s.onTarget != nil {
+			s.onTarget(target)
+		}
+		if s.onAction != nil {
+			s.onAction(action)
+		}
 	}
 	return cand, ok, err
 }
@@ -372,7 +390,7 @@ func (a *App) runOpen(cmd *cobra.Command, query, pathFlag, targetFlag string) er
 		target = a.chosenTarget
 	}
 
-	return a.launch(cmd.Context(), cand, target, a.currentPane, out, errOut)
+	return a.launch(cmd.Context(), cand, a.chosenAction, target, a.currentPane, out, errOut)
 }
 
 // resolveCandidate produces the candidate to launch, honouring --path first
@@ -510,7 +528,7 @@ func splitNonEmpty(s, sep string) []string {
 // multi-tab/multi-pane template inside someone else's workspace. Already-open
 // herdr workspaces, group/template entries, and plain paths surface a clear
 // error instead.
-func (a *App) launch(ctx context.Context, cand source.Candidate, target string, currentPane *source.Pane, out, errOut io.Writer) error {
+func (a *App) launch(ctx context.Context, cand source.Candidate, action tui.RowAction, target string, currentPane *source.Pane, out, errOut io.Writer) error {
 	if cand.Missing {
 		fmt.Fprintf(errOut, "path does not exist: %s\n", displayPath(cand))
 		return errExitOne
@@ -522,21 +540,21 @@ func (a *App) launch(ctx context.Context, cand source.Candidate, target string, 
 		return nil
 	}
 
-	// A synthesized tree-expand child row — either a tab (SourceHerdrTab) or
-	// a pane (SourceHerdrPane) — identifies an ALREADY-OPEN tab (or a pane
-	// inside one) in an ALREADY-OPEN workspace: it routes straight to
-	// FocusTab and bypasses the --target switch entirely (there is no
-	// "workspace"/"tab"/"pane" choice for a candidate that is itself a
-	// tab/pane). A pane row reuses the exact same FocusTab call as a tab
-	// row: Herdr has no "focus this exact pane" command (see
+	// A synthesized tree-expand child row (RowActionFocusTab) identifies an
+	// ALREADY-OPEN tab (or a pane inside one) in an ALREADY-OPEN workspace:
+	// it routes straight to FocusTab and bypasses the --target switch
+	// entirely (there is no "workspace"/"tab"/"pane" choice for a candidate
+	// that is itself a tab/pane). A pane row reuses the exact same FocusTab
+	// call as a tab row: Herdr has no "focus this exact pane" command (see
 	// internal/herdr.Driver.FocusTab's own doc comment), so the safest
 	// truthful action for Enter on a pane is focusing its containing tab —
-	// launchChildTab already only reads Meta["tab_id"], which every
-	// synthesized pane candidate carries alongside its own pane_id (see
-	// internal/tui/tree.go's synthesizeWorkspaceChildren). Checked before
-	// the switch below so it can never fall through to
-	// launchWorkspace/launchInCurrentWorkspace.
-	if cand.Source == config.SourceHerdrTab || cand.Source == config.SourceHerdrPane {
+	// launchChildTab only reads Meta["tab_id"], which every synthesized pane
+	// candidate carries alongside its own pane_id (see internal/tui/tree.go's
+	// synthesizeWorkspaceChildren). Checked before the switch below so it can
+	// never fall through to launchWorkspace/launchInCurrentWorkspace. The
+	// decision is the TUI-owned typed RowAction, not the candidate's Source
+	// string.
+	if action == tui.RowActionFocusTab {
 		return a.launchChildTab(ctx, driver, cand, errOut)
 	}
 
@@ -550,13 +568,13 @@ func (a *App) launch(ctx context.Context, cand source.Candidate, target string, 
 	}
 }
 
-// launchChildTab routes Enter on a synthesized SourceHerdrTab child row
-// (tree-expand, R4) to driver.FocusTab, never touching FocusOrCreate: the
-// child row already identifies an open tab in an open workspace, so there is
-// nothing to focus-or-create at the workspace level. There is no rollback on
-// failure — unlike launchInCurrentWorkspace's CreateTab/SplitPane, no
-// resource is created here, so a warning plus errExitOne is the complete
-// failure contract.
+// launchChildTab routes Enter on a RowActionFocusTab row (a synthesized
+// tree-expand tab or pane child) to driver.FocusTab, never touching
+// FocusOrCreate: the child row already identifies an open tab in an open
+// workspace, so there is nothing to focus-or-create at the workspace level.
+// There is no rollback on failure — unlike launchInCurrentWorkspace's
+// CreateTab/SplitPane, no resource is created here, so a warning plus
+// errExitOne is the complete failure contract.
 func (a *App) launchChildTab(ctx context.Context, driver source.HerdrDriver, cand source.Candidate, errOut io.Writer) error {
 	tabID := cand.Meta["tab_id"]
 	if tabID == "" {

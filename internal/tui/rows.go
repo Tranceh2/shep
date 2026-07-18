@@ -14,8 +14,9 @@ import (
 var defaultSourceOrder = []string{config.SourceHerdr, config.SourceWorkspaces, config.SourceZoxide, config.SourceProjects}
 
 // tabChildren is one synthesized tab row plus its own synthesized pane rows,
-// both already built as source.Candidate (Source == config.SourceHerdrTab /
-// config.SourceHerdrPane respectively) by synthesizeWorkspaceTree.
+// both built as source.Candidate by synthesizeWorkspaceChildren (internal/
+// tui/tree.go) and tagged RowActionFocusTab when flattened into Rows by
+// expandedChildren below.
 type tabChildren struct {
 	Tab   source.Candidate
 	Panes []source.Candidate
@@ -71,22 +72,27 @@ func effectiveSourceOrder(in rowBuildInput) []string {
 
 // rowIdentity returns a stable identity key for c, independent of its
 // position in any slice, used for selection retention across a rebuild and
-// for expand/collapse state lookups.
+// for expand/collapse state lookups. It derives the key from the candidate's
+// Meta ids (pane_id, then tab_id, then workspace_id) for synthesized tree
+// children, falling back to a source+path key for a normal provider
+// candidate — so it no longer depends on the removed SourceHerdrTab /
+// SourceHerdrPane string constants (a child candidate's identity is its own
+// most-specific id, not a fake Source value).
 func rowIdentity(c source.Candidate) string {
-	switch c.Source {
-	case config.SourceHerdrPane:
-		return "pane:" + c.Meta["pane_id"]
-	case config.SourceHerdrTab:
-		return "tab:" + c.Meta["tab_id"]
-	case config.SourceHerdr:
-		return "ws:" + c.Meta["workspace_id"]
-	default:
-		key := c.NormalizedPath
-		if key == "" {
-			key = c.Path
-		}
-		return c.Source + ":" + key
+	if id := c.Meta["pane_id"]; id != "" {
+		return "pane:" + id
 	}
+	if id := c.Meta["tab_id"]; id != "" {
+		return "tab:" + id
+	}
+	if id := c.Meta["workspace_id"]; id != "" {
+		return "ws:" + id
+	}
+	key := c.NormalizedPath
+	if key == "" {
+		key = c.Path
+	}
+	return c.Source + ":" + key
 }
 
 // fuzzyMatches reports whether query fuzzy-matches haystack (sahilm/fuzzy,
@@ -225,6 +231,7 @@ func expandedChildren(in rowBuildInput, c source.Candidate) ([]Row, bool) {
 			paneRows = append(paneRows, Row{
 				Kind: RowPane, Candidate: p, Depth: 2,
 				Match: paneMatch, ID: rowIdentity(p),
+				Action: RowActionFocusTab,
 			})
 		}
 		if in.query != "" && !tabSelf && !tabDescMatch {
@@ -241,6 +248,7 @@ func expandedChildren(in rowBuildInput, c source.Candidate) ([]Row, bool) {
 		out = append(out, Row{
 			Kind: RowTab, Candidate: tc.Tab, Depth: 1,
 			Match: tabMatch, ID: rowIdentity(tc.Tab),
+			Action: RowActionFocusTab,
 		})
 		out = append(out, paneRows...)
 		if tabSelf || tabDescMatch {

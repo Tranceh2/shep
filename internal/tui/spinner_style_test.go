@@ -25,11 +25,11 @@ import (
 // can observe it.
 
 // TestAgentStatusIcon_WorkingUsesStatusWorkingStyle proves the working-status
-// pane icon for the nerd/unicode tiers renders the shared spinner's current
-// frame through statusWorkingStyle (warn/bold) — NOT the spinner's own
-// configured Style, previewLoadingStyle (muted/italic, wired at construction
-// in newModelWithLayout for the preview-loading indicator). The working
-// status icon and the preview-loading spinner share one animated Bubble Tea
+// pane icon for the unicode tier renders the shared spinner's current frame
+// through statusWorkingStyle (warn/bold) — NOT the spinner's own configured
+// Style, previewLoadingStyle (muted/italic, wired at construction in
+// newModelWithLayout for the preview-loading indicator). The working status
+// icon and the preview-loading spinner share one animated Bubble Tea
 // component (and its single tick loop), but they are two distinct UI
 // affordances and must not visually collapse into the same color/weight.
 func TestAgentStatusIcon_WorkingUsesStatusWorkingStyle(t *testing.T) {
@@ -37,41 +37,37 @@ func TestAgentStatusIcon_WorkingUsesStatusWorkingStyle(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() { lipgloss.SetColorProfile(orig) })
 
-	for _, tier := range []string{IconsNerd, IconsUnicode} {
-		t.Run(tier, func(t *testing.T) {
-			m := newRenderTestModelWithIcons(ThemeMocha, tier)
-			m.spinner = spinner.New(
-				spinner.WithSpinner(spinner.MiniDot),
-				spinner.WithStyle(m.styles.previewLoadingStyle),
-			)
-			// A freshly built spinner.Model starts at frame index 0 (see
-			// bubbles/spinner.New); no Tick has been driven here.
-			frame := m.spinner.Spinner.Frames[0]
+	m := newRenderTestModelWithIcons(ThemeMocha, IconsUnicode)
+	m.spinner = spinner.New(
+		spinner.WithSpinner(spinner.MiniDot),
+		spinner.WithStyle(m.styles.previewLoadingStyle),
+	)
+	// A freshly built spinner.Model starts at frame index 0 (see
+	// bubbles/spinner.New); no Tick has been driven here.
+	frame := m.spinner.Spinner.Frames[0]
 
-			got := m.agentStatusIcon("working")
+	got := m.agentStatusIcon("working")
 
-			want := m.styles.statusWorkingStyle.Render(frame)
-			if got != want {
-				t.Errorf("[%s] agentStatusIcon(\"working\") = %q, want statusWorkingStyle-rendered spinner frame %q", tier, got, want)
-			}
+	want := m.styles.statusWorkingStyle.Render(frame)
+	if got != want {
+		t.Errorf("agentStatusIcon(\"working\") = %q, want statusWorkingStyle-rendered spinner frame %q", got, want)
+	}
 
-			wrongPreviewStyled := m.styles.previewLoadingStyle.Render(frame)
-			if got == wrongPreviewStyled {
-				t.Errorf("[%s] agentStatusIcon(\"working\") = %q, must NOT equal the spinner's own previewLoadingStyle rendering %q", tier, got, wrongPreviewStyled)
-			}
+	wrongPreviewStyled := m.styles.previewLoadingStyle.Render(frame)
+	if got == wrongPreviewStyled {
+		t.Errorf("agentStatusIcon(\"working\") = %q, must NOT equal the spinner's own previewLoadingStyle rendering %q", got, wrongPreviewStyled)
+	}
 
-			if !reSGR.MatchString(got) {
-				t.Fatalf("[%s] agentStatusIcon(\"working\") = %q, want an SGR-colored render (color profile forced to TrueColor for this test)", tier, got)
-			}
+	if !reSGR.MatchString(got) {
+		t.Fatalf("agentStatusIcon(\"working\") = %q, want an SGR-colored render (color profile forced to TrueColor for this test)", got)
+	}
 
-			// The animation source is unchanged: the rendered text still
-			// carries the spinner's current MiniDot frame glyph, not the
-			// ASCII-tier static fallback ("o").
-			plain := reSGR.ReplaceAllString(got, "")
-			if plain != frame {
-				t.Errorf("[%s] agentStatusIcon(\"working\") plain glyph = %q, want the spinner frame %q (animation must be preserved)", tier, plain, frame)
-			}
-		})
+	// The animation source is unchanged: the rendered text still carries the
+	// spinner's current MiniDot frame glyph, not the ASCII-tier static
+	// fallback ("o").
+	plain := reSGR.ReplaceAllString(got, "")
+	if plain != frame {
+		t.Errorf("agentStatusIcon(\"working\") plain glyph = %q, want the spinner frame %q (animation must be preserved)", plain, frame)
 	}
 }
 

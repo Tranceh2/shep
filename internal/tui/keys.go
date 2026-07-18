@@ -259,6 +259,7 @@ func (m Model) handleEnter() (tea.Model, tea.Cmd) {
 	}
 	m.selected = row.Candidate
 	m.hasSelected = true
+	m.selectedAction = row.Action
 	return m, tea.Quit
 }
 
@@ -277,23 +278,25 @@ func (m Model) selectWithTarget(target string) (tea.Model, tea.Cmd) {
 	}
 	m.selected = cand
 	m.hasSelected = true
+	m.selectedAction = RowActionOpen
 	m.chosenTarget = target
 	return m, tea.Quit
 }
 
-// cycleOrientationOverride advances the session-only layout override
-// through auto -> landscape -> portrait -> auto (ctrl+l). "auto" is the
-// empty Orientation value, which re-engages the responsive width-based mode
-// (see nextResponsiveMode) on the next WindowSizeMsg/render.
+// cycleOrientationOverride toggles the session-only layout override between
+// auto and landscape (ctrl+l): auto -> landscape -> auto. "auto" is the empty
+// Orientation value, which re-engages the responsive width-based mode (see
+// nextResponsiveMode). m.mode is recomputed immediately against the current
+// width/height so the visible layout reacts to ctrl+l in the same step,
+// instead of staying stale until the next WindowSizeMsg/render. The
+// stacked/portrait third state was removed along with the stacked layout.
 func (m *Model) cycleOrientationOverride() {
-	switch m.layout.Orientation {
-	case "":
+	if m.layout.Orientation == "" {
 		m.layout.Orientation = LayoutLandscape
-	case LayoutLandscape:
-		m.layout.Orientation = LayoutPortrait
-	default:
+	} else {
 		m.layout.Orientation = ""
 	}
+	m.mode = nextResponsiveMode(*m, m.mode)
 }
 
 // expandCurrent handles Right on the highlighted row: manually expands a

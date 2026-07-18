@@ -58,7 +58,7 @@ func (m *Model) fetchAllChildren() map[string]workspaceChildren {
 		if !ok {
 			continue
 		}
-		out[wsID] = synthesizeWorkspaceChildren(wsID, cand.Path, tree.Tabs, tree.Panes)
+		out[wsID] = synthesizeWorkspaceChildren(wsID, cand.Label, cand.Path, tree.Tabs, tree.Panes)
 	}
 	return out
 }

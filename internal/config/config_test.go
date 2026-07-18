@@ -1116,11 +1116,12 @@ func TestLoad_TUILayout_DefaultsEmptyAndAccepted(t *testing.T) {
 	}
 }
 
-// TestLoad_AcceptsValidTUILayoutValues confirms both documented layout
-// values parse and load without error.
+// TestLoad_AcceptsValidTUILayoutValues confirms the only documented layout
+// value ("landscape"; empty means auto) parses and loads without error.
+// "portrait" is no longer accepted — see TestLoad_RejectsPortraitTUILayout.
 func TestLoad_AcceptsValidTUILayoutValues(t *testing.T) {
 	t.Parallel()
-	for _, val := range []string{"landscape", "portrait"} {
+	for _, val := range []string{"landscape"} {
 		t.Run(val, func(t *testing.T) {
 			t.Parallel()
 			tmp := t.TempDir()
@@ -1137,6 +1138,26 @@ func TestLoad_AcceptsValidTUILayoutValues(t *testing.T) {
 				t.Errorf("tui.layout: got %q want %q", got, val)
 			}
 		})
+	}
+}
+
+// TestLoad_RejectsPortraitTUILayout confirms the removed "portrait" layout is
+// rejected at config validation with a clear error (the stacked/portrait
+// layout was deleted; only wide and list-only modes remain).
+func TestLoad_RejectsPortraitTUILayout(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.toml")
+	const doc = "[tui]\nlayout = \"portrait\"\n"
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for the removed portrait tui.layout value")
+	}
+	if !strings.Contains(err.Error(), "portrait") {
+		t.Errorf("error must name the removed value %q, got: %v", "portrait", err)
 	}
 }
 
@@ -1244,10 +1265,11 @@ func TestLoad_TUIIcons_DefaultsEmptyAndAccepted(t *testing.T) {
 }
 
 // TestLoad_AcceptsValidTUIIconsValues confirms every documented icon
-// fallback tier name parses and loads without error.
+// fallback tier name (unicode, ascii) parses and loads without error. The
+// "nerd" tier was removed — see TestLoad_RejectsNerdTUIIcons.
 func TestLoad_AcceptsValidTUIIconsValues(t *testing.T) {
 	t.Parallel()
-	for _, val := range []string{TUIIconsNerd, TUIIconsUnicode, TUIIconsASCII} {
+	for _, val := range []string{TUIIconsUnicode, TUIIconsASCII} {
 		t.Run(val, func(t *testing.T) {
 			t.Parallel()
 			tmp := t.TempDir()
@@ -1264,6 +1286,26 @@ func TestLoad_AcceptsValidTUIIconsValues(t *testing.T) {
 				t.Errorf("tui.icons: got %q want %q", got, val)
 			}
 		})
+	}
+}
+
+// TestLoad_RejectsNerdTUIIcons confirms the removed "nerd" icon tier is
+// rejected at config validation with a clear error rather than silently
+// falling back to another tier.
+func TestLoad_RejectsNerdTUIIcons(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.toml")
+	const doc = "[tui]\nicons = \"nerd\"\n"
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for the removed nerd tui.icons value")
+	}
+	if !strings.Contains(err.Error(), "nerd") {
+		t.Errorf("error must name the removed value %q, got: %v", "nerd", err)
 	}
 }
 

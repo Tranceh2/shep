@@ -1,7 +1,7 @@
 Search: api                                                                                                       1 of 1
 ╭──────────────────────────────────────────────────────────────────────╮ ╭─────────────────────────────────────────────╮
 │ ▌ ~ ▾ backend                                                        │ │ label  backend                              │
-│      » api                                                           │ │ path   /srv/backend                         │
+│      » api  in backend                                               │ │ path   /srv/backend                         │
 │                                                                      │ │                                             │
 │                                                                      │ │                                             │
 │                                                                      │ │                                             │

@@ -20,12 +20,12 @@ const (
 	// [[workspaces]] entry).
 	RowCandidate RowKind = iota
 	// RowTab is a synthesized child row for one already-open tab inside a
-	// RowCandidate workspace (Source == config.SourceHerdrTab).
+	// RowCandidate workspace. Action is RowActionFocusTab.
 	RowTab
-	// RowPane is a synthesized grandchild row for one pane inside a RowTab
-	// (Source == config.SourceHerdrPane). Enter routes to the same
-	// driver.FocusTab call as its parent RowTab — Herdr has no per-pane
-	// focus command (see internal/herdr.Driver.FocusTab).
+	// RowPane is a synthesized grandchild row for one pane inside a RowTab.
+	// Enter routes to the same driver.FocusTab call as its parent RowTab —
+	// Herdr has no per-pane focus command (see internal/herdr.Driver.FocusTab)
+	// — so Action is RowActionFocusTab as well.
 	RowPane
 )
 
@@ -54,6 +54,11 @@ type Row struct {
 	Candidate source.Candidate
 	Depth     int // 0 = candidate, 1 = tab, 2 = pane
 	Match     MatchKind
+	// Action is the typed launch semantics for Enter on this row (see
+	// RowAction). It is what the command layer dispatches on — never the
+	// candidate's Source string. RowActionOpen (zero) for a RowCandidate;
+	// RowActionFocusTab for a synthesized RowTab/RowPane.
+	Action RowAction
 	// ID is a stable identity key (see rowIdentity) used for: (1) selection
 	// retention across a rebuild, (2) expand/collapse state lookups. It is
 	// never derived from slice position, so it survives reordering/filtering.

@@ -35,26 +35,24 @@ type = "shell"
 template = "default"
 
 # [tui] configures the picker's pane sizing, orientation, and theme.
-# list_width/preview_width are "auto" or a percentage like "60%" and, in
-# both orientations, mean "share of the split axis" (width in landscape,
-# height in portrait). layout is "landscape" (side-by-side), "portrait"
-# (list stacked above preview), or omitted for the responsive default (the
-# picker picks landscape/portrait/list-only from the terminal size); cycle
-# it live for the current session with ctrl+l while the picker is open
-# (does not persist to this file). theme is one of "mocha", "macchiato",
-# "frappe", "latte", or "plain" (no color, textual markers only); omitted
-# defers to the $SHEP_THEME environment variable, then "mocha". $NO_COLOR
-# (any non-empty value), when set, always forces "plain" regardless of both.
+# list_width/preview_width are "auto" or a percentage like "60%" (share of
+# the split axis). layout is "landscape" (forces side-by-side) or omitted for
+# the responsive default (the picker picks wide/list-only from the terminal
+# width); toggle it live for the current session with ctrl+l while the picker
+# is open (does not persist to this file). theme is one of "mocha",
+# "macchiato", "frappe", "latte", or "plain" (no color, textual markers only);
+# omitted defers to the $SHEP_THEME environment variable, then "mocha".
+# $NO_COLOR (any non-empty value), when set, always forces "plain" regardless
+# of both.
 [tui]
 list_width = "auto"
 preview_width = "60%"
 layout = "landscape"
 theme = "mocha"
 # icons selects the fallback tier for the picker's OWN semantic icons (pane
-# agent-status markers, row expand/tab/pane markers): "nerd" (Nerd Font
-# glyphs, requires a patched terminal font), "unicode" (plain Unicode
-# symbols, safe on any UTF-8 terminal), or "ascii" (7-bit ASCII only, for
-# terminals/locales that cannot render Unicode); omitted defaults to
+# agent-status markers, row expand/tab/pane markers): "unicode" (plain
+# Unicode symbols, safe on any UTF-8 terminal), or "ascii" (7-bit ASCII only,
+# for terminals/locales that cannot render Unicode); omitted defaults to
 # "unicode". Does not affect [sources.<name>].icon below, which is your own
 # configured string rendered verbatim.
 icons = "unicode"

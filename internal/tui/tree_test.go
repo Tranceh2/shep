@@ -93,7 +93,9 @@ func TestTreeExpander_ReadPane_ErrorPropagates(t *testing.T) {
 // tree is built: each tab gets its own nested panes, every synthesized
 // candidate carries the ids a consumer needs (workspace_id always; tab_id
 // on both; pane_id only on panes) — the contract launchChildTab and
-// row.go's Enter routing depend on.
+// row.go's Enter routing depend on. Synthesized children carry NO Source
+// (semantics live on the Row's Kind/Action, not a fake Source string) and
+// carry workspace_label for concise parent-context display.
 func TestSynthesizeWorkspaceChildren_TabsAndPanes(t *testing.T) {
 	t.Parallel()
 	tabs := []source.Tab{
@@ -105,14 +107,20 @@ func TestSynthesizeWorkspaceChildren_TabsAndPanes(t *testing.T) {
 		{ID: "p2", WorkspaceID: "w1", TabID: "t1", CWD: "/svc/api", AgentStatus: "working"},
 		{ID: "p3", WorkspaceID: "w1", TabID: "t2", CWD: "/svc/db"},
 	}
-	wc := synthesizeWorkspaceChildren("w1", "/svc", tabs, panes)
+	wc := synthesizeWorkspaceChildren("w1", "backend", "/svc", tabs, panes)
 
 	if len(wc.Tabs) != 2 {
 		t.Fatalf("expected 2 tabs, got %d", len(wc.Tabs))
 	}
 	apiTab := wc.Tabs[0]
+	if apiTab.Tab.Source != "" {
+		t.Errorf("tab api Source = %q, want empty (synthesized children carry no Source)", apiTab.Tab.Source)
+	}
 	if apiTab.Tab.Meta["workspace_id"] != "w1" || apiTab.Tab.Meta["tab_id"] != "t1" {
 		t.Errorf("tab api Meta = %v, want workspace_id=w1 tab_id=t1", apiTab.Tab.Meta)
+	}
+	if apiTab.Tab.Meta["workspace_label"] != "backend" {
+		t.Errorf("tab api Meta[workspace_label] = %q, want \"backend\" (parent context)", apiTab.Tab.Meta["workspace_label"])
 	}
 	if len(apiTab.Panes) != 2 {
 		t.Fatalf("expected 2 panes under tab api, got %d", len(apiTab.Panes))

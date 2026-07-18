@@ -83,8 +83,8 @@ func TestBuildRows_DescendantOnlyTabMatchRetainsParent(t *testing.T) {
 	ws := herdrCandidate("backend", "/svc", "w1")
 	children := map[string]workspaceChildren{
 		"w1": {Tabs: []tabChildren{
-			{Tab: source.Candidate{Label: "api", Path: "/svc/api", Source: config.SourceHerdrTab, Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1"}}},
-			{Tab: source.Candidate{Label: "db", Path: "/svc/db", Source: config.SourceHerdrTab, Meta: map[string]string{"workspace_id": "w1", "tab_id": "t2"}}},
+			{Tab: source.Candidate{Label: "api", Path: "/svc/api", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1"}}},
+			{Tab: source.Candidate{Label: "db", Path: "/svc/db", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t2"}}},
 		}},
 	}
 	rows := buildRows(rowBuildInput{
@@ -121,13 +121,13 @@ func TestBuildRows_DescendantOnlyPaneMatchRetainsWorkspaceAndTab(t *testing.T) {
 	children := map[string]workspaceChildren{
 		"w1": {Tabs: []tabChildren{
 			{
-				Tab: source.Candidate{Label: "api", Path: "/svc/api", Source: config.SourceHerdrTab, Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1"}},
+				Tab: source.Candidate{Label: "api", Path: "/svc/api", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1"}},
 				Panes: []source.Candidate{
-					{Label: "p1-worker", Path: "/svc/api", Source: config.SourceHerdrPane, Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1", "pane_id": "p1"}},
-					{Label: "p2-shell", Path: "/svc/api", Source: config.SourceHerdrPane, Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1", "pane_id": "p2"}},
+					{Label: "p1-worker", Path: "/svc/api", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1", "pane_id": "p1"}},
+					{Label: "p2-shell", Path: "/svc/api", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1", "pane_id": "p2"}},
 				},
 			},
-			{Tab: source.Candidate{Label: "db", Path: "/svc/db", Source: config.SourceHerdrTab, Meta: map[string]string{"workspace_id": "w1", "tab_id": "t2"}}},
+			{Tab: source.Candidate{Label: "db", Path: "/svc/db", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t2"}}},
 		}},
 	}
 	rows := buildRows(rowBuildInput{
@@ -157,7 +157,7 @@ func TestBuildRows_WorkspaceOnlyMatchStaysFlat(t *testing.T) {
 	ws := herdrCandidate("backend", "/svc", "w1")
 	children := map[string]workspaceChildren{
 		"w1": {Tabs: []tabChildren{
-			{Tab: source.Candidate{Label: "api", Path: "/svc/api", Source: config.SourceHerdrTab, Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1"}}},
+			{Tab: source.Candidate{Label: "api", Path: "/svc/api", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1"}}},
 		}},
 	}
 	rows := buildRows(rowBuildInput{
@@ -181,7 +181,7 @@ func TestBuildRows_EmptyQueryNeverDumpsChildren(t *testing.T) {
 	ws := herdrCandidate("backend", "/svc", "w1")
 	children := map[string]workspaceChildren{
 		"w1": {Tabs: []tabChildren{
-			{Tab: source.Candidate{Label: "api", Path: "/svc/api", Source: config.SourceHerdrTab, Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1"}}},
+			{Tab: source.Candidate{Label: "api", Path: "/svc/api", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1"}}},
 		}},
 	}
 	rows := buildRows(rowBuildInput{candidates: []source.Candidate{ws}, query: "", children: children})
@@ -207,11 +207,11 @@ func TestRowIdentity_StableAcrossRebuilds(t *testing.T) {
 	if got, want := rowIdentity(ws), "ws:w1"; got != want {
 		t.Errorf("rowIdentity(workspace) = %q, want %q", got, want)
 	}
-	tab := source.Candidate{Source: config.SourceHerdrTab, Meta: map[string]string{"tab_id": "t1"}}
+	tab := source.Candidate{Meta: map[string]string{"tab_id": "t1"}}
 	if got, want := rowIdentity(tab), "tab:t1"; got != want {
 		t.Errorf("rowIdentity(tab) = %q, want %q", got, want)
 	}
-	pane := source.Candidate{Source: config.SourceHerdrPane, Meta: map[string]string{"pane_id": "p1"}}
+	pane := source.Candidate{Meta: map[string]string{"pane_id": "p1"}}
 	if got, want := rowIdentity(pane), "pane:p1"; got != want {
 		t.Errorf("rowIdentity(pane) = %q, want %q", got, want)
 	}

@@ -7,10 +7,10 @@ import (
 	"github.com/tranceh2/shep/internal/source"
 )
 
-// Phase 8 — strict TDD. This file exercises the icon fallback chain (Nerd
-// Font -> Unicode -> ASCII) resolved from [tui].icons (config.TUIConfig.Icons,
-// threaded through Layout.Icons -> resolveIconSet), and its effect on the two
-// UI surfaces that render shep's OWN semantic icons: agentStatusIcon (pane
+// Phase 8 — strict TDD. This file exercises the icon fallback chain (Unicode
+// -> ASCII) resolved from [tui].icons (config.TUIConfig.Icons, threaded
+// through Layout.Icons -> resolveIconSet), and its effect on the two UI
+// surfaces that render shep's OWN semantic icons: agentStatusIcon (pane
 // agent-status glyphs) and kindPrefix (row kind/expand markers). It does NOT
 // cover source.Candidate.Icon ([sources.<name>].icon in config) — that is a
 // raw user-configured string rendered verbatim regardless of the resolved
@@ -41,6 +41,7 @@ func TestResolveIconSet_DefaultsToUnicode(t *testing.T) {
 		ExpandClosed:  "▸",
 		TabPrefix:     "»",
 		PanePrefix:    "·",
+		ActiveMarker:  "◆",
 	}
 	if set != want {
 		t.Errorf("resolveIconSet(\"\") = %+v, want %+v (must match the pre-Phase-8 hardcoded glyphs exactly)", set, want)
@@ -59,31 +60,6 @@ func TestResolveIconSet_UnknownFallsBackToUnicode(t *testing.T) {
 	}
 }
 
-// TestResolveIconSet_Nerd proves the "nerd" tier resolves to a distinct,
-// fully-populated glyph set (Nerd Font Private Use Area codepoints).
-func TestResolveIconSet_Nerd(t *testing.T) {
-	t.Parallel()
-	set := resolveIconSet(IconsNerd)
-	if set.Name != IconsNerd {
-		t.Errorf("resolveIconSet(%q).Name = %q, want %q", IconsNerd, set.Name, IconsNerd)
-	}
-	fields := map[string]string{
-		"StatusIdle": set.StatusIdle, "StatusDone": set.StatusDone,
-		"StatusBlocked": set.StatusBlocked, "StatusUnknown": set.StatusUnknown,
-		"ExpandOpen": set.ExpandOpen, "ExpandClosed": set.ExpandClosed,
-		"TabPrefix": set.TabPrefix, "PanePrefix": set.PanePrefix,
-	}
-	for name, glyph := range fields {
-		if glyph == "" {
-			t.Errorf("nerd icon set: %s is empty, want a Nerd Font glyph", name)
-		}
-	}
-	unicode := resolveIconSet(IconsUnicode)
-	if set.StatusIdle == unicode.StatusIdle {
-		t.Error("nerd StatusIdle must differ from the unicode tier's glyph")
-	}
-}
-
 // TestResolveIconSet_ASCII proves the "ascii" tier resolves to a
 // fully-populated glyph set containing only 7-bit ASCII bytes — the tier a
 // dumb terminal or non-UTF-8 locale can always render.
@@ -99,6 +75,7 @@ func TestResolveIconSet_ASCII(t *testing.T) {
 		"StatusWorking": set.StatusWorking,
 		"ExpandOpen":    set.ExpandOpen, "ExpandClosed": set.ExpandClosed,
 		"TabPrefix": set.TabPrefix, "PanePrefix": set.PanePrefix,
+		"ActiveMarker": set.ActiveMarker,
 	}
 	for name, glyph := range fields {
 		if glyph == "" {
@@ -138,10 +115,10 @@ func TestModelIcons_DefaultsToUnicodeWhenLayoutIconsUnset(t *testing.T) {
 
 // TestAgentStatusIcon_RespectsConfiguredIconSet proves each non-working
 // status glyph comes from the resolved IconSet for the Model's Layout.Icons,
-// not a hardcoded literal — asserted for both non-default tiers.
+// not a hardcoded literal — asserted for both tiers.
 func TestAgentStatusIcon_RespectsConfiguredIconSet(t *testing.T) {
 	t.Parallel()
-	for _, tier := range []string{IconsNerd, IconsASCII} {
+	for _, tier := range []string{IconsUnicode, IconsASCII} {
 		t.Run(tier, func(t *testing.T) {
 			t.Parallel()
 			m := newRenderTestModelWithIcons(ThemeMocha, tier)
@@ -165,20 +142,17 @@ func TestAgentStatusIcon_RespectsConfiguredIconSet(t *testing.T) {
 }
 
 // TestAgentStatusIcon_WorkingIgnoresIconSet proves the "working" status
-// renders the model's shared animated spinner for the nerd and unicode
-// tiers regardless of icon fallback chain otherwise — the spinner is a
-// Bubble Tea component, not one of the icon-fallback-chain glyphs, and
-// those two tiers' terminals can always display its Braille dot glyphs.
-// Its color role (statusWorkingStyle, not previewLoadingStyle) is asserted
-// with a forced color profile in spinner_style_test.go, since this
+// renders the model's shared animated spinner for the unicode tier — the
+// spinner is a Bubble Tea component, not one of the icon-fallback-chain
+// glyphs, and a unicode-capable terminal can always display its Braille dot
+// glyphs. Its color role (statusWorkingStyle, not previewLoadingStyle) is
+// asserted with a forced color profile in spinner_style_test.go, since this
 // package's tests never force lipgloss color output.
 func TestAgentStatusIcon_WorkingIgnoresIconSet(t *testing.T) {
 	t.Parallel()
-	for _, tier := range []string{IconsNerd, IconsUnicode} {
-		m := newRenderTestModelWithIcons(ThemeMocha, tier)
-		if got, want := m.agentStatusIcon("working"), m.spinner.View(); got != want {
-			t.Errorf("[%s] agentStatusIcon(\"working\") = %q, want spinner view %q", tier, got, want)
-		}
+	m := newRenderTestModelWithIcons(ThemeMocha, IconsUnicode)
+	if got, want := m.agentStatusIcon("working"), m.spinner.View(); got != want {
+		t.Errorf("agentStatusIcon(\"working\") = %q, want spinner view %q", got, want)
 	}
 }
 
@@ -214,7 +188,7 @@ func TestAgentStatusIcon_WorkingIsASCIISafeUnderASCIITier(t *testing.T) {
 // expanded/collapsed RowCandidate markers come from the resolved IconSet.
 func TestKindPrefix_ExpandMarkersRespectConfiguredIconSet(t *testing.T) {
 	t.Parallel()
-	for _, tier := range []string{IconsNerd, IconsASCII} {
+	for _, tier := range []string{IconsUnicode, IconsASCII} {
 		t.Run(tier, func(t *testing.T) {
 			t.Parallel()
 			m := newRenderTestModelWithIcons(ThemeMocha, tier)
@@ -235,7 +209,7 @@ func TestKindPrefix_ExpandMarkersRespectConfiguredIconSet(t *testing.T) {
 // RowTab/RowPane markers come from the resolved IconSet.
 func TestKindPrefix_TabAndPaneMarkersRespectConfiguredIconSet(t *testing.T) {
 	t.Parallel()
-	for _, tier := range []string{IconsNerd, IconsASCII} {
+	for _, tier := range []string{IconsUnicode, IconsASCII} {
 		t.Run(tier, func(t *testing.T) {
 			t.Parallel()
 			m := newRenderTestModelWithIcons(ThemeMocha, tier)

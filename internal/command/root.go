@@ -16,6 +16,7 @@ import (
 	"github.com/tranceh2/shep/internal/herdr"
 	"github.com/tranceh2/shep/internal/selector"
 	"github.com/tranceh2/shep/internal/source"
+	"github.com/tranceh2/shep/internal/tui"
 )
 
 // App wires the shep command tree and holds runtime state shared across
@@ -53,6 +54,14 @@ type App struct {
 	// populated only when the TUI is the selecting selector and the user
 	// pressed a target binding; Direct/fzf never set it.
 	chosenTarget string
+	// chosenAction records the typed tui.RowAction of the row the interactive
+	// TUI picker selected (RowActionFocusTab for a synthesized tab/pane row,
+	// RowActionOpen otherwise). The zero value (RowActionOpen) is the default
+	// for every non-TUI path (Direct, fzf, --path, "."). It is populated only
+	// when the TUI is the selecting selector; runOpen threads it into launch,
+	// which dispatches on the typed action instead of the candidate's Source
+	// string.
+	chosenAction tui.RowAction
 	// currentPane is the Herdr pane shep is running inside, queried once per
 	// invocation so the TUI footer hints and the launch path share a single
 	// CurrentPane call. nil means "not inside a Herdr pane" (or the query
@@ -113,6 +122,13 @@ func WithHerdrDriver(d source.HerdrDriver) Option {
 // every cascade member and cannot itself grow a target return value.
 func (a *App) setChosenTarget(target string) {
 	a.chosenTarget = target
+}
+
+// setChosenAction records the typed RowAction of the row the interactive TUI
+// picker selected, threaded in as a callback for the same reason as
+// setChosenTarget (Select's signature is fixed across Direct/Fzf/TUI).
+func (a *App) setChosenAction(action tui.RowAction) {
+	a.chosenAction = action
 }
 
 // Driver returns the active Herdr driver, lazily building a real one from the

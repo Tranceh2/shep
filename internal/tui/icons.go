@@ -10,10 +10,11 @@
 package tui
 
 // Icon fallback tier names for Layout.Icons, mirrored in
-// config.TUIIconsNerd etc. so config validation and the TUI resolve the
-// exact same set without an import cycle (config cannot import tui).
+// config.TUIIconsUnicode etc. so config validation and the TUI resolve the
+// exact same set without an import cycle (config cannot import tui). The
+// "nerd" tier was removed — config validation rejects [tui].icons = "nerd"
+// explicitly rather than silently falling back to another tier.
 const (
-	IconsNerd    = "nerd"
 	IconsUnicode = "unicode"
 	IconsASCII   = "ascii"
 )
@@ -30,36 +31,30 @@ type IconSet struct {
 	// StatusWorking is a static agentStatusIcon("working") fallback for a
 	// tier whose terminal/locale cannot render the model's shared animated
 	// spinner (spinner.MiniDot, which draws Unicode Braille dot glyphs).
-	// Empty means the tier renders the animated spinner as-is (nerd and
-	// unicode terminals can always display Braille); only IconsASCII sets
-	// this, since Braille has no 7-bit ASCII fallback rendering.
+	// Empty means the tier renders the animated spinner as-is (a unicode
+	// terminal can always display Braille); only IconsASCII sets this, since
+	// Braille has no 7-bit ASCII fallback rendering.
 	StatusWorking string
 
 	ExpandOpen   string // kindPrefix, expanded RowCandidate
 	ExpandClosed string // kindPrefix, collapsed RowCandidate
 	TabPrefix    string // kindPrefix, RowTab
 	PanePrefix   string // kindPrefix, RowPane
+
+	// ActiveMarker prefixes a RowTab/RowPane that identifies the Herdr tab or
+	// pane shep is currently running inside (see Model.isActiveFocusRow) — a
+	// truthful "you are here" indicator, since Enter can only ever focus the
+	// containing tab (Herdr has no per-pane focus command), never claim to
+	// focus one exact pane.
+	ActiveMarker string
 }
 
 // iconSets holds every documented tier. IconsUnicode is byte-identical to
 // the picker's pre-Phase-8 hardcoded glyphs — the default tier, so an unset
 // [tui].icons never changes existing rendered output (and every pre-Phase-8
-// golden fixture stays valid unchanged). IconsNerd uses Font Awesome Nerd
-// Font Private Use Area codepoints (requires a patched terminal font).
-// IconsASCII is 7-bit ASCII only, for terminals/locales that cannot render
-// Unicode at all.
+// golden fixture stays valid unchanged). IconsASCII is 7-bit ASCII only, for
+// terminals/locales that cannot render Unicode at all.
 var iconSets = map[string]IconSet{
-	IconsNerd: {
-		Name:          IconsNerd,
-		StatusIdle:    "\uf00c", // nf-fa-check
-		StatusDone:    "\uf111", // nf-fa-circle
-		StatusBlocked: "\uf071", // nf-fa-exclamation_triangle
-		StatusUnknown: "\uf059", // nf-fa-question_circle
-		ExpandOpen:    "\uf078", // nf-fa-chevron_down
-		ExpandClosed:  "\uf054", // nf-fa-chevron_right
-		TabPrefix:     "\uf24d", // nf-fa-clone
-		PanePrefix:    "\uf2d2", // nf-fa-window_maximize
-	},
 	IconsUnicode: {
 		Name:          IconsUnicode,
 		StatusIdle:    "✓",
@@ -70,6 +65,7 @@ var iconSets = map[string]IconSet{
 		ExpandClosed:  "▸",
 		TabPrefix:     "»",
 		PanePrefix:    "·",
+		ActiveMarker:  "◆",
 	},
 	IconsASCII: {
 		Name:          IconsASCII,
@@ -82,6 +78,7 @@ var iconSets = map[string]IconSet{
 		ExpandClosed:  ">",
 		TabPrefix:     ">>",
 		PanePrefix:    "-",
+		ActiveMarker:  "@",
 	},
 }
 
