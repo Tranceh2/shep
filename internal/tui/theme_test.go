@@ -239,23 +239,35 @@ func TestStyleRoles_HeadingsDistinct(t *testing.T) {
 	}
 }
 
-// TestStyleRoles_CursorGutter proves the focused cursor gutter carries an
-// accent background (the 1-col selection indicator) and the unfocused variant
-// a rule background (a dimmer gutter when the preview pane owns focus). Plain
-// uses reverse-video (focused) and faint (unfocused) as the structural
-// fallbacks.
+// TestStyleRoles_CursorGutter proves the cursor gutter is a clean glyph-only
+// indicator: an accent FOREGROUND (focused) / rule foreground (unfocused) on
+// the thin "❯" chevron, with NO background fill. A solid background behind a
+// thin chevron glyph looks like a colored block obscuring the marker rather
+// than a clean cursor (TRL-2) — the gutter's own background must stay
+// transparent (no color escape at all for a colored theme; the row's own
+// selection tint is applied separately by cursorSurfaceStyle, not the
+// gutter). Plain uses reverse-video (focused) and faint (unfocused) as the
+// structural fallbacks — those already carry no explicit Background/
+// Foreground field (see TestResolveTheme_PlainIsNoColor) and are unaffected.
 func TestStyleRoles_CursorGutter(t *testing.T) {
 	t.Parallel()
+	noColor := lipgloss.NoColor{}
 	for _, th := range allColorThemes() {
 		s := newPalette(th)
-		if bg := s.cursorGutterStyle.GetBackground(); bg != lipgloss.Color(th.Accent) {
-			t.Errorf("%s: cursorGutterStyle background = %#v, want accent %q", th.Name, bg, th.Accent)
+		if fg := s.cursorGutterStyle.GetForeground(); fg != lipgloss.Color(th.Accent) {
+			t.Errorf("%s: cursorGutterStyle foreground = %#v, want accent %q", th.Name, fg, th.Accent)
 		}
-		if bg := s.cursorGutterUnfocusedStyle.GetBackground(); bg != lipgloss.Color(th.Rule) {
-			t.Errorf("%s: cursorGutterUnfocusedStyle background = %#v, want rule %q", th.Name, bg, th.Rule)
+		if bg := s.cursorGutterStyle.GetBackground(); bg != noColor {
+			t.Errorf("%s: cursorGutterStyle background = %#v, want no background (transparent, glyph-only)", th.Name, bg)
 		}
-		if s.cursorGutterStyle.GetBackground() == s.cursorGutterUnfocusedStyle.GetBackground() {
-			t.Errorf("%s: focused gutter bg == unfocused gutter bg, must differ (accent vs rule)", th.Name)
+		if fg := s.cursorGutterUnfocusedStyle.GetForeground(); fg != lipgloss.Color(th.Rule) {
+			t.Errorf("%s: cursorGutterUnfocusedStyle foreground = %#v, want rule %q", th.Name, fg, th.Rule)
+		}
+		if bg := s.cursorGutterUnfocusedStyle.GetBackground(); bg != noColor {
+			t.Errorf("%s: cursorGutterUnfocusedStyle background = %#v, want no background (transparent, glyph-only)", th.Name, bg)
+		}
+		if s.cursorGutterStyle.GetForeground() == s.cursorGutterUnfocusedStyle.GetForeground() {
+			t.Errorf("%s: focused gutter fg == unfocused gutter fg, must differ (accent vs rule)", th.Name)
 		}
 	}
 	s := newPalette(themes[ThemePlain])

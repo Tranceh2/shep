@@ -179,7 +179,7 @@ func TestPreview_BrokenCustomCommandHiddenFromOutput(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Preview.Default = []string{config.PreviewIdentity, "broken"}
 	cfg.Preview.Commands = map[string]config.PreviewCommand{
-		"broken": {Command: "shep-preview-command-does-not-exist-xyz {path}"},
+		"broken": {Command: "shep-preview-command-does-not-exist-xyz {{.Path}}"},
 	}
 	out, _, err := runPreviewFor(t, cfg, dir)
 	if err != nil {

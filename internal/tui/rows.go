@@ -1,8 +1,10 @@
 package tui
 
 import (
-	"github.com/sahilm/fuzzy"
+	"sort"
+
 	"github.com/tranceh2/shep/internal/config"
+	"github.com/tranceh2/shep/internal/fuzzy"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -95,17 +97,16 @@ func rowIdentity(c source.Candidate) string {
 	return c.Source + ":" + key
 }
 
-// fuzzyMatches reports whether query fuzzy-matches haystack (sahilm/fuzzy,
-// case-insensitive via its own equalFold, camelCase/separator-boundary aware
-// — the same matcher the old flat picker used). An empty query always
-// matches (callers gate the empty-query case separately; this helper is
-// only ever invoked from a non-empty-query path in practice, but stays
-// total so it is safe to call unconditionally).
-func fuzzyMatches(query, haystack string) bool {
+// fuzzyMatch returns the score and codepoint indexes for a matching query.
+func fuzzyMatch(query, haystack string) (int, []int, bool) {
 	if query == "" {
-		return true
+		return 0, nil, true
 	}
-	return len(fuzzy.Find(query, []string{haystack})) > 0
+	if !fuzzy.Match(query, haystack) {
+		return 0, nil, false
+	}
+	score, matchedIndexes := fuzzy.Score(query, haystack)
+	return score, matchedIndexes, true
 }
 
 // candidateHaystack is the searchable "label path" text for one candidate —
@@ -123,35 +124,54 @@ func candidateHaystack(c source.Candidate) string {
 // render — a single flat list, source-differentiated by icon/color only
 // (see rowDisplayText), with no divider/header rows at all.
 //
-// Ordering contract (non-negotiable, see skill task): within a source,
-// candidates are kept in their ORIGINAL PROVIDER ORDER — never re-sorted by
-// fuzzy score. A query only decides VISIBILITY (in vs. out), never
-// re-ranks who's in. This is what keeps "stable group/parent order as query
-// evolves" and "child fuzzy scores must never reorder workspace parents"
-// true by construction: a child's score is never even computed for
-// ordering purposes, only for the boolean visibility decision.
+// An empty query preserves provider order. A non-empty query score-sorts
+// visible candidate groups, preserving their tree context, by score descending.
+// Score ties retain configured source order and original provider order.
 func buildRows(in rowBuildInput) []Row {
-	var out []Row
+	var groups []scoredRowGroup
 	for _, src := range effectiveSourceOrder(in) {
-		out = append(out, visibleGroupRows(in, src)...)
+		groups = append(groups, visibleGroupRows(in, src)...)
+	}
+	sortScoredRowGroups(groups, in.query)
+
+	var out []Row
+	for _, group := range groups {
+		out = append(out, group.rows...)
 	}
 	return out
 }
 
-// visibleGroupRows returns the visible RowCandidate (+ nested RowTab/RowPane)
-// rows for one source, in original provider order, per buildRows' ordering
-// contract.
-func visibleGroupRows(in rowBuildInput, groupSource string) []Row {
-	var out []Row
+// scoredRowGroup keeps a structural row group intact while it is sorted. A
+// candidate group is a workspace parent plus its child rows; a tab group is a
+// tab plus its matching pane rows.
+type scoredRowGroup struct {
+	rows  []Row
+	score int
+}
+
+// sortScoredRowGroups applies fuzzy ranking only for non-empty queries.
+func sortScoredRowGroups(groups []scoredRowGroup, query string) {
+	if query == "" {
+		return
+	}
+	sort.SliceStable(groups, func(i, j int) bool {
+		return groups[i].score > groups[j].score
+	})
+}
+
+// visibleGroupRows returns visible candidate row groups for one source in
+// original provider order.
+func visibleGroupRows(in rowBuildInput, groupSource string) []scoredRowGroup {
+	var out []scoredRowGroup
 	for _, c := range in.candidates {
 		if c.Source != groupSource {
 			continue
 		}
-		row, ok := buildCandidateRow(in, c)
+		rows, score, ok := buildCandidateRow(in, c)
 		if !ok {
 			continue
 		}
-		out = append(out, row...)
+		out = append(out, scoredRowGroup{rows: rows, score: score})
 	}
 	return out
 }
@@ -159,12 +179,12 @@ func visibleGroupRows(in rowBuildInput, groupSource string) []Row {
 // buildCandidateRow builds the RowCandidate row for c (plus any expanded
 // RowTab/RowPane children) and reports ok=false when c is not visible at
 // all for the current query (matches neither itself nor any descendant).
-func buildCandidateRow(in rowBuildInput, c source.Candidate) ([]Row, bool) {
-	selfMatch := in.query == "" || fuzzyMatches(in.query, candidateHaystack(c))
-	children, descMatch := expandedChildren(in, c)
+func buildCandidateRow(in rowBuildInput, c source.Candidate) ([]Row, int, bool) {
+	selfScore, selfMatchedIndexes, selfMatch := fuzzyMatch(in.query, candidateHaystack(c))
+	children, descMatch, descScore := expandedChildren(in, c)
 
 	if in.query != "" && !selfMatch && !descMatch {
-		return nil, false
+		return nil, 0, false
 	}
 
 	match := MatchNone
@@ -176,50 +196,55 @@ func buildCandidateRow(in rowBuildInput, c source.Candidate) ([]Row, bool) {
 		}
 	}
 	row := Row{
-		Kind:       RowCandidate,
-		Candidate:  c,
-		Depth:      0,
-		Match:      match,
-		ID:         rowIdentity(c),
-		Expandable: c.Source == config.SourceHerdr,
-		Expanded:   len(children) > 0,
+		Kind:           RowCandidate,
+		Candidate:      c,
+		Depth:          0,
+		Match:          match,
+		MatchedIndexes: selfMatchedIndexes,
+		ID:             rowIdentity(c),
+		Expandable:     c.Source == config.SourceHerdr,
+		Expanded:       len(children) > 0,
 	}
-	return append([]Row{row}, children...), true
+	if descScore > selfScore {
+		selfScore = descScore
+	}
+	return append([]Row{row}, children...), selfScore, true
 }
 
 // expandedChildren returns the RowTab/RowPane rows to nest under a
 // SourceHerdr candidate, and whether any descendant matched the query
 // (which is also what makes the candidate itself visible when its own
 // label/path did not match — the "single tab/pane match expands only that
-// branch" contract). Every other candidate source returns (nil, false)
+// branch" contract). Every other candidate source returns (nil, false, 0)
 // immediately: only Herdr workspaces can have tree-expand children.
 //
 // A workspace's children are shown when EITHER the query is non-empty
 // (matching descendants must always be reachable) OR the user has manually
 // expanded it via toggleExpand at an empty query (progressive disclosure:
 // an empty query never dumps every workspace's tabs/panes by default).
-func expandedChildren(in rowBuildInput, c source.Candidate) ([]Row, bool) {
+func expandedChildren(in rowBuildInput, c source.Candidate) ([]Row, bool, int) {
 	if c.Source != config.SourceHerdr {
-		return nil, false
+		return nil, false, 0
 	}
 	wsID := c.Meta["workspace_id"]
 	wc, ok := in.children[wsID]
 	if !ok {
-		return nil, false
+		return nil, false, 0
 	}
 	expand := in.query != "" || in.expandedWorkspaces[wsID]
 	if !expand {
-		return nil, false
+		return nil, false, 0
 	}
 
-	var out []Row
+	var tabGroups []scoredRowGroup
 	descMatch := false
+	descScore := 0
 	for _, tc := range wc.Tabs {
-		tabSelf := in.query == "" || fuzzyMatches(in.query, candidateHaystack(tc.Tab))
-		var paneRows []Row
+		tabScore, tabMatchedIndexes, tabSelf := fuzzyMatch(in.query, candidateHaystack(tc.Tab))
+		var paneGroups []scoredRowGroup
 		tabDescMatch := false
 		for _, p := range tc.Panes {
-			paneSelf := in.query == "" || fuzzyMatches(in.query, candidateHaystack(p))
+			paneScore, paneMatchedIndexes, paneSelf := fuzzyMatch(in.query, candidateHaystack(p))
 			if in.query != "" && !paneSelf {
 				continue // only matching descendants are shown (non-negotiable)
 			}
@@ -228,10 +253,13 @@ func expandedChildren(in rowBuildInput, c source.Candidate) ([]Row, bool) {
 				paneMatch = MatchDirect
 				tabDescMatch = true
 			}
-			paneRows = append(paneRows, Row{
-				Kind: RowPane, Candidate: p, Depth: 2,
-				Match: paneMatch, ID: rowIdentity(p),
-				Action: RowActionFocusTab,
+			paneGroups = append(paneGroups, scoredRowGroup{
+				rows: []Row{{
+					Kind: RowPane, Candidate: p, Depth: 2,
+					Match: paneMatch, MatchedIndexes: paneMatchedIndexes,
+					ID: rowIdentity(p), Action: RowActionFocusTab,
+				}},
+				score: paneScore,
 			})
 		}
 		if in.query != "" && !tabSelf && !tabDescMatch {
@@ -245,15 +273,40 @@ func expandedChildren(in rowBuildInput, c source.Candidate) ([]Row, bool) {
 				tabMatch = MatchDescendant
 			}
 		}
-		out = append(out, Row{
+		sortScoredRowGroups(paneGroups, in.query)
+		if len(paneGroups) > 0 {
+			paneGroups[len(paneGroups)-1].rows[0].IsLast = true
+		}
+		var rows []Row
+		rows = append(rows, Row{
 			Kind: RowTab, Candidate: tc.Tab, Depth: 1,
-			Match: tabMatch, ID: rowIdentity(tc.Tab),
-			Action: RowActionFocusTab,
+			Match: tabMatch, MatchedIndexes: tabMatchedIndexes,
+			ID: rowIdentity(tc.Tab), Action: RowActionFocusTab,
 		})
-		out = append(out, paneRows...)
+		for _, paneGroup := range paneGroups {
+			rows = append(rows, paneGroup.rows...)
+			if paneGroup.score > tabScore {
+				tabScore = paneGroup.score
+			}
+		}
+		tabGroups = append(tabGroups, scoredRowGroup{rows: rows, score: tabScore})
 		if tabSelf || tabDescMatch {
 			descMatch = true
+			if tabScore > descScore {
+				descScore = tabScore
+			}
 		}
 	}
-	return out, descMatch
+	sortScoredRowGroups(tabGroups, in.query)
+	var out []Row
+	for i := range tabGroups {
+		tabGroup := &tabGroups[i]
+		tabIsLast := i == len(tabGroups)-1
+		tabGroup.rows[0].IsLast = tabIsLast
+		for paneIndex := 1; paneIndex < len(tabGroup.rows); paneIndex++ {
+			tabGroup.rows[paneIndex].AncestorIsLast = tabIsLast
+		}
+		out = append(out, tabGroup.rows...)
+	}
+	return out, descMatch, descScore
 }

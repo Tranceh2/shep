@@ -8,10 +8,10 @@
 // — differentiated only by each row's icon/color per source, with Herdr
 // workspaces able to expand into their open tabs and, per tab, its panes)
 // and a contextual, scrollable preview on the right. Filtering uses
-// github.com/sahilm/fuzzy (see rows.go's fuzzyMatches): within a source,
-// candidates are kept in their ORIGINAL PROVIDER ORDER — a query only
-// decides visibility, never re-ranks — so parent order never jumps around
-// as the user types (see buildRows' doc comment for the full contract).
+// internal/fuzzy (via rows.go's fuzzyMatch): empty queries preserve
+// configured source and provider order; non-empty queries rank candidates by
+// fuzzy score with that same stable ordering as a tiebreak (see buildRows'
+// doc comment for the full contract).
 // Tab/Shift+Tab cycles keyboard focus between the list and the preview pane
 // (FocusList/FocusPreview — see the Focus ring in keys.go); while the
 // preview is focused, arrow/page keys scroll it (via bubbles/viewport)
@@ -43,8 +43,45 @@ import (
 	"github.com/tranceh2/shep/internal/source"
 )
 
+// LabelFormats contains the resolved source-specific row templates needed by
+// render.go. It deliberately carries only presentation strings rather than a
+// config.Config so Model remains a session-only view model.
+type LabelFormats struct {
+	Herdr      string
+	Workspaces string
+	Zoxide     string
+	Projects   string
+	Tab        string
+	Pane       string
+}
+
+// withDefaults lets direct Model/Layout construction retain the historical
+// rendering behavior. Config.Load already resolves these same defaults for the
+// production path before command wires them into Layout.
+func (f LabelFormats) withDefaults() LabelFormats {
+	if f.Herdr == "" {
+		f.Herdr = defaultLabelWithPathFormat
+	}
+	if f.Workspaces == "" {
+		f.Workspaces = defaultLabelOnlyFormat
+	}
+	if f.Zoxide == "" {
+		f.Zoxide = defaultPathLabelFormat
+	}
+	if f.Projects == "" {
+		f.Projects = defaultPathLabelFormat
+	}
+	if f.Tab == "" {
+		f.Tab = defaultLabelWithPathFormat
+	}
+	if f.Pane == "" {
+		f.Pane = defaultLabelWithPathFormat
+	}
+	return f
+}
+
 // Layout configures the picker's list/preview pane widths, orientation
-// override, and color theme (config.TUIConfig). ListWidth/PreviewWidth are
+// override, color theme, and resolved row label formats. ListWidth/PreviewWidth are
 // each "auto" (or empty) or a percentage string like "60%"; see
 // config.ParsePercent. Orientation is "" (auto — the responsive width-based
 // mode described in nextResponsiveMode applies) or LayoutLandscape (forces
@@ -68,6 +105,10 @@ type Layout struct {
 	// Model.icons(). Empty defaults to IconsUnicode, byte-identical to
 	// the picker's pre-Phase-8 hardcoded glyphs.
 	Icons string
+	// LabelFormats carries the loaded, per-source row label templates into the
+	// session-only Model, following the same Layout-carried configuration pattern
+	// as Icons and SourceOrder.
+	LabelFormats LabelFormats
 }
 
 // Orientation values for Layout.Orientation. The empty string means "auto":
@@ -121,9 +162,10 @@ type Model struct {
 	rows   []Row
 	cursor int // index into rows
 
-	query  string
-	width  int
-	height int
+	query            string
+	lastAppliedQuery string
+	width            int
+	height           int
 	// mode is the resolved responsive display mode ("wide"/"list-only"),
 	// recomputed on every tea.WindowSizeMsg (see nextResponsiveMode) — never
 	// inside View, which must stay a pure projection of already-settled
@@ -324,6 +366,13 @@ func (m Model) Layout() Layout { return m.layout }
 // updated for Phase 8.
 func (m Model) icons() IconSet {
 	return resolveIconSet(m.layout.Icons)
+}
+
+// labelFormats resolves the model's configured row templates from Layout.
+// Direct test callers that construct a zero-value Layout retain the exact
+// defaults normalized by config.Load in the production path.
+func (m Model) labelFormats() LabelFormats {
+	return m.layout.LabelFormats.withDefaults()
 }
 
 // ChosenTarget returns the target the user picked via ctrl+t ("tab") or

@@ -103,8 +103,8 @@ func TestSynthesizeWorkspaceChildren_TabsAndPanes(t *testing.T) {
 		{ID: "t2", WorkspaceID: "w1", Label: "db"},
 	}
 	panes := []source.Pane{
-		{ID: "p1", WorkspaceID: "w1", TabID: "t1", CWD: "/svc/api", ForegroundCWD: "/svc/api/cmd"},
-		{ID: "p2", WorkspaceID: "w1", TabID: "t1", CWD: "/svc/api", AgentStatus: "working"},
+		{ID: "p1", Label: "worker", WorkspaceID: "w1", TabID: "t1", CWD: "/svc/api", ForegroundCWD: "/svc/api/cmd"},
+		{ID: "p2", Label: "shell", WorkspaceID: "w1", TabID: "t1", CWD: "/svc/api", AgentStatus: "working"},
 		{ID: "p3", WorkspaceID: "w1", TabID: "t2", CWD: "/svc/db"},
 	}
 	wc := synthesizeWorkspaceChildren("w1", "backend", "/svc", tabs, panes)
@@ -132,8 +132,11 @@ func TestSynthesizeWorkspaceChildren_TabsAndPanes(t *testing.T) {
 	if p1.Path != "/svc/api/cmd" {
 		t.Errorf("pane p1 Path = %q, want ForegroundCWD /svc/api/cmd", p1.Path)
 	}
-	if p1.Label != "p1" {
-		t.Errorf("pane p1 Label = %q, want bare pane id \"p1\" (no appended status text)", p1.Label)
+	if p1.Label != "worker" {
+		t.Errorf("pane p1 Label = %q, want Herdr pane label \"worker\"", p1.Label)
+	}
+	if p1.Meta["tab_label"] != "api" {
+		t.Errorf("pane p1 Meta[tab_label] = %q, want parent tab label \"api\"", p1.Meta["tab_label"])
 	}
 	if p1.Meta["agent_status"] != "" {
 		t.Errorf("pane p1 Meta[agent_status] = %q, want empty (no status reported)", p1.Meta["agent_status"])
@@ -142,8 +145,8 @@ func TestSynthesizeWorkspaceChildren_TabsAndPanes(t *testing.T) {
 	if p2.Path != "/svc/api" {
 		t.Errorf("pane p2 Path = %q, want CWD fallback /svc/api", p2.Path)
 	}
-	if p2.Label != "p2" {
-		t.Errorf("pane p2 Label = %q, want bare pane id \"p2\" (corrective round: status text no longer appended to the label)", p2.Label)
+	if p2.Label != "shell" {
+		t.Errorf("pane p2 Label = %q, want Herdr pane label \"shell\"", p2.Label)
 	}
 	if p2.Meta["agent_status"] != "working" {
 		t.Errorf("pane p2 Meta[agent_status] = %q, want \"working\" (carried in Meta, not the label — see render.go's agentStatusIcon)", p2.Meta["agent_status"])
@@ -152,6 +155,36 @@ func TestSynthesizeWorkspaceChildren_TabsAndPanes(t *testing.T) {
 	dbTab := wc.Tabs[1]
 	if len(dbTab.Panes) != 1 || dbTab.Panes[0].Meta["pane_id"] != "p3" {
 		t.Errorf("expected exactly pane p3 under tab db, got %+v", dbTab.Panes)
+	}
+}
+
+// TestSynthesizeWorkspaceChildren_ThreadsTabNumber proves every synthesized
+// tab candidate retains the Herdr tab number needed for inline row rendering.
+func TestSynthesizeWorkspaceChildren_ThreadsTabNumber(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name   string
+		number int
+		want   string
+	}{
+		{name: "single digit", number: 3, want: "3"},
+		{name: "multiple digits", number: 12, want: "12"},
+		{name: "zero value is omitted", number: 0, want: ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			children := synthesizeWorkspaceChildren(
+				"w1",
+				"backend",
+				"/srv",
+				[]source.Tab{{ID: "t1", Label: "deploy", Number: tt.number}},
+				nil,
+			)
+
+			if got := children.Tabs[0].Tab.Meta["tab_number"]; got != tt.want {
+				t.Errorf("tab_number = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

@@ -1,9 +1,9 @@
 Search: type to filter…                                                                                     1 candidates
-╭──────────────────────────────────────────────────────────────────────╮ ╭─────────────────────────────────────────────╮
-│    ▾ backend                                                         │ │ label  p1                                   │
-│      » api  in backend                                               │ │ path   /srv/api                             │
-│ ▌       · /srv/api  p1 · in backend                                  │ │ kind   herdr pane                           │
-│                                                                      │ │ tab    t1                                   │
+╭──────────────────────────────────────────────────────────────────────╮ ╭/srv/api─────────────────────────────────────╮
+│   backend · /srv/backend                                             │ │ path   /srv/api                             │
+│       └─ ◫ api · /srv/api                                            │ │ kind   herdr pane                           │
+│ ❯       └─ /srv/api                                                  │ │ tab    api                                  │
+│                                                                      │ │                                             │
 │                                                                      │ │                                             │
 │                                                                      │ │                                             │
 │                                                                      │ │                                             │

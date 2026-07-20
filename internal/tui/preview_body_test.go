@@ -462,7 +462,7 @@ func TestPanePreview_IdentityAndCapturedPaneLast(t *testing.T) {
 	t.Parallel()
 	driver := &fakeTreeDriver{
 		tabs:     []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}},
-		panes:    []source.Pane{{ID: "p1", WorkspaceID: "w1", TabID: "t1", CWD: "/srv/api"}},
+		panes:    []source.Pane{{ID: "p1", Label: "worker", WorkspaceID: "w1", TabID: "t1", CWD: "/srv/api"}},
 		readText: "┌────────┐\n│ pane 1 │\n└────────┘",
 	}
 	tree := NewTreeExpander(driver, time.Minute)
@@ -482,8 +482,8 @@ func TestPanePreview_IdentityAndCapturedPaneLast(t *testing.T) {
 	m, _ = update(t, m, panePreviewMsg{seq: m.previewSeq, text: "┌────────┐\n│ pane 1 │\n└────────┘"})
 	body := previewBodyAt(m, m.cursor)
 	lines := strings.Split(body, "\n")
-	if !strings.Contains(body, "p1") {
-		t.Errorf("pane identity missing pane id: %q", body)
+	if !strings.Contains(body, "worker") {
+		t.Errorf("pane identity missing pane label: %q", body)
 	}
 	if !strings.Contains(body, "herdr pane") {
 		t.Errorf("pane identity missing kind: %q", body)
@@ -505,7 +505,7 @@ func TestPanePreview_LoadingUnderHeading(t *testing.T) {
 	t.Parallel()
 	driver := &fakeTreeDriver{
 		tabs:  []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}},
-		panes: []source.Pane{{ID: "p1", WorkspaceID: "w1", TabID: "t1", CWD: "/srv/api"}},
+		panes: []source.Pane{{ID: "p1", Label: "worker", WorkspaceID: "w1", TabID: "t1", CWD: "/srv/api"}},
 	}
 	tree := NewTreeExpander(driver, time.Minute)
 	cands := []source.Candidate{
@@ -525,7 +525,7 @@ func TestPanePreview_LoadingUnderHeading(t *testing.T) {
 	m.previewText = ""
 	body := previewBodyAt(m, m.cursor)
 	lines := strings.Split(body, "\n")
-	if !strings.Contains(body, "p1") {
+	if !strings.Contains(body, "worker") {
 		t.Errorf("pane identity should remain during loading: %q", body)
 	}
 	headingIdx := indexOfLineContaining(lines, "Captured pane")
@@ -548,7 +548,7 @@ func TestPanePreview_UnavailableOmitsSection(t *testing.T) {
 	t.Parallel()
 	driver := &fakeTreeDriver{
 		tabs:  []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}},
-		panes: []source.Pane{{ID: "p1", WorkspaceID: "w1", TabID: "t1", CWD: "/srv/api"}},
+		panes: []source.Pane{{ID: "p1", Label: "worker", WorkspaceID: "w1", TabID: "t1", CWD: "/srv/api"}},
 	}
 	tree := NewTreeExpander(driver, time.Minute)
 	cands := []source.Candidate{
@@ -567,7 +567,7 @@ func TestPanePreview_UnavailableOmitsSection(t *testing.T) {
 	// Deliver an empty pane capture (no error) — capture unavailable.
 	m, _ = update(t, m, panePreviewMsg{seq: m.previewSeq, text: ""})
 	body := previewBodyAt(m, m.cursor)
-	if !strings.Contains(body, "p1") {
+	if !strings.Contains(body, "worker") {
 		t.Errorf("pane identity should remain when capture unavailable: %q", body)
 	}
 	if strings.Contains(body, "Captured pane") || strings.Contains(body, "captured pane") {
@@ -579,7 +579,7 @@ func TestPanePreview_WhitespaceOnlyOmitsSection(t *testing.T) {
 	t.Parallel()
 	driver := &fakeTreeDriver{
 		tabs:  []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}},
-		panes: []source.Pane{{ID: "p1", WorkspaceID: "w1", TabID: "t1", CWD: "/srv/api"}},
+		panes: []source.Pane{{ID: "p1", Label: "worker", WorkspaceID: "w1", TabID: "t1", CWD: "/srv/api"}},
 	}
 	tree := NewTreeExpander(driver, time.Minute)
 	cands := []source.Candidate{
@@ -598,7 +598,7 @@ func TestPanePreview_WhitespaceOnlyOmitsSection(t *testing.T) {
 	// Deliver whitespace-only pane capture.
 	m, _ = update(t, m, panePreviewMsg{seq: m.previewSeq, text: "  \n\n  "})
 	body := previewBodyAt(m, m.cursor)
-	if !strings.Contains(body, "p1") {
+	if !strings.Contains(body, "worker") {
 		t.Errorf("pane identity should remain when capture is whitespace-only: %q", body)
 	}
 	if strings.Contains(body, "Captured pane") || strings.Contains(body, "captured pane") {
@@ -610,7 +610,7 @@ func TestPanePreview_ContainingTabInMeta(t *testing.T) {
 	t.Parallel()
 	driver := &fakeTreeDriver{
 		tabs:  []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}},
-		panes: []source.Pane{{ID: "p1", WorkspaceID: "w1", TabID: "t1", CWD: "/srv/api"}},
+		panes: []source.Pane{{ID: "p1", Label: "worker", WorkspaceID: "w1", TabID: "t1", CWD: "/srv/api"}},
 	}
 	tree := NewTreeExpander(driver, time.Minute)
 	cands := []source.Candidate{
@@ -629,8 +629,24 @@ func TestPanePreview_ContainingTabInMeta(t *testing.T) {
 	m.previewLoading = false
 	m.previewText = ""
 	body := previewBodyAt(m, m.cursor)
-	if !strings.Contains(body, "t1") {
-		t.Errorf("pane identity should show containing tab_id: %q", body)
+	if !strings.Contains(body, "tab    api") {
+		t.Errorf("pane identity should show containing tab label: %q", body)
+	}
+	if strings.Contains(body, "t1") {
+		t.Errorf("pane identity must not present tab_id as a tab label: %q", body)
+	}
+}
+
+func TestPanePreview_EmptyLabelOmitsLabelAndTabID(t *testing.T) {
+	t.Parallel()
+	m := newRenderTestModel(ThemePlain, FocusList)
+	body := stripANSI(m.panePreviewBody(source.Candidate{
+		Path: "/srv/api",
+		Meta: map[string]string{"pane_id": "p1", "tab_id": "t1"},
+	}))
+	want := "path   /srv/api\nkind   herdr pane"
+	if body != want {
+		t.Errorf("empty-label pane preview = %q, want %q", body, want)
 	}
 }
 

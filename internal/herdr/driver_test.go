@@ -62,8 +62,11 @@ func paneListJSON(panes ...rawPane) []byte {
 		if i > 0 {
 			out += ","
 		}
-		out += `{"pane_id":"` + p.PaneID + `","workspace_id":"` + p.WorkspaceID + `","cwd":"` + p.CWD +
+		out += `{"pane_id":"` + p.PaneID + `","workspace_id":"` + p.WorkspaceID + `","tab_id":"` + p.TabID + `","cwd":"` + p.CWD +
 			`","foreground_cwd":"` + p.ForegroundCWD + `","focused":` + boolStr(p.Focused)
+		if p.Label != "" {
+			out += `,"label":"` + p.Label + `"`
+		}
 		if p.AgentStatus != "" {
 			out += `,"agent_status":"` + p.AgentStatus + `"`
 		}
@@ -638,8 +641,8 @@ func TestListPanes_ParsesEnvelope(t *testing.T) {
 		{
 			match: "herdr pane list --workspace wA",
 			out: paneListJSON(
-				rawPane{PaneID: "wA:p1", WorkspaceID: "wA", CWD: "/x", ForegroundCWD: "/x", Focused: true, AgentStatus: "working"},
-				rawPane{PaneID: "wA:p2", WorkspaceID: "wA", CWD: "/y", ForegroundCWD: "", Focused: false},
+				rawPane{PaneID: "wA:p1", Label: "worker", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/x", ForegroundCWD: "/x", Focused: true, AgentStatus: "working"},
+				rawPane{PaneID: "wA:p2", WorkspaceID: "wA", TabID: "wA:t2", CWD: "/y", ForegroundCWD: "", Focused: false},
 			),
 		},
 	}}
@@ -649,8 +652,8 @@ func TestListPanes_ParsesEnvelope(t *testing.T) {
 		t.Fatalf("ListPanes: %v", err)
 	}
 	want := []source.Pane{
-		{ID: "wA:p1", WorkspaceID: "wA", CWD: "/x", ForegroundCWD: "/x", Focused: true, AgentStatus: "working"},
-		{ID: "wA:p2", WorkspaceID: "wA", CWD: "/y", ForegroundCWD: "", Focused: false, AgentStatus: ""},
+		{ID: "wA:p1", Label: "worker", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/x", ForegroundCWD: "/x", Focused: true, AgentStatus: "working"},
+		{ID: "wA:p2", WorkspaceID: "wA", TabID: "wA:t2", CWD: "/y", ForegroundCWD: "", Focused: false, AgentStatus: ""},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("expected %d panes, got %d: %+v", len(want), len(got), got)

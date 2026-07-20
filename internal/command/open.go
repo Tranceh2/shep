@@ -111,7 +111,7 @@ func (a *App) selectorFactory(matches []source.Candidate) *selector.Cascade {
 		return a.selectorBuilder()
 	}
 	cfg := a.Config()
-	return cascadeFor(cfg.General.Selector, a.buildPreviewRenderer(), a.currentPane, a.setChosenTarget, a.setChosenAction, a.buildTreeExpander(), matches, layoutFromConfig(cfg.TUI, cfg.General.Sources))
+	return cascadeFor(cfg.General.Selector, a.buildPreviewRenderer(), a.currentPane, a.setChosenTarget, a.setChosenAction, a.buildTreeExpander(), matches, layoutFromConfig(cfg.TUI, cfg.General.Sources, cfg.Sources))
 }
 
 // buildTreeExpander wires a tui.TreeExpander over the active HerdrDriver,
@@ -159,9 +159,11 @@ func treeActiveFor(matches []source.Candidate) bool {
 // configured provider order instead of a hardcoded literal — the same order
 // source.Registry.Enabled() already collects candidates in. t.Icons threads
 // through as Layout.Icons, selecting the picker's own icon fallback tier
-// (unicode/ascii — see internal/tui/icons.go).
-func layoutFromConfig(t config.TUIConfig, sources []string) tui.Layout {
-	return tui.Layout{
+// (unicode/ascii — see internal/tui/icons.go). sourceConfigs is optional for
+// compatibility with direct callers; production passes the normalized loaded
+// config to thread resolved row format templates into the Model.
+func layoutFromConfig(t config.TUIConfig, sources []string, sourceConfigs ...config.SourcesConfig) tui.Layout {
+	layout := tui.Layout{
 		ListWidth:    t.ListWidth,
 		PreviewWidth: t.PreviewWidth,
 		Orientation:  t.Layout,
@@ -169,6 +171,19 @@ func layoutFromConfig(t config.TUIConfig, sources []string) tui.Layout {
 		SourceOrder:  sources,
 		Icons:        t.Icons,
 	}
+	if len(sourceConfigs) == 0 {
+		return layout
+	}
+	s := sourceConfigs[0]
+	layout.LabelFormats = tui.LabelFormats{
+		Herdr:      s.Herdr.LabelFormat,
+		Workspaces: s.Workspaces.LabelFormat,
+		Zoxide:     s.Zoxide.LabelFormat,
+		Projects:   s.Projects.LabelFormat,
+		Tab:        s.Herdr.TabLabelFormat,
+		Pane:       s.Herdr.PaneLabelFormat,
+	}
+	return layout
 }
 
 // buildPreviewRenderer wires the production preview.Renderer from the loaded

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -232,6 +233,199 @@ description = "development workspace"
 	}
 }
 
+// TestLoad_LabelFormatsRoundTrip confirms every source-specific label template
+// decodes from TOML without being replaced by a default.
+func TestLoad_LabelFormatsRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	const doc = `
+[sources.herdr]
+label_format = "{{.Path}} / {{.Label}}"
+tab_label_format = "tab {{.TabNumber}}: {{.Label}}"
+pane_label_format = "pane {{.Path}}"
+
+[sources.workspaces]
+label_format = "workspace {{.Path}}"
+
+[sources.zoxide]
+label_format = "zoxide {{.Path}}"
+
+[sources.projects]
+label_format = "project {{.Path}}"
+`
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	cases := []struct {
+		field string
+		got   string
+		want  string
+	}{
+		{"sources.herdr.label_format", cfg.Sources.Herdr.LabelFormat, "{{.Path}} / {{.Label}}"},
+		{"sources.herdr.tab_label_format", cfg.Sources.Herdr.TabLabelFormat, "tab {{.TabNumber}}: {{.Label}}"},
+		{"sources.herdr.pane_label_format", cfg.Sources.Herdr.PaneLabelFormat, "pane {{.Path}}"},
+		{"sources.workspaces.label_format", cfg.Sources.Workspaces.LabelFormat, "workspace {{.Path}}"},
+		{"sources.zoxide.label_format", cfg.Sources.Zoxide.LabelFormat, "zoxide {{.Path}}"},
+		{"sources.projects.label_format", cfg.Sources.Projects.LabelFormat, "project {{.Path}}"},
+	}
+	for _, tc := range cases {
+		if tc.got != tc.want {
+			t.Errorf("%s: got %q want %q", tc.field, tc.got, tc.want)
+		}
+	}
+}
+
+// TestLoad_LabelFormatsDefault verifies empty label format fields resolve to
+// byte-for-byte current rendering behavior during Load.
+func TestLoad_LabelFormatsDefault(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(path, []byte("[general]\nsources = [\"herdr\"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	const labelWithPath = "{{if .Label}}{{.Label}} · {{end}}{{.Path}}"
+	cases := []struct {
+		field string
+		got   string
+		want  string
+	}{
+		{"sources.herdr.label_format", cfg.Sources.Herdr.LabelFormat, labelWithPath},
+		{"sources.herdr.tab_label_format", cfg.Sources.Herdr.TabLabelFormat, labelWithPath},
+		{"sources.herdr.pane_label_format", cfg.Sources.Herdr.PaneLabelFormat, labelWithPath},
+		{"sources.workspaces.label_format", cfg.Sources.Workspaces.LabelFormat, "{{.Label}}"},
+		{"sources.zoxide.label_format", cfg.Sources.Zoxide.LabelFormat, "{{.Path}}"},
+		{"sources.projects.label_format", cfg.Sources.Projects.LabelFormat, "{{.Path}}"},
+	}
+	for _, tc := range cases {
+		if tc.got != tc.want {
+			t.Errorf("%s: got %q want %q", tc.field, tc.got, tc.want)
+		}
+	}
+}
+
+// TestLoad_RejectsInvalidLabelFormats ensures every supported source field
+// fails Load with its own field path when a template cannot render safely.
+func TestLoad_RejectsInvalidLabelFormats(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		doc    string
+		field  string
+		detail string
+	}{
+		{
+			name:   "malformed herdr label format",
+			doc:    "[sources.herdr]\nlabel_format = \"{{if .Label}}\"\n",
+			field:  "sources.herdr.label_format",
+			detail: "invalid template",
+		},
+		{
+			name:   "unknown herdr tab field",
+			doc:    "[sources.herdr]\ntab_label_format = \"{{.Unknown}}\"\n",
+			field:  "sources.herdr.tab_label_format",
+			detail: "invalid template",
+		},
+		{
+			name:   "legacy path in herdr pane format",
+			doc:    "[sources.herdr]\npane_label_format = \"pane " + legacyTemplateSyntax("path") + "\"\n",
+			field:  "sources.herdr.pane_label_format",
+			detail: "legacy placeholder",
+		},
+		{
+			name:   "legacy label in workspaces format",
+			doc:    "[sources.workspaces]\nlabel_format = \"" + legacyTemplateSyntax("label") + "\"\n",
+			field:  "sources.workspaces.label_format",
+			detail: "legacy placeholder",
+		},
+		{
+			name:   "malformed zoxide label format",
+			doc:    "[sources.zoxide]\nlabel_format = \"{{.Path\"\n",
+			field:  "sources.zoxide.label_format",
+			detail: "invalid template",
+		},
+		{
+			name:   "unknown projects label field",
+			doc:    "[sources.projects]\nlabel_format = \"{{.Unknown}}\"\n",
+			field:  "sources.projects.label_format",
+			detail: "invalid template",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(tc.doc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := Load(path)
+			if err == nil {
+				t.Fatal("expected Load to reject invalid label format")
+			}
+			for _, want := range []string{tc.field, tc.detail} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q missing %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+// TestLoad_RejectsInvalidPreviewCommandTemplates validates preview commands
+// using the same template engine after tokenizing their argv-shaped input.
+func TestLoad_RejectsInvalidPreviewCommandTemplates(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		command string
+		detail  string
+	}{
+		{name: "legacy path", command: "git -C " + legacyTemplateSyntax("path") + " status", detail: "legacy placeholder"},
+		{name: "legacy label", command: "echo " + legacyTemplateSyntax("label"), detail: "legacy placeholder"},
+		{name: "malformed action", command: "echo {{.Path", detail: "invalid template"},
+		{name: "unknown context field", command: "echo {{.Unknown}}", detail: "invalid template"},
+		{name: "unterminated quote", command: "echo \"{{.Path}}", detail: "unterminated quote"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "config.toml")
+			doc := "[preview.commands.check]\ncommand = " + strconv.Quote(tc.command) + "\n"
+			if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := Load(path)
+			if err == nil {
+				t.Fatal("expected Load to reject invalid preview command template")
+			}
+			for _, want := range []string{"preview.commands.check.command", tc.detail} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q missing %q", err, want)
+				}
+			}
+		})
+	}
+}
+
 // TestLoad_MalformedReturnsError wraps the parse error so callers can surface
 // it without losing the originating file path.
 func TestLoad_MalformedReturnsError(t *testing.T) {
@@ -393,7 +587,7 @@ max_lines = 7
 default = ["identity", "git"]
 
 [preview.commands.recent_commits]
-command = "git -C {path} log -n 5"
+command = "git -C {{.Path}} log -n 5"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
@@ -421,7 +615,7 @@ command = "git -C {path} log -n 5"
 	if !ok {
 		t.Fatal("missing preview.commands.recent_commits")
 	}
-	if got, want := cmd.Command, "git -C {path} log -n 5"; got != want {
+	if got, want := cmd.Command, "git -C {{.Path}} log -n 5"; got != want {
 		t.Errorf("command: got %q want %q", got, want)
 	}
 }

@@ -70,10 +70,12 @@ max_lines = 50
 default = ["identity", "git"]
 
 # [preview.commands.<name>] declares a custom preview command referenced by
-# name from any preview = [...] list, alongside the built-ins above. {path}
-# is substituted as one argument value; no shell expansion, no sh -c.
+# name from any preview = [...] list, alongside the built-ins above. {{.Path}}
+# is substituted as one argument value; no shell expansion, no sh -c. Quote an
+# action with internal whitespace (for example, "{{ .Path }}"); {{.Path}} is
+# safe unquoted because raw command tokenization happens before rendering.
 [preview.commands.recent_commits]
-command = "git -C {path} log -n 3"
+command = "git -C {{.Path}} log -n 3"
 
 # [sources.<name>] configures the presentation of a built-in source. Only
 # herdr, workspaces, zoxide and projects are recognised.

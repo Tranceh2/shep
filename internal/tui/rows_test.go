@@ -1,18 +1,31 @@
 package tui
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
 )
 
+func TestNoFuzzyScoreReference(t *testing.T) {
+	t.Parallel()
+
+	src, err := os.ReadFile("rows.go")
+	if err != nil {
+		t.Fatalf("read rows.go: %v", err)
+	}
+	const deletedWrapper = "fuzzy" + "Score"
+	if strings.Contains(string(src), deletedWrapper) {
+		t.Error("rows.go still references the deleted score wrapper")
+	}
+}
+
 // TestBuildRows_StableGroupAndParentOrder proves the DEFAULT source order
 // (Herdr, Workspaces, Zoxide, Projects — mirroring config.defaultSourceOrder)
-// applies when rowBuildInput.sourceOrder is empty, and that within a source,
-// candidates keep their ORIGINAL PROVIDER ORDER regardless of query — a
-// query only decides visibility, never re-ranks. Typing a query that keeps
-// every workspace visible must not reorder them.
+// applies when rowBuildInput.sourceOrder is empty. An empty query preserves
+// each provider's original emitted order.
 func TestBuildRows_StableGroupAndParentOrder(t *testing.T) {
 	t.Parallel()
 	cands := []source.Candidate{
@@ -44,6 +57,141 @@ func TestBuildRows_StableGroupAndParentOrder(t *testing.T) {
 				t.Errorf("query %q: order = %v, want %v", query, order, want)
 			}
 		}
+	}
+}
+
+// TestBuildRows_FuzzyScoreRanksCandidates verifies non-empty queries rank
+// visible candidates by fuzzy score, while equal scores retain their original
+// provider position. The first case is the regression for "omp": a direct
+// ~/.config/omp match must surface above a weaker scattered match.
+func TestBuildRows_FuzzyScoreRanksCandidates(t *testing.T) {
+	t.Parallel()
+	t.Run("surfaces direct omp path above scattered match", func(t *testing.T) {
+		rows := buildRows(rowBuildInput{
+			query: "omp",
+			candidates: []source.Candidate{
+				zoxideCandidate("scattered", "/var/cache/xxomp"),
+				zoxideCandidate("omp config", "~/.config/omp"),
+			},
+		})
+		if len(rows) != 2 {
+			t.Fatalf("visible rows = %d, want 2: %+v", len(rows), rows)
+		}
+		if got, want := rows[0].Candidate.Path, "~/.config/omp"; got != want {
+			t.Errorf("first fuzzy result path = %q, want %q", got, want)
+		}
+		if got, want := rows[1].Candidate.Path, "/var/cache/xxomp"; got != want {
+			t.Errorf("second fuzzy result path = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("equal scores retain original provider order", func(t *testing.T) {
+		rows := buildRows(rowBuildInput{
+			query: "omp",
+			candidates: []source.Candidate{
+				{Source: config.SourceZoxide, Label: "omp", Path: "/same", Meta: map[string]string{"id": "first"}},
+				{Source: config.SourceZoxide, Label: "omp", Path: "/same", Meta: map[string]string{"id": "second"}},
+			},
+		})
+		if len(rows) != 2 {
+			t.Fatalf("visible rows = %d, want 2: %+v", len(rows), rows)
+		}
+		if got, want := rows[0].Candidate.Meta["id"], "first"; got != want {
+			t.Errorf("first equal-score result = %q, want %q", got, want)
+		}
+		if got, want := rows[1].Candidate.Meta["id"], "second"; got != want {
+			t.Errorf("second equal-score result = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("propagates indexes only for direct matches", func(t *testing.T) {
+		workspace := herdrCandidate("workspace", "/workspace", "w1")
+		rows := buildRows(rowBuildInput{
+			query: "omp",
+			candidates: []source.Candidate{
+				workspace,
+				zoxideCandidate("omp config", "~/.config/omp"),
+			},
+			children: map[string]workspaceChildren{
+				"w1": {Tabs: []tabChildren{{
+					Tab: source.Candidate{
+						Label: "logs",
+						Path:  "/workspace/logs",
+						Meta:  map[string]string{"workspace_id": "w1", "tab_id": "t1"},
+					},
+					Panes: []source.Candidate{{
+						Label: "omp pane",
+						Path:  "/workspace/omp",
+						Meta:  map[string]string{"workspace_id": "w1", "tab_id": "t1", "pane_id": "p1"},
+					}},
+				}}},
+			},
+		})
+
+		if len(rows) != 4 {
+			t.Fatalf("visible rows = %d, want workspace, tab, pane, and candidate: %+v", len(rows), rows)
+		}
+		if got := rows[0].Match; got != MatchDescendant {
+			t.Errorf("workspace match = %v, want MatchDescendant", got)
+		}
+		if got := rows[0].MatchedIndexes; len(got) != 0 {
+			t.Errorf("workspace matched indexes = %v, want empty for a non-match", got)
+		}
+		if got := rows[2].Match; got != MatchDirect {
+			t.Errorf("pane match = %v, want MatchDirect", got)
+		}
+		if got := rows[2].MatchedIndexes; len(got) == 0 {
+			t.Error("pane matched indexes are empty, want codepoint indexes for a direct match")
+		}
+		if got := rows[3].Match; got != MatchDirect {
+			t.Errorf("candidate match = %v, want MatchDirect", got)
+		}
+		if got := rows[3].MatchedIndexes; len(got) == 0 {
+			t.Error("candidate matched indexes are empty, want codepoint indexes for a direct match")
+		}
+	})
+}
+
+// TestBuildRows_FuzzyScoreTieAcrossSourcesKeepsSourceOrder verifies that a
+// score tie is resolved by configured source order before provider-local index.
+func TestBuildRows_FuzzyScoreTieAcrossSourcesKeepsSourceOrder(t *testing.T) {
+	t.Parallel()
+	rows := buildRows(rowBuildInput{
+		query:       "tie",
+		sourceOrder: []string{config.SourceHerdr, config.SourceZoxide},
+		candidates: []source.Candidate{
+			herdrCandidate("ignored", "/ignored", "w0"),
+			herdrCandidate("tie", "/same", "w1"),
+			zoxideCandidate("tie", "/same"),
+		},
+	})
+	if len(rows) != 2 {
+		t.Fatalf("visible rows = %d, want 2: %+v", len(rows), rows)
+	}
+
+	got := []string{rows[0].Candidate.Source, rows[1].Candidate.Source}
+	want := []string{config.SourceHerdr, config.SourceZoxide}
+	if !equalStrings(got, want) {
+		t.Errorf("source order for equal fuzzy scores = %v, want %v", got, want)
+	}
+}
+
+// TestBuildRows_FuzzyScoreRanksAcrossProviders verifies score ranking is
+// applied to every visible candidate, not only within one provider group.
+func TestBuildRows_FuzzyScoreRanksAcrossProviders(t *testing.T) {
+	t.Parallel()
+	rows := buildRows(rowBuildInput{
+		query: "omp",
+		candidates: []source.Candidate{
+			herdrCandidate("scattered", "/var/cache/xxomp", "w1"),
+			zoxideCandidate("omp config", "~/.config/omp"),
+		},
+	})
+	if len(rows) != 2 {
+		t.Fatalf("visible rows = %d, want 2: %+v", len(rows), rows)
+	}
+	if got, want := rows[0].Candidate.Path, "~/.config/omp"; got != want {
+		t.Errorf("first cross-provider fuzzy result path = %q, want %q", got, want)
 	}
 }
 
@@ -148,6 +296,195 @@ func TestBuildRows_DescendantOnlyPaneMatchRetainsWorkspaceAndTab(t *testing.T) {
 	if rows[2].Kind != RowPane || rows[2].Candidate.Label != "p1-worker" || rows[2].Match != MatchDirect {
 		t.Errorf("row 2 = %+v, want pane p1-worker marked MatchDirect", rows[2])
 	}
+}
+
+// TestBuildRows_FuzzyScoreRanksMatchingPanesWithinTab verifies that matching
+// pane rows are score-sorted without breaking the workspace/tab context used
+// for path-descendant matches.
+func TestBuildRows_FuzzyScoreRanksMatchingPanesWithinTab(t *testing.T) {
+	t.Parallel()
+	ws := herdrCandidate("backend", "/svc", "w1")
+	children := map[string]workspaceChildren{
+		"w1": {Tabs: []tabChildren{{
+			Tab: source.Candidate{Label: "services", Path: "/svc", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1"}},
+			Panes: []source.Candidate{
+				{Label: "scattered", Path: "/var/cache/xxomp", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1", "pane_id": "p1"}},
+				{Label: "omp config", Path: "~/.config/omp", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1", "pane_id": "p2"}},
+			},
+		}}},
+	}
+	rows := buildRows(rowBuildInput{
+		candidates: []source.Candidate{ws},
+		query:      "omp",
+		children:   children,
+	})
+	if len(rows) != 4 {
+		t.Fatalf("visible rows = %d, want workspace, tab, and two panes: %+v", len(rows), rows)
+	}
+	if rows[0].Match != MatchDescendant || rows[1].Match != MatchDescendant {
+		t.Errorf("workspace/tab context = (%v, %v), want both MatchDescendant", rows[0].Match, rows[1].Match)
+	}
+	if got, want := rows[2].Candidate.Path, "~/.config/omp"; got != want {
+		t.Errorf("first pane path = %q, want %q", got, want)
+	}
+	if got, want := rows[3].Candidate.Path, "/var/cache/xxomp"; got != want {
+		t.Errorf("second pane path = %q, want %q", got, want)
+	}
+}
+
+// TestBuildRows_FuzzyScoreRanksParentsByMatchingDescendants verifies a
+// workspace inherits its best matching descendant's score while retaining its
+// tab and pane rows as one contiguous structural group.
+func TestBuildRows_FuzzyScoreRanksParentsByMatchingDescendants(t *testing.T) {
+	t.Parallel()
+	weak := herdrCandidate("weak workspace", "/svc/weak", "w1")
+	strong := herdrCandidate("strong workspace", "/svc/strong", "w2")
+	children := map[string]workspaceChildren{
+		"w1": {Tabs: []tabChildren{{
+			Tab:   source.Candidate{Label: "services", Path: "/svc/weak", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1"}},
+			Panes: []source.Candidate{{Label: "scattered", Path: "/var/cache/xxomp", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1", "pane_id": "p1"}}},
+		}}},
+		"w2": {Tabs: []tabChildren{{
+			Tab:   source.Candidate{Label: "services", Path: "/svc/strong", Meta: map[string]string{"workspace_id": "w2", "tab_id": "t2"}},
+			Panes: []source.Candidate{{Label: "omp config", Path: "~/.config/omp", Meta: map[string]string{"workspace_id": "w2", "tab_id": "t2", "pane_id": "p2"}}},
+		}}},
+	}
+	rows := buildRows(rowBuildInput{candidates: []source.Candidate{weak, strong}, query: "omp", children: children})
+	if len(rows) != 6 {
+		t.Fatalf("visible rows = %d, want two workspace/tab/pane groups: %+v", len(rows), rows)
+	}
+	if got, want := rows[0].Candidate.Label, "strong workspace"; got != want {
+		t.Errorf("first workspace = %q, want %q", got, want)
+	}
+	if rows[0].Match != MatchDescendant || rows[1].Match != MatchDescendant || rows[2].Match != MatchDirect {
+		t.Errorf("strong workspace group matches = (%v, %v, %v), want descendant, descendant, direct", rows[0].Match, rows[1].Match, rows[2].Match)
+	}
+	if got, want := rows[3].Candidate.Label, "weak workspace"; got != want {
+		t.Errorf("second workspace = %q, want %q", got, want)
+	}
+}
+
+// TestBuildRows_EqualScorePanesRetainProviderOrder verifies score ties use
+// each pane's original index in its tab's emitted pane slice.
+func TestBuildRows_EqualScorePanesRetainProviderOrder(t *testing.T) {
+	t.Parallel()
+	ws := herdrCandidate("backend", "/svc", "w1")
+	children := map[string]workspaceChildren{
+		"w1": {Tabs: []tabChildren{{
+			Tab: source.Candidate{Label: "services", Path: "/svc", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1"}},
+			Panes: []source.Candidate{
+				{Label: "omp", Path: "/same", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1", "pane_id": "p1"}},
+				{Label: "omp", Path: "/same", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1", "pane_id": "p2"}},
+			},
+		}}},
+	}
+	rows := buildRows(rowBuildInput{candidates: []source.Candidate{ws}, query: "omp", children: children})
+	if len(rows) != 4 {
+		t.Fatalf("visible rows = %d, want workspace, tab, and two panes: %+v", len(rows), rows)
+	}
+	if got, want := rows[2].Candidate.Meta["pane_id"], "p1"; got != want {
+		t.Errorf("first equal-score pane = %q, want %q", got, want)
+	}
+	if got, want := rows[3].Candidate.Meta["pane_id"], "p2"; got != want {
+		t.Errorf("second equal-score pane = %q, want %q", got, want)
+	}
+}
+
+// TestBuildRows_TreeSiblingMetadata proves each expanded workspace marks last
+// tab/pane siblings after their final display order is determined. A pane
+// carries its parent tab's IsLast as AncestorIsLast; this is the current
+// two-level tree simplification.
+func TestBuildRows_TreeSiblingMetadata(t *testing.T) {
+	t.Parallel()
+	ws := herdrCandidate("backend", "/svc", "w1")
+	children := map[string]workspaceChildren{
+		"w1": {Tabs: []tabChildren{
+			{
+				Tab: source.Candidate{Label: "api", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1"}},
+				Panes: []source.Candidate{
+					{Label: "api-worker", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1", "pane_id": "p1"}},
+					{Label: "api-shell", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1", "pane_id": "p2"}},
+				},
+			},
+			{
+				Tab: source.Candidate{Label: "db", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t2"}},
+				Panes: []source.Candidate{
+					{Label: "db-worker", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t2", "pane_id": "p3"}},
+					{Label: "db-shell", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t2", "pane_id": "p4"}},
+				},
+			},
+		}},
+	}
+	rows := buildRows(rowBuildInput{
+		candidates:         []source.Candidate{ws},
+		children:           children,
+		expandedWorkspaces: map[string]bool{"w1": true},
+	})
+	if len(rows) != 7 {
+		t.Fatalf("visible rows = %d, want workspace, two tabs, and four panes: %+v", len(rows), rows)
+	}
+
+	for _, tt := range []struct {
+		index              int
+		name               string
+		kind               RowKind
+		wantIsLast         bool
+		wantAncestorIsLast bool
+	}{
+		{index: 1, name: "first tab", kind: RowTab, wantIsLast: false, wantAncestorIsLast: false},
+		{index: 2, name: "first tab first pane", kind: RowPane, wantIsLast: false, wantAncestorIsLast: false},
+		{index: 3, name: "first tab last pane", kind: RowPane, wantIsLast: true, wantAncestorIsLast: false},
+		{index: 4, name: "last tab", kind: RowTab, wantIsLast: true, wantAncestorIsLast: false},
+		{index: 5, name: "last tab first pane", kind: RowPane, wantIsLast: false, wantAncestorIsLast: true},
+		{index: 6, name: "last tab last pane", kind: RowPane, wantIsLast: true, wantAncestorIsLast: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			row := rows[tt.index]
+			if row.Kind != tt.kind {
+				t.Fatalf("row %d kind = %v, want %v", tt.index, row.Kind, tt.kind)
+			}
+			if row.IsLast != tt.wantIsLast {
+				t.Errorf("row %d IsLast = %t, want %t", tt.index, row.IsLast, tt.wantIsLast)
+			}
+			if row.AncestorIsLast != tt.wantAncestorIsLast {
+				t.Errorf("row %d AncestorIsLast = %t, want %t", tt.index, row.AncestorIsLast, tt.wantAncestorIsLast)
+			}
+		})
+	}
+
+	t.Run("marks final siblings after fuzzy sorting", func(t *testing.T) {
+		rows := buildRows(rowBuildInput{
+			query:      "omp",
+			candidates: []source.Candidate{ws},
+			children: map[string]workspaceChildren{
+				"w1": {Tabs: []tabChildren{
+					{
+						Tab:   source.Candidate{Label: "weak tab", Path: "/svc/weak", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1"}},
+						Panes: []source.Candidate{{Label: "scattered", Path: "/var/cache/xxomp", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1", "pane_id": "p1"}}},
+					},
+					{
+						Tab:   source.Candidate{Label: "strong tab", Path: "/svc/strong", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t2"}},
+						Panes: []source.Candidate{{Label: "omp pane", Path: "~/.config/omp", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t2", "pane_id": "p2"}}},
+					},
+				}},
+			},
+		})
+		if len(rows) != 5 {
+			t.Fatalf("visible rows = %d, want workspace and two tab/pane groups: %+v", len(rows), rows)
+		}
+		if got, want := rows[1].Candidate.Meta["tab_id"], "t2"; got != want {
+			t.Fatalf("first sorted tab = %q, want %q", got, want)
+		}
+		if rows[1].IsLast || !rows[2].IsLast || rows[2].AncestorIsLast {
+			t.Errorf("first sorted tab/pane flags = tab:%t pane:(last:%t ancestor:%t), want false / (true:false)", rows[1].IsLast, rows[2].IsLast, rows[2].AncestorIsLast)
+		}
+		if got, want := rows[3].Candidate.Meta["tab_id"], "t1"; got != want {
+			t.Fatalf("last sorted tab = %q, want %q", got, want)
+		}
+		if !rows[3].IsLast || !rows[4].IsLast || !rows[4].AncestorIsLast {
+			t.Errorf("last sorted tab/pane flags = tab:%t pane:(last:%t ancestor:%t), want true / (true:true)", rows[3].IsLast, rows[4].IsLast, rows[4].AncestorIsLast)
+		}
+	})
 }
 
 // TestBuildRows_WorkspaceOnlyMatchStaysFlat proves a query matching only the

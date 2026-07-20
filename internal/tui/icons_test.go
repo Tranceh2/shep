@@ -2,8 +2,10 @@ package tui
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -39,8 +41,10 @@ func TestResolveIconSet_DefaultsToUnicode(t *testing.T) {
 		StatusUnknown: "○",
 		ExpandOpen:    "▾",
 		ExpandClosed:  "▸",
-		TabPrefix:     "»",
-		PanePrefix:    "·",
+		TreeMid:       "├─",
+		TreeLast:      "└─",
+		TreeVertical:  "│ ",
+		TabIcon:       "◫",
 		ActiveMarker:  "◆",
 	}
 	if set != want {
@@ -74,8 +78,8 @@ func TestResolveIconSet_ASCII(t *testing.T) {
 		"StatusBlocked": set.StatusBlocked, "StatusUnknown": set.StatusUnknown,
 		"StatusWorking": set.StatusWorking,
 		"ExpandOpen":    set.ExpandOpen, "ExpandClosed": set.ExpandClosed,
-		"TabPrefix": set.TabPrefix, "PanePrefix": set.PanePrefix,
-		"ActiveMarker": set.ActiveMarker,
+		"TreeMid": set.TreeMid, "TreeLast": set.TreeLast,
+		"TreeVertical": set.TreeVertical, "TabIcon": set.TabIcon, "ActiveMarker": set.ActiveMarker,
 	}
 	for name, glyph := range fields {
 		if glyph == "" {
@@ -184,43 +188,103 @@ func TestAgentStatusIcon_WorkingIsASCIISafeUnderASCIITier(t *testing.T) {
 
 // === kindPrefix respects the configured tier ===
 
-// TestKindPrefix_ExpandMarkersRespectConfiguredIconSet proves the
-// expanded/collapsed RowCandidate markers come from the resolved IconSet.
-func TestKindPrefix_ExpandMarkersRespectConfiguredIconSet(t *testing.T) {
+// TestKindPrefix_RowCandidateNeverGetsExpandGlyph proves a RowCandidate
+// (top-level workspace row) never gets an expand/collapse glyph regardless
+// of Expandable/Expanded state or the configured icon tier (TRL-3: per-
+// source icons already differentiate row types, so the ▸/▾ marker was
+// removed from workspace rows entirely). Left/Right/Enter still toggle the
+// underlying Expandable/Expanded state (see keys.go) — only the glyph is
+// gone.
+func TestKindPrefix_RowCandidateNeverGetsExpandGlyph(t *testing.T) {
 	t.Parallel()
 	for _, tier := range []string{IconsUnicode, IconsASCII} {
 		t.Run(tier, func(t *testing.T) {
 			t.Parallel()
 			m := newRenderTestModelWithIcons(ThemeMocha, tier)
-			set := resolveIconSet(tier)
 			expanded := m.kindPrefix(Row{Kind: RowCandidate, Expandable: true, Expanded: true})
 			collapsed := m.kindPrefix(Row{Kind: RowCandidate, Expandable: true, Expanded: false})
-			if expanded != set.ExpandOpen+" " {
-				t.Errorf("[%s] kindPrefix(expanded) = %q, want %q", tier, expanded, set.ExpandOpen+" ")
+			notExpandable := m.kindPrefix(Row{Kind: RowCandidate, Expandable: false})
+			if expanded != "" {
+				t.Errorf("[%s] kindPrefix(expanded RowCandidate) = %q, want \"\" (no glyph)", tier, expanded)
 			}
-			if collapsed != set.ExpandClosed+" " {
-				t.Errorf("[%s] kindPrefix(collapsed) = %q, want %q", tier, collapsed, set.ExpandClosed+" ")
+			if collapsed != "" {
+				t.Errorf("[%s] kindPrefix(collapsed RowCandidate) = %q, want \"\" (no glyph)", tier, collapsed)
+			}
+			if notExpandable != "" {
+				t.Errorf("[%s] kindPrefix(non-expandable RowCandidate) = %q, want \"\"", tier, notExpandable)
 			}
 		})
 	}
 }
 
-// TestKindPrefix_TabAndPaneMarkersRespectConfiguredIconSet proves the
-// RowTab/RowPane markers come from the resolved IconSet.
-func TestKindPrefix_TabAndPaneMarkersRespectConfiguredIconSet(t *testing.T) {
+// TestKindPrefix_TreeGlyphsRespectConfiguredIconSet proves the RowTab and
+// RowPane tree glyphs come from the resolved IconSet and distinguish last
+// siblings. Every RowTab/RowPane prefix is led by a fixed-width blank
+// active-marker slot (TRL-4) — m.currentPane is nil here, so isActiveFocusRow
+// is always false and the slot is blank space, never the glyph itself (see
+// TestKindPrefix_TreeGlyphColumnAlignsRegardlessOfActiveMarker in
+// active_focus_test.go for the alignment proof against an active row).
+//
+// A RowPane's ancestor connector follows its fixed active-marker slot so it
+// shares the parent tab's branch column; its own glyph is one level deeper.
+func TestKindPrefix_TreeGlyphsRespectConfiguredIconSet(t *testing.T) {
 	t.Parallel()
 	for _, tier := range []string{IconsUnicode, IconsASCII} {
 		t.Run(tier, func(t *testing.T) {
 			t.Parallel()
 			m := newRenderTestModelWithIcons(ThemeMocha, tier)
 			set := resolveIconSet(tier)
-			tab := m.kindPrefix(Row{Kind: RowTab})
-			pane := m.kindPrefix(Row{Kind: RowPane})
-			if tab != set.TabPrefix+" " {
-				t.Errorf("[%s] kindPrefix(tab) = %q, want %q", tier, tab, set.TabPrefix+" ")
+			blankSlot := strings.Repeat(" ", lipgloss.Width(set.ActiveMarker+" "))
+			blankAncestor := strings.Repeat(" ", lipgloss.Width(set.TreeVertical))
+			tests := []struct {
+				name string
+				row  Row
+				want string
+			}{
+				{name: "non-last tab", row: Row{Kind: RowTab, Depth: 1}, want: "  " + blankSlot + set.TreeMid + " "},
+				{name: "last tab", row: Row{Kind: RowTab, Depth: 1, IsLast: true}, want: "  " + blankSlot + set.TreeLast + " "},
+				{name: "non-last pane, non-last ancestor", row: Row{Kind: RowPane, Depth: 2}, want: "  " + blankSlot + set.TreeVertical + set.TreeMid + " "},
+				{name: "last pane, non-last ancestor", row: Row{Kind: RowPane, Depth: 2, IsLast: true}, want: "  " + blankSlot + set.TreeVertical + set.TreeLast + " "},
+				{name: "ancestor is last sibling: blank ancestor column", row: Row{Kind: RowPane, Depth: 2, AncestorIsLast: true}, want: "  " + blankSlot + blankAncestor + set.TreeMid + " "},
+				{name: "candidate has no tree prefix", row: Row{Kind: RowCandidate, IsLast: true, AncestorIsLast: true}, want: ""},
 			}
-			if pane != set.PanePrefix+" " {
-				t.Errorf("[%s] kindPrefix(pane) = %q, want %q", tier, pane, set.PanePrefix+" ")
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					if got := m.kindPrefix(tt.row); got != tt.want {
+						t.Errorf("[%s] kindPrefix(%+v) = %q, want %q", tier, tt.row, got, tt.want)
+					}
+				})
+			}
+		})
+	}
+}
+
+// TestRowDisplayText_TreePrefixDistinguishesLastTab proves the tree glyph
+// still distinguishes last siblings, and (Change 2) the primary text now
+// unifies to "<tab icon> <resolved label> · <path>" — the tab-number/label
+// dedup rule folds "3"+"deploy" into "3 deploy", while a bare number with no
+// distinct label collapses to just the number (no path in these cases, so
+// composeLabelPath's path-less body — but a path is threaded through where
+// the test cares about the label/tree-glyph interaction specifically).
+func TestRowDisplayText_TreePrefixDistinguishesLastTab(t *testing.T) {
+	t.Parallel()
+	m := newRenderTestModelWithIcons(ThemeMocha, IconsUnicode)
+	set := m.icons()
+	blankSlot := strings.Repeat(" ", lipgloss.Width(set.ActiveMarker+" "))
+	for _, tt := range []struct {
+		name string
+		row  Row
+		want string
+	}{
+		{name: "non-last", row: Row{Kind: RowTab, Candidate: source.Candidate{Label: "deploy", Path: "/svc"}}, want: blankSlot + "├─ " + set.TabIcon + " deploy · /svc"},
+		{name: "last tab with number", row: Row{Kind: RowTab, IsLast: true, Candidate: source.Candidate{Label: "deploy", Path: "/svc", Meta: map[string]string{"tab_number": "3"}}}, want: blankSlot + "└─ " + set.TabIcon + " 3 deploy · /svc"},
+		{name: "last tab without number", row: Row{Kind: RowTab, IsLast: true, Candidate: source.Candidate{Label: "deploy", Path: "/svc"}}, want: blankSlot + "└─ " + set.TabIcon + " deploy · /svc"},
+		{name: "candidate without tree", row: Row{Kind: RowCandidate, IsLast: true, AncestorIsLast: true, Candidate: source.Candidate{Label: "workspace", Path: "/ws"}}, want: "/ws"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			primary, _ := m.rowDisplayText(tt.row)
+			if got := stripNonSGRANSI(primary); got != tt.want {
+				t.Errorf("rowDisplayText(%+v) primary = %q, want %q", tt.row, got, tt.want)
 			}
 		})
 	}

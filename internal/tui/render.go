@@ -7,6 +7,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/tranceh2/shep/internal/config"
+	"github.com/tranceh2/shep/internal/fuzzy"
+	"github.com/tranceh2/shep/internal/rowformat"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -66,8 +68,12 @@ func (m Model) View() string {
 	default: // modeWide, or "" (unknown/headless default — see model.go)
 		listW, prevW := splitWidths(m.width, m.layout)
 		listPane := m.paneBoxStyle(paneHeight, m.focus == FocusList).Render(paneModel.renderList(m.paneContentWidth(listW)))
-		previewPane := m.paneBoxStyle(paneHeight, m.focus == FocusPreview).Render(m.viewport.View())
-		_ = prevW
+		previewStyle := m.paneBoxStyle(paneHeight, m.focus == FocusPreview)
+		previewPane := lipgloss.JoinVertical(
+			lipgloss.Left,
+			m.renderPreviewTopBorder(previewStyle, prevW, m.previewTopBorderText()),
+			previewStyle.Copy().BorderTop(false).Render(m.viewport.View()),
+		)
 		body = lipgloss.JoinHorizontal(lipgloss.Top, listPane, gap(), previewPane)
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
@@ -237,29 +243,41 @@ func rightPadToWidth(left, right string, width int) string {
 	return left + strings.Repeat(" ", pad) + right
 }
 
-// cursorGutterGlyph is the 1-column selection gutter cell for color themes: a
-// solid left-half block rendered on the accent (focused) or rule (unfocused)
-// background. cursorGutterGlyphPlain is the no-color fallback — a visible "|"
-// (reverse-video when focused, faint when unfocused) so the cursor stays
-// marked in TERM=dumb / $NO_COLOR where the old full-row cursor style was
-// invisible. cursorGutterWidth is the visible cell width of either glyph.
+// cursorGlyphUnicode and cursorGlyphASCII are the FocusList-only cursor
+// markers. cursorPrefixWidth reserves two stable leading cells for every row:
+// the selected row uses its marker plus one space, and other rows use two
+// blanks.
 const (
-	cursorGutterGlyph      = "▌"
-	cursorGutterGlyphPlain = "|"
-	cursorGutterWidth      = 1
+	cursorGlyphUnicode = "❯"
+	cursorGlyphASCII   = ">"
+	cursorPrefixWidth  = 2
 )
 
 // rowPart is one styled segment of a row line. Most rows have a single part;
 // SourceZoxide/SourceProjects rows with a full-path label get a second dim
 // part for the shortened parent path.
 type rowPart struct {
-	text  string
-	style lipgloss.Style
+	text           string
+	style          lipgloss.Style
+	rendered       bool
+	rawText        string
+	highlighted    []bool
+	highlightStyle lipgloss.Style
+	// fixedPrefixRunes is the codepoint count of this part's leading
+	// structural prefix — kindPrefix's tree glyph/indent/active-marker slot and
+	// the row's own icon (source icon, agent-status icon, or tab number) —
+	// never the row's actual label/path text. Left truncation (truncateFromLeftPreservingPrefix,
+	// rowPart.renderHighlighted) must never cut into this prefix, so a
+	// row's icon always survives even when its label/path is severely
+	// truncated (TRL bug: a long zoxide/project path used to eat the row's
+	// own icon before touching a single label character). Zero for parts
+	// with no protected prefix, e.g. the secondary part.
+	fixedPrefixRunes int
 }
 
-// renderRowLine renders one row. The cursor (selected) row gets the Phase 2
-// selection treatment (a 1-col gutter + selectedSurface background, with the
-// row's OWN text styles preserved); every other row renders unchanged.
+// renderRowLine renders one row with a stable two-cell marker gutter. The
+// selected FocusList row fills it with the configured cursor plus one space;
+// all other rows keep it blank while preserving their own text styles.
 func (m Model) renderRowLine(row Row, isCursor bool, width int) string {
 	parts := m.rowLineParts(row)
 	if isCursor {
@@ -269,43 +287,105 @@ func (m Model) renderRowLine(row Row, isCursor bool, width int) string {
 }
 
 // rowLineParts builds the styled parts for one row, independent of
-// selection: the 2-char marker slot ("  " normally, " ~" for a
-// descendant-only match) + separator + depth/kind-prefixed primary text for
-// a candidate/tab/pane — plus an optional dim secondary (a RowPane's own
-// pane id, see rowDisplayText) for rows that carry one.
+// selection: depth/kind-prefixed primary text for a candidate/tab/pane — plus
+// an optional dim secondary (a RowPane's own pane id, see rowDisplayText) for
+// rows that carry one. The marker belongs exclusively to the leading gutter
+// assembled by the render functions below; adding another marker here would
+// restore the stale two-cell layout and shift content by focus state.
 func (m Model) rowLineParts(row Row) []rowPart {
-	marker := "  "
-	if row.Match == MatchDescendant {
-		marker = " ~"
-	}
 	style := m.styles.rowStyle
 	if row.Match == MatchDescendant {
 		style = m.styles.rowDescendantStyle
 	}
-	primary, secondary := m.rowDisplayText(row)
-	parts := []rowPart{{text: marker + " " + primary, style: style}}
+	primary, prefixRunes := m.rowPrimaryText(row)
+	secondary := m.rowSecondaryText(row)
+	primaryText := primary
+	fixedPrefixRunes := prefixRunes
+	primaryPart := rowPart{text: primaryText, style: style, fixedPrefixRunes: fixedPrefixRunes}
+	if row.Kind == RowCandidate && row.Match == MatchDirect && len(row.MatchedIndexes) > 0 {
+		if rawText, highlighted, ok := m.highlightedRowRunes(row, fixedPrefixRunes, primaryText); ok {
+			primaryPart = rowPart{
+				style:            style,
+				rendered:         true,
+				rawText:          rawText,
+				highlighted:      highlighted,
+				highlightStyle:   m.styles.queryStyle,
+				fixedPrefixRunes: fixedPrefixRunes,
+			}
+		}
+	}
+	parts := []rowPart{primaryPart}
 	if secondary != "" {
 		parts = append(parts, rowPart{text: "  " + secondary, style: m.styles.mutedStyle})
 	}
 	return parts
 }
 
-// renderUnselectedFromParts renders a non-cursor row from its parts, padded
-// to width. Single-part rows use the simple path; multi-part rows compose
-// the primary and secondary with truncation priority (secondary dropped first).
-func (m Model) renderUnselectedFromParts(parts []rowPart, width int) string {
-	if len(parts) == 1 {
-		p := parts[0]
-		return p.style.Width(width).Render(truncateToWidth(p.text, width))
+// highlightedRowRunes reports which runes of rawText (a RowCandidate's full
+// marker+prefix+visible-path text) should render with the query accent, and
+// returns rawText itself unchanged as the first result for convenience.
+//
+// It deliberately does NOT reuse row.MatchedIndexes for this: those indexes
+// are scored by fuzzyMatch against candidateHaystack (Label+" "+Path) for
+// visibility and ranking. Ordinary provider candidates render only their path,
+// so highlighting must rescore the visible path alone. A label-only match
+// remains visible but has no corresponding rendered rune to accent; returning
+// false prevents it from coloring unrelated path characters.
+func (m Model) highlightedRowRunes(row Row, fixedPrefixRunes int, rawText string) (string, []bool, bool) {
+	path := []rune(row.Candidate.Path)
+	if len(path) == 0 {
+		return "", nil, false
 	}
-	return m.composeMultiPartRow(parts, width, lipgloss.Style{}, false)
+	_, pathIndexes := fuzzy.Score(m.query, string(path))
+	if len(pathIndexes) == 0 {
+		return "", nil, false
+	}
+
+	matched := make(map[int]bool, len(pathIndexes))
+	for _, index := range pathIndexes {
+		if index >= 0 && index < len(path) {
+			matched[fixedPrefixRunes+index] = true
+		}
+	}
+	if len(matched) == 0 {
+		return "", nil, false
+	}
+
+	runes := []rune(rawText)
+	highlighted := make([]bool, len(runes))
+	for index := range runes {
+		highlighted[index] = matched[index]
+	}
+	return rawText, highlighted, true
 }
 
-// renderSelectedFromParts renders the cursor row with the selection treatment:
-// a 1-column gutter cell leading the row, the row background tinted
-// selectedSurface across the pane width, and the row's OWN text styles
-// preserved. When the list does NOT own focus (preview or help focused)
-// the gutter and surface drop to their unfocused variants.
+// renderUnselectedFromParts renders a non-cursor row from its parts, padded
+// to width. Every focus state reserves a blank cursorPrefixWidth-cell gutter
+// so content begins in one stable column. Single-part rows use the simple
+// path; multi-part rows compose the primary and secondary with truncation
+// priority (secondary dropped first).
+func (m Model) renderUnselectedFromParts(parts []rowPart, width int) string {
+	prefixWidth := cursorPrefixWidth
+	contentW := width - prefixWidth
+	if contentW < 1 {
+		contentW = 1
+	}
+	gutter := strings.Repeat(" ", prefixWidth)
+
+	if len(parts) == 1 {
+		p := parts[0]
+		if p.rendered {
+			return gutter + lipgloss.NewStyle().Width(contentW).Render(p.renderHighlighted(contentW, lipgloss.Style{}, false))
+		}
+		return gutter + p.style.Width(contentW).Render(truncateFromLeftPreservingPrefix(p.text, p.fixedPrefixRunes, contentW))
+	}
+	return gutter + m.composeMultiPartRow(parts, contentW, lipgloss.Style{}, false)
+}
+
+// renderSelectedFromParts renders the selected row with the selection
+// treatment: a two-cell gutter leading every row, a FocusList-only cursor plus
+// trailing space, selectedSurface across the pane width, and the row's own
+// text styles preserved.
 func (m Model) renderSelectedFromParts(parts []rowPart, width int) string {
 	gutterStyle := m.styles.cursorGutterStyle
 	surfaceStyle := m.styles.cursorSurfaceStyle
@@ -314,23 +394,94 @@ func (m Model) renderSelectedFromParts(parts []rowPart, width int) string {
 		surfaceStyle = m.styles.cursorSurfaceUnfocusedStyle
 	}
 
-	glyph := cursorGutterGlyph
-	if m.theme.NoColor {
-		glyph = cursorGutterGlyphPlain
+	prefixWidth := cursorPrefixWidth
+	gutterText := strings.Repeat(" ", prefixWidth)
+	if m.focus == FocusList {
+		glyph := cursorGlyphUnicode
+		if m.icons().Name == IconsASCII {
+			glyph = cursorGlyphASCII
+		}
+		gutterText = glyph + " "
 	}
-	gutter := gutterStyle.Render(glyph)
+	gutter := gutterStyle.Render(gutterText)
 
-	contentW := width - cursorGutterWidth
+	contentW := width - prefixWidth
 	if contentW < 1 {
 		contentW = 1
 	}
 	if len(parts) == 1 {
 		p := parts[0]
-		styled := applySurface(p.style, surfaceStyle).Width(contentW).Render(truncateToWidth(p.text, contentW))
+		if p.rendered {
+			content := p.renderHighlighted(contentW, surfaceStyle, true)
+			return gutter + applySurface(lipgloss.NewStyle(), surfaceStyle).Width(contentW).Render(content)
+		}
+		styled := applySurface(p.style, surfaceStyle).Width(contentW).Render(truncateFromLeftPreservingPrefix(p.text, p.fixedPrefixRunes, contentW))
 		return gutter + styled
 	}
 	styled := m.composeMultiPartRow(parts, contentW, surfaceStyle, true)
 	return gutter + styled
+}
+
+// renderHighlighted renders a highlighted (p.rendered) part's raw runes with
+// per-rune base/highlight styling, protecting p.fixedPrefixRunes from left
+// truncation: only the label content AFTER that prefix is ever shortened,
+// and the ellipsis lands immediately after the prefix — never inside it
+// (TRL bug: the old whole-string truncateFromLeftToWidth call ate the
+// marker/icon prefix before a single label rune). When hasSurface is true,
+// surface is merged into every rune's own style (the cursor row's selection
+// tint); per-rune lipgloss renders reset terminal state between runes, so an
+// outer surface alone would be lost after the first one.
+func (p rowPart) renderHighlighted(maxW int, surface lipgloss.Style, hasSurface bool) string {
+	runes := []rune(p.rawText)
+	prefixRunes := p.fixedPrefixRunes
+	if prefixRunes > len(runes) {
+		prefixRunes = len(runes)
+	}
+	prefixText := string(runes[:prefixRunes])
+	contentRunes := runes[prefixRunes:]
+	contentHighlighted := p.highlighted[prefixRunes:]
+
+	styleFor := func(s lipgloss.Style) lipgloss.Style {
+		if hasSurface {
+			return applySurface(s, surface)
+		}
+		return s
+	}
+
+	build := func(startIdx int, ellipsis bool) string {
+		var b strings.Builder
+		b.WriteString(styleFor(p.style).Render(prefixText))
+		if ellipsis {
+			b.WriteString(styleFor(p.style).Render("…"))
+		}
+		for i := startIdx; i < len(contentRunes); i++ {
+			style := p.style
+			if contentHighlighted[i] {
+				style = p.highlightStyle
+			}
+			b.WriteString(styleFor(style).Render(string(contentRunes[i])))
+		}
+		return b.String()
+	}
+
+	if maxW <= 0 {
+		return build(0, false)
+	}
+	budget := maxW - ansi.StringWidth(prefixText)
+	if budget < 1 {
+		// Not enough room even for the fixed prefix: degrade to rendering
+		// everything rather than producing an empty/garbled row.
+		return build(0, false)
+	}
+
+	contentText := string(contentRunes)
+	truncatedContent := truncateFromLeftToWidth(contentText, budget)
+	if truncatedContent == contentText {
+		return build(0, false)
+	}
+	survivingRunes := []rune(strings.TrimPrefix(truncatedContent, "…"))
+	startIdx := len(contentRunes) - len(survivingRunes)
+	return build(startIdx, true)
 }
 
 // composeMultiPartRow renders a multi-part row (primary + secondary) at the
@@ -353,7 +504,7 @@ func (m Model) composeMultiPartRow(parts []rowPart, width int, surface lipgloss.
 
 	primaryW := lipgloss.Width(primary.text)
 	if primaryW >= width {
-		return pStyle.Width(width).Render(truncateToWidth(primary.text, width))
+		return pStyle.Width(width).Render(truncateFromLeftPreservingPrefix(primary.text, primary.fixedPrefixRunes, width))
 	}
 
 	secondaryW := lipgloss.Width(secondary.text)
@@ -389,31 +540,62 @@ func applySurface(ownStyle, surface lipgloss.Style) lipgloss.Style {
 }
 
 // kindPrefix returns the depth indent + kind marker prefix for a row, drawn
-// from the Model's configured icon fallback tier (see icons.go): the
-// expand/collapse marker for an expandable candidate, the tab marker for a
-// RowTab, the pane marker for a RowPane, "" otherwise. The indent is
-// repeated 2-space per depth level.
+// from the Model's configured icon fallback tier (see icons.go): a
+// sibling-sensitive tree marker for a RowTab/RowPane, "" otherwise. The
+// indent is repeated 2-space per depth level.
+//
+// TRL-3: a RowCandidate (top-level workspace row) never gets an
+// expand/collapse glyph (the old ▸/▾ IconSet.ExpandClosed/ExpandOpen) — the
+// per-source icon (see rowDisplayText's c.Icon handling) already
+// differentiates row types, so the glyph was redundant and explicitly
+// removed. Left/Right/Enter still toggle Row.Expandable/Expanded (see
+// keys.go's toggleExpand); only the rendered glyph is gone. ExpandOpen/
+// ExpandClosed remain declared on IconSet (icons_test.go still exercises
+// them as part of the resolved tier's data) but no production code path
+// surfaces them anymore.
+//
+// TRL-4: the active-focus marker (IconSet.ActiveMarker, see isActiveFocusRow)
+// gets a FIXED-width leading slot on every RowTab/RowPane — blank space on
+// every sibling except the one row that identifies where shep is currently
+// running. Filling that slot with the marker only on the active row (with
+// no reserved space on the others) would shift just that one row's tree
+// glyph (├─/└─) rightward relative to its siblings, breaking the vertical
+// rule the tree glyphs are supposed to draw. lipgloss.Width (not len/rune
+// count) measures the slot so a multi-byte marker glyph still reserves the
+// correct terminal cell width.
 func (m Model) kindPrefix(row Row) string {
 	set := m.icons()
 	prefix := ""
+	indentDepth := row.Depth
 	switch row.Kind {
-	case RowCandidate:
-		if row.Expandable {
-			if row.Expanded {
-				prefix = set.ExpandOpen + " "
-			} else {
-				prefix = set.ExpandClosed + " "
-			}
+	case RowTab, RowPane:
+		treeGlyph := set.TreeMid
+		if row.IsLast {
+			treeGlyph = set.TreeLast
 		}
-	case RowTab:
-		prefix = set.TabPrefix + " "
-	case RowPane:
-		prefix = set.PanePrefix + " "
+		activeSlot := strings.Repeat(" ", lipgloss.Width(set.ActiveMarker+" "))
+		if m.isActiveFocusRow(row) {
+			activeSlot = set.ActiveMarker + " "
+		}
+		prefix += activeSlot
+		// A RowPane's ancestor connector is placed after the fixed active
+		// marker gutter, in the same column as its parent tab's branch. Its
+		// own branch then follows one level deeper. Keeping the same-width
+		// blank under a final tab preserves all sibling alignment.
+		if row.Kind == RowPane {
+			ancestorCol := set.TreeVertical
+			if row.AncestorIsLast {
+				ancestorCol = strings.Repeat(" ", lipgloss.Width(set.TreeVertical))
+			}
+			prefix += ancestorCol
+			indentDepth--
+		}
+		prefix += treeGlyph + " "
 	}
-	if m.isActiveFocusRow(row) {
-		prefix = set.ActiveMarker + " " + prefix
+	if indentDepth < 0 {
+		indentDepth = 0
 	}
-	indent := strings.Repeat("  ", row.Depth)
+	indent := strings.Repeat("  ", indentDepth)
 	return indent + prefix
 }
 
@@ -440,70 +622,144 @@ func (m Model) isActiveFocusRow(row Row) bool {
 	}
 }
 
-// rowDisplayText returns the primary and secondary display text for a
-// candidate/tab/pane row.
-//
-// Corrective round: SourceZoxide/SourceProjects no longer get the
-// basename-first/shortened-parent-path treatment — every non-pane row shows
-// its full label (falling back to its full Path when Label is empty), with
-// no secondary at all, matching every other source.
-//
-// A RowPane is the one exception: primary is the pane's real CWD/foreground
-// path (the most useful thing to scan a list of panes by), prefixed with its
-// agent-status icon (see agentStatusIcon) when one applies; secondary is the
-// pane's own id (Candidate.Label) as a muted disambiguator, followed by (see
-// workspaceContext) a concise "in <workspace>" parent-workspace context when
-// the candidate carries one — so a path/label match on a tab or pane row
-// explains WHERE it is open, not just what it is. A RowTab gets the same
-// parent-context secondary (it otherwise has none).
-func (m Model) rowDisplayText(row Row) (primary, secondary string) {
-	c := row.Candidate
-	label := c.Label
-	if label == "" {
-		label = c.Path
-	}
+// labelPathSeparator and the three default formats intentionally match
+// config.normalizeLabelFormats. They preserve current output for direct
+// zero-value Layout callers, which do not carry a loaded config.
+const (
+	labelPathSeparator         = " · "
+	defaultLabelWithPathFormat = "{{if .Label}}{{.Label}}" + labelPathSeparator + "{{end}}{{.Path}}"
+	defaultPathLabelFormat     = "{{.Path}}"
+	defaultLabelOnlyFormat     = "{{.Label}}"
+)
 
-	if row.Kind == RowPane {
-		primary = c.Path
-		if primary == "" {
-			primary = label
-		}
-		if icon := m.agentStatusIcon(c.Meta["agent_status"]); icon != "" {
-			primary = icon + " " + primary
-		}
-		primary = m.kindPrefix(row) + primary
-		secondary = label
-		if ctx := workspaceContext(c); ctx != "" {
-			secondary += " · " + ctx
-		}
-		return primary, secondary
+// tabLabelPortion resolves a RowTab's label text for the unified primary
+// layout: "<tab_number> <label>" when a tab number is configured and the
+// tab's own label differs from it, or just the bare tab number when the
+// label is empty OR is itself literally the tab number as a string (Herdr's
+// default/unnamed tab label equals its own number, e.g. Label="3" and
+// tab_number="3" — showing both would render the redundant "3 3"). With no
+// tab_number at all, the raw label is used as-is.
+func tabLabelPortion(c source.Candidate) string {
+	number := c.Meta["tab_number"]
+	if number == "" {
+		return c.Label
 	}
-
-	primary = label
-	if c.Icon != "" {
-		primary = c.Icon + " " + primary
+	if c.Label == "" || c.Label == number {
+		return number
 	}
-	if c.Missing {
-		primary += " (missing)"
-	}
-	primary = m.kindPrefix(row) + primary
-	if row.Kind == RowTab {
-		secondary = workspaceContext(c)
-	}
-	return primary, secondary
+	return number + " " + c.Label
 }
 
-// workspaceContext returns a concise "in <workspace>" parent-context string
-// when c carries Meta["workspace_label"] (every synthesized tab/pane
-// candidate does — see internal/tui/tree.go's synthesizeWorkspaceChildren),
-// else "". Shared by RowTab and RowPane so a query match on either row's
-// path/label always explains which parent workspace it belongs to.
-func workspaceContext(c source.Candidate) string {
-	label := c.Meta["workspace_label"]
-	if label == "" {
-		return ""
+// rowLabelFormat selects the resolved template for row. Ordinary candidates
+// use their provider's label_format; synthesized Herdr rows use their dedicated
+// tab_label_format or pane_label_format.
+func (m Model) rowLabelFormat(row Row) string {
+	formats := m.labelFormats()
+	switch row.Kind {
+	case RowTab:
+		return formats.Tab
+	case RowPane:
+		return formats.Pane
 	}
-	return "in " + label
+
+	switch row.Candidate.Source {
+	case config.SourceHerdr:
+		return formats.Herdr
+	case config.SourceWorkspaces:
+		return formats.Workspaces
+	case config.SourceZoxide:
+		return formats.Zoxide
+	case config.SourceProjects:
+		return formats.Projects
+	default:
+		return defaultPathLabelFormat
+	}
+}
+
+// renderRowLabel builds a template context for row and defensively falls back
+// to the raw path if an invalid format somehow reaches render time, or if a
+// valid format renders to an empty string (e.g. a bare {{.Label}} format
+// evaluated against a candidate whose Label is empty -- reachable only via
+// direct/programmatic Candidate construction, since config.Load enforces
+// non-empty names/labels for every source that ships a label-only default).
+// Config.Load rejects unparsable formats, but the TUI must never show a
+// silently blank row or crash when called directly.
+func (m Model) renderRowLabel(row Row) string {
+	c := row.Candidate
+	label := c.Label
+	if row.Kind == RowTab {
+		// Preserve the current Herdr-specific tab-number/label de-duplication
+		// before templates position the label.
+		label = tabLabelPortion(c)
+	}
+	text, err := rowformat.Render(m.rowLabelFormat(row), rowformat.Context{
+		Path:        c.Path,
+		Label:       label,
+		TabNumber:   c.Meta["tab_number"],
+		AgentStatus: c.Meta["agent_status"],
+		// Icon intentionally stays unset: c.Icon belongs to rowPrimaryText's
+		// fixed prefix, which left truncation must never consume.
+	})
+	if err != nil || text == "" {
+		return c.Path
+	}
+	return text
+}
+
+// rowPrimaryText builds a row's primary display text, split into the
+// structural prefix (kindPrefix's tree glyph/ancestor-column/indent/active-
+// marker slot, plus the row's own icon — a source icon for a RowCandidate, a
+// dedicated tab icon for a RowTab, or an agent-status icon for a RowPane) and
+// prefixRunes, the codepoint length of that leading prefix ALONE — everything
+// before the row's actual label/path text begins. renderRowLine's truncation
+// path (see truncateFromLeftPreservingPrefix, rowPart.renderHighlighted) must
+// never cut into that prefix, so a row's icon always survives even when its
+// label/path is severely left-truncated.
+//
+// All row bodies render through their resolved source template. A RowTab first
+// passes tabLabelPortion(c) as its Context.Label so the existing number/label
+// de-duplication remains intact. RowCandidate and RowPane use their raw label.
+func (m Model) rowPrimaryText(row Row) (primary string, prefixRunes int) {
+	c := row.Candidate
+
+	if row.Kind == RowPane {
+		prefix := m.kindPrefix(row)
+		if icon := m.agentStatusIcon(c.Meta["agent_status"]); icon != "" {
+			prefix += icon + " "
+		}
+		return prefix + m.renderRowLabel(row), len([]rune(prefix))
+	}
+
+	prefix := m.kindPrefix(row)
+	if row.Kind == RowTab {
+		prefix += m.icons().TabIcon + " "
+		text := m.renderRowLabel(row)
+		return prefix + text, len([]rune(prefix))
+	} else if c.Icon != "" {
+		prefix += c.Icon + " "
+	}
+	text := m.renderRowLabel(row)
+	if c.Missing {
+		text += " (missing)"
+	}
+	return prefix + text, len([]rune(prefix))
+}
+
+// rowSecondaryText returns no content. A tab's parent workspace context would
+// duplicate the path already shown in its primary text; pane and provider rows
+// likewise have no trailing context.
+func (m Model) rowSecondaryText(row Row) string {
+	return ""
+}
+
+// rowDisplayText returns the primary and secondary display text for a
+// candidate/tab/pane row — a thin combination of rowPrimaryText (dropping
+// its prefixRunes, which only renderRowLine's truncation path needs) and
+// rowSecondaryText. Kept as the stable external shape every existing
+// rowDisplayText caller/test already depends on.
+func (m Model) rowDisplayText(row Row) (primary, secondary string) {
+	primary, _ = m.rowPrimaryText(row)
+	return primary, m.rowSecondaryText(row)
 }
 
 // agentStatusIcon returns the styled glyph for a pane row's agent_status,
@@ -584,6 +840,67 @@ func truncateFromLeftToWidth(s string, maxW int) string {
 	ellipsisW := ansi.StringWidth("…")
 	n := w - maxW + ellipsisW
 	return ansi.TruncateLeft(s, n, "…")
+}
+
+// truncateFromLeftPreservingPrefix behaves like truncateFromLeftToWidth
+// except the leading prefixRunes codepoints of s are NEVER truncated — only
+// the remainder (a row's own label/path text) is shortened from the left.
+// Used so a row's structural prefix (cursor/descendant marker, kindPrefix's
+// tree glyph, and its own icon) always survives truncation intact; only the
+// label/path content following it may lose characters, with the ellipsis
+// landing right after the prefix. Degrades to the old whole-string behavior
+// when maxW cannot even fit the prefix itself — an extreme-narrow-width edge
+// case with no good outcome either way.
+func truncateFromLeftPreservingPrefix(s string, prefixRunes, maxW int) string {
+	runes := []rune(s)
+	if prefixRunes > len(runes) {
+		prefixRunes = len(runes)
+	}
+	prefix := string(runes[:prefixRunes])
+	rest := string(runes[prefixRunes:])
+	budget := maxW - ansi.StringWidth(prefix)
+	if budget < 1 {
+		return truncateFromLeftToWidth(s, maxW)
+	}
+	return prefix + truncateFromLeftToWidth(rest, budget)
+}
+
+// renderPreviewTopBorder builds the preview pane's top edge separately so the
+// current path can occupy the border without changing the remaining chrome.
+func (m Model) renderPreviewTopBorder(style lipgloss.Style, outerWidth int, text string) string {
+	if outerWidth <= 0 {
+		return ""
+	}
+
+	border, _, _, _, _ := style.GetBorder()
+	left, edge, right := border.TopLeft, border.Top, border.TopRight
+	if m.icons().Name == IconsASCII {
+		left, edge, right = "+", "-", "+"
+	}
+
+	edgeWidth := outerWidth - lipgloss.Width(left) - lipgloss.Width(right)
+	if edgeWidth <= 0 {
+		return lipgloss.NewStyle().Foreground(style.GetBorderTopForeground()).Render(truncateToWidth(left+right, outerWidth))
+	}
+
+	text = truncateFromLeftToWidth(text, edgeWidth)
+	fillWidth := edgeWidth - lipgloss.Width(text)
+	top := left + text + strings.Repeat(edge, fillWidth) + right
+	return lipgloss.NewStyle().Foreground(style.GetBorderTopForeground()).Render(top)
+}
+
+// previewTopBorderText returns the selected candidate's path, falling back to
+// its label when the source did not provide one. No selected row leaves the
+// preview edge empty.
+func (m Model) previewTopBorderText() string {
+	cand, ok := m.currentCandidate()
+	if !ok {
+		return ""
+	}
+	if cand.Path != "" {
+		return cand.Path
+	}
+	return cand.Label
 }
 
 func clamp(v, lo, hi int) int {

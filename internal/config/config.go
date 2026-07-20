@@ -22,6 +22,7 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 	"github.com/tranceh2/shep/internal/pathutil"
+	"github.com/tranceh2/shep/internal/rowformat"
 )
 
 // Built-in source names. general.sources lists which of these are enabled
@@ -214,21 +215,26 @@ type SourcesConfig struct {
 
 // HerdrSourceConfig configures the herdr workspaces source's presentation.
 type HerdrSourceConfig struct {
-	Icon    string   `toml:"icon,omitempty"`
-	Preview []string `toml:"preview,omitempty"`
+	Icon            string   `toml:"icon,omitempty"`
+	LabelFormat     string   `toml:"label_format,omitempty"`
+	TabLabelFormat  string   `toml:"tab_label_format,omitempty"`
+	PaneLabelFormat string   `toml:"pane_label_format,omitempty"`
+	Preview         []string `toml:"preview,omitempty"`
 }
 
 // WorkspacesSourceConfig configures the predefined-[[workspaces]] source's
 // presentation.
 type WorkspacesSourceConfig struct {
-	Icon    string   `toml:"icon,omitempty"`
-	Preview []string `toml:"preview,omitempty"`
+	Icon        string   `toml:"icon,omitempty"`
+	LabelFormat string   `toml:"label_format,omitempty"`
+	Preview     []string `toml:"preview,omitempty"`
 }
 
 // ZoxideSourceConfig configures the zoxide source's presentation.
 type ZoxideSourceConfig struct {
-	Icon    string   `toml:"icon,omitempty"`
-	Preview []string `toml:"preview,omitempty"`
+	Icon        string   `toml:"icon,omitempty"`
+	LabelFormat string   `toml:"label_format,omitempty"`
+	Preview     []string `toml:"preview,omitempty"`
 }
 
 // ProjectsSourceConfig configures the projects source: directories detected
@@ -238,12 +244,13 @@ type ZoxideSourceConfig struct {
 // projects source never runs at the top level: it only contributes
 // candidates once scoped to a group workspace's nested picker.
 type ProjectsSourceConfig struct {
-	Icon      string   `toml:"icon,omitempty"`
-	Recursive bool     `toml:"recursive,omitempty"`
-	MaxDepth  int      `toml:"max_depth,omitempty"`
-	Markers   []string `toml:"markers,omitempty"`
-	Ignore    []string `toml:"ignore,omitempty"`
-	Preview   []string `toml:"preview,omitempty"`
+	Icon        string   `toml:"icon,omitempty"`
+	LabelFormat string   `toml:"label_format,omitempty"`
+	Recursive   bool     `toml:"recursive,omitempty"`
+	MaxDepth    int      `toml:"max_depth,omitempty"`
+	Markers     []string `toml:"markers,omitempty"`
+	Ignore      []string `toml:"ignore,omitempty"`
+	Preview     []string `toml:"preview,omitempty"`
 }
 
 // WorkspaceConfig is one entry in the [[workspaces]] list. A plain entry
@@ -316,7 +323,8 @@ type PreviewConfig struct {
 }
 
 // PreviewCommand is one [preview.commands.<name>] entry: a shell-style
-// command with a {path} placeholder, executed safely (argv-parsed, no
+// command with rowformat template actions such as {{.Path}}, executed safely
+// (argv-parsed, no
 // `sh -c`, timeout + line cap from the surrounding PreviewConfig).
 type PreviewCommand struct {
 	Command string `toml:"command"`
@@ -431,6 +439,7 @@ func Defaults() *Config {
 		Wildcards:  []WildcardConfig{},
 	}
 	normalizePreview(&cfg.Preview)
+	normalizeLabelFormats(&cfg.Sources)
 	return cfg
 }
 
@@ -510,6 +519,7 @@ func Load(path string) (*Config, error) {
 		cfg.General.Selector = SelectorBuiltin
 	}
 	normalizePreview(&cfg.Preview)
+	normalizeLabelFormats(&cfg.Sources)
 
 	if err := validate(cfg); err != nil {
 		return nil, fmt.Errorf("parse config %q: %w", resolved, err)
@@ -532,10 +542,38 @@ func normalizePreview(p *PreviewConfig) {
 	}
 }
 
+// normalizeLabelFormats fills empty format fields with the current rendering
+// behavior so callers never need to interpret an empty value as a default.
+func normalizeLabelFormats(s *SourcesConfig) {
+	const labelWithPath = "{{if .Label}}{{.Label}} · {{end}}{{.Path}}"
+
+	if s.Herdr.LabelFormat == "" {
+		s.Herdr.LabelFormat = labelWithPath
+	}
+	if s.Herdr.TabLabelFormat == "" {
+		s.Herdr.TabLabelFormat = labelWithPath
+	}
+	if s.Herdr.PaneLabelFormat == "" {
+		s.Herdr.PaneLabelFormat = labelWithPath
+	}
+	if s.Workspaces.LabelFormat == "" {
+		s.Workspaces.LabelFormat = "{{.Label}}"
+	}
+	if s.Zoxide.LabelFormat == "" {
+		s.Zoxide.LabelFormat = "{{.Path}}"
+	}
+	if s.Projects.LabelFormat == "" {
+		s.Projects.LabelFormat = "{{.Path}}"
+	}
+}
+
 // validate enforces every schema invariant that must fail Load fast rather
 // than surface as a confusing runtime error later.
 func validate(cfg *Config) error {
 	if err := validateSources(cfg.General.Sources); err != nil {
+		return err
+	}
+	if err := validateLabelFormats(cfg.Sources); err != nil {
 		return err
 	}
 	if !isValidSelector(cfg.General.Selector) {
@@ -558,11 +596,70 @@ func validate(cfg *Config) error {
 	if err := validatePreview(cfg.Preview); err != nil {
 		return err
 	}
+	if err := validatePreviewCommandTemplates(cfg.Preview.Commands); err != nil {
+		return err
+	}
 	if err := validateAllPreviewLists(cfg); err != nil {
 		return err
 	}
 	if err := validateTUI(cfg.TUI); err != nil {
 		return err
+	}
+	return nil
+}
+
+// validateLabelFormats verifies every source label template can render with
+// the shared rowformat context before the TUI starts.
+func validateLabelFormats(s SourcesConfig) error {
+	formats := []struct {
+		field  string
+		format string
+	}{
+		{"sources.herdr.label_format", s.Herdr.LabelFormat},
+		{"sources.herdr.tab_label_format", s.Herdr.TabLabelFormat},
+		{"sources.herdr.pane_label_format", s.Herdr.PaneLabelFormat},
+		{"sources.workspaces.label_format", s.Workspaces.LabelFormat},
+		{"sources.zoxide.label_format", s.Zoxide.LabelFormat},
+		{"sources.projects.label_format", s.Projects.LabelFormat},
+	}
+	for _, f := range formats {
+		if err := validateRowFormat(f.field, f.format); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validatePreviewCommandTemplates applies the same validation that runtime
+// command rendering will use: tokenize first, then render each argv token.
+func validatePreviewCommandTemplates(commands map[string]PreviewCommand) error {
+	for name, command := range commands {
+		field := fmt.Sprintf("preview.commands.%s.command", name)
+		tokens, err := rowformat.Tokenize(command.Command)
+		if err != nil {
+			return fmt.Errorf("%s: %w", field, err)
+		}
+		for _, token := range tokens {
+			if err := validateRowFormat(field, token); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func legacyTemplateSyntax(field string) string { return "{" + field + "}" }
+
+// validateRowFormat rejects stale placeholders before sharing rowformat's
+// parse-and-execute validation against an empty, field-complete context.
+func validateRowFormat(field, format string) error {
+	for _, placeholder := range []string{legacyTemplateSyntax("path"), legacyTemplateSyntax("label")} {
+		if strings.Contains(format, placeholder) {
+			return fmt.Errorf("%s: legacy placeholder %q is not supported; use {{.Path}} or {{.Label}}", field, placeholder)
+		}
+	}
+	if _, err := rowformat.Render(format, rowformat.Context{}); err != nil {
+		return fmt.Errorf("%s: invalid template: %w", field, err)
 	}
 	return nil
 }

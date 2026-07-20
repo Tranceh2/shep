@@ -12,11 +12,9 @@ import (
 	"io"
 	"os/exec"
 	"strings"
-)
 
-// pathPlaceholder is the substitution token for the candidate path in a custom
-// preview command. It is replaced as one argument value, never re-tokenised.
-const pathPlaceholder = "{path}"
+	"github.com/tranceh2/shep/internal/rowformat"
+)
 
 const maxCapturedOutputBytes = 64 * 1024
 
@@ -102,12 +100,11 @@ func (w *cappedLineWriter) Len() int { return w.b.Len() }
 
 var _ io.Writer = (*cappedLineWriter)(nil)
 
-// ParseCommand splits a shell-style command string into argv and substitutes
-// {path} with the candidate path as a single argument value. It supports
-// single- and double-quoted arguments so users can pass descriptions with
-// spaces; it deliberately performs no shell expansion and never invokes sh -c.
-func ParseCommand(cmd, path string) ([]string, error) {
-	tokens, err := tokenize(cmd)
+// ParseCommand splits a shell-style command string into argv, then renders
+// template actions per isolated token. This order keeps rendered values inside
+// one argv element; it deliberately performs no shell expansion or sh -c.
+func ParseCommand(cmd string, ctx rowformat.Context) ([]string, error) {
+	tokens, err := rowformat.Tokenize(cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -116,50 +113,11 @@ func ParseCommand(cmd, path string) ([]string, error) {
 	}
 	out := make([]string, len(tokens))
 	for i, tok := range tokens {
-		out[i] = strings.ReplaceAll(tok, pathPlaceholder, path)
+		rendered, err := rowformat.Render(tok, ctx)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = rendered
 	}
 	return out, nil
-}
-
-// tokenize splits on whitespace while honouring single and double quotes.
-// Quotes are removed; a quoted run with spaces stays one token. An unmatched
-// quote is an error so users fail fast on a malformed command.
-func tokenize(s string) ([]string, error) {
-	var tokens []string
-	var cur strings.Builder
-	inQuotes := byte(0)
-	flushing := false
-
-	flush := func() {
-		if flushing {
-			tokens = append(tokens, cur.String())
-			cur.Reset()
-			flushing = false
-		}
-	}
-
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case inQuotes != 0:
-			if c == inQuotes {
-				inQuotes = 0
-			} else {
-				cur.WriteByte(c)
-			}
-		case c == '"' || c == '\'':
-			inQuotes = c
-			flushing = true
-		case c == ' ' || c == '\t' || c == '\n':
-			flush()
-		default:
-			cur.WriteByte(c)
-			flushing = true
-		}
-	}
-	if inQuotes != 0 {
-		return nil, errors.New("unterminated quote in preview command")
-	}
-	flush()
-	return tokens, nil
 }

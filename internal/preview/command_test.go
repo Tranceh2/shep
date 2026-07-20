@@ -5,33 +5,38 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tranceh2/shep/internal/rowformat"
 )
 
-// TestParseCommand splits a shell-style command into argv, substitute {path} as
-// one argument value, and honour quoting. No sh -c is ever used.
+// TestParseCommand tokenizes before rendering each template action. Rendered
+// values stay inside their already-isolated argv elements; no sh -c is used.
 func TestParseCommand(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
 		name    string
 		cmd     string
-		path    string
+		ctx     rowformat.Context
 		want    []string
 		wantErr bool
 	}{
-		{name: "simple", cmd: "echo hi", path: "/p", want: []string{"echo", "hi"}},
-		{name: "path token replaced wholesale", cmd: "git -C {path} log", path: "/p/x", want: []string{"git", "-C", "/p/x", "log"}},
-		{name: "path embedded in token", cmd: "ls {path}/sub", path: "/p", want: []string{"ls", "/p/sub"}},
-		{name: "path with spaces stays one arg", cmd: "ls {path}", path: "/has space/x", want: []string{"ls", "/has space/x"}},
-		{name: "double quoted arg stays single", cmd: `git commit -m "a b c"`, path: "/p", want: []string{"git", "commit", "-m", "a b c"}},
-		{name: "single quoted arg stays single", cmd: `echo 'x y'`, path: "/p", want: []string{"echo", "x y"}},
-		{name: "empty command errors", cmd: "   ", path: "/p", wantErr: true},
-		{name: "unterminated quote errors", cmd: `echo "open`, path: "/p", wantErr: true},
+		{name: "simple", cmd: "echo hi", ctx: rowformat.Context{Path: "/p"}, want: []string{"echo", "hi"}},
+		{name: "template path token renders", cmd: "git -C {{.Path}} log", ctx: rowformat.Context{Path: "/p/x"}, want: []string{"git", "-C", "/p/x", "log"}},
+		{name: "template path embedded in token renders", cmd: "ls {{.Path}}/sub", ctx: rowformat.Context{Path: "/p"}, want: []string{"ls", "/p/sub"}},
+		{name: "path and label shell metacharacters remain isolated", cmd: "printf {{.Path}} {{.Label}}", ctx: rowformat.Context{Path: "/has space/x;rm -rf ~", Label: "release candidate;$(touch nope)"}, want: []string{"printf", "/has space/x;rm -rf ~", "release candidate;$(touch nope)"}},
+		{name: "template syntax in path remains inert data", cmd: "echo {{.Path}}", ctx: rowformat.Context{Path: "{{.Label}}"}, want: []string{"echo", "{{.Label}}"}},
+		{name: "double quoted arg stays single", cmd: `git commit -m "a b c"`, ctx: rowformat.Context{Path: "/p"}, want: []string{"git", "commit", "-m", "a b c"}},
+		{name: "single quoted arg stays single", cmd: `echo 'x y'`, ctx: rowformat.Context{Path: "/p"}, want: []string{"echo", "x y"}},
+		{name: "unquoted template action with whitespace errors", cmd: "echo {{ .Path }}", ctx: rowformat.Context{Path: "/has space/x"}, wantErr: true},
+		{name: "quoted template action with whitespace succeeds", cmd: `echo "{{ .Path }}"`, ctx: rowformat.Context{Path: "/has space/x"}, want: []string{"echo", "/has space/x"}},
+		{name: "empty command errors", cmd: "   ", ctx: rowformat.Context{Path: "/p"}, wantErr: true},
+		{name: "unterminated quote errors", cmd: `echo "open`, ctx: rowformat.Context{Path: "/p"}, wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := ParseCommand(tc.cmd, tc.path)
+			got, err := ParseCommand(tc.cmd, tc.ctx)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected error, got %v", got)
@@ -42,7 +47,7 @@ func TestParseCommand(t *testing.T) {
 				t.Fatalf("parse: %v", err)
 			}
 			if !sliceEq(got, tc.want) {
-				t.Errorf("parse %q path=%q: got %v want %v", tc.cmd, tc.path, got, tc.want)
+				t.Errorf("parse %q context=%+v: got %v want %v", tc.cmd, tc.ctx, got, tc.want)
 			}
 		})
 	}

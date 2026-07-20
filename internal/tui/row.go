@@ -54,6 +54,9 @@ type Row struct {
 	Candidate source.Candidate
 	Depth     int // 0 = candidate, 1 = tab, 2 = pane
 	Match     MatchKind
+	// MatchedIndexes are codepoint indexes into candidateHaystack(Candidate)
+	// selected by fuzzy scoring. They are populated only for MatchDirect rows.
+	MatchedIndexes []int
 	// Action is the typed launch semantics for Enter on this row (see
 	// RowAction). It is what the command layer dispatches on — never the
 	// candidate's Source string. RowActionOpen (zero) for a RowCandidate;
@@ -73,6 +76,13 @@ type Row struct {
 	// beneath it (either because the user manually expanded it, or because
 	// the active query matched a descendant — see buildRows).
 	Expanded bool
+	// IsLast reports whether this synthesized RowTab or RowPane is the final
+	// child in its parent's displayed sibling order.
+	IsLast bool
+	// AncestorIsLast reports whether a RowPane's parent RowTab is its final
+	// sibling. This is a two-level-tree simplification; revisit it as a
+	// per-depth representation if the hierarchy gains a third level.
+	AncestorIsLast bool
 }
 
 // Selectable reports whether Enter should treat r as "open this". Every row

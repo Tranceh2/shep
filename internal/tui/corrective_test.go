@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/stretchr/testify/require"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
 )
@@ -102,6 +103,7 @@ func TestBuildRows_NonDefaultConfiguredOrder(t *testing.T) {
 func TestBuildRows_OnlyKnownRowKinds(t *testing.T) {
 	t.Parallel()
 	rows := buildRows(rowBuildInput{candidates: goldenCandidates()})
+	require.NotEmpty(t, rows, "setup must exercise the known-kinds loop")
 	for _, r := range rows {
 		switch r.Kind {
 		case RowCandidate, RowTab, RowPane:
@@ -132,7 +134,9 @@ func TestCursor_NeverLandsOnNonActionableRow(t *testing.T) {
 // === 4. Pane row primary/secondary + status icon (never a literal word) ===
 
 // TestRowDisplayText_PaneRow_PathPrimarySecondaryPaneID proves a RowPane's
-// primary is its path and secondary is its pane id (Candidate.Label), and
+// primary contains both its pane id (Candidate.Label) and its path (unified
+// "<label> · <path>" layout, Change 2 — the old separate "pane-id" secondary
+// was folded into the primary and the secondary is now always empty), and
 // that no agent_status literal word ever appears in the rendered row text —
 // only an icon.
 func TestRowDisplayText_PaneRow_PathPrimarySecondaryPaneID(t *testing.T) {
@@ -149,8 +153,11 @@ func TestRowDisplayText_PaneRow_PathPrimarySecondaryPaneID(t *testing.T) {
 		if !strings.Contains(primary, "/srv/api") {
 			t.Errorf("status=%q: primary = %q, want it to contain the path /srv/api", status, primary)
 		}
-		if secondary != "p1" {
-			t.Errorf("status=%q: secondary = %q, want the pane id \"p1\"", status, secondary)
+		if !strings.Contains(primary, "p1") {
+			t.Errorf("status=%q: primary = %q, want it to contain the pane id \"p1\"", status, primary)
+		}
+		if secondary != "" {
+			t.Errorf("status=%q: secondary = %q, want empty (RowPane secondary removed entirely by Change 2)", status, secondary)
 		}
 		full := stripNonSGRANSI(primary + " " + secondary)
 		for _, word := range []string{"working", "idle", "done", "blocked", "unknown"} {

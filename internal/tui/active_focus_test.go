@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -83,5 +84,52 @@ func TestKindPrefix_ActiveFocusRow_CandidateRowsNeverMark(t *testing.T) {
 	row := Row{Kind: RowCandidate, Candidate: source.Candidate{Meta: map[string]string{"workspace_id": "w1"}}}
 	if got := m.kindPrefix(row); strings.Contains(got, set.ActiveMarker) {
 		t.Errorf("kindPrefix(RowCandidate) = %q, must not contain the active marker", got)
+	}
+}
+
+// TestKindPrefix_TreeGlyphColumnAlignsRegardlessOfActiveMarker proves the
+// active-focus marker's leading slot is a FIXED width on every RowTab/
+// RowPane row (TRL-4): a sibling row where isActiveFocusRow is false must
+// reserve the exact same visual width for that slot (as blank space) as a
+// row where it is true, so the tree glyph (├─/└─) that follows always
+// starts at the same column across siblings — instead of only the one
+// active row shifting its OWN tree glyph rightward relative to every other
+// sibling. Measured with lipgloss.Width (not len/byte-count or rune-count)
+// because IconSet.ActiveMarker is a multi-byte Unicode glyph ("◆") whose
+// byte length does not equal its terminal cell width.
+func TestKindPrefix_TreeGlyphColumnAlignsRegardlessOfActiveMarker(t *testing.T) {
+	t.Parallel()
+	m := newRenderTestModel(ThemeMocha, FocusList)
+	m.currentPane = &source.Pane{ID: "p1", TabID: "t1"}
+	set := m.icons()
+
+	active := Row{Kind: RowTab, Candidate: source.Candidate{Meta: map[string]string{"tab_id": "t1"}}}
+	sibling := Row{Kind: RowTab, Candidate: source.Candidate{Meta: map[string]string{"tab_id": "t2"}}, IsLast: true}
+
+	activePrefix := m.kindPrefix(active)
+	siblingPrefix := m.kindPrefix(sibling)
+
+	if !strings.Contains(activePrefix, set.ActiveMarker) {
+		t.Fatalf("active row kindPrefix = %q, want it to contain the active marker %q", activePrefix, set.ActiveMarker)
+	}
+	if strings.Contains(siblingPrefix, set.ActiveMarker) {
+		t.Fatalf("sibling row kindPrefix = %q, must not contain the active marker", siblingPrefix)
+	}
+
+	if got, want := lipgloss.Width(activePrefix), lipgloss.Width(siblingPrefix); got != want {
+		t.Errorf("active row prefix width = %d (%q), sibling prefix width = %d (%q): tree glyph column misaligned", got, activePrefix, want, siblingPrefix)
+	}
+
+	// The tree glyph itself (everything after the fixed active-marker slot)
+	// must be identical between the two rows: the active row differs ONLY
+	// in its leading slot content, never in the tree glyph placement.
+	activeTreeGlyph := strings.TrimPrefix(activePrefix, set.ActiveMarker+" ")
+	siblingBlankSlot := strings.Repeat(" ", lipgloss.Width(set.ActiveMarker+" "))
+	siblingTreeGlyph := strings.TrimPrefix(siblingPrefix, siblingBlankSlot)
+	if activeTreeGlyph != set.TreeMid+" " {
+		t.Errorf("active row tree glyph = %q, want %q", activeTreeGlyph, set.TreeMid+" ")
+	}
+	if siblingTreeGlyph != set.TreeLast+" " {
+		t.Errorf("sibling row tree glyph = %q, want %q", siblingTreeGlyph, set.TreeLast+" ")
 	}
 }

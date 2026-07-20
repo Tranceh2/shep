@@ -179,16 +179,19 @@ type Tab struct {
 // and disable the tab/pane launch targets accordingly.
 var ErrNoFocusedPane = errors.New("no focused pane")
 
-// Pane is one pane of a Herdr workspace. CWD is the pane's working directory;
-// ForegroundCWD is the cwd of the foreground process running in it (Herdr
-// populates this only while a command is active). AgentStatus mirrors the
-// pane envelope's `agent_status` field: one of "idle", "working", "blocked",
+// Pane is one pane of a Herdr workspace. Label is the optional human-facing
+// name supplied by Herdr; ID remains the stable machine identifier. CWD is the
+// pane's working directory; ForegroundCWD is the cwd of the foreground process
+// running in it (Herdr populates this only while a command is active).
+// AgentStatus mirrors the pane envelope's `agent_status` field: one of "idle",
+// "working", "blocked",
 // "done", "unknown", or "" when the pane predates the field (older Herdr) or
 // carries no agent (a plain shell pane). Empty and "unknown" are distinct:
 // "" means the status is unavailable, "unknown" is Herdr explicitly
 // reporting it cannot classify the pane's agent.
 type Pane struct {
 	ID            string
+	Label         string
 	WorkspaceID   string
 	TabID         string
 	CWD           string
@@ -479,13 +482,9 @@ func (h *herdrProvider) List(ctx context.Context) ([]Candidate, error) {
 		if w.CWD == "" {
 			continue
 		}
-		label := w.Label
-		if label == "" {
-			label = baseLabel(w.CWD)
-		}
 		cand := Candidate{
 			Path:   w.CWD,
-			Label:  label,
+			Label:  w.Label,
 			Source: config.SourceHerdr,
 			Meta:   map[string]string{"workspace_id": w.ID},
 		}
@@ -714,16 +713,4 @@ func RelativeLabel(p string) string {
 		return p
 	}
 	return filepath.Join("~", rel)
-}
-
-// baseLabel derives a human label from a path's base; empty paths yield "?".
-func baseLabel(p string) string {
-	if p == "" {
-		return "?"
-	}
-	base := filepath.Base(p)
-	if base == "" || base == "." || base == string(filepath.Separator) {
-		return p
-	}
-	return base
 }

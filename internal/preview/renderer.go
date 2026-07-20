@@ -11,6 +11,7 @@ import (
 
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/pathutil"
+	"github.com/tranceh2/shep/internal/rowformat"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -369,7 +370,10 @@ func (r *defaultRenderer) renderCustomCommand(ctx context.Context, cmd config.Pr
 	if r.runner == nil {
 		return "", false
 	}
-	argv, err := ParseCommand(cmd.Command, renderPath(cand))
+	argv, err := ParseCommand(cmd.Command, rowformat.Context{
+		Path:  renderPath(cand),
+		Label: cand.Label,
+	})
 	if err != nil {
 		return "", false
 	}

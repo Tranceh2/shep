@@ -346,14 +346,16 @@ max_lines = 50
 default = ["identity", "git"]
 
 [preview.commands.recent_commits]
-command = "git -C {path} log -n 3"
+command = "git -C {{.Path}} log -n 3"
 ```
 
 `[preview.commands.<name>]` declares a custom preview command referenced by
 name alongside the built-ins above: argv-parsed (no `sh -c`), run with a
 timeout, output capped and cached. A failing custom command is silently
 omitted from normal preview output (no error/warning shown); it never breaks
-the picker or `shep preview`.
+the picker or `shep preview`. Commands use rowformat template actions such as
+`{{.Path}}` and `{{.Label}}`; keep actions containing whitespace quoted (for
+example, `"{{ .Path }}"`) because tokenization happens before rendering.
 
 ## Television integration
 

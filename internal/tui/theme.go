@@ -130,10 +130,13 @@ func resolveTheme(configTheme string) Theme {
 //
 // Selection is split into a gutter (cursorGutter*Style) plus a surface
 // background (cursorSurface*Style) instead of one full-row cursorStyle: the
-// gutter is a 1-col leading indicator and the surface tints the row's
-// background while the row's OWN text style (groupHeader/rowDescendant/row)
-// is preserved — see render.go's renderSelectedFromParts. The *Unfocused variants
-// apply when the preview pane owns focus (FocusPreview).
+// gutter is a leading glyph-only indicator (a colored "❯" chevron, NO
+// background fill — a solid background block behind a thin chevron looks
+// like it obscures the marker rather than pointing at it, TRL-2) and the
+// surface tints the row's background while the row's OWN text style
+// (groupHeader/rowDescendant/row) is preserved — see render.go's
+// renderSelectedFromParts. The *Unfocused variants apply when the preview
+// pane owns focus (FocusPreview).
 type styleSet struct {
 	queryStyle                  lipgloss.Style
 	rowStyle                    lipgloss.Style
@@ -207,9 +210,9 @@ func newPalette(t Theme) styleSet {
 		statusUnknownStyle:          lipgloss.NewStyle().Foreground(lipgloss.Color(t.Muted)),
 		previewHeadingStyle:         lipgloss.NewStyle().Foreground(lipgloss.Color(t.Accent)).Bold(true),
 		helpHeadingStyle:            lipgloss.NewStyle().Foreground(lipgloss.Color(t.Text)).Bold(true),
-		cursorGutterStyle:           lipgloss.NewStyle().Background(lipgloss.Color(t.Accent)),
+		cursorGutterStyle:           lipgloss.NewStyle().Foreground(lipgloss.Color(t.Accent)),
 		cursorSurfaceStyle:          lipgloss.NewStyle().Background(lipgloss.Color(t.SelectedSurface)),
-		cursorGutterUnfocusedStyle:  lipgloss.NewStyle().Background(lipgloss.Color(t.Rule)),
+		cursorGutterUnfocusedStyle:  lipgloss.NewStyle().Foreground(lipgloss.Color(t.Rule)),
 		cursorSurfaceUnfocusedStyle: lipgloss.NewStyle().Background(lipgloss.Color(t.UnfocusedSurface)),
 		rowDescendantStyle:          lipgloss.NewStyle().Foreground(lipgloss.Color(t.Muted)).Italic(true),
 	}

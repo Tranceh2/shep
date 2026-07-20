@@ -187,19 +187,21 @@ func (m Model) tabPreviewBody(cand source.Candidate) string {
 	return strings.Join(lines, "\n")
 }
 
-// panePreviewBody renders the RowPane preview: identity (pane label/id,
-// path, kind "herdr pane", containing tab from Meta), then "Captured pane"
-// heading + raw capture LAST. The loading spinner appears under the heading
-// while the capture is in flight. When the capture is unavailable or
-// whitespace-only, the heading+section are omitted entirely and identity
-// remains.
+// panePreviewBody renders the RowPane preview: the optional real pane label,
+// path, kind "herdr pane", and optional human-facing parent tab label from
+// Meta. Stable pane/tab IDs stay in explicitly ID-named metadata for actions
+// and are never shown as labels. The "Captured pane" heading + raw capture is
+// last; it is omitted when the capture is unavailable or whitespace-only.
 func (m Model) panePreviewBody(cand source.Candidate) string {
-	lines := []string{
-		m.styles.labelStyle.Render("label  ") + cand.Label,
-		m.styles.labelStyle.Render("path   ") + cand.Path,
-		m.styles.labelStyle.Render("kind   ") + "herdr pane",
+	lines := make([]string, 0, 4)
+	if cand.Label != "" {
+		lines = append(lines, m.styles.labelStyle.Render("label  ")+cand.Label)
 	}
-	if v := cand.Meta["tab_id"]; v != "" {
+	lines = append(lines,
+		m.styles.labelStyle.Render("path   ")+cand.Path,
+		m.styles.labelStyle.Render("kind   ")+"herdr pane",
+	)
+	if v := cand.Meta["tab_label"]; v != "" {
 		lines = append(lines, m.styles.labelStyle.Render("tab    ")+v)
 	}
 	identity := strings.Join(lines, "\n")

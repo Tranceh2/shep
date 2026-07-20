@@ -5,11 +5,11 @@ import (
 	"github.com/tranceh2/shep/internal/source"
 )
 
-// applyFilter recomputes m.rows from the current query/expand state
-// (buildRows, rows.go) and retains the previously highlighted row's
-// selection when it is still visible, falling back to the nearest row
-// otherwise (retainSelection).
+// applyFilter recomputes m.rows from the current query/expand state. A query
+// change starts selection at the first visible row; other rebuilds retain the
+// previously highlighted row when it remains visible.
 func (m *Model) applyFilter() {
+	queryChanged := m.query != m.lastAppliedQuery
 	prevID := m.currentRowID()
 	m.rows = buildRows(rowBuildInput{
 		candidates:         m.baseFlatCandidates(),
@@ -18,6 +18,11 @@ func (m *Model) applyFilter() {
 		expandedWorkspaces: m.expandedWorkspaces,
 		sourceOrder:        m.sourceOrder,
 	})
+	m.lastAppliedQuery = m.query
+	if queryChanged {
+		m.cursor = 0
+		return
+	}
 	m.retainSelection(prevID)
 }
 

@@ -31,14 +31,16 @@ func (f *fakeGit) Summary(_ context.Context, _ string) (GitSummary, error) {
 
 // fakeRunner is a scriptable CommandRunner for renderer tests.
 type fakeRunner struct {
-	out map[string]string // argv[0] -> output
-	err map[string]error
+	out  map[string]string // argv[0] -> output
+	err  map[string]error
+	argv []string
 }
 
 func (f *fakeRunner) Run(_ context.Context, argv []string, _ string, _ int) (string, error) {
 	if len(argv) == 0 {
 		return "", errors.New("empty argv")
 	}
+	f.argv = append([]string(nil), argv...)
 	if err, ok := f.err[argv[0]]; ok {
 		return "", err
 	}
@@ -866,18 +868,54 @@ func TestRender_DirSection_NoRunnerSkipsSilently(t *testing.T) {
 }
 
 // TestRender_CustomCommand_RunsAndSubstitutesPath confirms a declared
-// [preview.commands.<name>] entry runs with {path} substituted.
+// [preview.commands.<name>] entry renders a Path template into one argv value.
 func TestRender_CustomCommand_RunsAndSubstitutesPath(t *testing.T) {
 	t.Parallel()
 	cfg := cfgWithDefault("recent_commits")
 	cfg.Preview.Commands = map[string]config.PreviewCommand{
-		"recent_commits": {Command: "git -C {path} log -n 3"},
+		"recent_commits": {Command: "git -C {{.Path}} log -n 3"},
 	}
 	runner := &fakeRunner{out: map[string]string{"git": "commit-log"}}
 	r := NewRenderer(cfg, config.Probes{}, nil, runner)
 	got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
 	if got != "commit-log" {
 		t.Errorf("got %q, want commit-log", got)
+	}
+	if want := []string{"git", "-C", "/p/foo", "log", "-n", "3"}; !equalArgv(runner.argv, want) {
+		t.Errorf("argv = %v, want %v", runner.argv, want)
+	}
+}
+
+// TestRender_CustomCommand_LoadedTemplateExecutes ensures Load validation and
+// the real renderer/command-runner path agree on the same command syntax.
+func TestRender_CustomCommand_LoadedTemplateExecutes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("uses the system printf command as the preview runtime harness")
+	}
+
+	dir := filepath.Join(t.TempDir(), "dogfood path")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	const doc = `[preview]
+default = ["path_probe"]
+
+[preview.commands.path_probe]
+command = "printf %s {{.Path}}"
+`
+	if err := os.WriteFile(configPath, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	r := NewRenderer(cfg, config.Probes{}, nil, NewCommandRunner())
+	got := mustRender(t, r, candidate("dogfood", dir, "workspaces", ""))
+	if got != dir {
+		t.Errorf("rendered command output = %q, want %q", got, dir)
 	}
 }
 
@@ -888,7 +926,7 @@ func TestRender_CustomCommand_FailureHiddenFromNormalOutput(t *testing.T) {
 	t.Parallel()
 	cfg := cfgWithDefault(config.PreviewIdentity, "broken")
 	cfg.Preview.Commands = map[string]config.PreviewCommand{
-		"broken": {Command: "git -C {path} log"},
+		"broken": {Command: "git -C {{.Path}} log"},
 	}
 	runner := &fakeRunner{err: map[string]error{"git": errors.New("exit 1")}}
 	r := NewRenderer(cfg, config.Probes{}, nil, runner)

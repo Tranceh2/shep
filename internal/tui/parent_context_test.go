@@ -7,11 +7,9 @@ import (
 	"github.com/tranceh2/shep/internal/source"
 )
 
-// TestRowDisplayText_TabRow_ShowsParentWorkspaceContext proves a RowTab whose
-// candidate carries Meta["workspace_label"] shows a concise "in <workspace>"
-// secondary — so a path/label match on a tab row explains WHERE it is open,
-// instead of leaving the user to guess which workspace it belongs to.
-func TestRowDisplayText_TabRow_ShowsParentWorkspaceContext(t *testing.T) {
+// TestRowDisplayText_TabRow_OmitsParentWorkspaceContext proves a RowTab does
+// not render a duplicated trailing "in <workspace>" secondary.
+func TestRowDisplayText_TabRow_OmitsParentWorkspaceContext(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	row := Row{
@@ -22,8 +20,8 @@ func TestRowDisplayText_TabRow_ShowsParentWorkspaceContext(t *testing.T) {
 		},
 	}
 	_, secondary := m.rowDisplayText(row)
-	if !strings.Contains(secondary, "backend") {
-		t.Errorf("tab row secondary = %q, want it to mention the parent workspace \"backend\"", secondary)
+	if secondary != "" {
+		t.Errorf("tab row secondary = %q, want empty (no trailing parent workspace context)", secondary)
 	}
 }
 
@@ -41,9 +39,14 @@ func TestRowDisplayText_TabRow_NoWorkspaceLabelKeepsEmptySecondary(t *testing.T)
 	}
 }
 
-// TestRowDisplayText_PaneRow_ShowsParentWorkspaceContext proves a RowPane
-// still shows its own pane id AND the parent workspace context together,
-// concisely, when Meta["workspace_label"] is set.
+// TestRowDisplayText_PaneRow_ShowsParentWorkspaceContext previously proved a
+// RowPane's SECONDARY carried both its pane id and the parent workspace
+// context. Change 2 (unified "<label> · <path>" primary text) removes a
+// RowPane's secondary entirely and folds its pane id into the primary
+// instead — the parent workspace context is intentionally dropped for panes
+// (see rowSecondaryText's doc comment), not moved elsewhere. This test now
+// proves that removal directly: the pane id still appears, but in the
+// PRIMARY text, and the secondary is always empty.
 func TestRowDisplayText_PaneRow_ShowsParentWorkspaceContext(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
@@ -54,25 +57,27 @@ func TestRowDisplayText_PaneRow_ShowsParentWorkspaceContext(t *testing.T) {
 			Meta: map[string]string{"workspace_label": "backend"},
 		},
 	}
-	_, secondary := m.rowDisplayText(row)
-	if !strings.Contains(secondary, "p1") {
-		t.Errorf("pane row secondary = %q, want it to still contain the pane id \"p1\"", secondary)
+	primary, secondary := m.rowDisplayText(row)
+	if !strings.Contains(primary, "p1") {
+		t.Errorf("pane row primary = %q, want it to contain the pane id \"p1\"", primary)
 	}
-	if !strings.Contains(secondary, "backend") {
-		t.Errorf("pane row secondary = %q, want it to mention the parent workspace \"backend\"", secondary)
+	if secondary != "" {
+		t.Errorf("pane row secondary = %q, want empty (RowPane secondary removed entirely by Change 2)", secondary)
 	}
 }
 
 // TestRowDisplayText_PaneRow_NoWorkspaceLabelKeepsBarePaneID triangulates the
-// pane case: no workspace_label keeps the exact pre-existing "<pane id>"
-// secondary (see TestRowDisplayText_PaneRow_PathPrimarySecondaryPaneID in
-// corrective_test.go, which this must not regress).
+// pane case: no workspace_label still shows the bare pane id, now in the
+// PRIMARY text (RowPane's secondary is always empty since Change 2).
 func TestRowDisplayText_PaneRow_NoWorkspaceLabelKeepsBarePaneID(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	row := Row{Kind: RowPane, Candidate: source.Candidate{Label: "p1", Path: "/srv/api"}}
-	_, secondary := m.rowDisplayText(row)
-	if secondary != "p1" {
-		t.Errorf("pane row secondary with no workspace_label = %q, want the bare pane id \"p1\"", secondary)
+	primary, secondary := m.rowDisplayText(row)
+	if !strings.Contains(primary, "p1") {
+		t.Errorf("pane row primary = %q, want it to contain the bare pane id \"p1\"", primary)
+	}
+	if secondary != "" {
+		t.Errorf("pane row secondary with no workspace_label = %q, want empty", secondary)
 	}
 }

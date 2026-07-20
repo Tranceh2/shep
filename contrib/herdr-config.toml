@@ -15,7 +15,7 @@
 # any old pane-type keybind from your config when you adopt this one; do
 # not run both.
 [[keys.command]]
-key = "prefix+alt+p"        # pick any key your config does not already bind
+key = "prefix+alt+p"                              # pick any key your config does not already bind
 type = "plugin_action"
 command = "tranceh2.shep.open-overlay"
 description = "shep: open project picker overlay"

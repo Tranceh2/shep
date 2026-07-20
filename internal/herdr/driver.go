@@ -137,6 +137,7 @@ type paneListEnvelope struct {
 
 type rawPane struct {
 	PaneID        string `json:"pane_id"`
+	Label         string `json:"label"`
 	WorkspaceID   string `json:"workspace_id"`
 	TabID         string `json:"tab_id"`
 	CWD           string `json:"cwd"`
@@ -411,20 +412,13 @@ func (d *Driver) CreateTab(ctx context.Context, workspaceID, cwd, label string, 
 		return source.Tab{}, source.Pane{}, fmt.Errorf("herdr tab create: invalid pane id %q", env.Result.RootPane.PaneID)
 	}
 	return source.Tab{
-			ID:          env.Result.Tab.TabID,
-			WorkspaceID: env.Result.Tab.WorkspaceID,
-			Label:       env.Result.Tab.Label,
-			Focused:     env.Result.Tab.Focused,
-			Number:      env.Result.Tab.Number,
-			PaneCount:   env.Result.Tab.PaneCount,
-		}, source.Pane{
-			ID:            env.Result.RootPane.PaneID,
-			WorkspaceID:   env.Result.RootPane.WorkspaceID,
-			TabID:         env.Result.RootPane.TabID,
-			CWD:           env.Result.RootPane.CWD,
-			ForegroundCWD: env.Result.RootPane.ForegroundCWD,
-			Focused:       env.Result.RootPane.Focused,
-		}, nil
+		ID:          env.Result.Tab.TabID,
+		WorkspaceID: env.Result.Tab.WorkspaceID,
+		Label:       env.Result.Tab.Label,
+		Focused:     env.Result.Tab.Focused,
+		Number:      env.Result.Tab.Number,
+		PaneCount:   env.Result.Tab.PaneCount,
+	}, rawPaneToPane(env.Result.RootPane), nil
 }
 
 // RenameTab renames tabID via `herdr tab rename <tab_id> <label>`.
@@ -474,16 +468,7 @@ func (d *Driver) SplitPane(ctx context.Context, paneID, direction string, ratio 
 	if !validPaneID.MatchString(env.Result.Pane.PaneID) {
 		return source.Pane{}, fmt.Errorf("herdr pane split: invalid pane id %q", env.Result.Pane.PaneID)
 	}
-	p := env.Result.Pane
-	return source.Pane{
-		ID:            p.PaneID,
-		WorkspaceID:   p.WorkspaceID,
-		TabID:         p.TabID,
-		CWD:           p.CWD,
-		ForegroundCWD: p.ForegroundCWD,
-		Focused:       p.Focused,
-		AgentStatus:   p.AgentStatus,
-	}, nil
+	return rawPaneToPane(env.Result.Pane), nil
 }
 
 // RunPane runs command in paneID via `herdr pane run <pane_id> <command>`.
@@ -573,6 +558,7 @@ func (d *Driver) CurrentPane(ctx context.Context) (source.Pane, error) {
 func rawPaneToPane(p rawPane) source.Pane {
 	return source.Pane{
 		ID:            p.PaneID,
+		Label:         p.Label,
 		WorkspaceID:   p.WorkspaceID,
 		TabID:         p.TabID,
 		CWD:           p.CWD,
@@ -633,15 +619,7 @@ func (d *Driver) ListPanes(ctx context.Context, workspaceID string) ([]source.Pa
 		if p.PaneID == "" {
 			continue
 		}
-		panes = append(panes, source.Pane{
-			ID:            p.PaneID,
-			WorkspaceID:   p.WorkspaceID,
-			TabID:         p.TabID,
-			CWD:           p.CWD,
-			ForegroundCWD: p.ForegroundCWD,
-			Focused:       p.Focused,
-			AgentStatus:   p.AgentStatus,
-		})
+		panes = append(panes, rawPaneToPane(p))
 	}
 	return panes, nil
 }

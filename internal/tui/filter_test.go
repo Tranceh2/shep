@@ -4,13 +4,13 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tranceh2/shep/internal/source"
 )
 
-// TestApplyFilter_RetainsSelectionAcrossRebuild proves the cursor stays on
-// the SAME logical row (by identity, not slice position) when a keystroke
-// changes the query but the previously highlighted row is still visible.
-func TestApplyFilter_RetainsSelectionAcrossRebuild(t *testing.T) {
+// TestApplyFilter_ResetsCursorWhenQueryChanges proves filtering begins at the
+// first visible row whenever the query differs from the last applied query.
+func TestApplyFilter_ResetsCursorWhenQueryChanges(t *testing.T) {
 	t.Parallel()
 	cands := []source.Candidate{
 		zoxideCandidate("alpha", "/alpha"),
@@ -28,8 +28,58 @@ func TestApplyFilter_RetainsSelectionAcrossRebuild(t *testing.T) {
 	m.applyFilter()
 
 	got, ok := m.currentCandidate()
+	if !ok || got.Label != "alpha" {
+		t.Errorf("after filtering to \"alpha\": currentCandidate = %+v (ok=%v), want first visible alpha", got, ok)
+	}
+
+	m.cursor = 1
+	m.query = ""
+	m.applyFilter()
+	got, ok = m.currentCandidate()
+	if !ok || got.Label != "alpha" {
+		t.Errorf("after clearing the query: currentCandidate = %+v (ok=%v), want first visible alpha", got, ok)
+	}
+}
+
+// TestApplyFilter_RetainsSelectionWhenQueryUnchanged proves rebuilds caused
+// by non-query state retain the current row identity.
+func TestApplyFilter_RetainsSelectionWhenQueryUnchanged(t *testing.T) {
+	t.Parallel()
+	m := NewModel([]source.Candidate{
+		zoxideCandidate("alpha", "/alpha"),
+		zoxideCandidate("alphabet", "/alphabet"),
+		zoxideCandidate("beta", "/beta"),
+	}, nil)
+	m.cursor = 1
+	m.applyFilter()
+
+	got, ok := m.currentCandidate()
 	if !ok || got.Label != "alphabet" {
-		t.Errorf("after filtering to \"alpha\": currentCandidate = %+v (ok=%v), want alphabet retained", got, ok)
+		t.Errorf("after non-query rebuild: currentCandidate = %+v (ok=%v), want alphabet retained", got, ok)
+	}
+}
+
+// TestUpdate_PrintableQueryChangeResetsCursor proves the key handling path
+// applies the reset when a printable rune mutates m.query.
+func TestUpdate_PrintableQueryChangeResetsCursor(t *testing.T) {
+	t.Parallel()
+	m := NewModel([]source.Candidate{
+		zoxideCandidate("alpha", "/alpha"),
+		zoxideCandidate("alphabet", "/alphabet"),
+		zoxideCandidate("beta", "/beta"),
+	}, nil)
+	m.cursor = 2 // beta remains visible for query "a" but must not be retained.
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	m, ok := next.(Model)
+	if !ok {
+		t.Fatalf("Update returned %T, want Model", next)
+	}
+	if got, want := m.query, "a"; got != want {
+		t.Fatalf("query = %q, want %q", got, want)
+	}
+	if got := m.cursor; got != 0 {
+		t.Errorf("cursor after printable query change = %d, want 0", got)
 	}
 }
 

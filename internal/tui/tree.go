@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	"github.com/tranceh2/shep/internal/cache"
@@ -91,10 +92,10 @@ func (e *TreeExpander) ReadPane(ctx context.Context, paneID string, lines int) (
 // synthesizeWorkspaceChildren builds the full two-level (tab, then its own
 // panes) child tree for one Herdr workspace, ready for rows.go's buildRows.
 // Each tab candidate's Path resolves via primaryTabCWD; each pane candidate's
-// Path is its own CWD/ForegroundCWD and its Label is the bare pane id (no
-// appended status text — the corrective round moved agent status out of the
-// label entirely; see render.go's rowDisplayText/agentStatusIcon, which
-// render it as an icon derived from Meta["agent_status"] instead).
+// Path is its own CWD/ForegroundCWD and its Label is Herdr's optional pane
+// label. Pane IDs remain in metadata for stable identity and actions, never as
+// a user-facing label. Agent status is rendered as an icon derived from
+// Meta["agent_status"] instead of being appended to the label.
 //
 // These synthesized candidates carry NO Source (Source stays ""): they are not
 // provider candidates and never flow through the flat Registry/Dedup/Match
@@ -103,22 +104,30 @@ func (e *TreeExpander) ReadPane(ctx context.Context, paneID string, lines int) (
 // config.SourceHerdrTab / config.SourceHerdrPane constants were removed.
 //
 // Every synthesized candidate's Meta carries every id an ancestor might need
-// (workspace_id always; workspace_label for concise parent-context display in
-// the picker; tab_id on both tabs and panes; pane_id and agent_status only on
-// panes) so a pane row's Enter can route straight to
+// (workspace_id always; workspace_label for parent identity; tab_id on both
+// tabs and panes; tab_label, pane_id, and agent_status on panes) so a pane
+// row's Enter can route straight to
 // driver.FocusTab(tab_id) without a second lookup — Herdr has no per-pane
 // focus command (see internal/herdr.Driver.FocusTab).
 func synthesizeWorkspaceChildren(workspaceID, parentLabel, parentPath string, tabs []source.Tab, panes []source.Pane) workspaceChildren {
 	out := workspaceChildren{Tabs: make([]tabChildren, 0, len(tabs))}
 	for _, tab := range tabs {
+		tabMeta := map[string]string{
+			"workspace_id":    workspaceID,
+			"workspace_label": parentLabel,
+			"tab_id":          tab.ID,
+		}
+		if tab.Number != 0 {
+			// tab_number renders the inline "<number> <label>" RowTab text.
+			tabMeta["tab_number"] = strconv.Itoa(tab.Number)
+		}
+		if tab.Label != "" {
+			tabMeta["tab_label"] = tab.Label
+		}
 		tabCand := source.Candidate{
-			Label:  tab.Label,
-			Path:   primaryTabCWD(tab, panes, parentPath),
-			Meta: map[string]string{
-				"workspace_id":    workspaceID,
-				"workspace_label": parentLabel,
-				"tab_id":          tab.ID,
-			},
+			Label: tab.Label,
+			Path:  primaryTabCWD(tab, panes, parentPath),
+			Meta:  tabMeta,
 		}
 		var paneCands []source.Candidate
 		for _, p := range panes {
@@ -130,12 +139,13 @@ func synthesizeWorkspaceChildren(workspaceID, parentLabel, parentPath string, ta
 				path = p.CWD
 			}
 			paneCands = append(paneCands, source.Candidate{
-				Label:  p.ID,
-				Path:   path,
+				Label: p.Label,
+				Path:  path,
 				Meta: map[string]string{
 					"workspace_id":    workspaceID,
 					"workspace_label": parentLabel,
 					"tab_id":          tab.ID,
+					"tab_label":       tab.Label,
 					"pane_id":         p.ID,
 					"agent_status":    p.AgentStatus,
 				},

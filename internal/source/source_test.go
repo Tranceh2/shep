@@ -120,7 +120,7 @@ func TestHerdrProvider_NilDriverEmpty(t *testing.T) {
 }
 
 // TestHerdrProvider_WithDriver turns a fake driver into candidates, filtering
-// out entries with an empty CWD.
+// out entries with an empty CWD while preserving Herdr's optional human label.
 func TestHerdrProvider_WithDriver(t *testing.T) {
 	t.Parallel()
 	driver := fakeDriver{detect: true, workspaces: []Workspace{
@@ -136,8 +136,14 @@ func TestHerdrProvider_WithDriver(t *testing.T) {
 	if len(cands) != 2 {
 		t.Fatalf("expected 2 workspaces (empty CWD filtered), got %d", len(cands))
 	}
-	if cands[1].Label != "bar" {
-		t.Errorf("missing-label fallback: got %q", cands[1].Label)
+	if cands[0].Label != "foo" {
+		t.Errorf("human label: got %q, want %q", cands[0].Label, "foo")
+	}
+	if cands[1].Label != "" {
+		t.Errorf("missing human label must stay empty instead of deriving from path or ID: got %q", cands[1].Label)
+	}
+	if got := cands[1].Meta["workspace_id"]; got != "w2" {
+		t.Errorf("stable workspace ID must remain metadata: got %q, want %q", got, "w2")
 	}
 	if cands[0].Meta["workspace_id"] != "w1" {
 		t.Errorf("workspace_id meta not propagated: %v", cands[0].Meta)

@@ -1,12 +1,12 @@
 Search: type to filter…                             7 candidates
 ╭──────────────────────────────────────────────────────────────╮
-│ ▌   ▸ backend                                                │
-│    ▸ frontend                                                │
-│    notes                                                     │
-│    tmp                                                       │
-│    Downloads                                                 │
-│    shep                                                      │
-│    dotfiles                                                  │
+│ ❯ backend · /srv/backend                                     │
+│   frontend · /srv/frontend                                   │
+│   notes                                                      │
+│   /tmp                                                       │
+│   /home/dev/Downloads                                        │
+│   /home/dev/shep                                             │
+│   /home/dev/dotfiles                                         │
 │                                                              │
 │                                                              │
 │                                                              │

@@ -2,7 +2,7 @@
 // threaded through Layout.Icons — see layoutFromConfig in
 // internal/command/open.go) selects one of three glyph tiers for the
 // picker's OWN semantic icons — pane agent-status markers (agentStatusIcon)
-// and row expand/tab/pane markers (kindPrefix). It intentionally does NOT
+// and row tree/active-focus markers (kindPrefix). It intentionally does NOT
 // cover source.Candidate.Icon (each [sources.<name>].icon in config): that
 // is a raw user-configured string rendered verbatim by rowDisplayText /
 // candidateDisplayText regardless of the resolved tier, since shep has no
@@ -36,10 +36,26 @@ type IconSet struct {
 	// Braille has no 7-bit ASCII fallback rendering.
 	StatusWorking string
 
-	ExpandOpen   string // kindPrefix, expanded RowCandidate
-	ExpandClosed string // kindPrefix, collapsed RowCandidate
-	TabPrefix    string // kindPrefix, RowTab
-	PanePrefix   string // kindPrefix, RowPane
+	// ExpandOpen/ExpandClosed were the RowCandidate expand/collapse glyphs
+	// (▸/▾) kindPrefix used to prefix an expandable workspace row with. TRL-3
+	// removed that glyph entirely — per-source icons already differentiate
+	// row types, so it was redundant — and no production code path surfaces
+	// these two fields anymore. Left declared (rather than deleted) because
+	// icons_test.go still exercises them as part of the resolved tier's data
+	// (TestResolveIconSet_DefaultsToUnicode/_ASCII).
+	ExpandOpen   string
+	ExpandClosed string
+	TreeMid      string // kindPrefix, non-last RowTab/RowPane
+	TreeLast     string // kindPrefix, last RowTab/RowPane
+	TreeVertical string // continuation from an ancestor tree level
+
+	// TabIcon prefixes a RowTab's own primary text (placed right after
+	// kindPrefix's tree glyph/ancestor column, before the label), the same
+	// slot a RowCandidate's per-source icon or a RowPane's agent-status icon
+	// occupies — so a synthesized tab row is visually distinguishable from a
+	// top-level workspace/candidate row at a glance, not just by its tree
+	// glyph.
+	TabIcon string
 
 	// ActiveMarker prefixes a RowTab/RowPane that identifies the Herdr tab or
 	// pane shep is currently running inside (see Model.isActiveFocusRow) — a
@@ -63,8 +79,10 @@ var iconSets = map[string]IconSet{
 		StatusUnknown: "○",
 		ExpandOpen:    "▾",
 		ExpandClosed:  "▸",
-		TabPrefix:     "»",
-		PanePrefix:    "·",
+		TreeMid:       "├─",
+		TreeLast:      "└─",
+		TreeVertical:  "│ ",
+		TabIcon:       "◫",
 		ActiveMarker:  "◆",
 	},
 	IconsASCII: {
@@ -76,8 +94,10 @@ var iconSets = map[string]IconSet{
 		StatusWorking: "o",
 		ExpandOpen:    "v",
 		ExpandClosed:  ">",
-		TabPrefix:     ">>",
-		PanePrefix:    "-",
+		TreeMid:       "|-",
+		TreeLast:      "`-",
+		TreeVertical:  "| ",
+		TabIcon:       "t",
 		ActiveMarker:  "@",
 	},
 }

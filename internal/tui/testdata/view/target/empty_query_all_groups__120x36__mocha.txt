@@ -1,12 +1,12 @@
 Search: type to filter…                                                                                     7 candidates
-╭──────────────────────────────────────────────────────────────────────╮ ╭─────────────────────────────────────────────╮
-│ ▌   ▸ backend                                                        │ │ label  backend                              │
-│    ▸ frontend                                                        │ │ path   /srv/backend                         │
-│    notes                                                             │ │                                             │
-│    tmp                                                               │ │                                             │
-│    Downloads                                                         │ │                                             │
-│    shep                                                              │ │                                             │
-│    dotfiles                                                          │ │                                             │
+╭──────────────────────────────────────────────────────────────────────╮ ╭/srv/backend─────────────────────────────────╮
+│ ❯ backend · /srv/backend                                             │ │ label  backend                              │
+│   frontend · /srv/frontend                                           │ │ path   /srv/backend                         │
+│   notes                                                              │ │                                             │
+│   /tmp                                                               │ │                                             │
+│   /home/dev/Downloads                                                │ │                                             │
+│   /home/dev/shep                                                     │ │                                             │
+│   /home/dev/dotfiles                                                 │ │                                             │
 │                                                                      │ │                                             │
 │                                                                      │ │                                             │
 │                                                                      │ │                                             │
