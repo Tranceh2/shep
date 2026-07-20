@@ -456,6 +456,43 @@ func TestTabPreview_MetaCounts(t *testing.T) {
 	}
 }
 
+func TestTabPreview_ActivePaneCaptureLast(t *testing.T) {
+	t.Parallel()
+
+	m := NewModelWithTree(nil, nil, NewTreeExpander(&fakeTreeDriver{}, time.Minute), Layout{Theme: ThemePlain})
+	capture := "\x1b[31mfocused capture\x1b[0m"
+	m.previewText = capture
+	body := m.tabPreviewBody(source.Candidate{Label: "api", Path: "/srv/api"})
+	lines := strings.Split(body, "\n")
+
+	headingIdx := indexOfLineContaining(lines, "Active pane")
+	if headingIdx < 0 {
+		t.Fatalf("tab preview missing Active pane heading: %q", body)
+	}
+	captureIdx := indexOfLineContaining(lines, "focused capture")
+	if captureIdx <= headingIdx {
+		t.Errorf("active-pane capture should follow its heading: captureIdx=%d headingIdx=%d", captureIdx, headingIdx)
+	}
+	if !strings.Contains(body, capture) {
+		t.Errorf("tab preview must preserve the raw ANSI capture: %q", body)
+	}
+}
+
+func TestTabPreview_UnavailableOmitsActivePane(t *testing.T) {
+	t.Parallel()
+
+	m := NewModelWithTree(nil, nil, NewTreeExpander(&fakeTreeDriver{}, time.Minute), Layout{Theme: ThemePlain})
+	m.previewText = " \n "
+	body := m.tabPreviewBody(source.Candidate{Label: "api", Path: "/srv/api"})
+
+	if !strings.Contains(body, "herdr tab") {
+		t.Errorf("tab identity should remain when active pane is unavailable: %q", body)
+	}
+	if strings.Contains(body, "Active pane") {
+		t.Errorf("Active pane heading should be omitted when capture is unavailable: %q", body)
+	}
+}
+
 // === 7. Pane preview ===
 
 func TestPanePreview_IdentityAndCapturedPaneLast(t *testing.T) {

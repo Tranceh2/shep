@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"errors"
+
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tranceh2/shep/internal/source"
@@ -12,9 +14,8 @@ import (
 // arriving out of order can never flash the wrong row's text), bumps
 // previewSeq (invalidating any in-flight render), and dispatches a fresh
 // async request appropriate to the new row's kind: previewCmd for a
-// RowCandidate (via the injected Renderer), panePreviewCmd for a RowPane
-// (via TreeExpander.ReadPane), or nothing for a RowTab (its preview is
-// always the synchronous built-in summary — see preview_body.go).
+// RowCandidate (via the injected Renderer), panePreviewCmd for a RowPane,
+// or tabPreviewCmd for a RowTab (both via TreeExpander.ReadPane).
 func (m *Model) syncPreviewAfterSelectionChange() tea.Cmd {
 	cmd := m.previewCmdForCurrentRow()
 	return tea.Batch(cmd, m.maybeStartSpinner())
@@ -51,9 +52,8 @@ func (m Model) initialPreviewCmd() tea.Cmd {
 // dispatchPreviewForRow is the shared core: given the currently highlighted
 // row and a target seq, returns whether a meaningful async request was
 // dispatched and the Cmd to run it. A RowCandidate uses the injected
-// Renderer; a RowPane uses TreeExpander.ReadPane; a RowTab/no-selection
-// never dispatches (their preview is always the synchronous built-in body —
-// see preview_body.go).
+// Renderer; a RowPane uses TreeExpander.ReadPane; a RowTab resolves and reads
+// its selected pane through TreeExpander; a missing selection does nothing.
 func (m *Model) dispatchPreviewForRow(seq int) (bool, tea.Cmd) {
 	row, ok := m.currentRow()
 	if !ok {
@@ -75,7 +75,14 @@ func (m *Model) dispatchPreviewForRow(seq int) (bool, tea.Cmd) {
 		}
 		m.previewLoading = true
 		return true, m.panePreviewCmd(seq, row.Candidate)
-	default: // RowTab: synchronous built-in body only.
+	case RowTab:
+		if m.tree == nil {
+			m.previewLoading = false
+			return false, nil
+		}
+		m.previewLoading = true
+		return true, m.tabPreviewCmd(seq, row.Candidate)
+	default:
 		m.previewLoading = false
 		return false, nil
 	}
@@ -101,6 +108,27 @@ func (m Model) panePreviewCmd(seq int, cand source.Candidate) tea.Cmd {
 	renderCtx := m.renderCtx
 	paneID := cand.Meta["pane_id"]
 	return func() tea.Msg {
+		text, err := tree.ReadPane(renderCtx, paneID, panePreviewMaxLines)
+		return panePreviewMsg{seq: seq, text: text, err: err}
+	}
+}
+
+var errNoResolvedPane = errors.New("herdr tab has no resolved pane")
+
+// tabPreviewCmd resolves a RowTab's focused pane (or its deterministic
+// same-tab fallback), then reads that pane's captured terminal buffer. It
+// reports through panePreviewMsg to retain the existing stale-result and error
+// handling shared with RowPane previews.
+func (m Model) tabPreviewCmd(seq int, cand source.Candidate) tea.Cmd {
+	tree := m.tree
+	renderCtx := m.renderCtx
+	workspaceID := cand.Meta["workspace_id"]
+	tabID := cand.Meta["tab_id"]
+	return func() tea.Msg {
+		paneID, ok := tree.ResolveActivePaneID(renderCtx, workspaceID, tabID)
+		if !ok {
+			return panePreviewMsg{seq: seq, err: errNoResolvedPane}
+		}
 		text, err := tree.ReadPane(renderCtx, paneID, panePreviewMaxLines)
 		return panePreviewMsg{seq: seq, text: text, err: err}
 	}
@@ -151,7 +179,7 @@ func (m Model) anyVisibleRowWorking() bool {
 
 // refreshPreviewLoadingFlag sets previewLoading to match whether a
 // meaningful async request is in flight for the currently highlighted row
-// (a RowCandidate with a renderer, or a RowPane with a tree). Used at
+// (a RowCandidate with a renderer, or a RowPane/RowTab with a tree). Used at
 // construction so the first frame shows the loading indicator immediately
 // when Init's async render is in flight.
 func (m *Model) refreshPreviewLoadingFlag() {
@@ -163,7 +191,7 @@ func (m *Model) refreshPreviewLoadingFlag() {
 	switch row.Kind {
 	case RowCandidate:
 		m.previewLoading = m.renderer != nil
-	case RowPane:
+	case RowPane, RowTab:
 		m.previewLoading = m.tree != nil
 	default:
 		m.previewLoading = false

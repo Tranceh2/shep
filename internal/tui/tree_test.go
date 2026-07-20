@@ -219,3 +219,97 @@ func TestPrimaryTabCWD_FallsBackToParentPath(t *testing.T) {
 		t.Errorf("primaryTabCWD = %q, want /parent", got)
 	}
 }
+
+func TestSelectTabPaneID(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name  string
+		panes []source.Pane
+		tabID string
+		want  string
+		ok    bool
+	}{
+		{
+			name: "focused pane in selected tab wins",
+			panes: []source.Pane{
+				{ID: "p1", TabID: "t1"},
+				{ID: "p2", TabID: "t2", Focused: true},
+				{ID: "p3", TabID: "t1", Focused: true},
+			},
+			tabID: "t1",
+			want:  "p3",
+			ok:    true,
+		},
+		{
+			name: "first pane in selected tab is deterministic fallback",
+			panes: []source.Pane{
+				{ID: "p1", TabID: "t2"},
+				{ID: "p2", TabID: "t1"},
+				{ID: "p3", TabID: "t1"},
+			},
+			tabID: "t1",
+			want:  "p2",
+			ok:    true,
+		},
+		{
+			name:  "zero panes is unavailable",
+			tabID: "t1",
+			want:  "",
+			ok:    false,
+		},
+		{
+			name: "panes belonging only to another tab are unavailable",
+			panes: []source.Pane{
+				{ID: "p1", TabID: "t2", Focused: true},
+				{ID: "p2", TabID: "t2"},
+			},
+			tabID: "t1",
+			want:  "",
+			ok:    false,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := selectTabPaneID(tt.panes, tt.tabID)
+			if got != tt.want || ok != tt.ok {
+				t.Errorf("selectTabPaneID() = (%q, %t), want (%q, %t)", got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
+func TestTreeExpanderResolveActivePaneID(t *testing.T) {
+	t.Parallel()
+
+	t.Run("uses cached workspace panes", func(t *testing.T) {
+		driver := &fakeTreeDriver{
+			tabs: []source.Tab{{ID: "t1", WorkspaceID: "w1"}},
+			panes: []source.Pane{
+				{ID: "p1", WorkspaceID: "w1", TabID: "t1"},
+				{ID: "p2", WorkspaceID: "w1", TabID: "t1", Focused: true},
+			},
+		}
+		tree := NewTreeExpander(driver, time.Minute)
+
+		for range 2 {
+			got, ok := tree.ResolveActivePaneID(context.Background(), "w1", "t1")
+			if got != "p2" || !ok {
+				t.Errorf("ResolveActivePaneID() = (%q, %t), want (\"p2\", true)", got, ok)
+			}
+		}
+		if driver.listTabsN != 1 || driver.listPanesN != 1 {
+			t.Errorf("expected one cached ListTabs/ListPanes pair, got listTabsN=%d listPanesN=%d", driver.listTabsN, driver.listPanesN)
+		}
+	})
+
+	t.Run("fetch failure is unavailable", func(t *testing.T) {
+		tree := NewTreeExpander(&fakeTreeDriver{panesErr: errors.New("herdr pane list: boom")}, time.Minute)
+
+		got, ok := tree.ResolveActivePaneID(context.Background(), "w1", "t1")
+		if got != "" || ok {
+			t.Errorf("ResolveActivePaneID() = (%q, %t), want (\"\", false)", got, ok)
+		}
+	})
+}

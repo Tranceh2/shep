@@ -344,6 +344,13 @@ func cursorOnPane(m Model) bool {
 	return m.rows[m.cursor].Kind == RowPane
 }
 
+func cursorOnTab(m Model) bool {
+	if m.cursor < 0 || m.cursor >= len(m.rows) {
+		return false
+	}
+	return m.rows[m.cursor].Kind == RowTab
+}
+
 // goldenScenario describes one golden render: a named, deterministic model
 // state at a fixed terminal dimension and theme, plus the fixture path to
 // compare its normalized View() against.
@@ -514,6 +521,38 @@ func goldenScenarios() []goldenScenario {
 				if strings.Contains(raw, "\x1b]0;evil") {
 					t.Errorf("OSC containment: raw View() output must not pass the OSC sequence through, but it was present: %q", raw)
 				}
+			},
+		},
+		{
+			name: "tab_active_pane", width: 120, height: 36, theme: ThemeMocha,
+			setup: func(t *testing.T) Model {
+				driver := &fakeTreeDriver{
+					tabs: []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}},
+					panes: []source.Pane{
+						{ID: "p1", WorkspaceID: "w1", TabID: "t1", Focused: true},
+					},
+					readText: "tab active capture",
+				}
+				m := NewModelWithTree(
+					[]source.Candidate{herdrCandidate("backend", "/srv/backend", "w1")},
+					nil, NewTreeExpander(driver, time.Minute), Layout{Theme: ThemeMocha},
+				)
+				m, _ = update(t, m, sizeMsg(120, 36))
+				m.expandedWorkspaces["w1"] = true
+				m.applyFilter()
+				m, cmd := update(t, m, key("down"))
+				if !cursorOnTab(m) {
+					t.Fatalf("setup: cursor never reached a RowTab, rows=%d cursor=%d", len(m.rows), m.cursor)
+				}
+				if cmd == nil {
+					t.Fatal("expected RowTab selection to dispatch an active-pane preview")
+				}
+				// syncPreviewAfterSelectionChange returns a Batch containing the
+				// tab request and spinner tick. Drive the tab request directly so
+				// this deterministic fixture receives its panePreviewMsg rather
+				// than the BatchMsg wrapper managed by Bubble Tea's runtime.
+				m, _ = update(t, m, m.tabPreviewCmd(m.previewSeq, m.rows[m.cursor].Candidate)())
+				return m
 			},
 		},
 		{

@@ -169,9 +169,9 @@ func (m Model) standardCandidatePreview(cand source.Candidate) string {
 	return strings.Join(parts, "\n\n")
 }
 
-// tabPreviewBody renders a synchronous summary for a RowTab: tab label,
-// CWD/path, kind "herdr tab". Includes workspace/tab/pane counts from Meta
-// if present (no async work, no fetching).
+// tabPreviewBody renders a RowTab summary: tab label, CWD/path, kind "herdr
+// tab", optional workspace/tab pane counts, and its resolved active-pane
+// capture when available.
 func (m Model) tabPreviewBody(cand source.Candidate) string {
 	lines := []string{
 		m.styles.labelStyle.Render("label  ") + cand.Label,
@@ -184,7 +184,13 @@ func (m Model) tabPreviewBody(cand source.Candidate) string {
 	if v := cand.Meta["tab_panes"]; v != "" {
 		lines = append(lines, m.styles.labelStyle.Render("panes  ")+v)
 	}
-	return strings.Join(lines, "\n")
+	identity := strings.Join(lines, "\n")
+
+	capture := m.panePreviewCaptureBody()
+	if capture == "" {
+		return identity
+	}
+	return identity + "\n\n" + m.styles.previewHeadingStyle.Render("Active pane") + "\n" + capture
 }
 
 // panePreviewBody renders the RowPane preview: the optional real pane label,

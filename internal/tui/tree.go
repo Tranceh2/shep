@@ -69,6 +69,39 @@ func (e *TreeExpander) Fetch(ctx context.Context, workspaceID string) (workspace
 	return tree, true
 }
 
+// ResolveActivePaneID returns the focused pane in tabID from the cached
+// workspace tree, falling back to that tab's first pane in Herdr list order.
+// A missing tree or matching pane is unavailable rather than selecting a pane
+// from another tab.
+func (e *TreeExpander) ResolveActivePaneID(ctx context.Context, workspaceID, tabID string) (string, bool) {
+	tree, ok := e.Fetch(ctx, workspaceID)
+	if !ok {
+		return "", false
+	}
+	return selectTabPaneID(tree.Panes, tabID)
+}
+
+// selectTabPaneID returns the selected tab's focused pane, or its first pane
+// in the supplied Herdr list order. It never selects a pane from another tab.
+func selectTabPaneID(panes []source.Pane, tabID string) (string, bool) {
+	var fallback string
+	for _, pane := range panes {
+		if pane.TabID != tabID || pane.ID == "" {
+			continue
+		}
+		if pane.Focused {
+			return pane.ID, true
+		}
+		if fallback == "" {
+			fallback = pane.ID
+		}
+	}
+	if fallback == "" {
+		return "", false
+	}
+	return fallback, true
+}
+
 // panePreviewTimeout bounds a single ReadPane call issued for a highlighted
 // RowPane's "existing visual capture" preview section — independent of
 // treeExpanderTimeout (which only bounds the ListTabs/ListPanes pair) since

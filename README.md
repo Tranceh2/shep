@@ -381,73 +381,31 @@ runs it as a subprocess — so the picker's preview pane shows actual color for
 `shep open` picker. Selecting an entry runs `shep open --path '{split:\t:0}'`,
 which flows through the same Herdr focus/create path as the CLI.
 
-## Herdr plugin
+## Herdr popup
 
-shep ships as a minimal Herdr plugin (`herdr-plugin.toml` at the repo root)
-whose single bindable action opens `shep open` in a real Herdr **floating
-overlay** pane, instead of a temporary full-tab pane.
+Use Herdr's native popup command to open `shep open` in a session-modal
+terminal without changing the tab layout.
 
-**Prerequisites**: Herdr installed, and `shep` on `$PATH` (`go install
-./cmd/shep`, or `make install` from a clone of this repo) — the plugin's
-`[[build]]` step checks for `shep` on `$PATH` and fails loudly if it is
-missing.
+**Prerequisites**: Herdr installed and `shep` available on `$PATH` (`go
+install ./cmd/shep`, or `make install` from a clone of this repository).
 
-**Install the plugin**:
-
-```sh
-# Local dev — link this checkout as a Herdr plugin.
-herdr plugin link /path/to/shep
-
-# Published — install shep as a Herdr plugin by owner/repo.
-herdr plugin install tranceh2/shep
-```
-
-**Bind a key** in your own `~/.config/herdr/config.toml`:
+**Bind a key** in `~/.config/herdr/config.toml`:
 
 ```toml
 [[keys.command]]
-key = "prefix+alt+p"        # pick any key your config does not already bind
-type = "plugin_action"
-command = "tranceh2.shep.open-overlay"
-description = "shep: open project picker overlay"
+key = "prefix+alt+p" # Pick any key your config does not already bind.
+type = "popup"
+command = "shep open"
 ```
 
-then run `herdr server reload-config` to pick up the new binding. The
-block above is copy-pasteable from
+Run `herdr server reload-config` to load the binding. The same block is in
 [`contrib/herdr-config.toml`](contrib/herdr-config.toml).
 
-**Migration note**: an older revision of this README and
-`contrib/herdr-config.toml` documented a pane-type `[[keys.command]]`
-block (`command = "shep open"`) as a plain user keybind with no plugin
-involved. That block opens a temporary **full-tab pane**, not a floating
-overlay. Replace it with the `plugin_action` block above after linking or
-installing the plugin — the two are not meant to coexist.
-
-**PATH resolution — do not hardcode paths**: the plugin manifest's
-`[[panes]] command = ["shep", "open"]` references the binary by bare name
-only, so Herdr resolves it via the plugin process's `$PATH` — the same
-rule as the old plain keybind. Do not rewrite it to a relative path or a
-hardcoded absolute path under your home directory. This is also why
-`scripts/herdr-plugin-open-overlay.sh` calls `herdr plugin pane open`
-**without** a `--cwd` flag: Herdr resolves a `[[panes]]` command's relative
-path (if it had one) against the pane's own working directory, not the
-plugin's install directory, so passing `--cwd` here would be misleading at
-best and break relative-path panes at worst (see the cwd-trap pattern
-documented from cloudmanic/herdr-plus's `quickactions.go`). Keeping the
-command bare and PATH-resolved, and the pane-open call `--cwd`-free, avoids
-that trap entirely.
-
-**If the plugin is not linked or installed**, pressing the bound key has no
-effect on shep — Herdr reports an `unknown plugin_action` error itself,
-because `tranceh2.shep.open-overlay` isn't a registered action yet. Link or
-install the plugin first (see above).
-
-When shep is launched inside the overlay pane this action opens, it
-detects the Herdr pane it is running in (`Driver.CurrentPane`) and enables
-the in-overlay features: `Ctrl+T`/`Ctrl+P` to open the highlighted entry as
-a new tab/pane, the `agent_status` preview section, and the footer's
-`focused: <status>` hint. Launching `shep open` from a raw terminal (outside
-any Herdr pane) shows the picker without any of those — same as today.
+When shep runs in the popup, it detects the Herdr pane it is running in
+(`Driver.CurrentPane`) and enables in-overlay features: `Ctrl+T`/`Ctrl+P` to
+open the highlighted entry as a new tab or pane, the `agent_status` preview
+section, and the footer's `focused: <status>` hint. Running `shep open` from
+a terminal remains supported and shows the picker without those extras.
 
 ## Build, test, lint
 

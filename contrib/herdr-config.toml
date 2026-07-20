@@ -1,34 +1,12 @@
-# Herdr plugin keybind snippet for launching shep — see README.md's "Herdr
-# plugin" section for full context.
-#
-# Copy the [[keys.command]] block below into your own
-# ~/.config/herdr/config.toml (merge it into an existing [keys] table /
-# [[keys.command]] list if you already have one; do not duplicate [keys]).
-#
-# Migration: an older revision of this file shipped a pane-type keybind
-# (`command = "shep open"`, plain pane keybind, no plugin) that opened shep
-# in a temporary full-tab pane. That block is superseded by the
-# plugin_action block below, which opens shep as a real floating overlay
-# via the `tranceh2.shep` Herdr plugin (herdr-plugin.toml at the repo
-# root). Requires linking or installing the plugin first — see README.md
-# for `herdr plugin link` / `herdr plugin install` instructions. Remove
-# any old pane-type keybind from your config when you adopt this one; do
-# not run both.
+# Herdr native popup keybind for launching shep.
+# Copy this [[keys.command]] block into ~/.config/herdr/config.toml. Merge it
+# into an existing [keys] table or [[keys.command]] list; do not duplicate
+# [keys].
 [[keys.command]]
-key = "prefix+alt+p"                              # pick any key your config does not already bind
-type = "plugin_action"
-command = "tranceh2.shep.open-overlay"
-description = "shep: open project picker overlay"
+key = "prefix+alt+p" # Pick any key your config does not already bind.
+type = "popup"
+command = "shep open"
 
-# Herdr's [[keys.command]] bindings are global only (verified against Herdr
-# 0.7.1's `herdr --default-config`): there is currently no per-workspace or
-# workspace-local override for a custom command keybind, so the single
-# global block above is the complete picture for this integration — it
-# applies the same way from every workspace.
-#
-# When shep is launched inside the overlay pane this keybind opens, it
-# detects the Herdr pane it is running in (Driver.CurrentPane) and enables
-# the in-overlay features: Ctrl+T/Ctrl+P (open the highlighted entry as a
-# new tab/pane), the agent_status preview section, and the footer's
-# "focused: <status>" hint. Launching shep from a raw terminal (outside any
-# Herdr pane) shows the picker without any of those extras — same as today.
+# The keybind is global. When shep runs in this popup, it detects the current
+# Herdr pane and enables its in-overlay features. Running `shep open` from a
+# terminal remains supported.
