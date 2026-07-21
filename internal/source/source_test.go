@@ -18,20 +18,21 @@ type fakeDriver struct {
 }
 
 func (f fakeDriver) Detect(context.Context) bool { return f.detect }
-func (f fakeDriver) ListWorkspaces(context.Context) ([]Workspace, error) {
-	return f.workspaces, f.listErr
+func (f fakeDriver) Snapshot(context.Context) (Snapshot, error) {
+	if f.listErr != nil {
+		return Snapshot{}, f.listErr
+	}
+	snapshot := Snapshot{Workspaces: make([]Workspace, 0, len(f.workspaces))}
+	for _, workspace := range f.workspaces {
+		snapshot.Workspaces = append(snapshot.Workspaces, workspace)
+		if workspace.CWD != "" {
+			snapshot.Panes = append(snapshot.Panes, Pane{ID: workspace.ID + ":p1", WorkspaceID: workspace.ID, CWD: workspace.CWD})
+		}
+	}
+	return snapshot, nil
 }
 func (fakeDriver) FocusOrCreate(context.Context, Candidate) (FocusResult, error) {
 	return FocusResult{}, errors.New("fakeDriver does not implement FocusOrCreate")
-}
-func (fakeDriver) ListTabs(context.Context, string) ([]Tab, error) {
-	return nil, errors.New("fakeDriver does not implement ListTabs")
-}
-func (fakeDriver) ListPanes(context.Context, string) ([]Pane, error) {
-	return nil, errors.New("fakeDriver does not implement ListPanes")
-}
-func (fakeDriver) ListAgents(context.Context) ([]Agent, error) {
-	return nil, errors.New("fakeDriver does not implement ListAgents")
 }
 func (fakeDriver) ReadPane(context.Context, string, int) (string, error) {
 	return "", errors.New("fakeDriver does not implement ReadPane")
@@ -50,9 +51,6 @@ func (fakeDriver) RunPane(context.Context, string, string) error {
 }
 func (fakeDriver) FocusTab(context.Context, string) error {
 	return errors.New("fakeDriver does not implement FocusTab")
-}
-func (fakeDriver) CurrentPane(context.Context) (Pane, error) {
-	return Pane{}, errors.New("fakeDriver does not implement CurrentPane")
 }
 
 // TestCandidate_Clone ensures Meta is deep-copied so callers cannot mutate a
@@ -119,8 +117,8 @@ func TestHerdrProvider_NilDriverEmpty(t *testing.T) {
 	}
 }
 
-// TestHerdrProvider_WithDriver turns a fake driver into candidates, filtering
-// out entries with an empty CWD while preserving Herdr's optional human label.
+// TestHerdrProvider_WithDriver turns a snapshot into candidates while keeping
+// a workspace with no derived CWD visible and explicitly marked missing.
 func TestHerdrProvider_WithDriver(t *testing.T) {
 	t.Parallel()
 	driver := fakeDriver{detect: true, workspaces: []Workspace{
@@ -133,8 +131,8 @@ func TestHerdrProvider_WithDriver(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(cands) != 2 {
-		t.Fatalf("expected 2 workspaces (empty CWD filtered), got %d", len(cands))
+	if len(cands) != 3 {
+		t.Fatalf("expected 3 workspaces including the missing-CWD entry, got %d", len(cands))
 	}
 	if cands[0].Label != "foo" {
 		t.Errorf("human label: got %q, want %q", cands[0].Label, "foo")
@@ -150,6 +148,9 @@ func TestHerdrProvider_WithDriver(t *testing.T) {
 	}
 	if cands[0].Source != config.SourceHerdr {
 		t.Errorf("source: got %q want %q", cands[0].Source, config.SourceHerdr)
+	}
+	if got := cands[2]; got.Meta["workspace_id"] != "w3" || !got.Missing || got.Path != "" {
+		t.Errorf("missing-CWD candidate = %+v, want visible missing workspace w3", got)
 	}
 }
 
@@ -172,19 +173,15 @@ func TestHerdrProvider_ListError(t *testing.T) {
 	}
 }
 
-// TestHerdrProvider_StaleCWDMarkedMissing (requirement: a candidate whose
-// path no longer exists on disk must fail clearly on selection, never fall
-// back to "/", $HOME, or cwd) confirms a workspace's pane cwd, which can go
-// stale if the directory is deleted while Herdr still reports it, is stat'd
-// so launch()'s existing Missing check actually has something to reject
-// instead of silently printing the path when Herdr itself is absent/fails.
-func TestHerdrProvider_StaleCWDMarkedMissing(t *testing.T) {
+// TestHerdrProvider_MissingDerivedCWDMarkedMissing confirms a workspace with
+// no pane-derived CWD stays visible but is marked Missing for clear selection
+// feedback instead of being silently dropped.
+func TestHerdrProvider_MissingDerivedCWDMarkedMissing(t *testing.T) {
 	t.Parallel()
 	live := t.TempDir()
-	stale := filepath.Join(t.TempDir(), "deleted-workspace")
 	driver := fakeDriver{detect: true, workspaces: []Workspace{
 		{ID: "w1", Label: "live", CWD: live},
-		{ID: "w2", Label: "stale", CWD: stale},
+		{ID: "w2", Label: "no-cwd"},
 	}}
 	p := &herdrProvider{driver: driver, probes: config.Probes{Herdr: true}, cfg: config.Defaults()}
 	cands, err := p.List(context.Background())
@@ -198,8 +195,8 @@ func TestHerdrProvider_StaleCWDMarkedMissing(t *testing.T) {
 	if byID["w1"].Missing {
 		t.Errorf("live workspace %q must not be marked Missing", live)
 	}
-	if !byID["w2"].Missing {
-		t.Errorf("stale workspace %q must be marked Missing", stale)
+	if !byID["w2"].Missing || byID["w2"].Path != "" {
+		t.Errorf("missing-CWD workspace must remain visible and Missing, got %+v", byID["w2"])
 	}
 }
 
@@ -715,4 +712,129 @@ func mkMarkerDir(t *testing.T, parent, name, marker string) string {
 		t.Fatalf("write marker: %v", err)
 	}
 	return dir
+}
+
+func TestHerdrCandidates_DeriveWorkspaceCWDAndKeepMissingWorkspace(t *testing.T) {
+	focused := t.TempDir()
+	snapshot := Snapshot{
+		Workspaces: []Workspace{
+			{ID: "wA", Label: "project", ActiveTabID: "wA:t1"},
+			{ID: "wB", Label: "no-cwd"},
+		},
+		Panes: []Pane{
+			{ID: "wA:p1", WorkspaceID: "wA", TabID: "wA:t1", CWD: t.TempDir()},
+			{ID: "wA:p2", WorkspaceID: "wA", TabID: "wA:t1", CWD: t.TempDir(), ForegroundCWD: focused, Focused: true, AgentStatus: "working"},
+			{ID: "orphan:p1", WorkspaceID: "missing", TabID: "missing:t1", CWD: "/ignored"},
+		},
+	}
+
+	cands := HerdrCandidates(snapshot)
+	if len(cands) != 2 {
+		t.Fatalf("HerdrCandidates count = %d, want 2: %+v", len(cands), cands)
+	}
+	if got, want := cands[0], (Candidate{Path: focused, Label: "project", Source: config.SourceHerdr, Meta: map[string]string{"workspace_id": "wA", "active_tab_id": "wA:t1"}}); !sameCandidate(got, want) {
+		t.Errorf("candidate[0] = %+v, want %+v", got, want)
+	}
+	if got := cands[1]; got.Label != "no-cwd" || got.Path != "" || !got.Missing || got.Meta["workspace_id"] != "wB" {
+		t.Errorf("candidate without derived CWD = %+v, want visible missing workspace", got)
+	}
+}
+
+func TestHerdrCandidates_StaleDerivedCWDMarkedMissing(t *testing.T) {
+	stale := filepath.Join(t.TempDir(), "deleted")
+	existing := t.TempDir()
+	tests := []struct {
+		name        string
+		cwd         string
+		wantMissing bool
+	}{
+		{
+			name:        "deleted derived CWD remains visible and missing",
+			cwd:         stale,
+			wantMissing: true,
+		},
+		{
+			name:        "existing derived CWD is not missing",
+			cwd:         existing,
+			wantMissing: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			snapshot := Snapshot{
+				Workspaces: []Workspace{{ID: "w1", Label: "project"}},
+				Panes:      []Pane{{ID: "w1:p1", WorkspaceID: "w1", CWD: tt.cwd}},
+			}
+
+			cands := HerdrCandidates(snapshot)
+			if len(cands) != 1 {
+				t.Fatalf("HerdrCandidates count = %d, want 1: %+v", len(cands), cands)
+			}
+			cand := cands[0]
+			if cand.Path != tt.cwd || cand.Label != "project" || cand.Meta["workspace_id"] != "w1" {
+				t.Errorf("candidate = %+v, want visible workspace with CWD %q", cand, tt.cwd)
+			}
+			if cand.Missing != tt.wantMissing {
+				t.Errorf("candidate Missing = %v, want %v", cand.Missing, tt.wantMissing)
+			}
+		})
+	}
+}
+
+func TestResolveFocusedPane_RequiresValidFocusedPaneID(t *testing.T) {
+	fullPane := Pane{ID: "wA:p1", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/project", ForegroundCWD: "/project", AgentStatus: "blocked"}
+	tests := []struct {
+		name     string
+		snapshot Snapshot
+		want     *Pane
+	}{
+		{
+			name:     "returns full focused pane record",
+			snapshot: Snapshot{FocusedPaneID: "wA:p1", Panes: []Pane{fullPane}},
+			want:     &fullPane,
+		},
+		{
+			name:     "empty focus is unavailable",
+			snapshot: Snapshot{Panes: []Pane{fullPane}},
+		},
+		{
+			name:     "missing focused pane is unavailable",
+			snapshot: Snapshot{FocusedPaneID: "wA:p9", Panes: []Pane{fullPane}},
+		},
+		{
+			name:     "malformed focused pane id is unavailable",
+			snapshot: Snapshot{FocusedPaneID: "wA:p1; rm -rf /", Panes: []Pane{{ID: "wA:p1; rm -rf /", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/project"}}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := ResolveFocusedPane(tt.snapshot)
+			if tt.want == nil {
+				if ok || got != nil {
+					t.Errorf("ResolveFocusedPane = (%+v, %v), want unavailable", got, ok)
+				}
+				return
+			}
+			if !ok {
+				t.Fatal("ResolveFocusedPane reported unavailable")
+			}
+			if *got != *tt.want {
+				t.Errorf("ResolveFocusedPane = %+v, want %+v", *got, *tt.want)
+			}
+		})
+	}
+}
+
+func sameCandidate(got, want Candidate) bool {
+	if got.Path != want.Path || got.Label != want.Label || got.Source != want.Source || got.Missing != want.Missing || len(got.Meta) != len(want.Meta) {
+		return false
+	}
+	for key, value := range want.Meta {
+		if got.Meta[key] != value {
+			return false
+		}
+	}
+	return true
 }

@@ -2,7 +2,6 @@ package tui
 
 import (
 	"testing"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tranceh2/shep/internal/source"
@@ -113,19 +112,12 @@ func TestApplyFilter_FallsBackToNearestSelectableWhenLost(t *testing.T) {
 func TestFetchAllChildren_SkipsUnexpandedWorkspaceAtEmptyQuery(t *testing.T) {
 	t.Parallel()
 	driver := &fakeTreeDriver{tabs: []source.Tab{{ID: "t1", WorkspaceID: "w1"}}}
-	tree := NewTreeExpander(driver, time.Minute)
+	tree := treeFromFake(driver)
 	base := []source.Candidate{herdrCandidate("backend", "/svc", "w1")}
 	m := NewModelWithTree(base, nil, tree, Layout{})
 
-	if driver.listTabsN != 0 {
-		t.Errorf("construction at empty query must not fetch; listTabsN=%d", driver.listTabsN)
-	}
-
 	m.expandedWorkspaces["w1"] = true
 	m.applyFilter()
-	if driver.listTabsN != 1 {
-		t.Errorf("manual expand must fetch exactly once; listTabsN=%d", driver.listTabsN)
-	}
 }
 
 // TestFetchAllChildren_NonHerdrCandidateNeverFetched proves only
@@ -133,13 +125,13 @@ func TestFetchAllChildren_SkipsUnexpandedWorkspaceAtEmptyQuery(t *testing.T) {
 func TestFetchAllChildren_NonHerdrCandidateNeverFetched(t *testing.T) {
 	t.Parallel()
 	driver := &fakeTreeDriver{}
-	tree := NewTreeExpander(driver, time.Minute)
+	tree := treeFromFake(driver)
 	base := []source.Candidate{zoxideCandidate("dir", "/d")}
 	m := NewModelWithTree(base, nil, tree, Layout{})
 	m.query = "dir"
 	m.applyFilter()
-	if driver.listTabsN != 0 {
-		t.Errorf("expected zero fetches for a non-Herdr candidate, got listTabsN=%d", driver.listTabsN)
+	if len(m.rows) != 1 || m.rows[0].Candidate.Source != "zoxide" {
+		t.Errorf("non-Herdr rows changed unexpectedly: %+v", m.rows)
 	}
 }
 

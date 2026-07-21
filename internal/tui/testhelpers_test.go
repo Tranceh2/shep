@@ -10,51 +10,23 @@ import (
 	"github.com/tranceh2/shep/internal/source"
 )
 
-// fakeTreeDriver is a controllable source.HerdrDriver scoped to this
-// package's tests. Only ListTabs/ListPanes/ReadPane are exercised by
-// TreeExpander; every other method returns an error if ever called, so a
-// test would fail loudly instead of silently succeeding on an unintended
-// code path.
+// fakeTreeDriver supplies immutable snapshot records plus the dedicated live
+// pane-read command to TUI tests.
 type fakeTreeDriver struct {
 	tabs     []source.Tab
 	panes    []source.Pane
-	tabsErr  error
-	panesErr error
-
 	readText string
 	readErr  error
 
-	listTabsN  int
-	listPanesN int
-	readPaneN  int
+	readPaneN int
 }
 
-func (f *fakeTreeDriver) Detect(context.Context) bool { return true }
-func (f *fakeTreeDriver) ListWorkspaces(context.Context) ([]source.Workspace, error) {
-	return nil, errors.New("fakeTreeDriver does not implement ListWorkspaces")
-}
-func (f *fakeTreeDriver) FocusOrCreate(context.Context, source.Candidate) (source.FocusResult, error) {
-	return source.FocusResult{}, errors.New("fakeTreeDriver does not implement FocusOrCreate")
-}
-
-func (f *fakeTreeDriver) ListTabs(_ context.Context, _ string) ([]source.Tab, error) {
-	f.listTabsN++
-	if f.tabsErr != nil {
-		return nil, f.tabsErr
+func (f *fakeTreeDriver) Snapshot(context.Context) (source.Snapshot, error) {
+	snapshot := source.Snapshot{Tabs: append([]source.Tab(nil), f.tabs...), Panes: append([]source.Pane(nil), f.panes...)}
+	for _, tab := range snapshot.Tabs {
+		snapshot.Workspaces = append(snapshot.Workspaces, source.Workspace{ID: tab.WorkspaceID})
 	}
-	return f.tabs, nil
-}
-
-func (f *fakeTreeDriver) ListPanes(_ context.Context, _ string) ([]source.Pane, error) {
-	f.listPanesN++
-	if f.panesErr != nil {
-		return nil, f.panesErr
-	}
-	return f.panes, nil
-}
-
-func (f *fakeTreeDriver) ListAgents(context.Context) ([]source.Agent, error) {
-	return nil, errors.New("fakeTreeDriver does not implement ListAgents")
+	return snapshot, nil
 }
 
 func (f *fakeTreeDriver) ReadPane(_ context.Context, _ string, _ int) (string, error) {
@@ -65,23 +37,23 @@ func (f *fakeTreeDriver) ReadPane(_ context.Context, _ string, _ int) (string, e
 	return f.readText, nil
 }
 
-func (f *fakeTreeDriver) CreateTab(context.Context, string, string, string, bool) (source.Tab, source.Pane, error) {
-	return source.Tab{}, source.Pane{}, errors.New("fakeTreeDriver does not implement CreateTab")
-}
-func (f *fakeTreeDriver) RenameTab(context.Context, string, string) error {
-	return errors.New("fakeTreeDriver does not implement RenameTab")
-}
-func (f *fakeTreeDriver) SplitPane(context.Context, string, string, float64, string, bool) (source.Pane, error) {
-	return source.Pane{}, errors.New("fakeTreeDriver does not implement SplitPane")
-}
-func (f *fakeTreeDriver) RunPane(context.Context, string, string) error {
-	return errors.New("fakeTreeDriver does not implement RunPane")
-}
-func (f *fakeTreeDriver) FocusTab(context.Context, string) error {
-	return errors.New("fakeTreeDriver does not implement FocusTab")
-}
-func (f *fakeTreeDriver) CurrentPane(context.Context) (source.Pane, error) {
-	return source.Pane{}, errors.New("fakeTreeDriver does not implement CurrentPane")
+func treeFromFake(driver *fakeTreeDriver) *TreeExpander {
+	snapshot := source.Snapshot{Tabs: append([]source.Tab(nil), driver.tabs...), Panes: append([]source.Pane(nil), driver.panes...)}
+	workspaces := map[string]bool{}
+	for _, tab := range snapshot.Tabs {
+		if tab.WorkspaceID != "" {
+			workspaces[tab.WorkspaceID] = true
+		}
+	}
+	for _, pane := range snapshot.Panes {
+		if pane.WorkspaceID != "" {
+			workspaces[pane.WorkspaceID] = true
+		}
+	}
+	for workspaceID := range workspaces {
+		snapshot.Workspaces = append(snapshot.Workspaces, source.Workspace{ID: workspaceID})
+	}
+	return NewTreeExpanderFromSnapshot(snapshot)
 }
 
 // stubRenderer returns a fixed Result; used where only "a Renderer is

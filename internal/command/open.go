@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/tranceh2/shep/internal/config"
@@ -76,12 +75,6 @@ projects (already-open herdr workspaces, templates, and groups are rejected).`,
 	return cmd
 }
 
-// currentPaneTimeout bounds the best-effort CurrentPane probe runOpen issues
-// before candidate resolution. Without a deadline, a hung Herdr daemon could
-// block shep startup indefinitely; 2s is a short, user-imperceptible budget
-// for a single local CLI round-trip.
-const currentPaneTimeout = 2 * time.Second
-
 // validTargets is the closed set accepted by --target. workspace preserves the
 // pre-flag behaviour (focus/create a standalone Herdr workspace); tab and pane
 // open the entry inside the Herdr workspace shep is currently running in.
@@ -111,24 +104,20 @@ func (a *App) selectorFactory(matches []source.Candidate) *selector.Cascade {
 		return a.selectorBuilder()
 	}
 	cfg := a.Config()
+	if a.startupSnapshot != nil {
+		return snapshotCascadeFor(cfg.General.Selector, a.buildPreviewRendererForSnapshot(*a.startupSnapshot), a.currentPane, a.setChosenTarget, a.setChosenAction, *a.startupSnapshot, a.Driver(), a.buildPreviewRendererForSnapshot, cfg.Sources.Herdr.Icon, matches, layoutFromConfig(cfg.TUI, cfg.General.Sources, cfg.Sources))
+	}
 	return cascadeFor(cfg.General.Selector, a.buildPreviewRenderer(), a.currentPane, a.setChosenTarget, a.setChosenAction, a.buildTreeExpander(), matches, layoutFromConfig(cfg.TUI, cfg.General.Sources, cfg.Sources))
 }
 
-// buildTreeExpander wires a tui.TreeExpander over the active HerdrDriver,
-// reusing [preview].cache_ttl as the tree cache's lifetime — the same "how
-// fresh does workspace state need to be" question the preview cache already
-// answers, so tree-expand does not need its own overlapping TTL config
-// knob. Returns nil when no driver is configured; treeActiveFor can only
-// report true when matches already contains a SourceHerdr candidate, which
-// itself requires a driver to have produced it, so a nil tree here never
-// silently disables an otherwise-active cascade.
+// buildTreeExpander returns the startup generation's pure child tree. State
+// refreshes construct an entirely new tree inside tui.Model; no cache or
+// fragmented driver loader remains here.
 func (a *App) buildTreeExpander() *tui.TreeExpander {
-	driver := a.Driver()
-	if driver == nil {
+	if a.startupSnapshot == nil {
 		return nil
 	}
-	ttl := time.Duration(a.Config().Preview.CacheTTL)
-	return tui.NewTreeExpander(driver, ttl)
+	return tui.NewTreeExpanderFromSnapshot(*a.startupSnapshot)
 }
 
 // treeActiveFor reports whether tree-expand should replace the normal
@@ -190,10 +179,12 @@ func layoutFromConfig(t config.TUIConfig, sources []string, sourceConfigs ...con
 // config and binary probes so the TUI's preview pane and the `shep preview`
 // command share identical rendering behaviour. A CommandRunner is always
 // constructed (it powers both the "dir" built-in and any declared
-// preview.commands); the active Herdr driver (if any) is threaded in via
-// WithHerdrDriver so the workspace/active_pane preview sections can
-// enumerate tabs/panes and read the active pane.
+// preview.commands); the active Herdr driver (if any) supplies only live pane
+// reads. Workspace and agent-status state require a startup snapshot.
 func (a *App) buildPreviewRenderer() preview.Renderer {
+	if a.startupSnapshot != nil {
+		return a.buildPreviewRendererForSnapshot(*a.startupSnapshot)
+	}
 	cfg := a.Config()
 	var git preview.GitProvider
 	if a.Probes().Git {
@@ -202,7 +193,21 @@ func (a *App) buildPreviewRenderer() preview.Renderer {
 	runner := preview.NewCommandRunner()
 	var opts []preview.RendererOption
 	if driver := a.Driver(); driver != nil {
-		opts = append(opts, preview.WithHerdrDriver(driver))
+		opts = append(opts, preview.WithPaneReader(driver))
+	}
+	return preview.NewRenderer(cfg, a.Probes(), git, runner, opts...)
+}
+
+func (a *App) buildPreviewRendererForSnapshot(snapshot source.Snapshot) preview.Renderer {
+	cfg := a.Config()
+	var git preview.GitProvider
+	if a.Probes().Git {
+		git = preview.NewGitProvider()
+	}
+	runner := preview.NewCommandRunner()
+	opts := []preview.RendererOption{preview.WithSnapshot(snapshot)}
+	if driver := a.Driver(); driver != nil {
+		opts = append(opts, preview.WithPaneReader(driver))
 	}
 	return preview.NewRenderer(cfg, a.Probes(), git, runner, opts...)
 }
@@ -365,6 +370,66 @@ func (s tuiTreeSelector) Select(ctx context.Context, candidates []source.Candida
 	return cand, ok, err
 }
 
+// snapshotTUISelector is the production selector for a startup-hydrated Herdr
+// session. It gives Model its snapshot driver and immutable-renderer factory;
+// the older generic selectors remain useful only when no Herdr state exists.
+type snapshotTUISelector struct {
+	name                string
+	renderer            preview.Renderer
+	layout              tui.Layout
+	currentPane         *source.Pane
+	snapshot            source.Snapshot
+	driver              source.HerdrDriver
+	rendererForSnapshot tui.SnapshotRendererFactory
+	herdrIcon           string
+	onTarget            func(string)
+	onAction            func(tui.RowAction)
+}
+
+func (s snapshotTUISelector) Name() string { return s.name }
+
+func (s snapshotTUISelector) Select(ctx context.Context, candidates []source.Candidate, query string) (source.Candidate, bool, error) {
+	if len(candidates) == 0 {
+		return source.Candidate{}, false, nil
+	}
+	cand, action, target, ok, err := tui.RunWithSnapshot(ctx, candidates, query, s.renderer, s.snapshot, s.driver, s.rendererForSnapshot, s.herdrIcon, s.currentPane, s.layout)
+	if ok {
+		if s.onTarget != nil {
+			s.onTarget(target)
+		}
+		if s.onAction != nil {
+			s.onAction(action)
+		}
+	}
+	return cand, ok, err
+}
+
+func snapshotCascadeFor(sel string, renderer preview.Renderer, currentPane *source.Pane, onTarget func(string), onAction func(tui.RowAction), snapshot source.Snapshot, driver source.HerdrDriver, rendererForSnapshot tui.SnapshotRendererFactory, herdrIcon string, matches []source.Candidate, layout tui.Layout) *selector.Cascade {
+	direct := selector.Direct{}
+	picker := snapshotTUISelector{
+		name:                "tui",
+		renderer:            renderer,
+		layout:              layout,
+		currentPane:         currentPane,
+		snapshot:            snapshot,
+		driver:              driver,
+		rendererForSnapshot: rendererForSnapshot,
+		herdrIcon:           herdrIcon,
+		onTarget:            onTarget,
+		onAction:            onAction,
+	}
+	if treeActiveFor(matches) {
+		picker.name = "tui_tree"
+		return selector.New(direct, picker)
+	}
+	switch sel {
+	case config.SelectorFzf, config.SelectorAuto:
+		return selector.New(direct, selector.NewFzf(), picker)
+	default:
+		return selector.New(direct, picker)
+	}
+}
+
 // runOpen is the pipeline so tests can call it directly against a fresh App.
 // target is the resolved --target value ("workspace", "tab", or "pane"); for
 // the interactive TUI path, the model can override it via App.chosenTarget.
@@ -372,22 +437,8 @@ func (a *App) runOpen(cmd *cobra.Command, query, pathFlag, targetFlag string) er
 	out := cmd.OutOrStdout()
 	errOut := cmd.ErrOrStderr()
 
-	// a.currentPane is best-effort and queried once per invocation, BEFORE
-	// candidate resolution, so both the interactive TUI (footer hints and
-	// ctrl+t/ctrl+p bindings, threaded in via selectorFactory) and the launch
-	// path below share a single CurrentPane call. A nil driver or any error
-	// (including source.ErrNoFocusedPane) just means the tab/pane targets —
-	// and the TUI bindings — stay disabled; the workspace target ignores it
-	// entirely. The call is bounded by currentPaneTimeout so a hung Herdr
-	// daemon can never block shep startup indefinitely: a timeout is just
-	// another CurrentPane error and degrades the same way.
-	if driver := a.Driver(); driver != nil && driver.Detect(cmd.Context()) {
-		paneCtx, cancel := context.WithTimeout(cmd.Context(), currentPaneTimeout)
-		pane, perr := driver.CurrentPane(paneCtx)
-		cancel()
-		if perr == nil {
-			a.currentPane = &pane
-		}
+	if err := a.hydrateStartupSnapshot(cmd.Context()); err != nil {
+		fmt.Fprintf(errOut, "warning: herdr snapshot unavailable: %v\n", err)
 	}
 
 	cand, ok, err := a.resolveCandidate(cmd, query, pathFlag, out, errOut)
@@ -406,6 +457,32 @@ func (a *App) runOpen(cmd *cobra.Command, query, pathFlag, targetFlag string) er
 	}
 
 	return a.launch(cmd.Context(), cand, a.chosenAction, target, a.currentPane, out, errOut)
+}
+
+// hydrateStartupSnapshot captures the one full Herdr state generation used by
+// this open invocation. It intentionally replaces the fragmented current/list
+// probes: focus is resolved from focused_pane_id in the same generation.
+func (a *App) hydrateStartupSnapshot(ctx context.Context) error {
+	a.currentPane = nil
+	a.startupSnapshot = nil
+	a.startupSnapshotAttempted = false
+	driver := a.Driver()
+	if driver == nil || !driver.Detect(ctx) {
+		return nil
+	}
+	a.startupSnapshotAttempted = true
+	snapshotCtx, cancel := context.WithTimeout(ctx, source.SnapshotTimeout)
+	defer cancel()
+	snapshot, err := driver.Snapshot(snapshotCtx)
+	if err != nil {
+		return err
+	}
+	a.startupSnapshot = &snapshot
+	if pane, ok := source.ResolveFocusedPane(snapshot); ok {
+		copy := *pane
+		a.currentPane = &copy
+	}
+	return nil
 }
 
 // resolveCandidate produces the candidate to launch, honouring --path first
@@ -433,8 +510,18 @@ func (a *App) resolveCandidate(cmd *cobra.Command, query, pathFlag string, out, 
 		return cand, true, nil
 	}
 
-	registry := source.NewRegistry(a.Config(), a.Probes(), a.Driver())
+	registry := a.withStartupSnapshot(source.NewRegistry(a.Config(), a.Probes(), a.Driver()))
 	return a.resolveFromRegistry(cmd, registry, query, "", out, errOut)
+}
+
+func (a *App) withStartupSnapshot(registry *source.Registry) *source.Registry {
+	if !a.startupSnapshotAttempted {
+		return registry
+	}
+	if a.startupSnapshot == nil {
+		return registry.DisableHerdr()
+	}
+	return registry.WithHerdrSnapshot(*a.startupSnapshot)
 }
 
 // resolveFromRegistry runs the collect/dedup/select pipeline against
@@ -493,7 +580,7 @@ func (a *App) resolveFromRegistry(cmd *cobra.Command, registry *source.Registry,
 		if nestedTemplate == "" {
 			nestedTemplate = parentTemplate
 		}
-		nested := source.NewScopedRegistry(a.Config(), a.Probes(), a.Driver(), groupSources, pick.Path)
+		nested := a.withStartupSnapshot(source.NewScopedRegistry(a.Config(), a.Probes(), a.Driver(), groupSources, pick.Path))
 		return a.resolveFromRegistry(cmd, nested, "", nestedTemplate, out, errOut)
 	}
 

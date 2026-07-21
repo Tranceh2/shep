@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/tranceh2/shep/internal/source"
 )
@@ -53,8 +52,12 @@ func TestPreview_RowTabDispatch(t *testing.T) {
 				readText: tt.readText,
 				readErr:  tt.readErr,
 			}
-			m := NewModel(nil, nil)
-			m.tree = NewTreeExpander(driver, time.Minute)
+			snapshot := source.Snapshot{
+				Workspaces: []source.Workspace{{ID: "w1"}},
+				Tabs:       driver.tabs,
+				Panes:      tt.panes,
+			}
+			m := NewModel(nil, nil).WithSnapshotRefresh(driver, snapshot, nil, "")
 			m.renderCtx = context.Background()
 			m.rows = []Row{{
 				Kind: RowTab,

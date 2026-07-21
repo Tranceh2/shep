@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/tranceh2/shep/internal/config"
@@ -395,7 +394,7 @@ func TestTabPreview_SynchronousSummary_NoLoading(t *testing.T) {
 	driver := &fakeTreeDriver{
 		tabs: []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}},
 	}
-	tree := NewTreeExpander(driver, time.Minute)
+	tree := treeFromFake(driver)
 	cands := []source.Candidate{
 		herdrCandidate("backend", "/srv/backend", "w1"),
 	}
@@ -430,7 +429,7 @@ func TestTabPreview_MetaCounts(t *testing.T) {
 	driver := &fakeTreeDriver{
 		tabs: []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}},
 	}
-	tree := NewTreeExpander(driver, time.Minute)
+	tree := treeFromFake(driver)
 	cands := []source.Candidate{
 		herdrCandidate("backend", "/srv/backend", "w1"),
 	}
@@ -459,7 +458,7 @@ func TestTabPreview_MetaCounts(t *testing.T) {
 func TestTabPreview_ActivePaneCaptureLast(t *testing.T) {
 	t.Parallel()
 
-	m := NewModelWithTree(nil, nil, NewTreeExpander(&fakeTreeDriver{}, time.Minute), Layout{Theme: ThemePlain})
+	m := NewModelWithTree(nil, nil, treeFromFake(&fakeTreeDriver{}), Layout{Theme: ThemePlain})
 	capture := "\x1b[31mfocused capture\x1b[0m"
 	m.previewText = capture
 	body := m.tabPreviewBody(source.Candidate{Label: "api", Path: "/srv/api"})
@@ -481,7 +480,7 @@ func TestTabPreview_ActivePaneCaptureLast(t *testing.T) {
 func TestTabPreview_UnavailableOmitsActivePane(t *testing.T) {
 	t.Parallel()
 
-	m := NewModelWithTree(nil, nil, NewTreeExpander(&fakeTreeDriver{}, time.Minute), Layout{Theme: ThemePlain})
+	m := NewModelWithTree(nil, nil, treeFromFake(&fakeTreeDriver{}), Layout{Theme: ThemePlain})
 	m.previewText = " \n "
 	body := m.tabPreviewBody(source.Candidate{Label: "api", Path: "/srv/api"})
 
@@ -502,7 +501,7 @@ func TestPanePreview_IdentityAndCapturedPaneLast(t *testing.T) {
 		panes:    []source.Pane{{ID: "p1", Label: "worker", WorkspaceID: "w1", TabID: "t1", CWD: "/srv/api"}},
 		readText: "┌────────┐\n│ pane 1 │\n└────────┘",
 	}
-	tree := NewTreeExpander(driver, time.Minute)
+	tree := treeFromFake(driver)
 	cands := []source.Candidate{
 		herdrCandidate("backend", "/srv/backend", "w1"),
 	}
@@ -544,7 +543,7 @@ func TestPanePreview_LoadingUnderHeading(t *testing.T) {
 		tabs:  []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}},
 		panes: []source.Pane{{ID: "p1", Label: "worker", WorkspaceID: "w1", TabID: "t1", CWD: "/srv/api"}},
 	}
-	tree := NewTreeExpander(driver, time.Minute)
+	tree := treeFromFake(driver)
 	cands := []source.Candidate{
 		herdrCandidate("backend", "/srv/backend", "w1"),
 	}
@@ -587,7 +586,7 @@ func TestPanePreview_UnavailableOmitsSection(t *testing.T) {
 		tabs:  []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}},
 		panes: []source.Pane{{ID: "p1", Label: "worker", WorkspaceID: "w1", TabID: "t1", CWD: "/srv/api"}},
 	}
-	tree := NewTreeExpander(driver, time.Minute)
+	tree := treeFromFake(driver)
 	cands := []source.Candidate{
 		herdrCandidate("backend", "/srv/backend", "w1"),
 	}
@@ -618,7 +617,7 @@ func TestPanePreview_WhitespaceOnlyOmitsSection(t *testing.T) {
 		tabs:  []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}},
 		panes: []source.Pane{{ID: "p1", Label: "worker", WorkspaceID: "w1", TabID: "t1", CWD: "/srv/api"}},
 	}
-	tree := NewTreeExpander(driver, time.Minute)
+	tree := treeFromFake(driver)
 	cands := []source.Candidate{
 		herdrCandidate("backend", "/srv/backend", "w1"),
 	}
@@ -649,7 +648,7 @@ func TestPanePreview_ContainingTabInMeta(t *testing.T) {
 		tabs:  []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}},
 		panes: []source.Pane{{ID: "p1", Label: "worker", WorkspaceID: "w1", TabID: "t1", CWD: "/srv/api"}},
 	}
-	tree := NewTreeExpander(driver, time.Minute)
+	tree := treeFromFake(driver)
 	cands := []source.Candidate{
 		herdrCandidate("backend", "/srv/backend", "w1"),
 	}

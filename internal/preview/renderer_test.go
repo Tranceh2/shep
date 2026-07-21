@@ -328,65 +328,67 @@ func TestResolvePreviewNames_CaseFoldMatches(t *testing.T) {
 	}
 }
 
-// fakePreviewDriver is a controllable HerdrDriver for workspace/active_pane
-// section tests.
+// fakePreviewDriver is a controllable snapshot and pane-read fixture for
+// workspace/active_pane section tests.
 type fakePreviewDriver struct {
 	tabs  []source.Tab
 	panes []source.Pane
-	// tabsByWorkspace/panesByWorkspace, when non-nil, let a single fake
-	// serve DIFFERENT tabs/panes per workspaceID — needed to reproduce the
-	// cache-collision bug for herdr candidates that share a cwd (multiple
-	// tabs/panes commonly point at the same directory). When nil, ListTabs
-	// and ListPanes fall back to the flat tabs/panes fields for backward
-	// compatibility with existing single-workspace tests.
+	// tabsByWorkspace/panesByWorkspace, when non-nil, build a snapshot with
+	// different tab/pane records per workspace ID for cache-collision coverage.
 	tabsByWorkspace  map[string][]source.Tab
 	panesByWorkspace map[string][]source.Pane
 	readOut          string
-	tabsErr          error
-	panesErr         error
 	readErr          error
-	listCalls        []string
 	readCalls        int
 	lastLines        int
 	lastPaneID       string
 	currentPane      source.Pane
-	currentPaneErr   error
-	currentPaneCalls int
 	// block switches each herdr query into a ctx-bound blocker that returns
 	// ctx.Err() — used for the timeout tests.
 	block bool
 }
 
-func (f *fakePreviewDriver) Detect(context.Context) bool { return true }
-func (f *fakePreviewDriver) ListWorkspaces(context.Context) ([]source.Workspace, error) {
-	return nil, nil
+// withFakeSnapshot builds the immutable snapshot and live pane reader used by
+// renderer tests. Production uses WithSnapshot plus WithPaneReader directly.
+func withFakeSnapshot(driver *fakePreviewDriver) RendererOption {
+	snapshot := source.Snapshot{Tabs: append([]source.Tab(nil), driver.tabs...), Panes: append([]source.Pane(nil), driver.panes...)}
+	for workspaceID, tabs := range driver.tabsByWorkspace {
+		snapshot.Tabs = append(snapshot.Tabs, tabs...)
+		snapshot.Workspaces = append(snapshot.Workspaces, source.Workspace{ID: workspaceID})
+	}
+	for workspaceID, panes := range driver.panesByWorkspace {
+		snapshot.Panes = append(snapshot.Panes, panes...)
+		if !snapshotHasWorkspace(snapshot, workspaceID) {
+			snapshot.Workspaces = append(snapshot.Workspaces, source.Workspace{ID: workspaceID})
+		}
+	}
+	for _, pane := range snapshot.Panes {
+		if !snapshotHasWorkspace(snapshot, pane.WorkspaceID) && pane.WorkspaceID != "" {
+			snapshot.Workspaces = append(snapshot.Workspaces, source.Workspace{ID: pane.WorkspaceID})
+		}
+	}
+	if driver.currentPane.ID != "" {
+		snapshot.Panes = append(snapshot.Panes, driver.currentPane)
+		snapshot.FocusedPaneID = driver.currentPane.ID
+	}
+	return func(renderer *defaultRenderer) {
+		WithSnapshot(snapshot)(renderer)
+		WithPaneReader(driver)(renderer)
+	}
 }
-func (fakePreviewDriver) FocusOrCreate(context.Context, source.Candidate) (source.FocusResult, error) {
-	return source.FocusResult{}, errors.New("fakePreviewDriver.FocusOrCreate not used in previews")
-}
-func (f *fakePreviewDriver) ListAgents(context.Context) ([]source.Agent, error) { return nil, nil }
 
-func (f *fakePreviewDriver) ListTabs(ctx context.Context, workspaceID string) ([]source.Tab, error) {
-	f.listCalls = append(f.listCalls, "tabs:"+workspaceID)
-	if f.block {
-		<-ctx.Done()
-		return nil, ctx.Err()
+func snapshotHasWorkspace(snapshot source.Snapshot, workspaceID string) bool {
+	for _, workspace := range snapshot.Workspaces {
+		if workspace.ID == workspaceID {
+			return true
+		}
 	}
-	if f.tabsByWorkspace != nil {
-		return f.tabsByWorkspace[workspaceID], f.tabsErr
-	}
-	return f.tabs, f.tabsErr
+	return false
 }
-func (f *fakePreviewDriver) ListPanes(ctx context.Context, workspaceID string) ([]source.Pane, error) {
-	f.listCalls = append(f.listCalls, "panes:"+workspaceID)
-	if f.block {
-		<-ctx.Done()
-		return nil, ctx.Err()
-	}
-	if f.panesByWorkspace != nil {
-		return f.panesByWorkspace[workspaceID], f.panesErr
-	}
-	return f.panes, f.panesErr
+
+func (f *fakePreviewDriver) Detect(context.Context) bool { return true }
+func (f *fakePreviewDriver) Snapshot(context.Context) (source.Snapshot, error) {
+	return source.Snapshot{}, errors.New("fakePreviewDriver does not implement Snapshot")
 }
 func (f *fakePreviewDriver) ReadPane(ctx context.Context, paneID string, lines int) (string, error) {
 	f.readCalls++
@@ -397,29 +399,6 @@ func (f *fakePreviewDriver) ReadPane(ctx context.Context, paneID string, lines i
 		return "", ctx.Err()
 	}
 	return f.readOut, f.readErr
-}
-func (f *fakePreviewDriver) CreateTab(context.Context, string, string, string, bool) (source.Tab, source.Pane, error) {
-	return source.Tab{}, source.Pane{}, errors.New("not used in previews")
-}
-func (f *fakePreviewDriver) RenameTab(context.Context, string, string) error {
-	return errors.New("not used in previews")
-}
-func (f *fakePreviewDriver) SplitPane(context.Context, string, string, float64, string, bool) (source.Pane, error) {
-	return source.Pane{}, errors.New("not used in previews")
-}
-func (f *fakePreviewDriver) RunPane(context.Context, string, string) error {
-	return errors.New("not used in previews")
-}
-func (fakePreviewDriver) FocusTab(context.Context, string) error {
-	return errors.New("not used in previews")
-}
-func (f *fakePreviewDriver) CurrentPane(ctx context.Context) (source.Pane, error) {
-	f.currentPaneCalls++
-	if f.block {
-		<-ctx.Done()
-		return source.Pane{}, ctx.Err()
-	}
-	return f.currentPane, f.currentPaneErr
 }
 
 // herdrCandidate builds a candidate carrying a workspace_id meta key, mirroring
@@ -449,7 +428,7 @@ func TestRender_WorkspaceSection(t *testing.T) {
 			{ID: "wA:p2", WorkspaceID: "wA", CWD: "/y", Focused: false},
 		},
 	}
-	r := NewRenderer(cfg, config.Probes{}, nil, nil, WithHerdrDriver(driver))
+	r := NewRenderer(cfg, config.Probes{}, nil, nil, withFakeSnapshot(driver))
 	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
 	if !strings.Contains(got, "workspace") {
 		t.Errorf("missing section heading: %q", got)
@@ -462,9 +441,6 @@ func TestRender_WorkspaceSection(t *testing.T) {
 	}
 	if !strings.Contains(got, "/x") || !strings.Contains(got, "/y") {
 		t.Errorf("missing pane cwds: %q", got)
-	}
-	if len(driver.listCalls) != 2 {
-		t.Errorf("expected 2 herdr list calls, got %d: %v", len(driver.listCalls), driver.listCalls)
 	}
 }
 
@@ -482,7 +458,7 @@ func TestRender_ActivePaneSection(t *testing.T) {
 		},
 		readOut: "$ echo hi\nhi\n$ ",
 	}
-	r := NewRenderer(cfg, config.Probes{}, nil, nil, WithHerdrDriver(driver))
+	r := NewRenderer(cfg, config.Probes{}, nil, nil, withFakeSnapshot(driver))
 	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
 	if !strings.Contains(got, "active pane") {
 		t.Errorf("missing section heading: %q", got)
@@ -511,7 +487,7 @@ func TestRender_ActivePaneSection_FallsBackToFirstPane(t *testing.T) {
 		},
 		readOut: "buffer",
 	}
-	r := NewRenderer(cfg, config.Probes{}, nil, nil, WithHerdrDriver(driver))
+	r := NewRenderer(cfg, config.Probes{}, nil, nil, withFakeSnapshot(driver))
 	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
 	if !strings.Contains(got, "buffer") {
 		t.Errorf("missing buffer: %q", got)
@@ -528,15 +504,14 @@ func TestRender_HerdrSections_SkipOnNonHerdrCandidate(t *testing.T) {
 
 	cfg := cfgWithDefault(config.PreviewWorkspace, config.PreviewActivePane, config.PreviewIdentity)
 	driver := &fakePreviewDriver{tabs: []source.Tab{{ID: "wA:t1"}}}
-	r := NewRenderer(cfg, config.Probes{}, nil, nil, WithHerdrDriver(driver))
+	r := NewRenderer(cfg, config.Probes{}, nil, nil, withFakeSnapshot(driver))
 	got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
 	want := "foo\npath: /p/foo\nsource: workspaces"
 	if got != want {
 		t.Errorf("non-herdr preview must skip herdr sections:\n got %q\nwant %q", got, want)
 	}
-	if len(driver.listCalls) != 0 || driver.readCalls != 0 {
-		t.Errorf("herdr driver must not be queried for non-herdr candidate: calls=%v read=%d",
-			driver.listCalls, driver.readCalls)
+	if driver.readCalls != 0 {
+		t.Errorf("pane reader must not be queried for non-herdr candidate: reads=%d", driver.readCalls)
 	}
 }
 
@@ -587,7 +562,7 @@ func TestRender_CacheKey_DoesNotAliasHerdrCandidatesSharingCWD(t *testing.T) {
 			"wB": {{ID: "wB:p1", WorkspaceID: "wB", CWD: "/shared", Focused: true}},
 		},
 	}
-	r := NewRenderer(cfg, config.Probes{}, nil, nil, WithHerdrDriver(driver))
+	r := NewRenderer(cfg, config.Probes{}, nil, nil, withFakeSnapshot(driver))
 
 	gotA := mustRender(t, r, herdrCandidate("tabA", "/shared", "wA"))
 	gotB := mustRender(t, r, herdrCandidate("tabB", "/shared", "wB"))
@@ -603,15 +578,15 @@ func TestRender_CacheKey_DoesNotAliasHerdrCandidatesSharingCWD(t *testing.T) {
 	}
 }
 
-// TestRender_WorkspaceSection_TimesOutGracefully confirms a slow daemon is
-// bounded by the herdr preview timeout and the section degrades to an
-// unavailable note instead of hanging the selector.
+// TestRender_WorkspaceSection_UsesSnapshotWithoutLiveQueries confirms a
+// workspace preview is resolved from its immutable generation and never waits
+// on a live list call.
 func TestRender_WorkspaceSection_TimesOutGracefully(t *testing.T) {
 	t.Parallel()
 
 	cfg := cfgWithDefault(config.PreviewWorkspace)
 	driver := &fakePreviewDriver{block: true}
-	r := NewRenderer(cfg, config.Probes{}, nil, nil, WithHerdrDriver(driver))
+	r := NewRenderer(cfg, config.Probes{}, nil, nil, withFakeSnapshot(driver))
 	start := time.Now()
 	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
 	elapsed := time.Since(start)
@@ -621,8 +596,8 @@ func TestRender_WorkspaceSection_TimesOutGracefully(t *testing.T) {
 	if !strings.Contains(got, "workspace") {
 		t.Errorf("section heading should still render on timeout: %q", got)
 	}
-	if !strings.Contains(got, "unavailable") {
-		t.Errorf("missing unavailable note on timeout: %q", got)
+	if strings.Contains(got, "unavailable") {
+		t.Errorf("snapshot-backed workspace preview must not report a live-query timeout: %q", got)
 	}
 }
 
@@ -633,7 +608,7 @@ func TestRenderAgentStatusSection_KnownStatus(t *testing.T) {
 
 	cfg := cfgWithDefault(config.PreviewAgentStatus)
 	driver := &fakePreviewDriver{currentPane: source.Pane{ID: "wA:p1", AgentStatus: "idle"}}
-	r := NewRenderer(cfg, config.Probes{}, nil, nil, WithHerdrDriver(driver))
+	r := NewRenderer(cfg, config.Probes{}, nil, nil, withFakeSnapshot(driver))
 	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
 	if !strings.Contains(got, "agent status") {
 		t.Errorf("missing section heading: %q", got)
@@ -643,9 +618,6 @@ func TestRenderAgentStatusSection_KnownStatus(t *testing.T) {
 	}
 	if strings.Contains(got, "wA:p1") {
 		t.Errorf("rendered output must not leak the raw pane id: %q", got)
-	}
-	if driver.currentPaneCalls != 1 {
-		t.Errorf("expected 1 CurrentPane call, got %d", driver.currentPaneCalls)
 	}
 }
 
@@ -658,7 +630,7 @@ func TestRenderAgentStatusSection_EmptyStatus(t *testing.T) {
 
 	cfg := cfgWithDefault(config.PreviewAgentStatus)
 	driver := &fakePreviewDriver{currentPane: source.Pane{ID: "wA:p1", AgentStatus: ""}}
-	r := NewRenderer(cfg, config.Probes{}, nil, nil, WithHerdrDriver(driver))
+	r := NewRenderer(cfg, config.Probes{}, nil, nil, withFakeSnapshot(driver))
 	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
 	if !strings.Contains(got, "agent status") {
 		t.Errorf("missing section heading: %q", got)
@@ -676,13 +648,10 @@ func TestRenderAgentStatusSection_SectionDisabled(t *testing.T) {
 
 	cfg := cfgWithDefault(config.PreviewIdentity)
 	driver := &fakePreviewDriver{currentPane: source.Pane{ID: "wA:p1", AgentStatus: "working"}}
-	r := NewRenderer(cfg, config.Probes{}, nil, nil, WithHerdrDriver(driver))
+	r := NewRenderer(cfg, config.Probes{}, nil, nil, withFakeSnapshot(driver))
 	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
 	if strings.Contains(got, "agent status") || strings.Contains(got, "working") {
 		t.Errorf("agent_status section must be omitted when disabled: %q", got)
-	}
-	if driver.currentPaneCalls != 0 {
-		t.Errorf("driver must not be queried when the section is disabled, got %d calls", driver.currentPaneCalls)
 	}
 }
 
@@ -698,7 +667,7 @@ func TestRender_ActivePaneSection_TimesOutGracefully(t *testing.T) {
 
 	cfg := cfgWithDefault(config.PreviewActivePane)
 	driver := &fakePreviewDriver{block: true}
-	r := NewRenderer(cfg, config.Probes{}, nil, nil, WithHerdrDriver(driver))
+	r := NewRenderer(cfg, config.Probes{}, nil, nil, withFakeSnapshot(driver))
 	start := time.Now()
 	res, err := r.Render(context.Background(), herdrCandidate("foo", "/x", "wA"))
 	if err != nil {
@@ -978,5 +947,38 @@ func TestRender_CachesResult(t *testing.T) {
 	}
 	if git.calls != 1 {
 		t.Errorf("git.Summary should only be called once, got %d calls", git.calls)
+	}
+}
+
+func TestRenderer_WithSnapshotBuildsImmutableGeneration(t *testing.T) {
+	cfg := cfgWithDefault(config.PreviewWorkspace, config.PreviewAgentStatus)
+	first := source.Snapshot{
+		Workspaces:         []source.Workspace{{ID: "w1", Label: "first"}},
+		Tabs:               []source.Tab{{ID: "w1:t1", WorkspaceID: "w1", Label: "editor-one", Number: 1, PaneCount: 1}},
+		Panes:              []source.Pane{{ID: "w1:p1", WorkspaceID: "w1", TabID: "w1:t1", CWD: "/one", Focused: true, AgentStatus: "working"}},
+		FocusedPaneID:      "w1:p1",
+		FocusedWorkspaceID: "w1",
+		FocusedTabID:       "w1:t1",
+	}
+	second := source.Snapshot{
+		Workspaces:         []source.Workspace{{ID: "w1", Label: "second"}},
+		Tabs:               []source.Tab{{ID: "w1:t1", WorkspaceID: "w1", Label: "editor-two", Number: 1, PaneCount: 1}},
+		Panes:              []source.Pane{{ID: "w1:p1", WorkspaceID: "w1", TabID: "w1:t1", CWD: "/two", Focused: true, AgentStatus: "idle"}},
+		FocusedPaneID:      "w1:p1",
+		FocusedWorkspaceID: "w1",
+		FocusedTabID:       "w1:t1",
+	}
+
+	firstRenderer := NewRenderer(cfg, config.Probes{}, nil, nil, WithSnapshot(first))
+	secondRenderer := NewRenderer(cfg, config.Probes{}, nil, nil, WithSnapshot(second))
+	cand := source.Candidate{Label: "workspace", Path: "/workspace", Source: config.SourceHerdr, Meta: map[string]string{"workspace_id": "w1"}}
+
+	firstText := mustRender(t, firstRenderer, cand)
+	secondText := mustRender(t, secondRenderer, cand)
+	if !strings.Contains(firstText, "editor-one") || !strings.Contains(firstText, "working") || strings.Contains(firstText, "editor-two") {
+		t.Errorf("first generation renderer changed after second construction: %q", firstText)
+	}
+	if !strings.Contains(secondText, "editor-two") || !strings.Contains(secondText, "idle") || strings.Contains(secondText, "editor-one") {
+		t.Errorf("second generation renderer did not use its own snapshot: %q", secondText)
 	}
 }

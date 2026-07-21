@@ -3,7 +3,6 @@ package tui
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -312,7 +311,7 @@ func TestEnter_OnCandidateSelectsAndQuits(t *testing.T) {
 func TestLeftRight_ExpandCollapseWorkspace(t *testing.T) {
 	t.Parallel()
 	driver := &fakeTreeDriver{tabs: []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}}}
-	tree := NewTreeExpander(driver, time.Minute)
+	tree := treeFromFake(driver)
 	base := []source.Candidate{herdrCandidate("backend", "/svc", "w1")}
 	m := NewModelWithTree(base, nil, tree, Layout{})
 	m.cursor = 0 // the workspace row (no group header anymore)
@@ -369,6 +368,20 @@ func TestSelectWithTarget_RequiresCurrentPaneAndSupportedCandidate(t *testing.T)
 	}
 }
 
+func TestSelectWithTarget_NoFocusKeepsSelectorUsableWithFeedback(t *testing.T) {
+	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
+	m, cmd := update(t, m, key("ctrl+p"))
+	if cmd != nil {
+		t.Error("ctrl+p without a focused pane must not select or quit")
+	}
+	if _, selected := m.Selected(); selected {
+		t.Error("ctrl+p without focus unexpectedly selected a candidate")
+	}
+	if m.previewErr != "no focused Herdr pane" {
+		t.Errorf("previewErr = %q, want concise no-focus feedback", m.previewErr)
+	}
+}
+
 // TestSelectWithTarget_HerdrTabAndPaneRowsAreUnsupported proves that
 // ctrl+t/ctrl+p on a synthesized RowTab/RowPane are no-ops:
 // source.SupportsCurrentWorkspaceTarget only recognizes zoxide/projects/
@@ -382,7 +395,7 @@ func TestSelectWithTarget_RequiresCurrentPaneAndSupportedCandidate(t *testing.T)
 func TestSelectWithTarget_HerdrTabAndPaneRowsAreUnsupported(t *testing.T) {
 	t.Parallel()
 	driver := &fakeTreeDriver{tabs: []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}}}
-	tree := NewTreeExpander(driver, time.Minute)
+	tree := treeFromFake(driver)
 	base := []source.Candidate{herdrCandidate("backend", "/svc", "w1")}
 	m := NewModelWithTree(base, nil, tree, Layout{})
 	m.expandedWorkspaces["w1"] = true
@@ -516,7 +529,7 @@ func TestCtrlL_RecomputesModeImmediately(t *testing.T) {
 func TestListOnlyActions_NoOpInFocusPreview(t *testing.T) {
 	t.Parallel()
 	driver := &fakeTreeDriver{tabs: []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}}}
-	tree := NewTreeExpander(driver, time.Minute)
+	tree := treeFromFake(driver)
 	base := []source.Candidate{herdrCandidate("backend", "/svc", "w1")}
 	m := NewModelWithTree(base, nil, tree, Layout{})
 	m, _ = update(t, m, sizeMsg(120, 36))
@@ -555,7 +568,7 @@ func TestListOnlyActions_NoOpInFocusPreview(t *testing.T) {
 func TestListOnlyActions_NoOpInFocusHelp(t *testing.T) {
 	t.Parallel()
 	driver := &fakeTreeDriver{tabs: []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}}}
-	tree := NewTreeExpander(driver, time.Minute)
+	tree := treeFromFake(driver)
 	base := []source.Candidate{herdrCandidate("backend", "/svc", "w1")}
 	m := NewModelWithTree(base, nil, tree, Layout{})
 	m.cursor = 0

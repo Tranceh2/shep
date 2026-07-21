@@ -1,6 +1,10 @@
 package tui
 
 import (
+	"context"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
 )
@@ -8,7 +12,7 @@ import (
 // applyFilter recomputes m.rows from the current query/expand state. A query
 // change starts selection at the first visible row; other rebuilds retain the
 // previously highlighted row when it remains visible.
-func (m *Model) applyFilter() {
+func (m *Model) applyFilter() tea.Cmd {
 	queryChanged := m.query != m.lastAppliedQuery
 	prevID := m.currentRowID()
 	m.rows = buildRows(rowBuildInput{
@@ -21,9 +25,27 @@ func (m *Model) applyFilter() {
 	m.lastAppliedQuery = m.query
 	if queryChanged {
 		m.cursor = 0
-		return
+		return m.maybeRefreshSnapshot()
 	}
 	m.retainSelection(prevID)
+	return m.maybeRefreshSnapshot()
+}
+
+func (m *Model) maybeRefreshSnapshot() tea.Cmd {
+	if m.snapshotDriver == nil || m.snapshotRefreshing || m.lastSnapshotAt.IsZero() || time.Since(m.lastSnapshotAt) < snapshotTTL {
+		return nil
+	}
+	m.snapshotRefreshing = true
+	m.snapshotSeq++
+	seq := m.snapshotSeq
+	driver := m.snapshotDriver
+	ctx := m.renderCtx
+	return func() tea.Msg {
+		snapshotCtx, cancel := context.WithTimeout(ctx, source.SnapshotTimeout)
+		defer cancel()
+		snapshot, err := driver.Snapshot(snapshotCtx)
+		return snapshotResponseMsg{seq: seq, snapshot: snapshot, err: err}
+	}
 }
 
 // baseFlatCandidates returns the flat candidate set buildRows groups: the

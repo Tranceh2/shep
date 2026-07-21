@@ -15,11 +15,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/pathutil"
 )
+
+// SnapshotTimeout bounds each complete Herdr state read so startup and
+// activity refreshes cannot leave the selector waiting on a hung daemon.
+const SnapshotTimeout = 2 * time.Second
 
 // Candidate is one project discovered by a provider. Path is the raw path as
 // observed; NormalizedPath is filled by the resolver (left empty here).
@@ -93,10 +99,9 @@ type HerdrDriver interface {
 	// Detect reports whether Herdr is usable (binary present). Daemon liveness
 	// is discovered lazily by actual command calls; Detect is a cheap probe.
 	Detect(ctx context.Context) bool
-	// ListWorkspaces returns the current Herdr workspaces with the CWD
-	// resolved from the workspace's panes (workspaces do not carry a cwd in
-	// the Herdr JSON envelope).
-	ListWorkspaces(ctx context.Context) ([]Workspace, error)
+	// Snapshot returns one complete Herdr state generation through the official
+	// `herdr api snapshot` command.
+	Snapshot(ctx context.Context) (Snapshot, error)
 	// FocusOrCreate decides focus-or-create solely from cand: if
 	// cand.Source == config.SourceHerdr it focuses the workspace identified by
 	// cand.Meta["workspace_id"], otherwise it creates a new focused workspace
@@ -105,14 +110,6 @@ type HerdrDriver interface {
 	// carries the workspace + root tab + root pane so callers can apply a
 	// template against a freshly created workspace.
 	FocusOrCreate(ctx context.Context, cand Candidate) (FocusResult, error)
-	// ListTabs returns the tabs of the named workspace via
-	// `herdr tab list --workspace <id>`. Used by the workspace preview section.
-	ListTabs(ctx context.Context, workspaceID string) ([]Tab, error)
-	// ListPanes returns the panes of the named workspace via
-	// `herdr pane list --workspace <id>`. Used by the workspace preview section.
-	ListPanes(ctx context.Context, workspaceID string) ([]Pane, error)
-	// ListAgents returns the agents known to Herdr via `herdr agent list`.
-	ListAgents(ctx context.Context) ([]Agent, error)
 	// ReadPane returns the captured terminal buffer of a pane, with its real
 	// ANSI color codes preserved, via
 	// `herdr pane read <pane_id> --lines <lines> --format ansi`. lines caps
@@ -143,23 +140,17 @@ type HerdrDriver interface {
 	// FocusTab focuses tabID via `herdr tab focus <id>`. A valid fallback;
 	// the primary focus mechanism is the creation-time flag on CreateTab.
 	FocusTab(ctx context.Context, tabID string) error
-	// CurrentPane returns the pane that currently has keyboard focus inside
-	// Herdr, via `herdr pane current` (falling back to `pane list` + a
-	// Focused:true filter on older Herdr builds that lack the subcommand).
-	// The returned Pane carries WorkspaceID/TabID/PaneID/CWD so callers can
-	// open a new tab or split a pane inside that same workspace. Returns
-	// ErrNoFocusedPane when no pane is focused (e.g. shep is not running
-	// inside a Herdr pane at all).
-	CurrentPane(ctx context.Context) (Pane, error)
 }
 
 // Workspace is a minimal, driver-supplied description of a Herdr workspace.
 // CWD is derived by the driver from the workspace's panes; the Herdr JSON
 // envelope does not attach a cwd directly to a workspace.
 type Workspace struct {
-	ID    string
-	Label string
-	CWD   string
+	ID          string
+	Label       string
+	CWD         string
+	ActiveTabID string
+	Focused     bool
 }
 
 // Tab is one tab of a Herdr workspace. PaneCount is the number of panes the
@@ -172,12 +163,6 @@ type Tab struct {
 	Number      int
 	PaneCount   int
 }
-
-// ErrNoFocusedPane is returned by CurrentPane when no Herdr pane currently has
-// keyboard focus (e.g. the Herdr daemon is reachable but shep is not running
-// inside a Herdr pane). Callers treat this as "no current workspace context"
-// and disable the tab/pane launch targets accordingly.
-var ErrNoFocusedPane = errors.New("no focused pane")
 
 // Pane is one pane of a Herdr workspace. Label is the optional human-facing
 // name supplied by Herdr; ID remains the stable machine identifier. CWD is the
@@ -200,12 +185,98 @@ type Pane struct {
 	AgentStatus   string
 }
 
-// Agent is one Herdr agent. Status mirrors the `agent_status` field of the
-// Herdr agent-list envelope (e.g. "running", "idle", "").
-type Agent struct {
-	ID     string
-	Label  string
-	Status string
+// Snapshot is one coherent Herdr state generation. Its records intentionally
+// retain only the fields Shep consumes; unknown Herdr fields are ignored by the
+// CLI driver so newer daemon versions remain usable.
+type Snapshot struct {
+	Workspaces         []Workspace
+	Tabs               []Tab
+	Panes              []Pane
+	FocusedWorkspaceID string
+	FocusedTabID       string
+	FocusedPaneID      string
+}
+
+var validPaneID = regexp.MustCompile(`^[A-Za-z0-9:._-]+$`)
+
+// HerdrCandidates derives one visible workspace candidate per snapshot
+// workspace. A workspace with no derivable CWD remains visible and marked
+// missing instead of disappearing from the selector.
+func HerdrCandidates(snapshot Snapshot) []Candidate {
+	panesByWorkspace := make(map[string][]Pane, len(snapshot.Workspaces))
+	for _, pane := range snapshot.Panes {
+		if pane.ID == "" || pane.WorkspaceID == "" {
+			continue
+		}
+		panesByWorkspace[pane.WorkspaceID] = append(panesByWorkspace[pane.WorkspaceID], pane)
+	}
+
+	candidates := make([]Candidate, 0, len(snapshot.Workspaces))
+	seen := make(map[string]struct{}, len(snapshot.Workspaces))
+	for _, workspace := range snapshot.Workspaces {
+		if workspace.ID == "" {
+			continue
+		}
+		if _, duplicate := seen[workspace.ID]; duplicate {
+			continue
+		}
+		seen[workspace.ID] = struct{}{}
+		cwd := representativeCWD(panesByWorkspace[workspace.ID])
+		missing := cwd == ""
+		if cwd != "" {
+			if _, err := os.Stat(cwd); err != nil {
+				missing = true
+			}
+		}
+		meta := map[string]string{"workspace_id": workspace.ID}
+		if workspace.ActiveTabID != "" {
+			meta["active_tab_id"] = workspace.ActiveTabID
+		}
+		candidates = append(candidates, Candidate{
+			Path:    cwd,
+			Label:   workspace.Label,
+			Source:  config.SourceHerdr,
+			Missing: missing,
+			Meta:    meta,
+		})
+	}
+	return candidates
+}
+
+// ResolveFocusedPane returns the complete focused Pane record needed by
+// command-workspace targeting. Invalid or absent ids deliberately degrade to
+// no focus before a pane id can reach close-on-exit shell composition.
+func ResolveFocusedPane(snapshot Snapshot) (*Pane, bool) {
+	if !validPaneID.MatchString(snapshot.FocusedPaneID) {
+		return nil, false
+	}
+	for i := range snapshot.Panes {
+		if snapshot.Panes[i].ID == snapshot.FocusedPaneID {
+			return &snapshot.Panes[i], true
+		}
+	}
+	return nil, false
+}
+
+func representativeCWD(panes []Pane) string {
+	for _, pane := range panes {
+		if pane.Focused {
+			return firstNonEmptyString(pane.ForegroundCWD, pane.CWD)
+		}
+	}
+	if len(panes) == 0 {
+		return ""
+	}
+	return firstNonEmptyString(panes[0].ForegroundCWD, panes[0].CWD)
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // HerdrAction records what FocusOrCreate did so callers can gate template
@@ -239,6 +310,35 @@ type Registry struct {
 	providers map[string]Provider
 	cfg       *config.Config
 	probes    config.Probes
+}
+
+// WithHerdrSnapshot supplies the already-captured startup generation to this
+// registry, preventing its herdr provider from issuing another state query.
+func (r *Registry) WithHerdrSnapshot(snapshot Snapshot) *Registry {
+	provider, ok := r.providers[config.SourceHerdr].(*herdrProvider)
+	if !ok {
+		return r
+	}
+	copy := cloneSnapshot(snapshot)
+	provider.snapshot = &copy
+	return r
+}
+
+// DisableHerdr leaves the registry's unrelated providers usable after an
+// initial snapshot failure, without retrying fragmented state loading.
+func (r *Registry) DisableHerdr() *Registry {
+	if provider, ok := r.providers[config.SourceHerdr].(*herdrProvider); ok {
+		provider.disabled = true
+	}
+	return r
+}
+
+func cloneSnapshot(snapshot Snapshot) Snapshot {
+	copy := snapshot
+	copy.Workspaces = append([]Workspace(nil), snapshot.Workspaces...)
+	copy.Tabs = append([]Tab(nil), snapshot.Tabs...)
+	copy.Panes = append([]Pane(nil), snapshot.Panes...)
+	return copy
 }
 
 // NewRegistry returns a Registry populated with the built-in providers gated
@@ -456,9 +556,11 @@ func (p *workspacesProvider) List(ctx context.Context) ([]Candidate, error) {
 // --- herdr provider ---
 
 type herdrProvider struct {
-	driver HerdrDriver
-	probes config.Probes
-	cfg    *config.Config
+	driver   HerdrDriver
+	probes   config.Probes
+	cfg      *config.Config
+	snapshot *Snapshot
+	disabled bool
 }
 
 func (h *herdrProvider) Name() string { return config.SourceHerdr }
@@ -466,38 +568,21 @@ func (h *herdrProvider) Name() string { return config.SourceHerdr }
 // enabled when a driver is present and the binary is on PATH. Without a
 // driver the provider is inert.
 func (h *herdrProvider) enabled(_ *config.Config, probes config.Probes) bool {
-	return probes.Herdr
+	return probes.Herdr && !h.disabled
 }
 
 func (h *herdrProvider) List(ctx context.Context) ([]Candidate, error) {
-	if h.driver == nil {
+	if h.driver == nil || h.disabled {
 		return nil, nil
 	}
-	workspaces, err := h.driver.ListWorkspaces(ctx)
+	if h.snapshot != nil {
+		return HerdrCandidates(*h.snapshot), nil
+	}
+	snapshot, err := h.driver.Snapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]Candidate, 0, len(workspaces))
-	for _, w := range workspaces {
-		if w.CWD == "" {
-			continue
-		}
-		cand := Candidate{
-			Path:   w.CWD,
-			Label:  w.Label,
-			Source: config.SourceHerdr,
-			Meta:   map[string]string{"workspace_id": w.ID},
-		}
-		// A workspace's reported pane cwd can go stale if the directory is
-		// deleted while Herdr still has it open; stat it here so launch()'s
-		// existing Missing check rejects it instead of silently printing the
-		// path when Herdr itself is absent/fails at selection time.
-		if _, err := os.Stat(w.CWD); err != nil {
-			cand.Missing = true
-		}
-		out = append(out, cand)
-	}
-	return out, nil
+	return HerdrCandidates(snapshot), nil
 }
 
 // --- zoxide provider ---

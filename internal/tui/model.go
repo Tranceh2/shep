@@ -35,13 +35,30 @@ package tui
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/preview"
 	"github.com/tranceh2/shep/internal/source"
 )
+
+// SnapshotDriver is the small read-only Herdr boundary the picker needs after
+// startup hydration: whole-generation refreshes and live pane reads. It keeps
+// refresh ownership inside Model without pulling imperative commands into the
+// TUI.
+type SnapshotDriver interface {
+	Snapshot(context.Context) (source.Snapshot, error)
+	ReadPane(context.Context, string, int) (string, error)
+}
+
+// SnapshotRendererFactory constructs a fresh immutable renderer for a new
+// snapshot generation.
+type SnapshotRendererFactory func(source.Snapshot) preview.Renderer
+
+const snapshotTTL = 5 * time.Second
 
 // LabelFormats contains the resolved source-specific row templates needed by
 // render.go. It deliberately carries only presentation strings rather than a
@@ -185,6 +202,14 @@ type Model struct {
 	// pane": the footer's ctrl+t/ctrl+p hints are hidden and handleKey
 	// ignores both bindings (see selectWithTarget).
 	currentPane *source.Pane
+	// snapshotDriver is non-nil only for a model hydrated from a full Herdr
+	// snapshot. Model is the single owner of eligible refreshes.
+	snapshotDriver      SnapshotDriver
+	rendererForSnapshot SnapshotRendererFactory
+	herdrIcon           string
+	snapshotSeq         int
+	snapshotRefreshing  bool
+	lastSnapshotAt      time.Time
 	// chosenTarget records which target the user picked via ctrl+t ("tab")
 	// or ctrl+p ("pane"). Empty means enter was pressed (or the run was
 	// cancelled), so the caller's --target flag value applies unchanged.
@@ -273,6 +298,15 @@ type panePreviewMsg struct {
 	seq  int
 	text string
 	err  error
+}
+
+// snapshotResponseMsg carries an asynchronous full-generation refresh. The
+// request seq is independent from previewSeq because it protects source state,
+// while previewSeq protects renderer output for a particular generation/row.
+type snapshotResponseMsg struct {
+	seq      int
+	snapshot source.Snapshot
+	err      error
 }
 
 // NewModel builds a model over the supplied candidates. renderer may be nil,
@@ -387,6 +421,24 @@ func (m Model) WithCurrentPane(p *source.Pane) Model {
 	return m
 }
 
+// WithSnapshotRefresh wires a startup generation into the model. The initial
+// state is already resolved by command/open; this method merely establishes
+// the one refresh owner and generation-scoped tree/focus references.
+func (m Model) WithSnapshotRefresh(driver SnapshotDriver, snapshot source.Snapshot, rendererForSnapshot SnapshotRendererFactory, herdrIcon string) Model {
+	m.snapshotDriver = driver
+	m.rendererForSnapshot = rendererForSnapshot
+	m.herdrIcon = herdrIcon
+	m.tree = NewTreeExpanderFromSnapshot(snapshot)
+	if pane, ok := source.ResolveFocusedPane(snapshot); ok {
+		copy := *pane
+		m.currentPane = &copy
+	} else {
+		m.currentPane = nil
+	}
+	m.lastSnapshotAt = time.Now()
+	return m
+}
+
 // Init kicks off the first async preview render for the initially
 // highlighted row when a Renderer (or tree, for a pane row) is wired.
 func (m Model) Init() tea.Cmd {
@@ -406,6 +458,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.handlePreviewResponse(msg)
 	case panePreviewMsg:
 		m = m.handlePanePreviewResponse(msg)
+	case snapshotResponseMsg:
+		m, cmd = m.handleSnapshotResponse(msg)
 	case spinner.TickMsg:
 		m, cmd = m.handleSpinnerTick(msg)
 	case tea.KeyMsg:
@@ -481,6 +535,91 @@ func (m Model) handlePanePreviewResponse(msg panePreviewMsg) Model {
 	return m
 }
 
+func (m Model) handleSnapshotResponse(msg snapshotResponseMsg) (Model, tea.Cmd) {
+	if msg.seq != m.snapshotSeq {
+		return m, nil
+	}
+	m.snapshotRefreshing = false
+	if msg.err != nil {
+		m.lastSnapshotAt = time.Now()
+		m.previewErr = "snapshot refresh failed"
+		return m, nil
+	}
+
+	replacement := source.HerdrCandidates(msg.snapshot)
+	if m.herdrIcon != "" {
+		for i := range replacement {
+			replacement[i].Icon = m.herdrIcon
+		}
+	}
+	m.baseCandidates = spliceHerdrCandidates(m.baseCandidates, replacement)
+	m.candidates = m.baseCandidates
+	m.tree = NewTreeExpanderFromSnapshot(msg.snapshot)
+	if pane, ok := source.ResolveFocusedPane(msg.snapshot); ok {
+		copy := *pane
+		m.currentPane = &copy
+	} else {
+		m.currentPane = nil
+	}
+	if m.rendererForSnapshot != nil {
+		m.renderer = m.rendererForSnapshot(msg.snapshot)
+	}
+	m.lastSnapshotAt = time.Now()
+	m.previewSeq++
+	m.previewText = ""
+	m.previewSections = nil
+	m.previewErr = ""
+	filterCmd := m.applyFilter()
+	_, previewCmd := m.dispatchPreviewForRow(m.previewSeq)
+	return m, tea.Batch(filterCmd, previewCmd, m.maybeStartSpinner())
+}
+
+// spliceHerdrCandidates preserves every non-Herdr candidate in its original
+// order while replacing, dropping, and appending only the Herdr slice from a
+// new full snapshot generation.
+func spliceHerdrCandidates(base, replacement []source.Candidate) []source.Candidate {
+	byID := make(map[string]source.Candidate, len(replacement))
+	for _, candidate := range replacement {
+		byID[candidate.Meta["workspace_id"]] = candidate
+	}
+	lastHerdr := -1
+	for i, candidate := range base {
+		if candidate.Source == config.SourceHerdr {
+			lastHerdr = i
+		}
+	}
+	out := make([]source.Candidate, 0, len(base)+len(replacement))
+	used := make(map[string]struct{}, len(replacement))
+	appendNew := func() {
+		for _, candidate := range replacement {
+			id := candidate.Meta["workspace_id"]
+			if _, exists := used[id]; exists {
+				continue
+			}
+			out = append(out, candidate)
+			used[id] = struct{}{}
+		}
+	}
+	for i, candidate := range base {
+		if candidate.Source == config.SourceHerdr {
+			id := candidate.Meta["workspace_id"]
+			if replacementCandidate, exists := byID[id]; exists {
+				out = append(out, replacementCandidate)
+				used[id] = struct{}{}
+			}
+		} else {
+			out = append(out, candidate)
+		}
+		if i == lastHerdr {
+			appendNew()
+		}
+	}
+	if lastHerdr == -1 {
+		appendNew()
+	}
+	return out
+}
+
 // handleSpinnerTick advances the loading spinner while spinnerNeeded() is
 // still true (a preview render in flight, or a visible working-status pane
 // icon), and lets the tick loop die (returns a nil Cmd) the moment neither
@@ -521,6 +660,22 @@ func RunWithTree(ctx context.Context, candidates []source.Candidate, query strin
 		l = layout[0]
 	}
 	m := newModelWithTreeLayout(candidates, renderer, ctx, tree, l).WithCurrentPane(currentPane)
+	m.query = query
+	m.applyFilter()
+	return runProgram(ctx, m)
+}
+
+// RunWithSnapshot drives a picker from one coherent startup generation and
+// gives the model the sole eligible-refresh driver. The renderer factory builds
+// an immutable renderer each time a newer generation succeeds.
+func RunWithSnapshot(ctx context.Context, candidates []source.Candidate, query string, renderer preview.Renderer, snapshot source.Snapshot, driver SnapshotDriver, rendererForSnapshot SnapshotRendererFactory, herdrIcon string, currentPane *source.Pane, layout ...Layout) (source.Candidate, RowAction, string, bool, error) {
+	var l Layout
+	if len(layout) > 0 {
+		l = layout[0]
+	}
+	m := newModelWithTreeLayout(candidates, renderer, ctx, NewTreeExpanderFromSnapshot(snapshot), l).
+		WithCurrentPane(currentPane).
+		WithSnapshotRefresh(driver, snapshot, rendererForSnapshot, herdrIcon)
 	m.query = query
 	m.applyFilter()
 	return runProgram(ctx, m)

@@ -2,7 +2,6 @@ package tui
 
 import (
 	"testing"
-	"time"
 
 	"github.com/tranceh2/shep/internal/source"
 )
@@ -19,7 +18,7 @@ func TestRowAction_SynthesizedTabPaneRowsAreFocusTab(t *testing.T) {
 		tabs:  []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}},
 		panes: []source.Pane{{ID: "p1", WorkspaceID: "w1", TabID: "t1", CWD: "/srv/api"}},
 	}
-	tree := NewTreeExpander(driver, time.Minute)
+	tree := treeFromFake(driver)
 	m := NewModelWithTree(cands, nil, tree, Layout{})
 	m.expandedWorkspaces["w1"] = true
 	m.applyFilter()
@@ -86,6 +85,7 @@ func mWithSelectedAction(action RowAction) Model {
 	m.selectedAction = action
 	return m
 }
+
 // reflects the Action of whatever row Enter was pressed on: RowActionFocusTab
 // for a pane row, RowActionOpen for a top-level candidate row.
 func TestRowAction_SelectedActionTracksCurrentRow(t *testing.T) {
@@ -94,7 +94,7 @@ func TestRowAction_SelectedActionTracksCurrentRow(t *testing.T) {
 		tabs:  []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}},
 		panes: []source.Pane{{ID: "p1", WorkspaceID: "w1", TabID: "t1", CWD: "/srv/api"}},
 	}
-	tree := NewTreeExpander(driver, time.Minute)
+	tree := treeFromFake(driver)
 	base := []source.Candidate{herdrCandidate("backend", "/srv/backend", "w1")}
 	m := NewModelWithTree(base, nil, tree, Layout{})
 	m, _ = update(t, m, sizeMsg(120, 36))

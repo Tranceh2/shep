@@ -25,16 +25,13 @@ type fakeDriver struct {
 }
 
 func (f *fakeDriver) Detect(context.Context) bool { return true }
-func (f *fakeDriver) ListWorkspaces(context.Context) ([]source.Workspace, error) {
-	return nil, nil
+func (f *fakeDriver) Snapshot(context.Context) (source.Snapshot, error) {
+	return source.Snapshot{}, errors.New("not implemented")
 }
 func (f *fakeDriver) FocusOrCreate(context.Context, source.Candidate) (source.FocusResult, error) {
 	return source.FocusResult{}, errors.New("not implemented")
 }
-func (f *fakeDriver) ListTabs(context.Context, string) ([]source.Tab, error)   { return nil, nil }
-func (f *fakeDriver) ListPanes(context.Context, string) ([]source.Pane, error) { return nil, nil }
-func (f *fakeDriver) ListAgents(context.Context) ([]source.Agent, error)       { return nil, nil }
-func (f *fakeDriver) ReadPane(context.Context, string, int) (string, error)    { return "", nil }
+func (f *fakeDriver) ReadPane(context.Context, string, int) (string, error) { return "", nil }
 
 func (f *fakeDriver) CreateTab(_ context.Context, workspaceID, cwd, label string, focus bool) (source.Tab, source.Pane, error) {
 	f.tabSeq++
@@ -68,9 +65,6 @@ func (f *fakeDriver) RunPane(_ context.Context, paneID, command string) error {
 func (f *fakeDriver) FocusTab(_ context.Context, tabID string) error {
 	f.focused = append(f.focused, "focus-tab:"+tabID)
 	return nil
-}
-func (f *fakeDriver) CurrentPane(context.Context) (source.Pane, error) {
-	return source.Pane{}, nil
 }
 
 func seqID(prefix string, n int) string {

@@ -36,7 +36,7 @@ import (
 )
 
 // validPaneID matches the shape Herdr's own pane ids use. CreateTab,
-// SplitPane and CurrentPane reject any pane_id outside this set as
+// SplitPane rejects any pane_id outside this set as
 // defense-in-depth: those ids eventually reach
 // internal/templates.wrapCloseOnExit's shell-chained command construction, so
 // a hostile or malformed Herdr response must never carry shell
@@ -113,26 +113,11 @@ func (d *Driver) Detect(_ context.Context) bool {
 
 // --- JSON envelopes (captured against a live Herdr daemon) ---
 
-type workspaceListEnvelope struct {
-	ID     string `json:"id"`
-	Result struct {
-		Type       string         `json:"type"`
-		Workspaces []rawWorkspace `json:"workspaces"`
-	} `json:"result"`
-}
-
 type rawWorkspace struct {
 	WorkspaceID string `json:"workspace_id"`
 	Label       string `json:"label"`
 	ActiveTabID string `json:"active_tab_id"`
 	Focused     bool   `json:"focused"`
-}
-
-type paneListEnvelope struct {
-	ID     string `json:"id"`
-	Result struct {
-		Panes []rawPane `json:"panes"`
-	} `json:"result"`
 }
 
 type rawPane struct {
@@ -146,18 +131,6 @@ type rawPane struct {
 	AgentStatus   string `json:"agent_status"`
 }
 
-// tabListEnvelope wraps `herdr tab list --workspace <id>`.
-//
-//	{"id":"cli:tab:list","result":{"type":"tab_list","tabs":[
-//	  {tab_id,workspace_id,label,focused,number,pane_count}]}}
-type tabListEnvelope struct {
-	ID     string `json:"id"`
-	Result struct {
-		Type string   `json:"type"`
-		Tabs []rawTab `json:"tabs"`
-	} `json:"result"`
-}
-
 type rawTab struct {
 	TabID       string `json:"tab_id"`
 	WorkspaceID string `json:"workspace_id"`
@@ -167,106 +140,80 @@ type rawTab struct {
 	PaneCount   int    `json:"pane_count"`
 }
 
-// agentListEnvelope wraps `herdr agent list`.
-//
-//	{"id":"cli:agent:list","result":{"agents":[
-//	  {agent_id,label,agent_status}]}}
-type agentListEnvelope struct {
+// snapshotEnvelope wraps `herdr api snapshot`. The command provides one
+// coherent state generation containing the workspace, tab, and pane records
+// that previously needed several independent calls.
+type snapshotEnvelope struct {
 	ID     string `json:"id"`
 	Result struct {
-		Agents []rawAgent `json:"agents"`
+		Snapshot rawSnapshot `json:"snapshot"`
 	} `json:"result"`
 }
 
-type rawAgent struct {
-	AgentID     string `json:"agent_id"`
-	Label       string `json:"label"`
-	AgentStatus string `json:"agent_status"`
+type rawSnapshot struct {
+	Workspaces         []rawWorkspace `json:"workspaces"`
+	Tabs               []rawTab       `json:"tabs"`
+	Panes              []rawPane      `json:"panes"`
+	FocusedWorkspaceID string         `json:"focused_workspace_id"`
+	FocusedTabID       string         `json:"focused_tab_id"`
+	FocusedPaneID      string         `json:"focused_pane_id"`
 }
 
-// ListWorkspaces enumerates Herdr workspaces and derives each workspace's CWD
-// from its panes (preferring the focused pane's cwd, falling back to the first
-// pane's foreground_cwd). A workspace with no panes keeps an empty CWD and is
-// dropped by the herdr source provider.
-func (d *Driver) ListWorkspaces(ctx context.Context) ([]source.Workspace, error) {
-	workspaces, panes, err := d.loadState(ctx)
+// Snapshot obtains one full coherent state generation through the official
+// Herdr CLI. Records without their primary identity are ignored so a partial
+// daemon response cannot invalidate complete neighboring records.
+func (d *Driver) Snapshot(ctx context.Context) (source.Snapshot, error) {
+	out, err := d.run.Run(ctx, d.binary, "api", "snapshot")
 	if err != nil {
-		return nil, err
+		return source.Snapshot{}, fmt.Errorf("herdr api snapshot: %w", err)
 	}
-	return joinWorkspaces(workspaces, panes), nil
+	var env snapshotEnvelope
+	if err := json.Unmarshal(out, &env); err != nil {
+		return source.Snapshot{}, fmt.Errorf("herdr api snapshot: parse: %w", err)
+	}
+	return rawSnapshotToSnapshot(env.Result.Snapshot), nil
 }
 
-// loadState fetches workspaces and panes in two round trips. Either envelope
-// failing to parse is an error so callers can fall back to a path-print
-// (HI-6); we never silently return partial state.
-func (d *Driver) loadState(ctx context.Context) ([]rawWorkspace, []rawPane, error) {
-	wsOut, err := d.run.Run(ctx, d.binary, "workspace", "list")
-	if err != nil {
-		return nil, nil, fmt.Errorf("herdr workspace list: %w", err)
+func rawSnapshotToSnapshot(raw rawSnapshot) source.Snapshot {
+	snapshot := source.Snapshot{
+		Workspaces:         make([]source.Workspace, 0, len(raw.Workspaces)),
+		Tabs:               make([]source.Tab, 0, len(raw.Tabs)),
+		Panes:              make([]source.Pane, 0, len(raw.Panes)),
+		FocusedWorkspaceID: raw.FocusedWorkspaceID,
+		FocusedTabID:       raw.FocusedTabID,
+		FocusedPaneID:      raw.FocusedPaneID,
 	}
-	var wsEnv workspaceListEnvelope
-	if err := json.Unmarshal(wsOut, &wsEnv); err != nil {
-		return nil, nil, fmt.Errorf("herdr workspace list: parse: %w", err)
-	}
-
-	paneOut, err := d.run.Run(ctx, d.binary, "pane", "list")
-	if err != nil {
-		return nil, nil, fmt.Errorf("herdr pane list: %w", err)
-	}
-	var paneEnv paneListEnvelope
-	if err := json.Unmarshal(paneOut, &paneEnv); err != nil {
-		return nil, nil, fmt.Errorf("herdr pane list: parse: %w", err)
-	}
-	return wsEnv.Result.Workspaces, paneEnv.Result.Panes, nil
-}
-
-// joinWorkspaces attaches a representative CWD to each workspace by walking
-// the pane list. Focused pane wins; otherwise the first pane's foreground_cwd
-// (then cwd) is used.
-func joinWorkspaces(workspaces []rawWorkspace, panes []rawPane) []source.Workspace {
-	byWorkspace := make(map[string][]rawPane, len(workspaces))
-	for _, p := range panes {
-		if p.WorkspaceID == "" {
+	for _, workspace := range raw.Workspaces {
+		if workspace.WorkspaceID == "" {
 			continue
 		}
-		byWorkspace[p.WorkspaceID] = append(byWorkspace[p.WorkspaceID], p)
-	}
-	out := make([]source.Workspace, 0, len(workspaces))
-	for _, w := range workspaces {
-		if w.WorkspaceID == "" {
-			continue
-		}
-		cwd := representativeCWD(byWorkspace[w.WorkspaceID])
-		out = append(out, source.Workspace{
-			ID:    w.WorkspaceID,
-			Label: w.Label,
-			CWD:   cwd,
+		snapshot.Workspaces = append(snapshot.Workspaces, source.Workspace{
+			ID:          workspace.WorkspaceID,
+			Label:       workspace.Label,
+			ActiveTabID: workspace.ActiveTabID,
+			Focused:     workspace.Focused,
 		})
 	}
-	return out
-}
-
-// representativeCWD picks the cwd to represent a workspace from its panes.
-// Focused pane > first pane's foreground_cwd > first pane's cwd > "".
-func representativeCWD(panes []rawPane) string {
-	for _, p := range panes {
-		if p.Focused {
-			return firstNonEmpty(p.ForegroundCWD, p.CWD)
+	for _, tab := range raw.Tabs {
+		if tab.TabID == "" {
+			continue
 		}
+		snapshot.Tabs = append(snapshot.Tabs, source.Tab{
+			ID:          tab.TabID,
+			WorkspaceID: tab.WorkspaceID,
+			Label:       tab.Label,
+			Focused:     tab.Focused,
+			Number:      tab.Number,
+			PaneCount:   tab.PaneCount,
+		})
 	}
-	if len(panes) > 0 {
-		return firstNonEmpty(panes[0].ForegroundCWD, panes[0].CWD)
-	}
-	return ""
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
+	for _, pane := range raw.Panes {
+		if pane.PaneID == "" {
+			continue
 		}
+		snapshot.Panes = append(snapshot.Panes, rawPaneToPane(pane))
 	}
-	return ""
+	return snapshot
 }
 
 // workspaceCreatedEnvelope wraps `herdr workspace create`.
@@ -303,18 +250,6 @@ type paneInfoEnvelope struct {
 	ID     string `json:"id"`
 	Result struct {
 		Type string  `json:"type"`
-		Pane rawPane `json:"pane"`
-	} `json:"result"`
-}
-
-// paneCurrentEnvelope wraps `herdr pane current`, documented in the package
-// doc comment:
-//
-//	{"id":"cli:pane:current","result":{"pane":{pane_id,workspace_id,tab_id,
-//	  cwd,foreground_cwd,focused,...}}}
-type paneCurrentEnvelope struct {
-	ID     string `json:"id"`
-	Result struct {
 		Pane rawPane `json:"pane"`
 	} `json:"result"`
 }
@@ -503,54 +438,6 @@ func (d *Driver) FocusTab(ctx context.Context, tabID string) error {
 	return nil
 }
 
-// CurrentPane returns the pane that currently has keyboard focus inside Herdr,
-// via `herdr pane current`. Newer Herdr builds answer with a single-pane
-// envelope (pane_id/workspace_id/tab_id/cwd/focused). Older builds that do not
-// recognise the `pane current` subcommand exit non-zero; CurrentPane then
-// falls back to the loadState pair (`workspace list` + `pane list`) and returns
-// the first pane whose Focused flag is set — the same filter pattern
-// internal/preview/renderer.go's activePaneID uses. When no pane is focused
-// (shep is not running inside a Herdr pane), CurrentPane returns
-// source.ErrNoFocusedPane so callers can disable the tab/pane launch targets.
-//
-// `pane current` deliberately carries no --format flag, matching every other
-// JSON-emitting herdr command in this driver (`workspace list`, `pane list`,
-// `tab list`, `agent list`): JSON is the default envelope, and adding a
-// format flag here would diverge from the established convention without
-// changing the response shape.
-func (d *Driver) CurrentPane(ctx context.Context) (source.Pane, error) {
-	out, err := d.run.Run(ctx, d.binary, "pane", "current")
-	if err == nil {
-		var env paneCurrentEnvelope
-		if jErr := json.Unmarshal(out, &env); jErr != nil {
-			return source.Pane{}, fmt.Errorf("herdr pane current: parse: %w", jErr)
-		}
-		if env.Result.Pane.PaneID == "" {
-			return source.Pane{}, fmt.Errorf("herdr pane current: incomplete response")
-		}
-		if !validPaneID.MatchString(env.Result.Pane.PaneID) {
-			return source.Pane{}, fmt.Errorf("herdr pane current: invalid pane id %q", env.Result.Pane.PaneID)
-		}
-		return rawPaneToPane(env.Result.Pane), nil
-	}
-
-	// Fallback: older Herdr builds reject `pane current` as an unknown
-	// subcommand (non-zero exit). Re-derive the focused pane from the full
-	// `pane list`, mirroring activePaneID in internal/preview/renderer.go.
-	_, panes, lerr := d.loadState(ctx)
-	if lerr != nil {
-		// Surface the original `pane current` failure so callers see why the
-		// fallback was attempted, not just the secondary list error.
-		return source.Pane{}, fmt.Errorf("herdr pane current: %w", err)
-	}
-	for _, p := range panes {
-		if p.Focused {
-			return rawPaneToPane(p), nil
-		}
-	}
-	return source.Pane{}, source.ErrNoFocusedPane
-}
-
 // rawPaneToPane converts the JSON envelope's rawPane into the exported
 // source.Pane. Kept unexported and local because it is only needed by the
 // pane-producing methods of this driver; the templates/command layers consume
@@ -566,87 +453,6 @@ func rawPaneToPane(p rawPane) source.Pane {
 		Focused:       p.Focused,
 		AgentStatus:   p.AgentStatus,
 	}
-}
-
-// ListTabs enumerates the tabs of the named workspace via
-// `herdr tab list --workspace <id>`. An empty tabs array is a normal
-// nil-slice result, not an error.
-func (d *Driver) ListTabs(ctx context.Context, workspaceID string) ([]source.Tab, error) {
-	if workspaceID == "" {
-		return nil, errors.New("herdr tab list: empty workspace id")
-	}
-	out, err := d.run.Run(ctx, d.binary, "tab", "list", "--workspace", workspaceID)
-	if err != nil {
-		return nil, fmt.Errorf("herdr tab list --workspace %s: %w", workspaceID, err)
-	}
-	var env tabListEnvelope
-	if err := json.Unmarshal(out, &env); err != nil {
-		return nil, fmt.Errorf("herdr tab list --workspace %s: parse: %w", workspaceID, err)
-	}
-	tabs := make([]source.Tab, 0, len(env.Result.Tabs))
-	for _, t := range env.Result.Tabs {
-		if t.TabID == "" {
-			continue
-		}
-		tabs = append(tabs, source.Tab{
-			ID:          t.TabID,
-			WorkspaceID: t.WorkspaceID,
-			Label:       t.Label,
-			Focused:     t.Focused,
-			Number:      t.Number,
-			PaneCount:   t.PaneCount,
-		})
-	}
-	return tabs, nil
-}
-
-// ListPanes enumerates the panes of the named workspace via
-// `herdr pane list --workspace <id>`.
-func (d *Driver) ListPanes(ctx context.Context, workspaceID string) ([]source.Pane, error) {
-	if workspaceID == "" {
-		return nil, errors.New("herdr pane list: empty workspace id")
-	}
-	out, err := d.run.Run(ctx, d.binary, "pane", "list", "--workspace", workspaceID)
-	if err != nil {
-		return nil, fmt.Errorf("herdr pane list --workspace %s: %w", workspaceID, err)
-	}
-	var env paneListEnvelope
-	if err := json.Unmarshal(out, &env); err != nil {
-		return nil, fmt.Errorf("herdr pane list --workspace %s: parse: %w", workspaceID, err)
-	}
-	panes := make([]source.Pane, 0, len(env.Result.Panes))
-	for _, p := range env.Result.Panes {
-		if p.PaneID == "" {
-			continue
-		}
-		panes = append(panes, rawPaneToPane(p))
-	}
-	return panes, nil
-}
-
-// ListAgents enumerates Herdr agents via `herdr agent list`. An empty agents
-// array is a normal nil-slice result, not an error.
-func (d *Driver) ListAgents(ctx context.Context) ([]source.Agent, error) {
-	out, err := d.run.Run(ctx, d.binary, "agent", "list")
-	if err != nil {
-		return nil, fmt.Errorf("herdr agent list: %w", err)
-	}
-	var env agentListEnvelope
-	if err := json.Unmarshal(out, &env); err != nil {
-		return nil, fmt.Errorf("herdr agent list: parse: %w", err)
-	}
-	agents := make([]source.Agent, 0, len(env.Result.Agents))
-	for _, a := range env.Result.Agents {
-		if a.AgentID == "" {
-			continue
-		}
-		agents = append(agents, source.Agent{
-			ID:     a.AgentID,
-			Label:  a.Label,
-			Status: a.AgentStatus,
-		})
-	}
-	return agents, nil
 }
 
 // ReadPane returns the captured terminal buffer of a pane via

@@ -1,12 +1,16 @@
 package tui
 
 import (
+	"context"
 	"errors"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tranceh2/shep/internal/source"
 )
+
+const panePreviewTimeout = 150 * time.Millisecond
 
 // syncPreviewAfterSelectionChange compares the highlighted row before and
 // after a key mutated cursor/query/expand state. When the highlight
@@ -104,11 +108,10 @@ func (m Model) previewCmd(seq int, cand source.Candidate) tea.Cmd {
 // panePreviewMsg tagged with seq — the "existing visual capture where
 // available" contract for a highlighted pane row.
 func (m Model) panePreviewCmd(seq int, cand source.Candidate) tea.Cmd {
-	tree := m.tree
 	renderCtx := m.renderCtx
 	paneID := cand.Meta["pane_id"]
 	return func() tea.Msg {
-		text, err := tree.ReadPane(renderCtx, paneID, panePreviewMaxLines)
+		text, err := m.readPane(renderCtx, paneID, panePreviewMaxLines)
 		return panePreviewMsg{seq: seq, text: text, err: err}
 	}
 }
@@ -129,9 +132,18 @@ func (m Model) tabPreviewCmd(seq int, cand source.Candidate) tea.Cmd {
 		if !ok {
 			return panePreviewMsg{seq: seq, err: errNoResolvedPane}
 		}
-		text, err := tree.ReadPane(renderCtx, paneID, panePreviewMaxLines)
+		text, err := m.readPane(renderCtx, paneID, panePreviewMaxLines)
 		return panePreviewMsg{seq: seq, text: text, err: err}
 	}
+}
+
+func (m Model) readPane(ctx context.Context, paneID string, lines int) (string, error) {
+	if m.snapshotDriver != nil {
+		qctx, cancel := context.WithTimeout(ctx, panePreviewTimeout)
+		defer cancel()
+		return m.snapshotDriver.ReadPane(qctx, paneID, lines)
+	}
+	return "", errors.New("pane reader unavailable")
 }
 
 // panePreviewMaxLines caps the trailing lines captured for a highlighted

@@ -116,8 +116,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.query != "" {
 			m.query = ""
 			m.focus = FocusList
-			m.applyFilter()
-			return m, m.syncPreviewAfterSelectionChange()
+			return m, tea.Batch(m.applyFilter(), m.syncPreviewAfterSelectionChange())
 		}
 		m.cancelled = true
 		return m, tea.Quit
@@ -179,13 +178,12 @@ func (m Model) handlePreviewFocusedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+u":
 		m.focus = FocusList
 		m.query = ""
-		m.applyFilter()
-		return m, m.syncPreviewAfterSelectionChange()
+		return m, tea.Batch(m.applyFilter(), m.syncPreviewAfterSelectionChange())
 	case "backspace":
 		m.focus = FocusList
 		if len(m.query) > 0 {
 			m.query = m.query[:len(m.query)-1]
-			m.applyFilter()
+			return m, tea.Batch(m.applyFilter(), m.syncPreviewAfterSelectionChange())
 		}
 		return m, m.syncPreviewAfterSelectionChange()
 	case "enter", "ctrl+l", "left", "right":
@@ -194,8 +192,7 @@ func (m Model) handlePreviewFocusedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if isPrintable(msg.String()) {
 		m.focus = FocusList
 		m.query += msg.String()
-		m.applyFilter()
-		return m, m.syncPreviewAfterSelectionChange()
+		return m, tea.Batch(m.applyFilter(), m.syncPreviewAfterSelectionChange())
 	}
 	return m, nil
 }
@@ -226,25 +223,22 @@ func (m Model) handleListFocusedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.syncPreviewAfterSelectionChange()
 	case "right":
-		m.expandCurrent()
-		return m, m.syncPreviewAfterSelectionChange()
+		return m, tea.Batch(m.expandCurrent(), m.syncPreviewAfterSelectionChange())
 	case "left":
-		m.collapseCurrent()
-		return m, m.syncPreviewAfterSelectionChange()
+		return m, tea.Batch(m.collapseCurrent(), m.syncPreviewAfterSelectionChange())
 	case "ctrl+u":
 		m.query = ""
-		m.applyFilter()
-		return m, m.syncPreviewAfterSelectionChange()
+		return m, tea.Batch(m.applyFilter(), m.syncPreviewAfterSelectionChange())
 	case "backspace":
 		if len(m.query) > 0 {
 			m.query = m.query[:len(m.query)-1]
-			m.applyFilter()
+			return m, tea.Batch(m.applyFilter(), m.syncPreviewAfterSelectionChange())
 		}
 		return m, m.syncPreviewAfterSelectionChange()
 	default:
 		if isPrintable(msg.String()) {
 			m.query += msg.String()
-			m.applyFilter()
+			return m, tea.Batch(m.applyFilter(), m.syncPreviewAfterSelectionChange())
 		}
 		return m, m.syncPreviewAfterSelectionChange()
 	}
@@ -270,6 +264,7 @@ func (m Model) handleEnter() (tea.Model, tea.Cmd) {
 // Row instead of a raw candidate index.
 func (m Model) selectWithTarget(target string) (tea.Model, tea.Cmd) {
 	if m.currentPane == nil {
+		m.previewErr = "no focused Herdr pane"
 		return m, nil
 	}
 	cand, ok := m.currentCandidate()
@@ -303,32 +298,32 @@ func (m *Model) cycleOrientationOverride() {
 // RowCandidate Herdr workspace's tab/pane children (progressive disclosure
 // at an empty query — see expandedWorkspaces' doc comment). A no-op for any
 // other row kind.
-func (m *Model) expandCurrent() {
+func (m *Model) expandCurrent() tea.Cmd {
 	row, ok := m.currentRow()
 	if !ok || row.Kind != RowCandidate || !row.Expandable {
-		return
+		return nil
 	}
 	wsID := row.Candidate.Meta["workspace_id"]
 	if wsID == "" {
-		return
+		return nil
 	}
 	m.expandedWorkspaces[wsID] = true
-	m.applyFilter()
+	return m.applyFilter()
 }
 
 // collapseCurrent handles Left on the highlighted row: manually collapses a
 // RowCandidate Herdr workspace's expanded tab/pane children. A no-op for any
 // other row kind (including a RowTab/RowPane row: only the owning workspace
 // collapses, there is nothing to collapse on a leaf).
-func (m *Model) collapseCurrent() {
+func (m *Model) collapseCurrent() tea.Cmd {
 	row, ok := m.currentRow()
 	if !ok || row.Kind != RowCandidate || !row.Expandable {
-		return
+		return nil
 	}
 	wsID := row.Candidate.Meta["workspace_id"]
 	if wsID == "" {
-		return
+		return nil
 	}
 	delete(m.expandedWorkspaces, wsID)
-	m.applyFilter()
+	return m.applyFilter()
 }

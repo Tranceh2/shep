@@ -34,22 +34,17 @@ func (fakePreviewRenderer) Render(context.Context, source.Candidate) (preview.Re
 // and responding with scripted FocusOrCreate results plus recording any
 // tab/pane mutation calls a template application would issue.
 type openDriver struct {
-	detect      bool
-	focusErr    error
-	lastCand    source.Candidate
-	lastAction  source.HerdrAction
-	workspaceID string
-	rootTabID   string
-	rootPaneID  string
-	listErr     error
-
-	// currentPane/currentPaneErr script CurrentPane: when currentPaneErr is
-	// non-nil it is returned (use source.ErrNoFocusedPane to model "shep not
-	// inside a herdr pane"); otherwise currentPane is returned as-is.
-	currentPane      source.Pane
-	currentPaneErr   error
-	currentCalled    bool
-	currentPaneDelay time.Duration
+	detect        bool
+	focusErr      error
+	lastCand      source.Candidate
+	lastAction    source.HerdrAction
+	workspaceID   string
+	rootTabID     string
+	rootPaneID    string
+	snapshot      source.Snapshot
+	snapshotErr   error
+	snapshotCalls int
+	snapshotFn    func(context.Context) (source.Snapshot, error)
 
 	renamed      []string
 	ran          []string
@@ -68,8 +63,12 @@ type openDriver struct {
 }
 
 func (d *openDriver) Detect(context.Context) bool { return d.detect }
-func (d *openDriver) ListWorkspaces(context.Context) ([]source.Workspace, error) {
-	return nil, d.listErr
+func (d *openDriver) Snapshot(ctx context.Context) (source.Snapshot, error) {
+	d.snapshotCalls++
+	if d.snapshotFn != nil {
+		return d.snapshotFn(ctx)
+	}
+	return d.snapshot, d.snapshotErr
 }
 func (d *openDriver) FocusOrCreate(_ context.Context, cand source.Candidate) (source.FocusResult, error) {
 	d.lastCand = cand
@@ -81,15 +80,6 @@ func (d *openDriver) FocusOrCreate(_ context.Context, cand source.Candidate) (so
 		action = source.HerdrActionFocused
 	}
 	return source.FocusResult{WorkspaceID: d.workspaceID, Action: action, RootTabID: d.rootTabID, RootPaneID: d.rootPaneID}, nil
-}
-func (d *openDriver) ListTabs(context.Context, string) ([]source.Tab, error) {
-	return nil, errors.New("openDriver does not implement ListTabs")
-}
-func (d *openDriver) ListPanes(context.Context, string) ([]source.Pane, error) {
-	return nil, errors.New("openDriver does not implement ListPanes")
-}
-func (d *openDriver) ListAgents(context.Context) ([]source.Agent, error) {
-	return nil, errors.New("openDriver does not implement ListAgents")
 }
 func (d *openDriver) ReadPane(context.Context, string, int) (string, error) {
 	return "", errors.New("openDriver does not implement ReadPane")
@@ -123,17 +113,6 @@ func (d *openDriver) RunPane(_ context.Context, paneID, command string) error {
 func (d *openDriver) FocusTab(_ context.Context, tabID string) error {
 	d.focused = append(d.focused, "focus-tab:"+tabID)
 	return d.focusTabErr
-}
-func (d *openDriver) CurrentPane(ctx context.Context) (source.Pane, error) {
-	d.currentCalled = true
-	if d.currentPaneDelay > 0 {
-		select {
-		case <-time.After(d.currentPaneDelay):
-		case <-ctx.Done():
-			return source.Pane{}, ctx.Err()
-		}
-	}
-	return d.currentPane, d.currentPaneErr
 }
 
 // openFocusStr renders a focus bool the same way the templates-package fake
@@ -1056,30 +1035,17 @@ func TestApp_BuildPreviewRenderer_ReturnsNonNil(t *testing.T) {
 	}
 }
 
-// recordingDriver is an open-scoped HerdrDriver that records the preview
-// queries (ListTabs/ListPanes/ReadPane) so the CLI wiring test can prove the
-// injected driver reaches the preview renderer.
+// recordingDriver records the preserved live pane-read preview operation.
 type recordingDriver struct {
-	tabsQueried  int
-	panesQueried int
-	readQueried  int
+	readQueried int
 }
 
 func (*recordingDriver) Detect(context.Context) bool { return true }
-func (*recordingDriver) ListWorkspaces(context.Context) ([]source.Workspace, error) {
-	return nil, nil
+func (*recordingDriver) Snapshot(context.Context) (source.Snapshot, error) {
+	return source.Snapshot{}, nil
 }
 func (*recordingDriver) FocusOrCreate(context.Context, source.Candidate) (source.FocusResult, error) {
 	return source.FocusResult{}, errors.New("not used")
-}
-func (*recordingDriver) ListAgents(context.Context) ([]source.Agent, error) { return nil, nil }
-func (d *recordingDriver) ListTabs(_ context.Context, _ string) ([]source.Tab, error) {
-	d.tabsQueried++
-	return []source.Tab{{ID: "wA:t1", WorkspaceID: "wA", Label: "edit", Focused: true, Number: 1, PaneCount: 2}}, nil
-}
-func (d *recordingDriver) ListPanes(_ context.Context, _ string) ([]source.Pane, error) {
-	d.panesQueried++
-	return []source.Pane{{ID: "wA:p1", WorkspaceID: "wA", CWD: "/x", Focused: true}}, nil
 }
 func (d *recordingDriver) ReadPane(_ context.Context, _ string, _ int) (string, error) {
 	d.readQueried++
@@ -1096,19 +1062,22 @@ func (*recordingDriver) SplitPane(context.Context, string, string, float64, stri
 }
 func (*recordingDriver) RunPane(context.Context, string, string) error { return errors.New("not used") }
 func (*recordingDriver) FocusTab(context.Context, string) error        { return errors.New("not used") }
-func (*recordingDriver) CurrentPane(context.Context) (source.Pane, error) {
-	return source.Pane{}, nil
-}
 
-// TestApp_BuildPreviewRenderer_ThreadsHerdrDriver proves an injected
-// HerdrDriver is wired into the preview renderer so workspace/active_pane
-// sections render against it instead of being skipped.
-func TestApp_BuildPreviewRenderer_ThreadsHerdrDriver(t *testing.T) {
+// TestApp_BuildPreviewRenderer_UsesSnapshotAndLivePaneRead proves workspace
+// state is rendered from the startup generation while active-pane content
+// retains its dedicated live pane-read command.
+func TestApp_BuildPreviewRenderer_UsesSnapshotAndLivePaneRead(t *testing.T) {
 	driver := &recordingDriver{}
 	app := New(WithHerdrDriver(driver))
 	app.cfg = config.Defaults()
 	app.cfg.Preview.Default = []string{config.PreviewWorkspace, config.PreviewActivePane}
 	app.probes = config.Probes{}
+	app.startupSnapshot = &source.Snapshot{
+		Workspaces:    []source.Workspace{{ID: "wA"}},
+		Tabs:          []source.Tab{{ID: "wA:t1", WorkspaceID: "wA", Label: "edit", Focused: true, Number: 1, PaneCount: 1}},
+		Panes:         []source.Pane{{ID: "wA:p1", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/x", Focused: true}},
+		FocusedPaneID: "wA:p1",
+	}
 	r := app.buildPreviewRenderer()
 
 	cand := source.Candidate{
@@ -1119,12 +1088,11 @@ func TestApp_BuildPreviewRenderer_ThreadsHerdrDriver(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	if driver.tabsQueried == 0 || driver.panesQueried == 0 || driver.readQueried == 0 {
-		t.Errorf("driver not threaded into renderer: tabs=%d panes=%d read=%d",
-			driver.tabsQueried, driver.panesQueried, driver.readQueried)
+	if driver.readQueried == 0 {
+		t.Errorf("renderer must retain the dedicated live pane read")
 	}
 	if !strings.Contains(res.Text, "edit") {
-		t.Errorf("workspace section did not render tabs from driver: %q", res.Text)
+		t.Errorf("workspace section did not render tabs from snapshot: %q", res.Text)
 	}
 	if !strings.Contains(res.Text, "$ echo hi") {
 		t.Errorf("active_pane section did not render buffer from driver: %q", res.Text)
@@ -1244,14 +1212,16 @@ func commandWorkspaceCfg(t *testing.T, name, command string, closeOnExit bool) (
 	return cfg, dir
 }
 
-// insidePaneDriver returns an openDriver configured to look like shep is
-// running inside the given Herdr pane (CurrentPane succeeds). workspaceID is
-// only used by the workspace-target path; the tab/pane paths read from
-// currentPane instead.
+// insidePaneDriver returns an openDriver with the given pane resolved by the
+// startup snapshot.
 func insidePaneDriver(pane source.Pane) *openDriver {
+	pane.Focused = true
 	return &openDriver{
-		detect:      true,
-		currentPane: pane,
+		detect: true,
+		snapshot: source.Snapshot{
+			Panes:         []source.Pane{pane},
+			FocusedPaneID: pane.ID,
+		},
 	}
 }
 
@@ -1280,6 +1250,81 @@ func TestOpen_TargetTab_OpensInCurrentWorkspace(t *testing.T) {
 	}
 }
 
+func TestOpen_UsesOneStartupSnapshotForTargeting(t *testing.T) {
+	cfg, _ := commandWorkspaceCfg(t, "ops", "k9s", false)
+	driver := &openDriver{
+		detect: true,
+		snapshot: source.Snapshot{
+			Workspaces:         []source.Workspace{{ID: "w-snapshot", ActiveTabID: "w-snapshot:t1", Focused: true}},
+			Tabs:               []source.Tab{{ID: "w-snapshot:t1", WorkspaceID: "w-snapshot", Focused: true}},
+			Panes:              []source.Pane{{ID: "w-snapshot:p1", WorkspaceID: "w-snapshot", TabID: "w-snapshot:t1", CWD: "/snapshot-cwd", Focused: true}},
+			FocusedWorkspaceID: "w-snapshot",
+			FocusedTabID:       "w-snapshot:t1",
+			FocusedPaneID:      "w-snapshot:p1",
+		},
+	}
+
+	_, _, err := runOpen(t, cfg, driver, nil, "--target", "tab", "ops")
+	if err != nil {
+		t.Fatalf("open --target=tab: %v", err)
+	}
+	if driver.snapshotCalls != 1 {
+		t.Fatalf("Snapshot calls = %d, want exactly one startup snapshot", driver.snapshotCalls)
+	}
+	if len(driver.created) != 1 || driver.created[0] != "tab:w-snapshot:/snapshot-cwd:ops:focus" {
+		t.Errorf("CreateTab target = %v, want snapshot workspace/tab/pane context", driver.created)
+	}
+}
+
+func TestOpen_InitialSnapshotFailure_IsolatesHerdrSource(t *testing.T) {
+	cfg, root := seedCfg(t, "fallback")
+	cfg.General.Sources = []string{config.SourceHerdr, config.SourceWorkspaces}
+	driver := &openDriver{
+		detect:      true,
+		snapshotErr: errors.New("snapshot unavailable"),
+		workspaceID: "created",
+	}
+
+	_, errOut, err := runOpen(t, cfg, driver, nil, "fallback")
+	if err != nil {
+		t.Fatalf("open with initial snapshot failure: %v", err)
+	}
+	if driver.snapshotCalls != 1 {
+		t.Errorf("Snapshot calls = %d, want exactly one initial attempt", driver.snapshotCalls)
+	}
+	if !strings.Contains(errOut, "warning: herdr snapshot unavailable: snapshot unavailable") {
+		t.Errorf("stderr = %q, want snapshot-unavailable diagnostic", errOut)
+	}
+	if got, want := driver.lastCand.Source, config.SourceWorkspaces; got != want {
+		t.Errorf("resolved source = %q, want unrelated configured source %q", got, want)
+	}
+	if got, want := driver.lastCand.NormalizedPath, resolved(filepath.Join(root, "fallback")); got != want {
+		t.Errorf("resolved path = %q, want %q", got, want)
+	}
+}
+
+func TestApp_HydrateStartupSnapshot_TimesOut(t *testing.T) {
+	driver := &openDriver{
+		detect: true,
+		snapshotFn: func(ctx context.Context) (source.Snapshot, error) {
+			<-ctx.Done()
+			return source.Snapshot{}, ctx.Err()
+		},
+	}
+	app := New(WithHerdrDriver(driver))
+
+	started := time.Now()
+	err := app.hydrateStartupSnapshot(context.Background())
+	elapsed := time.Since(started)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("hydrateStartupSnapshot error = %v, want deadline exceeded", err)
+	}
+	if elapsed > source.SnapshotTimeout+500*time.Millisecond {
+		t.Fatalf("hydrateStartupSnapshot took %v, want bounded by %v", elapsed, source.SnapshotTimeout)
+	}
+}
+
 // TestOpen_TargetPane_OpensInCurrentWorkspace (end-to-end): --target=pane
 // splits a new pane off the current one (right, 0.5, focus=true) and runs the
 // wrapped command there.
@@ -1300,15 +1345,13 @@ func TestOpen_TargetPane_OpensInCurrentWorkspace(t *testing.T) {
 	}
 }
 
-// TestOpen_TargetTab_NoCurrentPane_Errors (end-to-end): --target=tab when
-// shep is NOT running inside a Herdr pane (CurrentPane returns
-// source.ErrNoFocusedPane) surfaces a clear, specific error and never reaches
-// CreateTab/RunPane.
+// TestOpen_TargetTab_NoCurrentPane_Errors (end-to-end): --target=tab when the
+// startup snapshot has no focused pane surfaces a clear, specific error and
+// never reaches CreateTab/RunPane.
 func TestOpen_TargetTab_NoCurrentPane_Errors(t *testing.T) {
 	cfg, _ := commandWorkspaceCfg(t, "ops", "k9s", true)
 	driver := &openDriver{
-		detect:         true,
-		currentPaneErr: source.ErrNoFocusedPane,
+		detect: true,
 	}
 	_, errOut, err := runOpen(t, cfg, driver, nil, "--target", "tab", "ops")
 	if err == nil {
@@ -1406,29 +1449,6 @@ func TestLaunch_TargetTab_GroupWorkspace_Errors(t *testing.T) {
 	}
 	if len(driver.created) != 0 || len(driver.ran) != 0 {
 		t.Errorf("no tab/pane mutation must occur for a group entry; created=%v ran=%v", driver.created, driver.ran)
-	}
-}
-
-// TestRunOpen_CurrentPaneTimeout confirms runOpen bounds its CurrentPane
-// probe with a short timeout: a hung Herdr daemon (here, a CurrentPane stub
-// that sleeps 5s) must not block the whole invocation — runOpen degrades
-// gracefully (currentPane stays nil) and returns well within the 2s budget
-// plus test slack.
-func TestRunOpen_CurrentPaneTimeout(t *testing.T) {
-	t.Parallel()
-	cfg, _ := seedCfg(t, "foo")
-	driver := &openDriver{detect: true, currentPaneDelay: 5 * time.Second}
-	start := time.Now()
-	_, _, err := runOpen(t, cfg, driver, nil, "foo")
-	elapsed := time.Since(start)
-	if err != nil {
-		t.Fatalf("runOpen: %v", err)
-	}
-	if !driver.currentCalled {
-		t.Fatal("expected CurrentPane to have been called")
-	}
-	if elapsed > 2500*time.Millisecond {
-		t.Errorf("runOpen took %v, want it to return within ~2.5s despite a hung CurrentPane", elapsed)
 	}
 }
 

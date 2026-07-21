@@ -2,90 +2,26 @@ package tui
 
 import (
 	"context"
-	"errors"
 	"testing"
-	"time"
 
 	"github.com/tranceh2/shep/internal/source"
 )
 
-// TestTreeExpander_CacheHitAvoidsDriver proves two Fetch calls for the same
-// workspace within the TTL window hit the cache on the second call.
-func TestTreeExpander_CacheHitAvoidsDriver(t *testing.T) {
+// TestTreeExpander_ReusesPrecomputedGeneration proves repeated reads use the
+// same pure snapshot tree without any driver or TTL cache.
+func TestTreeExpander_ReusesPrecomputedGeneration(t *testing.T) {
 	t.Parallel()
 	driver := &fakeTreeDriver{
 		tabs:  []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}},
 		panes: []source.Pane{{ID: "p1", WorkspaceID: "w1", TabID: "t1", CWD: "/svc/api"}},
 	}
-	tree := NewTreeExpander(driver, time.Minute)
+	tree := treeFromFake(driver)
 
 	if _, ok := tree.Fetch(context.Background(), "w1"); !ok {
 		t.Fatal("first Fetch: expected ok=true")
 	}
 	if _, ok := tree.Fetch(context.Background(), "w1"); !ok {
 		t.Fatal("second Fetch: expected ok=true")
-	}
-	if driver.listTabsN != 1 || driver.listPanesN != 1 {
-		t.Errorf("expected exactly 1 ListTabs/ListPanes pair, got listTabsN=%d listPanesN=%d", driver.listTabsN, driver.listPanesN)
-	}
-}
-
-// TestTreeExpander_ListTabsErrorDegradesGracefully proves a ListTabs
-// failure degrades to ok=false, never a panic, and stores nothing.
-func TestTreeExpander_ListTabsErrorDegradesGracefully(t *testing.T) {
-	t.Parallel()
-	driver := &fakeTreeDriver{tabsErr: errors.New("herdr tab list: boom")}
-	tree := NewTreeExpander(driver, time.Minute)
-	if _, ok := tree.Fetch(context.Background(), "w1"); ok {
-		t.Error("expected ok=false on ListTabs error")
-	}
-}
-
-// TestTreeExpander_ListPanesErrorDegradesGracefully mirrors the above for
-// ListPanes.
-func TestTreeExpander_ListPanesErrorDegradesGracefully(t *testing.T) {
-	t.Parallel()
-	driver := &fakeTreeDriver{
-		tabs:     []source.Tab{{ID: "t1", WorkspaceID: "w1"}},
-		panesErr: errors.New("herdr pane list: boom"),
-	}
-	tree := NewTreeExpander(driver, time.Minute)
-	if _, ok := tree.Fetch(context.Background(), "w1"); ok {
-		t.Error("expected ok=false on ListPanes error")
-	}
-}
-
-// TestTreeExpander_ReadPane_CachelessPassthrough proves ReadPane forwards
-// straight to the driver (no caching layer of its own — a pane's live
-// buffer must never be served stale).
-func TestTreeExpander_ReadPane_CachelessPassthrough(t *testing.T) {
-	t.Parallel()
-	driver := &fakeTreeDriver{readText: "hello from pane"}
-	tree := NewTreeExpander(driver, time.Minute)
-
-	text, err := tree.ReadPane(context.Background(), "p1", 100)
-	if err != nil {
-		t.Fatalf("ReadPane: %v", err)
-	}
-	if text != "hello from pane" {
-		t.Errorf("ReadPane text = %q, want %q", text, "hello from pane")
-	}
-	if _, err := tree.ReadPane(context.Background(), "p1", 100); err != nil {
-		t.Fatalf("second ReadPane: %v", err)
-	}
-	if driver.readPaneN != 2 {
-		t.Errorf("expected 2 driver ReadPane calls (no caching), got %d", driver.readPaneN)
-	}
-}
-
-// TestTreeExpander_ReadPane_ErrorPropagates proves a driver error surfaces
-// through ReadPane rather than being swallowed.
-func TestTreeExpander_ReadPane_ErrorPropagates(t *testing.T) {
-	t.Parallel()
-	driver := &fakeTreeDriver{readErr: errors.New("herdr pane read: boom")}
-	tree := NewTreeExpander(driver, time.Minute)
-	if _, err := tree.ReadPane(context.Background(), "p1", 100); err == nil {
-		t.Error("expected ReadPane to propagate the driver error")
 	}
 }
 
@@ -291,7 +227,7 @@ func TestTreeExpanderResolveActivePaneID(t *testing.T) {
 				{ID: "p2", WorkspaceID: "w1", TabID: "t1", Focused: true},
 			},
 		}
-		tree := NewTreeExpander(driver, time.Minute)
+		tree := treeFromFake(driver)
 
 		for range 2 {
 			got, ok := tree.ResolveActivePaneID(context.Background(), "w1", "t1")
@@ -299,17 +235,46 @@ func TestTreeExpanderResolveActivePaneID(t *testing.T) {
 				t.Errorf("ResolveActivePaneID() = (%q, %t), want (\"p2\", true)", got, ok)
 			}
 		}
-		if driver.listTabsN != 1 || driver.listPanesN != 1 {
-			t.Errorf("expected one cached ListTabs/ListPanes pair, got listTabsN=%d listPanesN=%d", driver.listTabsN, driver.listPanesN)
-		}
 	})
 
 	t.Run("fetch failure is unavailable", func(t *testing.T) {
-		tree := NewTreeExpander(&fakeTreeDriver{panesErr: errors.New("herdr pane list: boom")}, time.Minute)
+		tree := treeFromFake(&fakeTreeDriver{})
 
 		got, ok := tree.ResolveActivePaneID(context.Background(), "w1", "t1")
 		if got != "" || ok {
 			t.Errorf("ResolveActivePaneID() = (%q, %t), want (\"\", false)", got, ok)
 		}
 	})
+}
+
+func TestTreeExpanderFromSnapshot_UsesOnlyOneImmutableGeneration(t *testing.T) {
+	snapshot := source.Snapshot{
+		Workspaces: []source.Workspace{{ID: "w1"}},
+		Tabs: []source.Tab{
+			{ID: "w1:t1", WorkspaceID: "w1", Label: "editor"},
+			{ID: "orphan:t1", WorkspaceID: "missing", Label: "discard"},
+		},
+		Panes: []source.Pane{
+			{ID: "w1:p1", WorkspaceID: "w1", TabID: "w1:t1", CWD: "/project"},
+			{ID: "orphan:p1", WorkspaceID: "missing", TabID: "orphan:t1", CWD: "/discard"},
+		},
+	}
+
+	tree := NewTreeExpanderFromSnapshot(snapshot)
+	got, ok := tree.Fetch(context.Background(), "w1")
+	if !ok {
+		t.Fatal("Fetch(w1) reported no snapshot tree")
+	}
+	if len(got.Tabs) != 1 || got.Tabs[0].ID != "w1:t1" {
+		t.Errorf("Fetch(w1) tabs = %+v, want only w1:t1", got.Tabs)
+	}
+	if len(got.Panes) != 1 || got.Panes[0].ID != "w1:p1" {
+		t.Errorf("Fetch(w1) panes = %+v, want only w1:p1", got.Panes)
+	}
+	if paneID, ok := tree.ResolveActivePaneID(context.Background(), "w1", "w1:t1"); !ok || paneID != "w1:p1" {
+		t.Errorf("ResolveActivePaneID = (%q, %v), want (w1:p1, true)", paneID, ok)
+	}
+	if _, ok := tree.Fetch(context.Background(), "missing"); ok {
+		t.Fatal("Fetch(missing) reported an orphan workspace tree")
+	}
 }

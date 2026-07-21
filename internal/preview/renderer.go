@@ -2,7 +2,6 @@ package preview
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -70,20 +69,43 @@ type defaultRenderer struct {
 	probes config.Probes
 	git    GitProvider
 	runner CommandRunner
-	driver source.HerdrDriver
-	cache  *Cache
+	reader PaneReader
+	// snapshot is copied at construction and never mutated. A fresh renderer is
+	// created for every successful Herdr generation replacement.
+	snapshot *source.Snapshot
+	cache    *Cache
 }
 
-// RendererOption configures a Renderer at construction (e.g. to inject a
-// HerdrDriver for the workspace/active_pane preview sections).
+// PaneReader is the live `herdr pane read` boundary retained by previews. All
+// state derivation comes from the immutable snapshot instead.
+type PaneReader interface {
+	ReadPane(context.Context, string, int) (string, error)
+}
+
+// RendererOption configures a Renderer at construction.
 type RendererOption func(*defaultRenderer)
 
-// WithHerdrDriver injects a HerdrDriver so the workspace and active_pane
-// preview sections can enumerate tabs/panes and read the active pane buffer.
-// Without a driver those sections degrade to a skip. Intended for production
-// wiring; tests inject a fake.
-func WithHerdrDriver(d source.HerdrDriver) RendererOption {
-	return func(r *defaultRenderer) { r.driver = d }
+// WithPaneReader injects the only live Herdr preview operation: pane capture.
+func WithPaneReader(reader PaneReader) RendererOption {
+	return func(r *defaultRenderer) { r.reader = reader }
+}
+
+// WithSnapshot supplies the resolved full Herdr generation used by workspace
+// and agent-status preview sections. It is construction-only: callers build a
+// new renderer for a new generation instead of mutating an in-flight one.
+func WithSnapshot(snapshot source.Snapshot) RendererOption {
+	return func(r *defaultRenderer) {
+		copy := cloneSnapshot(snapshot)
+		r.snapshot = &copy
+	}
+}
+
+func cloneSnapshot(snapshot source.Snapshot) source.Snapshot {
+	copy := snapshot
+	copy.Workspaces = append([]source.Workspace(nil), snapshot.Workspaces...)
+	copy.Tabs = append([]source.Tab(nil), snapshot.Tabs...)
+	copy.Panes = append([]source.Pane(nil), snapshot.Panes...)
+	return copy
 }
 
 // NewRenderer wires the production renderer from the full config (Workspaces
@@ -255,15 +277,11 @@ const herdrPreviewTimeout = 100 * time.Millisecond
 // timeout degrades to an unavailable note under the heading.
 func (r *defaultRenderer) renderWorkspaceSection(ctx context.Context, cand source.Candidate) (string, bool) {
 	workspaceID := cand.Meta["workspace_id"]
-	if workspaceID == "" || r.driver == nil {
+	if workspaceID == "" || r.snapshot == nil {
 		return "", false
 	}
 	lines := []string{"workspace"}
-	tabs, panes, err := r.loadWorkspacePreview(ctx, workspaceID)
-	if err != nil {
-		lines = append(lines, "(workspace unavailable)")
-		return strings.Join(lines, "\n"), true
-	}
+	tabs, panes := snapshotWorkspace(*r.snapshot, workspaceID)
 	for _, t := range tabs {
 		marker := " "
 		if t.Focused {
@@ -282,27 +300,23 @@ func (r *defaultRenderer) renderWorkspaceSection(ctx context.Context, cand sourc
 }
 
 // renderAgentStatusSection renders a static, at-open-time snapshot of the
-// focused Herdr pane's agent status (via Driver.CurrentPane). ok=false means
-// the section is skipped entirely: the candidate is not an active herdr
-// workspace, or no driver is wired. A query failure or timeout degrades to
-// an unavailable note; no focused pane degrades to a "no active pane" note.
+// focused Herdr pane's agent status from the immutable snapshot. ok=false
+// means the section is skipped entirely: the candidate is not an active Herdr
+// workspace, or no snapshot is wired. No focused pane degrades to a "no active
+// pane" note.
 // This section normalizes both an empty AgentStatus and an explicit
 // "unknown" to the same "unknown" display text — the preview always shows a
 // definite line under the heading rather than distinguishing "not reported"
 // from "reported as unknown".
 func (r *defaultRenderer) renderAgentStatusSection(ctx context.Context, cand source.Candidate) (string, bool) {
 	workspaceID := cand.Meta["workspace_id"]
-	if workspaceID == "" || r.driver == nil {
+	if workspaceID == "" || r.snapshot == nil {
 		return "", false
 	}
 	lines := []string{"agent status"}
-	pane, err := r.currentPanePreview(ctx)
-	if err != nil {
-		if errors.Is(err, source.ErrNoFocusedPane) {
-			lines = append(lines, "(no active pane)")
-			return strings.Join(lines, "\n"), true
-		}
-		lines = append(lines, "(agent status unavailable)")
+	pane, ok := source.ResolveFocusedPane(*r.snapshot)
+	if !ok {
+		lines = append(lines, "(no active pane)")
 		return strings.Join(lines, "\n"), true
 	}
 	status := pane.AgentStatus
@@ -322,13 +336,10 @@ func (r *defaultRenderer) renderAgentStatusSection(ctx context.Context, cand sou
 // section omitted, since there is no useful content to display.
 func (r *defaultRenderer) renderActivePaneSection(ctx context.Context, cand source.Candidate) (string, bool) {
 	workspaceID := cand.Meta["workspace_id"]
-	if workspaceID == "" || r.driver == nil {
+	if workspaceID == "" || r.snapshot == nil || r.reader == nil {
 		return "", false
 	}
-	panes, err := r.listPanesPreview(ctx, workspaceID)
-	if err != nil {
-		return "", false
-	}
+	_, panes := snapshotWorkspace(*r.snapshot, workspaceID)
 	paneID := activePaneID(panes)
 	if paneID == "" {
 		return "", false
@@ -343,6 +354,22 @@ func (r *defaultRenderer) renderActivePaneSection(ctx context.Context, cand sour
 	lines := []string{"active pane"}
 	lines = append(lines, capLines(buf, r.cfg.Preview.MaxLines))
 	return strings.Join(lines, "\n"), true
+}
+
+func snapshotWorkspace(snapshot source.Snapshot, workspaceID string) ([]source.Tab, []source.Pane) {
+	tabs := make([]source.Tab, 0)
+	panes := make([]source.Pane, 0)
+	for _, tab := range snapshot.Tabs {
+		if tab.WorkspaceID == workspaceID {
+			tabs = append(tabs, tab)
+		}
+	}
+	for _, pane := range snapshot.Panes {
+		if pane.WorkspaceID == workspaceID {
+			panes = append(panes, pane)
+		}
+	}
+	return tabs, panes
 }
 
 // renderDirSection runs the first available of lsd/eza/ls against the
@@ -421,48 +448,11 @@ func dirArgv(path string) []string {
 	return []string{"ls", "-la", path}
 }
 
-// loadWorkspacePreview fetches tabs and panes for a workspace, each query
-// bounded by herdrPreviewTimeout. Either query failing yields an error so the
-// caller can degrade to an unavailable note.
-func (r *defaultRenderer) loadWorkspacePreview(ctx context.Context, workspaceID string) ([]source.Tab, []source.Pane, error) {
-	tabs, err := r.listTabsPreview(ctx, workspaceID)
-	if err != nil {
-		return nil, nil, err
-	}
-	panes, err := r.listPanesPreview(ctx, workspaceID)
-	if err != nil {
-		return nil, nil, err
-	}
-	return tabs, panes, nil
-}
-
-// listTabsPreview bounds a ListTabs call by herdrPreviewTimeout.
-func (r *defaultRenderer) listTabsPreview(ctx context.Context, workspaceID string) ([]source.Tab, error) {
-	qctx, cancel := context.WithTimeout(ctx, herdrPreviewTimeout)
-	defer cancel()
-	return r.driver.ListTabs(qctx, workspaceID)
-}
-
-// listPanesPreview bounds a ListPanes call by herdrPreviewTimeout.
-func (r *defaultRenderer) listPanesPreview(ctx context.Context, workspaceID string) ([]source.Pane, error) {
-	qctx, cancel := context.WithTimeout(ctx, herdrPreviewTimeout)
-	defer cancel()
-	return r.driver.ListPanes(qctx, workspaceID)
-}
-
 // readPanePreview bounds a ReadPane call by herdrPreviewTimeout.
 func (r *defaultRenderer) readPanePreview(ctx context.Context, paneID string, lines int) (string, error) {
 	qctx, cancel := context.WithTimeout(ctx, herdrPreviewTimeout)
 	defer cancel()
-	return r.driver.ReadPane(qctx, paneID, lines)
-}
-
-// currentPanePreview bounds a CurrentPane call by herdrPreviewTimeout, for
-// the agent_status section's static snapshot.
-func (r *defaultRenderer) currentPanePreview(ctx context.Context) (source.Pane, error) {
-	qctx, cancel := context.WithTimeout(ctx, herdrPreviewTimeout)
-	defer cancel()
-	return r.driver.CurrentPane(qctx)
+	return r.reader.ReadPane(qctx, paneID, lines)
 }
 
 // activePaneID returns the focused pane's id, falling back to the first pane.

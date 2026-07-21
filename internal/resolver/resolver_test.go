@@ -387,20 +387,11 @@ func TestResolveFromSources_PreservePartialError(t *testing.T) {
 type fakeErrDriver struct{}
 
 func (fakeErrDriver) Detect(context.Context) bool { return true }
-func (fakeErrDriver) ListWorkspaces(context.Context) ([]source.Workspace, error) {
-	return nil, errors.New("daemon down")
+func (fakeErrDriver) Snapshot(context.Context) (source.Snapshot, error) {
+	return source.Snapshot{}, errors.New("daemon down")
 }
 func (fakeErrDriver) FocusOrCreate(context.Context, source.Candidate) (source.FocusResult, error) {
 	return source.FocusResult{}, errors.New("fakeErrDriver does not implement FocusOrCreate")
-}
-func (fakeErrDriver) ListTabs(context.Context, string) ([]source.Tab, error) {
-	return nil, errors.New("fakeErrDriver does not implement ListTabs")
-}
-func (fakeErrDriver) ListPanes(context.Context, string) ([]source.Pane, error) {
-	return nil, errors.New("fakeErrDriver does not implement ListPanes")
-}
-func (fakeErrDriver) ListAgents(context.Context) ([]source.Agent, error) {
-	return nil, errors.New("fakeErrDriver does not implement ListAgents")
 }
 func (fakeErrDriver) ReadPane(context.Context, string, int) (string, error) {
 	return "", errors.New("fakeErrDriver does not implement ReadPane")
@@ -420,9 +411,6 @@ func (fakeErrDriver) RunPane(context.Context, string, string) error {
 func (fakeErrDriver) FocusTab(context.Context, string) error {
 	return errors.New("fakeErrDriver does not implement FocusTab")
 }
-func (fakeErrDriver) CurrentPane(context.Context) (source.Pane, error) {
-	return source.Pane{}, errors.New("fakeErrDriver does not implement CurrentPane")
-}
 
 // fakeWorkspacesDriver is a HerdrDriver that returns a fixed workspace set,
 // used by the priority-dedup contract test.
@@ -431,20 +419,18 @@ type fakeWorkspacesDriver struct {
 }
 
 func (fakeWorkspacesDriver) Detect(context.Context) bool { return true }
-func (d fakeWorkspacesDriver) ListWorkspaces(context.Context) ([]source.Workspace, error) {
-	return d.workspaces, nil
+func (d fakeWorkspacesDriver) Snapshot(context.Context) (source.Snapshot, error) {
+	snapshot := source.Snapshot{Workspaces: make([]source.Workspace, 0, len(d.workspaces))}
+	for _, workspace := range d.workspaces {
+		snapshot.Workspaces = append(snapshot.Workspaces, workspace)
+		if workspace.CWD != "" {
+			snapshot.Panes = append(snapshot.Panes, source.Pane{ID: workspace.ID + ":p1", WorkspaceID: workspace.ID, CWD: workspace.CWD})
+		}
+	}
+	return snapshot, nil
 }
 func (fakeWorkspacesDriver) FocusOrCreate(context.Context, source.Candidate) (source.FocusResult, error) {
 	return source.FocusResult{}, errors.New("fakeWorkspacesDriver does not implement FocusOrCreate")
-}
-func (fakeWorkspacesDriver) ListTabs(context.Context, string) ([]source.Tab, error) {
-	return nil, errors.New("fakeWorkspacesDriver does not implement ListTabs")
-}
-func (fakeWorkspacesDriver) ListPanes(context.Context, string) ([]source.Pane, error) {
-	return nil, errors.New("fakeWorkspacesDriver does not implement ListPanes")
-}
-func (fakeWorkspacesDriver) ListAgents(context.Context) ([]source.Agent, error) {
-	return nil, errors.New("fakeWorkspacesDriver does not implement ListAgents")
 }
 func (fakeWorkspacesDriver) ReadPane(context.Context, string, int) (string, error) {
 	return "", errors.New("fakeWorkspacesDriver does not implement ReadPane")
@@ -463,9 +449,6 @@ func (fakeWorkspacesDriver) RunPane(context.Context, string, string) error {
 }
 func (fakeWorkspacesDriver) FocusTab(context.Context, string) error {
 	return errors.New("fakeWorkspacesDriver does not implement FocusTab")
-}
-func (fakeWorkspacesDriver) CurrentPane(context.Context) (source.Pane, error) {
-	return source.Pane{}, errors.New("fakeWorkspacesDriver does not implement CurrentPane")
 }
 
 // TestDedup_HerdrExempt_AcrossRegistry (R2, end-to-end through the real

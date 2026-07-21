@@ -62,11 +62,15 @@ type App struct {
 	// which dispatches on the typed action instead of the candidate's Source
 	// string.
 	chosenAction tui.RowAction
-	// currentPane is the Herdr pane shep is running inside, queried once per
-	// invocation so the TUI footer hints and the launch path share a single
-	// CurrentPane call. nil means "not inside a Herdr pane" (or the query
-	// failed); the tab/pane launch targets are disabled in that case.
+	// currentPane is resolved from the startup snapshot's focused_pane_id. nil
+	// means "not inside a Herdr pane" (or snapshot hydration failed); the
+	// tab/pane launch targets are disabled in that case.
 	currentPane *source.Pane
+	// startupSnapshot is the one full state generation captured by runOpen.
+	// attempted prevents a failed initial hydration from triggering a second
+	// provider-level state call during candidate resolution.
+	startupSnapshot          *source.Snapshot
+	startupSnapshotAttempted bool
 }
 
 // Config returns the loaded configuration, defaulting to path-agnostic

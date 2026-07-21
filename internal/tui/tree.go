@@ -3,70 +3,71 @@ package tui
 import (
 	"context"
 	"strconv"
-	"time"
 
-	"github.com/tranceh2/shep/internal/cache"
 	"github.com/tranceh2/shep/internal/source"
 )
 
-// treeExpanderTimeout bounds each ListTabs/ListPanes pair issued by
-// TreeExpander.Fetch, mirroring the herdrPreviewTimeout pattern
-// (internal/preview/renderer.go:394-404) so a slow or hung Herdr daemon
-// never blocks the picker's keystroke loop.
-const treeExpanderTimeout = 100 * time.Millisecond
-
-// workspaceTree is the cached (Tabs, Panes) snapshot of one Herdr
-// workspace, keyed by workspace id in TreeExpander's cache.
+// workspaceTree is the immutable (Tabs, Panes) snapshot of one Herdr
+// workspace, keyed by workspace id in TreeExpander's generation map.
 type workspaceTree struct {
 	Tabs  []source.Tab
 	Panes []source.Pane
 }
 
-// TreeExpander fetches and caches a workspace's tabs/panes so the picker
-// can synthesize child tab/pane rows without a driver round-trip on every
-// keystroke that still matches the same workspace.
+// TreeExpander indexes one immutable snapshot generation for child-row
+// synthesis. It never calls the Herdr driver or owns a TTL cache.
 type TreeExpander struct {
-	driver  source.HerdrDriver
-	cache   *cache.Cache[workspaceTree]
-	timeout time.Duration
+	trees map[string]workspaceTree
 }
 
-// NewTreeExpander builds a TreeExpander backed by driver, caching each
-// workspace's (Tabs, Panes) for ttl. Each Fetch's ListTabs/ListPanes pair is
-// bounded by treeExpanderTimeout regardless of ttl.
-func NewTreeExpander(driver source.HerdrDriver, ttl time.Duration) *TreeExpander {
-	return &TreeExpander{
-		driver:  driver,
-		cache:   cache.New[workspaceTree](ttl),
-		timeout: treeExpanderTimeout,
+// NewTreeExpanderFromSnapshot constructs a pure tree view over one complete
+// snapshot generation. It intentionally filters orphan tabs and panes at the
+// boundary so later row synthesis cannot mix records from unrelated state.
+func NewTreeExpanderFromSnapshot(snapshot source.Snapshot) *TreeExpander {
+	validWorkspaces := make(map[string]struct{}, len(snapshot.Workspaces))
+	for _, workspace := range snapshot.Workspaces {
+		if workspace.ID != "" {
+			validWorkspaces[workspace.ID] = struct{}{}
+		}
 	}
+	trees := make(map[string]workspaceTree, len(validWorkspaces))
+	for workspaceID := range validWorkspaces {
+		trees[workspaceID] = workspaceTree{}
+	}
+	validTabs := make(map[string]string, len(snapshot.Tabs))
+	for _, tab := range snapshot.Tabs {
+		if tab.ID == "" {
+			continue
+		}
+		if _, ok := validWorkspaces[tab.WorkspaceID]; !ok {
+			continue
+		}
+		tree := trees[tab.WorkspaceID]
+		tree.Tabs = append(tree.Tabs, tab)
+		trees[tab.WorkspaceID] = tree
+		validTabs[tab.ID] = tab.WorkspaceID
+	}
+	for _, pane := range snapshot.Panes {
+		if pane.ID == "" {
+			continue
+		}
+		if workspaceID, ok := validTabs[pane.TabID]; !ok || workspaceID != pane.WorkspaceID {
+			continue
+		}
+		tree := trees[pane.WorkspaceID]
+		tree.Panes = append(tree.Panes, pane)
+		trees[pane.WorkspaceID] = tree
+	}
+	return &TreeExpander{trees: trees}
 }
 
-// Fetch returns the cached (Tabs, Panes) for workspaceID, or fetches them
-// via ListTabs then ListPanes under a treeExpanderTimeout-bounded context.
-// Any error from either call degrades to ok=false and stores nothing — the
-// picker treats this filter pass as having zero children rather than
-// crashing or surfacing an error to the user.
-func (e *TreeExpander) Fetch(ctx context.Context, workspaceID string) (workspaceTree, bool) {
-	if tree, ok := e.cache.Get(workspaceID); ok {
-		return tree, true
-	}
-
-	qctx, cancel := context.WithTimeout(ctx, e.timeout)
-	defer cancel()
-
-	tabs, err := e.driver.ListTabs(qctx, workspaceID)
-	if err != nil {
+// Fetch returns workspaceID's precomputed tree from this generation.
+func (e *TreeExpander) Fetch(_ context.Context, workspaceID string) (workspaceTree, bool) {
+	if e == nil {
 		return workspaceTree{}, false
 	}
-	panes, err := e.driver.ListPanes(qctx, workspaceID)
-	if err != nil {
-		return workspaceTree{}, false
-	}
-
-	tree := workspaceTree{Tabs: tabs, Panes: panes}
-	e.cache.Put(workspaceID, tree)
-	return tree, true
+	tree, ok := e.trees[workspaceID]
+	return tree, ok
 }
 
 // ResolveActivePaneID returns the focused pane in tabID from the cached
@@ -100,26 +101,6 @@ func selectTabPaneID(panes []source.Pane, tabID string) (string, bool) {
 		return "", false
 	}
 	return fallback, true
-}
-
-// panePreviewTimeout bounds a single ReadPane call issued for a highlighted
-// RowPane's "existing visual capture" preview section — independent of
-// treeExpanderTimeout (which only bounds the ListTabs/ListPanes pair) since
-// reading a pane's captured buffer is a different, separately-timed
-// round-trip and must never block the keystroke loop either.
-const panePreviewTimeout = 150 * time.Millisecond
-
-// ReadPane returns paneID's captured terminal buffer (capped at lines
-// trailing lines; lines <= 0 means the daemon default), bounded by
-// panePreviewTimeout. Exposed on TreeExpander (rather than requiring Model
-// to hold a second HerdrDriver reference) so a highlighted RowPane's preview
-// can show its real captured content — the "existing visual capture where
-// available" contract — using the exact same driver TreeExpander already
-// holds for ListTabs/ListPanes.
-func (e *TreeExpander) ReadPane(ctx context.Context, paneID string, lines int) (string, error) {
-	qctx, cancel := context.WithTimeout(ctx, panePreviewTimeout)
-	defer cancel()
-	return e.driver.ReadPane(qctx, paneID, lines)
 }
 
 // synthesizeWorkspaceChildren builds the full two-level (tab, then its own

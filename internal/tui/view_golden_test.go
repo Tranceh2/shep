@@ -43,7 +43,6 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tranceh2/shep/internal/source"
@@ -393,7 +392,7 @@ func goldenScenarios() []goldenScenario {
 				driver := &fakeTreeDriver{
 					tabs: []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}},
 				}
-				tree := NewTreeExpander(driver, time.Minute)
+				tree := treeFromFake(driver)
 				m := NewModelWithTree(
 					[]source.Candidate{herdrCandidate("backend", "/srv/backend", "w1")},
 					nil, tree, Layout{Theme: ThemeMocha},
@@ -490,7 +489,7 @@ func goldenScenarios() []goldenScenario {
 					panes:    []source.Pane{{ID: "p1", WorkspaceID: "w1", TabID: "t1", CWD: "/srv/api"}},
 					readText: paneCaptureBuffer(),
 				}
-				tree := NewTreeExpander(driver, time.Minute)
+				tree := treeFromFake(driver)
 				m := NewModelWithTree(
 					[]source.Candidate{herdrCandidate("backend", "/srv/backend", "w1")},
 					nil, tree, Layout{Theme: ThemeMocha},
@@ -533,10 +532,11 @@ func goldenScenarios() []goldenScenario {
 					},
 					readText: "tab active capture",
 				}
+				snapshot := source.Snapshot{Workspaces: []source.Workspace{{ID: "w1"}}, Tabs: driver.tabs, Panes: driver.panes}
 				m := NewModelWithTree(
 					[]source.Candidate{herdrCandidate("backend", "/srv/backend", "w1")},
-					nil, NewTreeExpander(driver, time.Minute), Layout{Theme: ThemeMocha},
-				)
+					nil, treeFromFake(driver), Layout{Theme: ThemeMocha},
+				).WithSnapshotRefresh(driver, snapshot, nil, "")
 				m, _ = update(t, m, sizeMsg(120, 36))
 				m.expandedWorkspaces["w1"] = true
 				m.applyFilter()
@@ -596,7 +596,7 @@ func goldenScenarios() []goldenScenario {
 					tabs:  []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}},
 					panes: []source.Pane{{ID: "p1", WorkspaceID: "w1", TabID: "t1", CWD: "/srv/api"}},
 				}
-				tree := NewTreeExpander(driver, time.Minute)
+				tree := treeFromFake(driver)
 				m := NewModelWithTree(
 					[]source.Candidate{herdrCandidate("backend", "/srv/backend", "w1")},
 					nil, tree, Layout{Theme: ThemeMocha},
