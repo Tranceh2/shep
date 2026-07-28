@@ -415,7 +415,7 @@ func (fakeErrDriver) Snapshot(context.Context) (source.Snapshot, error) {
 func (fakeErrDriver) ListSessions(context.Context) ([]source.Session, error) {
 	return nil, errors.New("daemon down")
 }
-func (fakeErrDriver) FocusOrCreate(context.Context, source.Candidate) (source.FocusResult, error) {
+func (fakeErrDriver) FocusOrCreate(context.Context, source.WorkspaceLaunchRequest) (source.FocusResult, error) {
 	return source.FocusResult{}, errors.New("fakeErrDriver does not implement FocusOrCreate")
 }
 func (fakeErrDriver) ReadPane(context.Context, string, int) (string, error) {
@@ -455,7 +455,7 @@ func (d fakeWorkspacesDriver) Snapshot(context.Context) (source.Snapshot, error)
 	return snapshot, nil
 }
 func (fakeWorkspacesDriver) ListSessions(context.Context) ([]source.Session, error) { return nil, nil }
-func (fakeWorkspacesDriver) FocusOrCreate(context.Context, source.Candidate) (source.FocusResult, error) {
+func (fakeWorkspacesDriver) FocusOrCreate(context.Context, source.WorkspaceLaunchRequest) (source.FocusResult, error) {
 	return source.FocusResult{}, errors.New("fakeWorkspacesDriver does not implement FocusOrCreate")
 }
 func (fakeWorkspacesDriver) ReadPane(context.Context, string, int) (string, error) {

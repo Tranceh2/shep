@@ -20,6 +20,10 @@ sources = ["herdr", "workspaces", "zoxide", "projects"]
 # selector picks the interactive picker for "shep open" after the direct
 # (exact / single-match) short-circuit. Valid values: builtin, fzf, auto.
 selector = "builtin"
+# workspace_name controls only newly created dynamic workspaces. It receives
+# Path, NormalizedPath, Label, and Source. Explicit workspace names and existing
+# Herdr workspaces bypass this policy.
+# workspace_name = '{{ .Path | osBase | lower }}'
 
 # [herdr] locates the Herdr CLI binary. Leave binary empty to use "herdr" from
 # PATH. Set it to an absolute path only if Herdr is not on PATH.
@@ -205,11 +209,11 @@ command = "k9s"
 #   command = "opencode"
 #   close_on_exit = true
 
-# [[wildcards]] binds a glob pattern to a template and/or preview override,
-# scanned in declaration order on the resolved candidate's normalised path or
-# base name. First match wins.
+# [[wildcards]] binds a glob pattern to a workspace name, template and/or
+# preview override. Rules are scanned in declaration order; first match wins.
 # [[wildcards]]
 # pattern = "~/projects/kubernetes/**"
+# workspace_name = '✈️ {{ printf "%s/%s" (.Path | osDir | osBase) (.Path | osBase) }}'
 # template = "k8s"
 # preview = ["identity", "git", "recent_commits"]
 `

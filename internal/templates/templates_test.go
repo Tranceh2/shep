@@ -31,7 +31,7 @@ func (f *fakeDriver) Snapshot(context.Context) (source.Snapshot, error) {
 func (f *fakeDriver) ListSessions(context.Context) ([]source.Session, error) {
 	return nil, errors.New("not implemented")
 }
-func (f *fakeDriver) FocusOrCreate(context.Context, source.Candidate) (source.FocusResult, error) {
+func (f *fakeDriver) FocusOrCreate(context.Context, source.WorkspaceLaunchRequest) (source.FocusResult, error) {
 	return source.FocusResult{}, errors.New("not implemented")
 }
 func (f *fakeDriver) ReadPane(context.Context, string, int) (string, error) { return "", nil }

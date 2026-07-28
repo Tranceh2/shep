@@ -22,6 +22,7 @@ import (
 
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/pathutil"
+	"github.com/tranceh2/shep/internal/workspacename"
 )
 
 // SnapshotTimeout bounds each complete Herdr state read so startup and
@@ -95,6 +96,13 @@ type Provider interface {
 	List(ctx context.Context) ([]Candidate, error)
 }
 
+// WorkspaceLaunchRequest is the typed creation contract. Candidate identity and
+// presentation remain unchanged while WorkspaceName carries the launch label.
+type WorkspaceLaunchRequest struct {
+	Candidate     Candidate
+	WorkspaceName workspacename.Name
+}
+
 // HerdrDriver is the contract shep keeps with the Herdr CLI. The real
 // implementation lives in internal/herdr; tests inject a fake. A nil driver
 // keeps the herdr provider inert so source enumeration degrades to the
@@ -109,14 +117,14 @@ type HerdrDriver interface {
 	// ListSessions returns local session records through
 	// `herdr session list --json`.
 	ListSessions(ctx context.Context) ([]Session, error)
-	// FocusOrCreate decides focus-or-create solely from cand: if
-	// cand.Source == config.SourceHerdr it focuses the workspace identified by
-	// cand.Meta["workspace_id"], otherwise it creates a new focused workspace
-	// via `herdr workspace create --cwd --label --focus`. No pane/workspace
-	// scan is performed to find a CWD or label match. The returned result
-	// carries the workspace + root tab + root pane so callers can apply a
-	// template against a freshly created workspace.
-	FocusOrCreate(ctx context.Context, cand Candidate) (FocusResult, error)
+	// FocusOrCreate decides focus-or-create from the typed request: if
+	// request.Candidate.Source == config.SourceHerdr it focuses the workspace
+	// identified by request.Candidate.Meta["workspace_id"], otherwise it creates
+	// a new focused workspace via `herdr workspace create --cwd --label --focus`.
+	// No pane/workspace scan is performed to find a CWD or label match. The
+	// returned result carries the workspace + root tab + root pane so callers can
+	// apply a template against a freshly created workspace.
+	FocusOrCreate(ctx context.Context, request WorkspaceLaunchRequest) (FocusResult, error)
 	// ReadPane returns the captured terminal buffer of a pane, with its real
 	// ANSI color codes preserved, via
 	// `herdr pane read <pane_id> --lines <lines> --format ansi`. lines caps

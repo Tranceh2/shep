@@ -18,6 +18,7 @@ import (
 	"github.com/tranceh2/shep/internal/source"
 	"github.com/tranceh2/shep/internal/templates"
 	"github.com/tranceh2/shep/internal/tui"
+	"github.com/tranceh2/shep/internal/workspacename"
 )
 
 // sessionAttachFunc is the command-layer seam for a foreground session
@@ -756,12 +757,52 @@ func (a *App) launchChildTab(ctx context.Context, driver source.HerdrDriver, can
 	return nil
 }
 
+func (a *App) workspaceLaunchRequest(cand source.Candidate) (source.WorkspaceLaunchRequest, error) {
+	cfg := a.Config()
+	if cand.Source == config.SourceHerdr {
+		return source.WorkspaceLaunchRequest{Candidate: cand}, nil
+	}
+	if cand.Source == config.SourceWorkspaces {
+		return source.WorkspaceLaunchRequest{Candidate: cand, WorkspaceName: workspacename.Name(cand.Label)}, nil
+	}
+	normalized := cand.NormalizedPath
+	if normalized == "" {
+		var err error
+		normalized, err = resolver.Normalize(cand.Path)
+		if err != nil {
+			return source.WorkspaceLaunchRequest{}, fmt.Errorf("workspace name: normalize path: %w", err)
+		}
+	}
+	format := ""
+	if wildcard, ok := config.FirstMatchingWildcard(cfg.Wildcards, normalized); ok {
+		format = wildcard.WorkspaceName
+	}
+	if format == "" {
+		format = cfg.General.WorkspaceName
+	}
+	if format == "" {
+		return source.WorkspaceLaunchRequest{Candidate: cand, WorkspaceName: workspacename.Name(normalized)}, nil
+	}
+	name, err := workspacename.Render("workspace name", format, workspacename.Context{
+		Path: cand.Path, NormalizedPath: normalized, Label: cand.Label, Source: cand.Source,
+	})
+	if err != nil {
+		return source.WorkspaceLaunchRequest{}, err
+	}
+	return source.WorkspaceLaunchRequest{Candidate: cand, WorkspaceName: name}, nil
+}
+
 // launchWorkspace is the historical "workspace" target: focus-or-create a
 // standalone Herdr workspace and apply the resolved template on creation. It
 // is the pre-target behaviour, factored out so the tab/pane branch reads at
 // the same level.
 func (a *App) launchWorkspace(ctx context.Context, driver source.HerdrDriver, cand source.Candidate, out, errOut io.Writer) error {
-	res, err := driver.FocusOrCreate(ctx, cand)
+	request, err := a.workspaceLaunchRequest(cand)
+	if err != nil {
+		fmt.Fprintln(errOut, err)
+		return errExitOne
+	}
+	res, err := driver.FocusOrCreate(ctx, request)
 	if err != nil {
 		fmt.Fprintf(errOut, "warning: herdr unavailable: %v\n", err)
 		fmt.Fprintln(out, displayPath(cand))

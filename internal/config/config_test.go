@@ -2194,3 +2194,68 @@ root = "main"
 		t.Errorf("error %q should name the template %q and the tab %q", err.Error(), "dev", "code")
 	}
 }
+
+func TestLoad_WorkspaceNameFieldsAndOrderedWildcardSelector(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	const doc = `[general]
+workspace_name = '{{ .Path | osBase }}'
+
+[[wildcards]]
+pattern = "**/services/*"
+workspace_name = "first"
+
+[[wildcards]]
+pattern = "**/services/platform-*"
+workspace_name = "second"
+
+[[workspaces]]
+name = "explicit"
+path = "/srv/services/platform-api"
+`
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got, want := cfg.General.WorkspaceName, "{{ .Path | osBase }}"; got != want {
+		t.Errorf("general.workspace_name = %q, want %q", got, want)
+	}
+	if got, want := cfg.Wildcards[0].WorkspaceName, "first"; got != want {
+		t.Errorf("wildcards[0].workspace_name = %q, want %q", got, want)
+	}
+	if got, ok := FirstMatchingWildcard(cfg.Wildcards, "/srv/services/platform-api"); !ok || got.WorkspaceName != "first" {
+		t.Fatalf("first wildcard = (%+v, %v), want first match", got, ok)
+	}
+	if got, ok := FirstMatchingWildcard(cfg.Wildcards, "/srv/other"); ok || got.WorkspaceName != "" {
+		t.Fatalf("unmatched wildcard = (%+v, %v), want no match", got, ok)
+	}
+}
+
+func TestLoad_RejectsInvalidWorkspaceNameFieldsWithScope(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		doc  string
+		want string
+	}{
+		{name: "general parse", doc: "[general]\nworkspace_name = \"{{ .Unknown }}\"\n", want: "general.workspace_name"},
+		{name: "wildcard execute", doc: "[[wildcards]]\npattern = \"**\"\nworkspace_name = " + strconv.Quote(`{{ mustRegexMatch "[" .Path }}`) + "\n", want: "wildcards[0].workspace_name"},
+		{name: "wildcard blank", doc: "[[wildcards]]\npattern = \"**\"\nworkspace_name = " + strconv.Quote(`{{ "   " }}`) + "\n", want: "wildcards[0].workspace_name"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(tc.doc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(path)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("load error = %v, want field scope %q", err, tc.want)
+			}
+		})
+	}
+}

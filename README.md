@@ -63,6 +63,8 @@ arbitrary user-defined providers:
 [general]
 sources = ["herdr", "workspaces", "zoxide", "projects"]
 selector = "builtin"   # builtin | fzf | auto
+# Applies only to newly created dynamic workspaces.
+workspace_name = '{{ .Path | osBase | lower }}'
 ```
 
 - **herdr** — active Herdr workspaces.
@@ -91,7 +93,29 @@ type = "group"
 path = "~/projects"
 sources = ["projects", "zoxide"]
 template = "dev"
+
+[[wildcards]]
+pattern = "**/services/*"
+workspace_name = '✈️ {{ printf "%s/%s" (.Path | osDir | osBase) (.Path | osBase) }}'
 ```
+
+`workspace_name` is evaluated only when a new dynamic zoxide, project, or direct-path
+workspace is created. Precedence is explicit `[[workspaces]].name` (which bypasses
+templates), first matching wildcard, `[general].workspace_name`, then the full
+normalized path. Existing Herdr workspaces, sessions, tabs, panes, and current-
+workspace launches bypass it. Candidate labels, paths, normalized identity,
+previews, list output, and TUI rows are unchanged.
+
+The naming engine uses a deterministic allow-list of Sprig functions. Core helpers
+include `osBase`, `osDir`, `osClean`, `trim`, `lower`, `upper`, `title`, `replace`,
+`default`, and path predicates. Advanced helpers include list, numeric, regex, and
+`sha256sum` functions. Environment, time, DNS, random, crypto/cert, mutation,
+reflection, serialization, URL/semver, and Helm-only helpers are unavailable.
+Names preserve Unicode, spaces, and slashes; blank/control-character results fail
+before Herdr creation. Duplicate rendered labels are allowed and are never
+suffix-adjusted. `os*` helpers use host-native paths; slash helpers are for
+slash-normalized values. No filesystem, symlink, tilde, clock, environment, or
+network state is read while rendering.
 
 A `type = "group"` entry is a nested picker: selecting it re-scopes the
 picker to its own `sources` list rooted at its own `path`, instead of opening

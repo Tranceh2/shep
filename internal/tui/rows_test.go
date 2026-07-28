@@ -22,6 +22,28 @@ func TestNoFuzzyScoreReference(t *testing.T) {
 	}
 }
 
+func TestWorkspaceNameRemainsOutsideTUISearchAndPresentation(t *testing.T) {
+	t.Parallel()
+	cand := source.Candidate{
+		Path:   "/srv/platform-api",
+		Label:  "display-label",
+		Source: config.SourceProjects,
+	}
+	rows := buildRows(rowBuildInput{candidates: []source.Candidate{cand}, query: "display-label"})
+	if len(rows) != 1 || rows[0].Candidate.Label != cand.Label || rows[0].Candidate.Path != cand.Path {
+		t.Fatalf("TUI search changed candidate fields: %+v", rows)
+	}
+	if got := candidateHaystack(cand); strings.Contains(got, "rendered-name") || !strings.Contains(got, cand.Label) {
+		t.Fatalf("TUI search haystack = %q, want only candidate presentation fields", got)
+	}
+	m := newRenderTestModel(ThemePlain, FocusList)
+	m.layout.LabelFormats = LabelFormats{Projects: "{{.Label}}"}
+	primary, _ := m.rowDisplayText(rows[0])
+	if !strings.Contains(primary, cand.Label) || strings.Contains(primary, "rendered-name") {
+		t.Fatalf("TUI row presentation = %q, want candidate label without launch name", primary)
+	}
+}
+
 // TestBuildRows_StableGroupAndParentOrder proves the DEFAULT source order
 // (Herdr, Workspaces, Zoxide, Projects — mirroring config.defaultSourceOrder)
 // applies when rowBuildInput.sourceOrder is empty. An empty query preserves

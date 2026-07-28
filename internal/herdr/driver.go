@@ -310,11 +310,13 @@ type paneInfoEnvelope struct {
 //   - Any other candidate (zoxide, projects, a [[workspaces]] config entry,
 //     or a direct --path) creates a new focused workspace.
 //
-// The candidate carries its own NormalizedPath (filled by the resolver); when
-// empty we normalise on the fly against cand.Path so the create label fallback
-// (filepath.Base of a clean path) is stable. A freshly created workspace's
-// root tab id/pane id are returned so the caller can apply a template.
-func (d *Driver) FocusOrCreate(ctx context.Context, cand source.Candidate) (source.FocusResult, error) {
+// The request's candidate carries its own NormalizedPath (filled by the
+// resolver); when empty we normalise on the fly against cand.Path so the
+// fallback label (filepath.Base of a clean path) is stable. A freshly created
+// workspace's root tab id/pane id are returned so the caller can apply a
+// template.
+func (d *Driver) FocusOrCreate(ctx context.Context, request source.WorkspaceLaunchRequest) (source.FocusResult, error) {
+	cand := request.Candidate
 	if cand.Source == config.SourceHerdr {
 		id := cand.Meta["workspace_id"]
 		if _, err := d.run.Run(ctx, d.binary, "workspace", "focus", id); err != nil {
@@ -331,7 +333,10 @@ func (d *Driver) FocusOrCreate(ctx context.Context, cand source.Candidate) (sour
 		}
 		needle = n
 	}
-	label := cand.Label
+	label := string(request.WorkspaceName)
+	if label == "" {
+		label = cand.Label
+	}
 	if label == "" {
 		label = filepath.Base(needle)
 	}

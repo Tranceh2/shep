@@ -137,14 +137,14 @@ func TestDriverListSessions_RejectsUnverifiedOrBrokenEnvelope(t *testing.T) {
 func TestDriver_FocusOrCreateUsesDedicatedCommands(t *testing.T) {
 	runner := &fakeRunner{script: []fakeCall{
 		{match: "herdr workspace focus w1", out: []byte(`{}`)},
-		{match: "herdr workspace create --cwd /new --label new --focus", out: []byte(`{"result":{"workspace":{"workspace_id":"w2"},"tab":{"tab_id":"w2:t1"},"root_pane":{"pane_id":"w2:p1"}}}`)},
+		{match: "herdr workspace create --cwd /new --label rendered-name --focus", out: []byte(`{"result":{"workspace":{"workspace_id":"w2"},"tab":{"tab_id":"w2:t1"},"root_pane":{"pane_id":"w2:p1"}}}`)},
 	}}
 	driver := New("herdr", WithRunner(runner))
-	focused, err := driver.FocusOrCreate(context.Background(), source.Candidate{Source: config.SourceHerdr, Meta: map[string]string{"workspace_id": "w1"}})
+	focused, err := driver.FocusOrCreate(context.Background(), source.WorkspaceLaunchRequest{Candidate: source.Candidate{Source: config.SourceHerdr, Meta: map[string]string{"workspace_id": "w1"}}})
 	if err != nil || focused.Action != source.HerdrActionFocused || focused.WorkspaceID != "w1" {
 		t.Fatalf("FocusOrCreate herdr = (%+v, %v)", focused, err)
 	}
-	created, err := driver.FocusOrCreate(context.Background(), source.Candidate{Path: "/new", Label: "new"})
+	created, err := driver.FocusOrCreate(context.Background(), source.WorkspaceLaunchRequest{Candidate: source.Candidate{Path: "/new", Label: "new"}, WorkspaceName: "rendered-name"})
 	if err != nil || created.Action != source.HerdrActionCreated || created.RootPaneID != "w2:p1" {
 		t.Fatalf("FocusOrCreate create = (%+v, %v)", created, err)
 	}

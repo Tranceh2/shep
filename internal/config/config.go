@@ -23,6 +23,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 	"github.com/tranceh2/shep/internal/pathutil"
 	"github.com/tranceh2/shep/internal/rowformat"
+	"github.com/tranceh2/shep/internal/workspacename"
 )
 
 // Built-in source names. general.sources lists which of these are enabled
@@ -117,10 +118,12 @@ type Config struct {
 
 // General holds global tweaks. Sources lists the enabled built-in source
 // names and their merge/display order; Selector picks the interactive
-// picker for `shep open` after the direct match.
+// picker for `shep open` after the direct match. WorkspaceName applies only to
+// newly created dynamic workspaces.
 type General struct {
-	Sources  []string `toml:"sources,omitempty"`
-	Selector string   `toml:"selector,omitempty"`
+	Sources       []string `toml:"sources,omitempty"`
+	Selector      string   `toml:"selector,omitempty"`
+	WorkspaceName string   `toml:"workspace_name,omitempty"`
 }
 
 // Herdr configures how the shep<->Herdr bridge locates the binary.
@@ -296,13 +299,14 @@ type WorkspaceConfig struct {
 }
 
 // WildcardConfig is one entry in the [[wildcards]] list: a glob pattern with
-// an optional template and preview override. The list is scanned in
-// declaration order; the first pattern matching the candidate's normalised
+// optional workspace-name, template, and preview overrides. The list is scanned
+// in declaration order; the first pattern matching the candidate's normalised
 // path or base name wins.
 type WildcardConfig struct {
-	Pattern  string   `toml:"pattern"`
-	Template string   `toml:"template,omitempty"`
-	Preview  []string `toml:"preview,omitempty"`
+	Pattern       string   `toml:"pattern"`
+	Template      string   `toml:"template,omitempty"`
+	WorkspaceName string   `toml:"workspace_name,omitempty"`
+	Preview       []string `toml:"preview,omitempty"`
 }
 
 // Duration wraps time.Duration so TOML string values ("150ms", "5s") parse
@@ -587,6 +591,9 @@ func normalizeLabelFormats(s *SourcesConfig) {
 // validate enforces every schema invariant that must fail Load fast rather
 // than surface as a confusing runtime error later.
 func validate(cfg *Config) error {
+	if err := validateWorkspaceNames(cfg); err != nil {
+		return err
+	}
 	if err := validateSources(cfg.General.Sources); err != nil {
 		return err
 	}
@@ -621,6 +628,24 @@ func validate(cfg *Config) error {
 	}
 	if err := validateTUI(cfg.TUI); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateWorkspaceNames(cfg *Config) error {
+	if cfg.General.WorkspaceName != "" {
+		if err := workspacename.Validate("general.workspace_name", cfg.General.WorkspaceName); err != nil {
+			return err
+		}
+	}
+	for i, wildcard := range cfg.Wildcards {
+		if wildcard.WorkspaceName == "" {
+			continue
+		}
+		field := fmt.Sprintf("wildcards[%d].workspace_name", i)
+		if err := workspacename.Validate(field, wildcard.WorkspaceName); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1108,6 +1133,21 @@ func ParsePercent(s string) (float64, bool) {
 		return 0, false
 	}
 	return n / 100, true
+}
+
+// FirstMatchingWildcard returns the first ordered wildcard matching normalizedPath
+// or its host-native base name. Declaration order is the precedence contract.
+func FirstMatchingWildcard(wildcards []WildcardConfig, normalizedPath string) (WildcardConfig, bool) {
+	if normalizedPath == "" {
+		return WildcardConfig{}, false
+	}
+	base := filepath.Base(normalizedPath)
+	for _, wildcard := range wildcards {
+		if MatchWildcard(wildcard.Pattern, normalizedPath) || MatchWildcard(wildcard.Pattern, base) {
+			return wildcard, true
+		}
+	}
+	return WildcardConfig{}, false
 }
 
 // MatchWildcard reports whether path matches a [[wildcards]] pattern. A

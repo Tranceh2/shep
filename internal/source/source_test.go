@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/tranceh2/shep/internal/config"
+	"github.com/tranceh2/shep/internal/workspacename"
 )
 
 // fakeDriver is a controllable HerdrDriver for tests.
@@ -53,8 +54,22 @@ func (f fakeDriver) Snapshot(context.Context) (Snapshot, error) {
 	return snapshot, nil
 }
 func (fakeDriver) ListSessions(context.Context) ([]Session, error) { return nil, nil }
-func (fakeDriver) FocusOrCreate(context.Context, Candidate) (FocusResult, error) {
+func (fakeDriver) FocusOrCreate(context.Context, WorkspaceLaunchRequest) (FocusResult, error) {
 	return FocusResult{}, errors.New("fakeDriver does not implement FocusOrCreate")
+}
+
+func TestWorkspaceLaunchRequestCarriesNameSeparately(t *testing.T) {
+	t.Parallel()
+	request := WorkspaceLaunchRequest{
+		Candidate:     Candidate{Path: "/srv/platform-api", Label: "display-label"},
+		WorkspaceName: workspacename.Name("launch-label"),
+	}
+	if request.Candidate.Label == string(request.WorkspaceName) {
+		t.Fatal("launch name must remain separate from candidate label")
+	}
+	if got, want := string(request.WorkspaceName), "launch-label"; got != want {
+		t.Fatalf("workspace name = %q, want %q", got, want)
+	}
 }
 func (fakeDriver) ReadPane(context.Context, string, int) (string, error) {
 	return "", errors.New("fakeDriver does not implement ReadPane")

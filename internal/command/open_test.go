@@ -35,20 +35,21 @@ func (fakePreviewRenderer) Render(context.Context, source.Candidate) (preview.Re
 // and responding with scripted FocusOrCreate results plus recording any
 // tab/pane mutation calls a template application would issue.
 type openDriver struct {
-	detect        bool
-	focusErr      error
-	lastCand      source.Candidate
-	lastAction    source.HerdrAction
-	workspaceID   string
-	rootTabID     string
-	rootPaneID    string
-	snapshot      source.Snapshot
-	snapshotErr   error
-	snapshotCalls int
-	snapshotFn    func(context.Context) (source.Snapshot, error)
-	sessions      []source.Session
-	sessionsErr   error
-	sessionsCalls int
+	detect            bool
+	focusErr          error
+	lastCand          source.Candidate
+	lastWorkspaceName string
+	lastAction        source.HerdrAction
+	workspaceID       string
+	rootTabID         string
+	rootPaneID        string
+	snapshot          source.Snapshot
+	snapshotErr       error
+	snapshotCalls     int
+	snapshotFn        func(context.Context) (source.Snapshot, error)
+	sessions          []source.Session
+	sessionsErr       error
+	sessionsCalls     int
 
 	renamed      []string
 	ran          []string
@@ -78,8 +79,9 @@ func (d *openDriver) ListSessions(context.Context) ([]source.Session, error) {
 	d.sessionsCalls++
 	return append([]source.Session(nil), d.sessions...), d.sessionsErr
 }
-func (d *openDriver) FocusOrCreate(_ context.Context, cand source.Candidate) (source.FocusResult, error) {
-	d.lastCand = cand
+func (d *openDriver) FocusOrCreate(_ context.Context, request source.WorkspaceLaunchRequest) (source.FocusResult, error) {
+	d.lastCand = request.Candidate
+	d.lastWorkspaceName = string(request.WorkspaceName)
 	if d.focusErr != nil {
 		return source.FocusResult{}, d.focusErr
 	}
@@ -1227,7 +1229,7 @@ func (*recordingDriver) Snapshot(context.Context) (source.Snapshot, error) {
 	return source.Snapshot{}, nil
 }
 func (*recordingDriver) ListSessions(context.Context) ([]source.Session, error) { return nil, nil }
-func (*recordingDriver) FocusOrCreate(context.Context, source.Candidate) (source.FocusResult, error) {
+func (*recordingDriver) FocusOrCreate(context.Context, source.WorkspaceLaunchRequest) (source.FocusResult, error) {
 	return source.FocusResult{}, errors.New("not used")
 }
 func (d *recordingDriver) ReadPane(_ context.Context, _ string, _ int) (string, error) {
