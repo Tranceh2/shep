@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -45,6 +46,9 @@ type openDriver struct {
 	snapshotErr   error
 	snapshotCalls int
 	snapshotFn    func(context.Context) (source.Snapshot, error)
+	sessions      []source.Session
+	sessionsErr   error
+	sessionsCalls int
 
 	renamed      []string
 	ran          []string
@@ -69,6 +73,10 @@ func (d *openDriver) Snapshot(ctx context.Context) (source.Snapshot, error) {
 		return d.snapshotFn(ctx)
 	}
 	return d.snapshot, d.snapshotErr
+}
+func (d *openDriver) ListSessions(context.Context) ([]source.Session, error) {
+	d.sessionsCalls++
+	return append([]source.Session(nil), d.sessions...), d.sessionsErr
 }
 func (d *openDriver) FocusOrCreate(_ context.Context, cand source.Candidate) (source.FocusResult, error) {
 	d.lastCand = cand
@@ -294,6 +302,180 @@ func TestOpen_ExactQueryInvokesDriver(t *testing.T) {
 	if driver.lastCand.NormalizedPath != foo {
 		t.Errorf("driver candidate normalized = %q, want %q", driver.lastCand.NormalizedPath, foo)
 	}
+}
+
+// TestOpen_SessionsSourceEndToEnd covers the opt-in production path from
+// config source order through collection, resolution, and foreground attach.
+func TestOpen_SessionsSourceEndToEnd(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.General.Sources = []string{config.SourceSessions}
+	cfg.Sources.Sessions.Icon = "S"
+	driver := &openDriver{detect: true, sessions: []source.Session{{Name: "alpha", Running: true}}}
+	var attached string
+	var out, errOut bytes.Buffer
+	app := New(
+		WithStreams(&out, &errOut),
+		WithHerdrDriver(driver),
+		WithSessionAttach(func(_ context.Context, binary, name string, _ []string) error {
+			if binary != "herdr" {
+				t.Errorf("attach binary = %q, want herdr", binary)
+			}
+			attached = name
+			return nil
+		}),
+	)
+	app.cfg = cfg
+	app.probes = config.Probes{Herdr: true}
+	cmd := app.rootCmd()
+	cmd.SetArgs([]string{"open", "alpha"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("open sessions source: %v (stderr=%q)", err, errOut.String())
+	}
+	if driver.sessionsCalls != 1 {
+		t.Errorf("session list calls = %d, want exactly one", driver.sessionsCalls)
+	}
+	if attached != "alpha" {
+		t.Errorf("attached session = %q, want alpha", attached)
+	}
+	if driver.lastCand.Path != "" || out.Len() != 0 || errOut.Len() != 0 {
+		t.Errorf("sessions flow used generic workspace behavior: candidate=%+v stdout=%q stderr=%q", driver.lastCand, out.String(), errOut.String())
+	}
+}
+
+// TestLaunch_SessionAttachDispatchesBeforePathAndDriverChecks verifies a
+// sessions row runs the dedicated foreground attach seam even when it has no
+// usable path or normal Herdr driver.
+func TestLaunch_SessionAttachDispatchesBeforePathAndDriverChecks(t *testing.T) {
+	t.Setenv("HERDR_SOCKET_PATH", "/tmp/current.sock")
+	t.Setenv("HERDR_SESSION", "current")
+	t.Setenv("HERDR_TEST_ONLY", "remove")
+	t.Setenv("SHEP_SESSION_UNRELATED", "keep")
+
+	var gotBinary, gotName string
+	var gotEnv []string
+	app := New(WithSessionAttach(func(_ context.Context, binary, name string, env []string) error {
+		gotBinary, gotName = binary, name
+		gotEnv = append([]string(nil), env...)
+		return nil
+	}))
+	app.cfg = config.Defaults()
+	var out, errOut bytes.Buffer
+	err := app.launch(context.Background(), source.Candidate{
+		Source:  config.SourceSessions,
+		Missing: true,
+		Meta:    map[string]string{"session_name": "alpha"},
+	}, tui.RowActionOpen, "workspace", nil, &out, &errOut)
+	if err != nil {
+		t.Fatalf("launch session: %v (stderr=%q)", err, errOut.String())
+	}
+	if gotBinary != "herdr" || gotName != "alpha" {
+		t.Errorf("attach = (%q, %q), want (herdr, alpha)", gotBinary, gotName)
+	}
+	if !containsEnv(gotEnv, "SHEP_SESSION_UNRELATED=keep") {
+		t.Errorf("unrelated environment missing from attach child: %v", gotEnv)
+	}
+	for _, entry := range gotEnv {
+		key, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(key, "HERDR_") {
+			t.Errorf("attach child leaked Herdr environment %q", entry)
+		}
+	}
+	if out.Len() != 0 || errOut.Len() != 0 {
+		t.Errorf("successful attach output = stdout:%q stderr:%q, want quiet", out.String(), errOut.String())
+	}
+}
+
+// TestLaunch_SessionAttachRejectsEmptyNameAndSurfacesChildFailure verifies an
+// invalid row never invokes the child and an attach error follows the existing
+// command failure contract.
+func TestLaunch_SessionAttachRejectsEmptyNameAndSurfacesChildFailure(t *testing.T) {
+	t.Run("empty name", func(t *testing.T) {
+		called := false
+		app := New(WithSessionAttach(func(context.Context, string, string, []string) error {
+			called = true
+			return nil
+		}))
+		var errOut bytes.Buffer
+		err := app.launch(context.Background(), source.Candidate{Source: config.SourceSessions}, tui.RowActionOpen, "workspace", nil, io.Discard, &errOut)
+		if !errors.Is(err, errExitOne) || called || !strings.Contains(errOut.String(), "missing session name") {
+			t.Errorf("empty session launch = err:%v called:%t stderr:%q", err, called, errOut.String())
+		}
+	})
+	t.Run("child failure", func(t *testing.T) {
+		app := New(WithSessionAttach(func(context.Context, string, string, []string) error {
+			return errors.New("attach exited 7")
+		}))
+		var errOut bytes.Buffer
+		err := app.launch(context.Background(), source.Candidate{Source: config.SourceSessions, Meta: map[string]string{"session_name": "beta"}}, tui.RowActionOpen, "workspace", nil, io.Discard, &errOut)
+		if !errors.Is(err, errExitOne) || !strings.Contains(errOut.String(), "attach exited 7") {
+			t.Errorf("failed session attach = err:%v stderr:%q", err, errOut.String())
+		}
+	})
+}
+
+func TestLaunch_SessionsSourceTargetGuard(t *testing.T) {
+	for _, tt := range []struct {
+		name, target string
+		inside       bool
+	}{
+		{"tab inside Herdr", "tab", true},
+		{"pane inside Herdr", "pane", true},
+		{"tab outside Herdr", "tab", false},
+		{"pane outside Herdr", "pane", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			app := New(WithSessionAttach(func(context.Context, string, string, []string) error {
+				calls++
+				return nil
+			}))
+			cand := source.Candidate{Source: config.SourceSessions, Label: "alpha", Meta: map[string]string{"session_name": "alpha"}}
+			var pane *source.Pane
+			want := "--target=" + tt.target + " requires shep to be running inside a herdr workspace pane\n"
+			if tt.inside {
+				pane = &source.Pane{}
+				want = disallowTarget(cand, tt.target) + "\n"
+			}
+			var errOut bytes.Buffer
+			err := app.launch(context.Background(), cand, tui.RowActionOpen, tt.target, pane, io.Discard, &errOut)
+			if !errors.Is(err, errExitOne) || calls != 0 || errOut.String() != want {
+				t.Errorf("launch = err:%v calls:%d stderr:%q, want exit 1, zero calls, %q", err, calls, errOut.String(), want)
+			}
+		})
+	}
+}
+
+func TestLaunch_SessionsSourceDefaultTargetAttachesUnchanged(t *testing.T) {
+	called, name := 0, ""
+	app := New(WithSessionAttach(func(_ context.Context, _ string, got string, _ []string) error {
+		called++
+		name = got
+		return nil
+	}))
+	var errOut bytes.Buffer
+	err := app.launch(context.Background(), source.Candidate{Source: config.SourceSessions, Meta: map[string]string{"session_name": "alpha"}}, tui.RowActionOpen, "", nil, io.Discard, &errOut)
+	if err != nil || called != 1 || name != "alpha" || errOut.Len() != 0 {
+		t.Errorf("default target = err:%v calls:%d name:%q stderr:%q", err, called, name, errOut.String())
+	}
+}
+
+// TestStripHerdrEnv removes every Herdr-prefixed setting without changing the
+// order or values of unrelated environment entries.
+func TestStripHerdrEnv(t *testing.T) {
+	input := []string{"PATH=/bin", "HERDR_SOCKET_PATH=/tmp/socket", "KEEP=1", "HERDR_FLAG", "NOT_HERDR=value"}
+	want := []string{"PATH=/bin", "KEEP=1", "NOT_HERDR=value"}
+	if got := stripHerdrEnv(input); !reflect.DeepEqual(got, want) {
+		t.Errorf("stripHerdrEnv(%v) = %v, want %v", input, got, want)
+	}
+}
+
+func containsEnv(env []string, want string) bool {
+	for _, entry := range env {
+		if entry == want {
+			return true
+		}
+	}
+	return false
 }
 
 // TestOpen_NoMatchExitsOne: an unmatched query prints "no match" to stderr
@@ -1044,6 +1226,7 @@ func (*recordingDriver) Detect(context.Context) bool { return true }
 func (*recordingDriver) Snapshot(context.Context) (source.Snapshot, error) {
 	return source.Snapshot{}, nil
 }
+func (*recordingDriver) ListSessions(context.Context) ([]source.Session, error) { return nil, nil }
 func (*recordingDriver) FocusOrCreate(context.Context, source.Candidate) (source.FocusResult, error) {
 	return source.FocusResult{}, errors.New("not used")
 }

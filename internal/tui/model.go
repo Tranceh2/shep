@@ -65,6 +65,7 @@ const snapshotTTL = 5 * time.Second
 // config.Config so Model remains a session-only view model.
 type LabelFormats struct {
 	Herdr      string
+	Sessions   string
 	Workspaces string
 	Zoxide     string
 	Projects   string
@@ -78,6 +79,9 @@ type LabelFormats struct {
 func (f LabelFormats) withDefaults() LabelFormats {
 	if f.Herdr == "" {
 		f.Herdr = defaultLabelWithPathFormat
+	}
+	if f.Sessions == "" {
+		f.Sessions = defaultLabelOnlyFormat
 	}
 	if f.Workspaces == "" {
 		f.Workspaces = defaultLabelOnlyFormat

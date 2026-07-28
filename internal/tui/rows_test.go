@@ -558,6 +558,31 @@ func TestRowIdentity_StableAcrossRebuilds(t *testing.T) {
 	}
 }
 
+// TestSessionRows_AreFlatAndUseSessionNameIdentity ensures directory-less
+// sessions never collide during selection retention and never synthesize tree
+// descendants.
+func TestSessionRows_AreFlatAndUseSessionNameIdentity(t *testing.T) {
+	t.Parallel()
+	alpha := source.Candidate{Source: config.SourceSessions, Label: "alpha", Meta: map[string]string{"session_name": "alpha"}}
+	beta := source.Candidate{Source: config.SourceSessions, Label: "beta", Meta: map[string]string{"session_name": "beta"}}
+	if got, want := rowIdentity(alpha), "session:alpha"; got != want {
+		t.Errorf("alpha identity = %q, want %q", got, want)
+	}
+	if got, want := rowIdentity(beta), "session:beta"; got != want {
+		t.Errorf("beta identity = %q, want %q", got, want)
+	}
+	rows := buildRows(rowBuildInput{
+		candidates:  []source.Candidate{alpha, beta},
+		sourceOrder: []string{config.SourceSessions},
+		children: map[string]workspaceChildren{
+			"ignored": {Tabs: []tabChildren{{Tab: source.Candidate{Label: "must not appear"}}}},
+		},
+	})
+	if len(rows) != 2 || rows[0].Kind != RowCandidate || rows[1].Kind != RowCandidate {
+		t.Fatalf("session rows = %+v, want two flat candidate rows", rows)
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

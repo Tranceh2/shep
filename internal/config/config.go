@@ -27,9 +27,10 @@ import (
 
 // Built-in source names. general.sources lists which of these are enabled
 // and in what merge/display order; unknown names fail Load fast. shep does
-// not support arbitrary user-defined source providers — only these four.
+// not support arbitrary user-defined source providers — only these five.
 const (
 	SourceHerdr      = "herdr"
+	SourceSessions   = "sessions"
 	SourceWorkspaces = "workspaces"
 	SourceZoxide     = "zoxide"
 	SourceProjects   = "projects"
@@ -39,7 +40,7 @@ const (
 var defaultSourceOrder = []string{SourceHerdr, SourceWorkspaces, SourceZoxide, SourceProjects}
 
 var validSourceNames = map[string]bool{
-	SourceHerdr: true, SourceWorkspaces: true, SourceZoxide: true, SourceProjects: true,
+	SourceHerdr: true, SourceSessions: true, SourceWorkspaces: true, SourceZoxide: true, SourceProjects: true,
 }
 
 // Selector values for the [general].selector field. They pick the interactive
@@ -72,13 +73,14 @@ const (
 	PreviewIdentity    = "identity"
 	PreviewGit         = "git"
 	PreviewWorkspace   = "workspace"
+	PreviewSessionInfo = "session_info"
 	PreviewActivePane  = "active_pane"
 	PreviewDir         = "dir"
 	PreviewAgentStatus = "agent_status"
 )
 
 var builtinPreviewNames = map[string]bool{
-	PreviewIdentity: true, PreviewGit: true, PreviewWorkspace: true,
+	PreviewIdentity: true, PreviewGit: true, PreviewWorkspace: true, PreviewSessionInfo: true,
 	PreviewActivePane: true, PreviewDir: true, PreviewAgentStatus: true,
 }
 
@@ -203,11 +205,12 @@ var validTUIIcons = map[string]bool{
 // at validation.
 const TUILayoutLandscape = "landscape"
 
-// SourcesConfig configures the four built-in source providers. Only these
-// four tables are recognised; there is no support for arbitrary
+// SourcesConfig configures the built-in source providers. Only these
+// tables are recognised; there is no support for arbitrary
 // user-defined provider kinds.
 type SourcesConfig struct {
 	Herdr      HerdrSourceConfig      `toml:"herdr,omitempty"`
+	Sessions   SessionsSourceConfig   `toml:"sessions,omitempty"`
 	Workspaces WorkspacesSourceConfig `toml:"workspaces,omitempty"`
 	Zoxide     ZoxideSourceConfig     `toml:"zoxide,omitempty"`
 	Projects   ProjectsSourceConfig   `toml:"projects,omitempty"`
@@ -220,6 +223,14 @@ type HerdrSourceConfig struct {
 	TabLabelFormat  string   `toml:"tab_label_format,omitempty"`
 	PaneLabelFormat string   `toml:"pane_label_format,omitempty"`
 	Preview         []string `toml:"preview,omitempty"`
+}
+
+// SessionsSourceConfig configures the opt-in Herdr sessions source's
+// presentation. Session rows never imply a filesystem path.
+type SessionsSourceConfig struct {
+	Icon        string   `toml:"icon,omitempty"`
+	LabelFormat string   `toml:"label_format,omitempty"`
+	Preview     []string `toml:"preview,omitempty"`
 }
 
 // WorkspacesSourceConfig configures the predefined-[[workspaces]] source's
@@ -556,6 +567,12 @@ func normalizeLabelFormats(s *SourcesConfig) {
 	if s.Herdr.PaneLabelFormat == "" {
 		s.Herdr.PaneLabelFormat = labelWithPath
 	}
+	if s.Sessions.LabelFormat == "" {
+		s.Sessions.LabelFormat = "{{.Label}}"
+	}
+	if len(s.Sessions.Preview) == 0 {
+		s.Sessions.Preview = []string{PreviewSessionInfo}
+	}
 	if s.Workspaces.LabelFormat == "" {
 		s.Workspaces.LabelFormat = "{{.Label}}"
 	}
@@ -618,6 +635,7 @@ func validateLabelFormats(s SourcesConfig) error {
 		{"sources.herdr.label_format", s.Herdr.LabelFormat},
 		{"sources.herdr.tab_label_format", s.Herdr.TabLabelFormat},
 		{"sources.herdr.pane_label_format", s.Herdr.PaneLabelFormat},
+		{"sources.sessions.label_format", s.Sessions.LabelFormat},
 		{"sources.workspaces.label_format", s.Workspaces.LabelFormat},
 		{"sources.zoxide.label_format", s.Zoxide.LabelFormat},
 		{"sources.projects.label_format", s.Projects.LabelFormat},
@@ -674,6 +692,7 @@ func validateAllPreviewLists(cfg *Config) error {
 		names []string
 	}{
 		{"sources.herdr.preview", cfg.Sources.Herdr.Preview},
+		{"sources.sessions.preview", cfg.Sources.Sessions.Preview},
 		{"sources.workspaces.preview", cfg.Sources.Workspaces.Preview},
 		{"sources.zoxide.preview", cfg.Sources.Zoxide.Preview},
 		{"sources.projects.preview", cfg.Sources.Projects.Preview},
@@ -701,8 +720,8 @@ func validateAllPreviewLists(cfg *Config) error {
 func validateSources(names []string) error {
 	for _, n := range names {
 		if !validSourceNames[n] {
-			return fmt.Errorf("invalid general.sources entry %q (valid: %s, %s, %s, %s)",
-				n, SourceHerdr, SourceWorkspaces, SourceZoxide, SourceProjects)
+			return fmt.Errorf("invalid general.sources entry %q (valid: %s, %s, %s, %s, %s)",
+				n, SourceHerdr, SourceSessions, SourceWorkspaces, SourceZoxide, SourceProjects)
 		}
 	}
 	return nil

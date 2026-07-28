@@ -665,6 +665,8 @@ func (m Model) rowLabelFormat(row Row) string {
 	switch row.Candidate.Source {
 	case config.SourceHerdr:
 		return formats.Herdr
+	case config.SourceSessions:
+		return formats.Sessions
 	case config.SourceWorkspaces:
 		return formats.Workspaces
 	case config.SourceZoxide:
@@ -739,10 +741,26 @@ func (m Model) rowPrimaryText(row Row) (primary string, prefixRunes int) {
 		prefix += c.Icon + " "
 	}
 	text := m.renderRowLabel(row)
+	if c.Source == config.SourceSessions {
+		text += sessionStatusSuffix(c)
+	}
 	if c.Missing {
 		text += " (missing)"
 	}
 	return prefix + text, len([]rune(prefix))
+}
+
+// sessionStatusSuffix renders the sessions source's known state metadata in a
+// fixed order, independent of a user's label template.
+func sessionStatusSuffix(c source.Candidate) string {
+	state := "stopped"
+	if c.Meta["running"] == "true" {
+		state = "running"
+	}
+	if c.Meta["default"] == "true" {
+		return " (" + state + ", default)"
+	}
+	return " (" + state + ")"
 }
 
 // rowSecondaryText returns no content. A tab's parent workspace context would

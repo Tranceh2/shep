@@ -79,6 +79,61 @@ func TestDriverSnapshot_EmptyMalformedAndCommandError(t *testing.T) {
 	}
 }
 
+// TestDriverListSessions_ParsesVerifiedEnvelope verifies the sessions command
+// accepts only its documented top-level envelope, ignores unknown fields, and
+// retains named records even when optional metadata is absent.
+func TestDriverListSessions_ParsesVerifiedEnvelope(t *testing.T) {
+	runner := &fakeRunner{script: []fakeCall{{match: "herdr session list --json", out: []byte(`{
+  "sessions": [
+    {"name":"default","running":true,"default":true,"session_dir":"/tmp/default","socket_path":"/tmp/default.sock","unknown":"kept-out"},
+    {"name":"stopped","running":false},
+    {"running":true,"socket_path":"/tmp/nameless.sock"}
+  ],
+  "future_field": {"ignored": true}
+}`)}}}
+
+	sessions, err := New("herdr", WithRunner(runner)).ListSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(runner.calls) != 1 || runner.calls[0] != "herdr session list --json" {
+		t.Errorf("calls = %v, want [herdr session list --json]", runner.calls)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("sessions = %+v, want two named records", sessions)
+	}
+	if got, want := sessions[0], (source.Session{Name: "default", Running: true, Default: true, SessionDir: "/tmp/default", SocketPath: "/tmp/default.sock"}); got != want {
+		t.Errorf("first session = %+v, want %+v", got, want)
+	}
+	if got, want := sessions[1], (source.Session{Name: "stopped"}); got != want {
+		t.Errorf("partial session = %+v, want %+v", got, want)
+	}
+}
+
+// TestDriverListSessions_RejectsUnverifiedOrBrokenEnvelope ensures legacy
+// result-wrapped payloads, malformed JSON, and CLI errors never become a
+// usable session list.
+func TestDriverListSessions_RejectsUnverifiedOrBrokenEnvelope(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		call fakeCall
+	}{
+		{name: "legacy result wrapper", call: fakeCall{match: "herdr session list --json", out: []byte(`{"result":{"sessions":[{"name":"legacy"}]}}`)}},
+		{name: "malformed JSON", call: fakeCall{match: "herdr session list --json", out: []byte(`{`)}},
+		{name: "command error", call: fakeCall{match: "herdr session list --json", err: errors.New("daemon down")}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := New("herdr", WithRunner(&fakeRunner{script: []fakeCall{tt.call}})).ListSessions(context.Background())
+			if err == nil {
+				t.Fatalf("ListSessions = %+v, want error", got)
+			}
+			if len(got) != 0 {
+				t.Errorf("ListSessions result = %+v, want no sessions on failure", got)
+			}
+		})
+	}
+}
+
 func TestDriver_FocusOrCreateUsesDedicatedCommands(t *testing.T) {
 	runner := &fakeRunner{script: []fakeCall{
 		{match: "herdr workspace focus w1", out: []byte(`{}`)},

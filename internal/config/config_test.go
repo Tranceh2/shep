@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -56,6 +57,55 @@ func TestDefaults_SourcesOrder(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("sources[%d]: got %q want %q", i, got[i], want[i])
 		}
+	}
+}
+
+// TestSessionsSource_OptInRegistration verifies sessions is accepted when
+// configured, carries its source presentation defaults, and never joins the
+// default source order.
+func TestSessionsSource_OptInRegistration(t *testing.T) {
+	t.Parallel()
+
+	defaults := Defaults()
+	for _, name := range defaults.General.Sources {
+		if name == SourceSessions {
+			t.Fatalf("sessions must be opt-in, default sources = %v", defaults.General.Sources)
+		}
+	}
+	if err := validateSources([]string{SourceSessions}); err != nil {
+		t.Fatalf("sessions must be a valid source: %v", err)
+	}
+	if got, want := defaults.Sources.Sessions.LabelFormat, "{{.Label}}"; got != want {
+		t.Errorf("sessions label format = %q, want %q", got, want)
+	}
+	if got, want := defaults.Sources.Sessions.Preview, []string{PreviewSessionInfo}; !reflect.DeepEqual(got, want) {
+		t.Errorf("sessions preview = %v, want %v", got, want)
+	}
+
+	path := filepath.Join(t.TempDir(), "config.toml")
+	const doc = `[general]
+sources = ["sessions"]
+
+[sources.sessions]
+icon = "S"
+label_format = "session {{.Label}}"
+preview = ["session_info"]
+`
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load sessions config: %v", err)
+	}
+	if got, want := cfg.General.Sources, []string{SourceSessions}; !reflect.DeepEqual(got, want) {
+		t.Errorf("configured sources = %v, want %v", got, want)
+	}
+	if got, want := cfg.Sources.Sessions.Icon, "S"; got != want {
+		t.Errorf("sessions icon = %q, want %q", got, want)
+	}
+	if got, want := cfg.Sources.Sessions.LabelFormat, "session {{.Label}}"; got != want {
+		t.Errorf("sessions label format = %q, want %q", got, want)
 	}
 }
 

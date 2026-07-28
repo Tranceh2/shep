@@ -13,6 +13,7 @@ func TestLayoutFromConfig_ThreadsLabelFormats(t *testing.T) {
 			TabLabelFormat:  "tab={{.Label}}",
 			PaneLabelFormat: "pane={{.Path}}",
 		},
+		Sessions:   config.SessionsSourceConfig{LabelFormat: "session={{.Label}}"},
 		Workspaces: config.WorkspacesSourceConfig{LabelFormat: "entry={{.Label}}"},
 		Zoxide:     config.ZoxideSourceConfig{LabelFormat: "history={{.Path}}"},
 		Projects:   config.ProjectsSourceConfig{LabelFormat: "project={{.Label}}"},
@@ -21,6 +22,9 @@ func TestLayoutFromConfig_ThreadsLabelFormats(t *testing.T) {
 	layout := layoutFromConfig(config.TUIConfig{}, nil, sources)
 	if got, want := layout.LabelFormats.Herdr, "workspace={{.Path}}"; got != want {
 		t.Errorf("Herdr format = %q, want %q", got, want)
+	}
+	if got, want := layout.LabelFormats.Sessions, "session={{.Label}}"; got != want {
+		t.Errorf("Sessions format = %q, want %q", got, want)
 	}
 	if got, want := layout.LabelFormats.Workspaces, "entry={{.Label}}"; got != want {
 		t.Errorf("Workspaces format = %q, want %q", got, want)

@@ -178,6 +178,8 @@ func (r *defaultRenderer) renderSection(ctx context.Context, cand source.Candida
 		return "", false
 	case config.PreviewWorkspace:
 		return r.renderWorkspaceSection(ctx, cand)
+	case config.PreviewSessionInfo:
+		return renderSessionInfoSection(cand), true
 	case config.PreviewActivePane:
 		return r.renderActivePaneSection(ctx, cand)
 	case config.PreviewAgentStatus:
@@ -193,38 +195,38 @@ func (r *defaultRenderer) renderSection(ctx context.Context, cand source.Candida
 	}
 }
 
-// resolvePreviewNames implements the documented precedence: an exact
-// [[workspaces]] path match with its own preview list wins; else the first
-// matching [[wildcards]] entry with a non-empty preview list; else the
-// candidate's source-level preview list; else [preview].default; else a
-// single built-in "identity" fallback so the preview is never blank.
+// resolvePreviewNames implements the documented precedence: sessions always
+// use their source-level preview because SessionDir is display metadata; other
+// candidates use workspace > wildcard > source > default > identity fallback.
 func resolvePreviewNames(cfg *config.Config, cand source.Candidate) []string {
-	path := renderPath(cand)
-	base := filepath.Base(path)
+	if cand.Source != config.SourceSessions {
+		path := renderPath(cand)
+		base := filepath.Base(path)
 
-	for _, ws := range cfg.Workspaces {
-		wsPath := ws.Path
-		if expanded, err := pathutil.ExpandTilde(ws.Path); err == nil {
-			wsPath = expanded
-		}
-		if wsPath == "" || len(ws.Preview) == 0 {
-			continue
-		}
-		// pathutil.SameDir already resolves symlinks and case-fold
-		// equivalence via os.Stat + os.SameFile (device+inode identity), so
-		// no separate Normalize pass is needed on either side here: a
-		// wsPath that is itself a symlink, or that differs only in case
-		// from path on a case-insensitive filesystem, still matches.
-		if pathutil.SameDir(wsPath, path) {
-			return ws.Preview
-		}
-	}
-	for _, w := range cfg.Wildcards {
-		if config.MatchWildcard(w.Pattern, path) || config.MatchWildcard(w.Pattern, base) {
-			if len(w.Preview) > 0 {
-				return w.Preview
+		for _, ws := range cfg.Workspaces {
+			wsPath := ws.Path
+			if expanded, err := pathutil.ExpandTilde(ws.Path); err == nil {
+				wsPath = expanded
 			}
-			break
+			if wsPath == "" || len(ws.Preview) == 0 {
+				continue
+			}
+			// pathutil.SameDir already resolves symlinks and case-fold
+			// equivalence via os.Stat + os.SameFile (device+inode identity), so
+			// no separate Normalize pass is needed on either side here: a
+			// wsPath that is itself a symlink, or that differs only in case
+			// from path on a case-insensitive filesystem, still matches.
+			if pathutil.SameDir(wsPath, path) {
+				return ws.Preview
+			}
+		}
+		for _, w := range cfg.Wildcards {
+			if config.MatchWildcard(w.Pattern, path) || config.MatchWildcard(w.Pattern, base) {
+				if len(w.Preview) > 0 {
+					return w.Preview
+				}
+				break
+			}
 		}
 	}
 	if names := sourcePreview(cfg, cand.Source); len(names) > 0 {
@@ -242,6 +244,8 @@ func sourcePreview(cfg *config.Config, sourceName string) []string {
 	switch sourceName {
 	case config.SourceHerdr:
 		return cfg.Sources.Herdr.Preview
+	case config.SourceSessions:
+		return cfg.Sources.Sessions.Preview
 	case config.SourceWorkspaces:
 		return cfg.Sources.Workspaces.Preview
 	case config.SourceZoxide:
@@ -264,6 +268,42 @@ func renderIdentity(cand source.Candidate) string {
 		lines = append(lines, "template: "+t)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// renderSessionInfoSection renders only values already carried by a sessions
+// candidate. It deliberately performs no directory, socket, pane, or command
+// lookup so selecting a session cannot trigger cross-session inspection.
+func renderSessionInfoSection(cand source.Candidate) string {
+	state := "unavailable"
+	switch cand.Meta["running"] {
+	case "true":
+		state = "running"
+	case "false":
+		state = "stopped"
+	}
+	lines := []string{
+		"session",
+		"  name: " + sessionInfoValue(cand.Meta["session_name"]),
+		"  state: " + state,
+		"  default: " + sessionBooleanValue(cand.Meta["default"]),
+		"  session dir: " + sessionInfoValue(cand.Meta["session_dir"]),
+		"  socket path: " + sessionInfoValue(cand.Meta["socket_path"]),
+	}
+	return strings.Join(lines, "\n")
+}
+
+func sessionInfoValue(value string) string {
+	if value == "" {
+		return "unavailable"
+	}
+	return value
+}
+
+func sessionBooleanValue(value string) string {
+	if value == "true" || value == "false" {
+		return value
+	}
+	return "unavailable"
 }
 
 // herdrPreviewTimeout bounds every herdr query made while rendering a preview

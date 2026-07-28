@@ -260,6 +260,28 @@ func TestDedup_HerdrExempt(t *testing.T) {
 	}
 }
 
+// TestDedup_SessionsExempt preserves independently attachable session targets
+// even when their optional session_dir metadata is the same as another source.
+func TestDedup_SessionsExempt(t *testing.T) {
+	t.Parallel()
+	shared := t.TempDir()
+	candidates := []source.Candidate{
+		{Path: shared, Label: "shared", Source: config.SourceSessions, Meta: map[string]string{"session_name": "alpha"}},
+		{Path: shared, Label: "shared", Source: config.SourceSessions, Meta: map[string]string{"session_name": "beta"}},
+		{Path: shared, Label: "shared", Source: config.SourceWorkspaces},
+	}
+
+	got := Dedup(candidates)
+	if len(got) != 3 {
+		t.Fatalf("Dedup = %+v, want all independently actionable session and workspace rows", got)
+	}
+	for i, want := range []string{"alpha", "beta", ""} {
+		if got[i].Meta["session_name"] != want {
+			t.Errorf("candidate %d session name = %q, want %q", i, got[i].Meta["session_name"], want)
+		}
+	}
+}
+
 // TestMatch_CaseInsensitiveSubstring (PL-7) matches against label, path, and
 // the normalised path alike.
 func TestMatch_CaseInsensitiveSubstring(t *testing.T) {
@@ -390,6 +412,9 @@ func (fakeErrDriver) Detect(context.Context) bool { return true }
 func (fakeErrDriver) Snapshot(context.Context) (source.Snapshot, error) {
 	return source.Snapshot{}, errors.New("daemon down")
 }
+func (fakeErrDriver) ListSessions(context.Context) ([]source.Session, error) {
+	return nil, errors.New("daemon down")
+}
 func (fakeErrDriver) FocusOrCreate(context.Context, source.Candidate) (source.FocusResult, error) {
 	return source.FocusResult{}, errors.New("fakeErrDriver does not implement FocusOrCreate")
 }
@@ -429,6 +454,7 @@ func (d fakeWorkspacesDriver) Snapshot(context.Context) (source.Snapshot, error)
 	}
 	return snapshot, nil
 }
+func (fakeWorkspacesDriver) ListSessions(context.Context) ([]source.Session, error) { return nil, nil }
 func (fakeWorkspacesDriver) FocusOrCreate(context.Context, source.Candidate) (source.FocusResult, error) {
 	return source.FocusResult{}, errors.New("fakeWorkspacesDriver does not implement FocusOrCreate")
 }

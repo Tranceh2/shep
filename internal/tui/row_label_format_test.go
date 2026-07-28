@@ -190,3 +190,38 @@ func TestRowPrimaryText_EmptyRenderedLabelFallsBackToPath(t *testing.T) {
 		t.Errorf("rowPrimaryText() = %q, want safe fallback %q", got, want)
 	}
 }
+
+// TestRowPrimaryText_SessionsUsesConfiguredFormatAndStatusSuffixes verifies
+// sessions follow source icon/label conventions while rendering stable state
+// metadata outside the template body.
+func TestRowPrimaryText_SessionsUsesConfiguredFormatAndStatusSuffixes(t *testing.T) {
+	m := newRenderTestModel(ThemeMocha, FocusList)
+	m.layout.LabelFormats = LabelFormats{Sessions: "session={{.Label}}"}
+	for _, tt := range []struct {
+		name string
+		row  Row
+		want string
+	}{
+		{
+			name: "running default",
+			row: Row{Kind: RowCandidate, Candidate: source.Candidate{
+				Source: config.SourceSessions, Label: "alpha", Icon: "S", Meta: map[string]string{"running": "true", "default": "true"},
+			}},
+			want: "S session=alpha (running, default)",
+		},
+		{
+			name: "stopped non-default",
+			row: Row{Kind: RowCandidate, Candidate: source.Candidate{
+				Source: config.SourceSessions, Label: "beta", Icon: "S", Meta: map[string]string{"running": "false", "default": "false"},
+			}},
+			want: "S session=beta (stopped)",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, _ := m.rowPrimaryText(tt.row)
+			if got != tt.want {
+				t.Errorf("rowPrimaryText() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

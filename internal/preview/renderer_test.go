@@ -31,12 +31,14 @@ func (f *fakeGit) Summary(_ context.Context, _ string) (GitSummary, error) {
 
 // fakeRunner is a scriptable CommandRunner for renderer tests.
 type fakeRunner struct {
-	out  map[string]string // argv[0] -> output
-	err  map[string]error
-	argv []string
+	out   map[string]string // argv[0] -> output
+	err   map[string]error
+	argv  []string
+	calls int
 }
 
 func (f *fakeRunner) Run(_ context.Context, argv []string, _ string, _ int) (string, error) {
+	f.calls++
 	if len(argv) == 0 {
 		return "", errors.New("empty argv")
 	}
@@ -94,6 +96,123 @@ func TestRender_IdentityWithTemplate(t *testing.T) {
 	want := "foo\npath: /p/foo\nsource: workspaces\ntemplate: dev"
 	if got != want {
 		t.Errorf("identity+template:\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestRender_SessionInfoRendersOnlyCandidateMetadata ensures session previews
+// require no filesystem, socket, pane, or command boundary and make missing
+// optional metadata explicit.
+func TestRender_SessionInfoRendersOnlyCandidateMetadata(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name string
+		meta map[string]string
+		want string
+	}{
+		{
+			name: "running default with metadata",
+			meta: map[string]string{
+				"session_name": "default", "running": "true", "default": "true", "session_dir": "/work/default", "socket_path": "/tmp/default.sock",
+			},
+			want: "session\n  name: default\n  state: running\n  default: true\n  session dir: /work/default\n  socket path: /tmp/default.sock",
+		},
+		{
+			name: "stopped with unavailable optional metadata",
+			meta: map[string]string{
+				"session_name": "stopped", "running": "false", "default": "false", "session_dir": "", "socket_path": "",
+			},
+			want: "session\n  name: stopped\n  state: stopped\n  default: false\n  session dir: unavailable\n  socket path: unavailable",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cand := source.Candidate{Path: "/must-not-be-read", Label: tt.meta["session_name"], Source: config.SourceSessions, Meta: tt.meta}
+			got := mustRender(t, NewRenderer(cfg, config.Probes{}, nil, nil), cand)
+			if got != tt.want {
+				t.Errorf("session preview = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRender_SessionsPreviewOverridesPathBasedPreviews ensures a sessions
+// candidate always uses its source preview even when its display-only
+// session_dir collides with a configured workspace or wildcard path.
+func TestRender_SessionsPreviewOverridesPathBasedPreviews(t *testing.T) {
+	t.Parallel()
+
+	const sessionDir = "/sessions/alpha"
+	want := "session\n  name: alpha\n  state: running\n  default: false\n  session dir: /sessions/alpha\n  socket path: /tmp/alpha.sock"
+
+	for _, tt := range []struct {
+		name   string
+		config func(*config.Config)
+	}{
+		{
+			name: "workspace path collision",
+			config: func(cfg *config.Config) {
+				cfg.Workspaces = []config.WorkspaceConfig{{
+					Name:    "alpha",
+					Path:    sessionDir,
+					Preview: []string{config.PreviewDir, config.PreviewGit, "custom", config.PreviewActivePane},
+				}}
+			},
+		},
+		{
+			name: "wildcard path collision",
+			config: func(cfg *config.Config) {
+				cfg.Wildcards = []config.WildcardConfig{{
+					Pattern: "/sessions/*",
+					Preview: []string{config.PreviewDir, config.PreviewGit, "custom", config.PreviewActivePane},
+				}}
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Sources.Sessions.Preview = []string{config.PreviewSessionInfo}
+			cfg.Preview.Commands = map[string]config.PreviewCommand{
+				"custom": {Command: "printf %s {{.Path}}"},
+			}
+			tt.config(cfg)
+
+			git := &fakeGit{summary: GitSummary{Branch: "main"}}
+			runner := &fakeRunner{}
+			pane := &fakePreviewDriver{currentPane: source.Pane{ID: "w1:p1", WorkspaceID: "w1", Focused: true}}
+			renderer := NewRenderer(cfg, config.Probes{Git: true}, git, runner, withFakeSnapshot(pane))
+			cand := source.Candidate{
+				Path:   sessionDir,
+				Label:  "alpha",
+				Source: config.SourceSessions,
+				Meta: map[string]string{
+					"session_name": "alpha",
+					"running":      "true",
+					"default":      "false",
+					"session_dir":  sessionDir,
+					"socket_path":  "/tmp/alpha.sock",
+				},
+			}
+
+			res, err := renderer.Render(context.Background(), cand)
+			if err != nil {
+				t.Fatalf("Render: %v", err)
+			}
+			if res.Text != want {
+				t.Errorf("session preview = %q, want %q", res.Text, want)
+			}
+			if len(res.Sections) != 1 || res.Sections[0].Kind != config.PreviewSessionInfo {
+				t.Errorf("sections = %+v, want only session_info", res.Sections)
+			}
+			if runner.calls != 0 {
+				t.Errorf("directory or custom command lookup calls = %d, want 0", runner.calls)
+			}
+			if git.calls != 0 {
+				t.Errorf("Git lookup calls = %d, want 0", git.calls)
+			}
+			if pane.readCalls != 0 {
+				t.Errorf("pane lookup calls = %d, want 0", pane.readCalls)
+			}
+		})
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,7 +26,10 @@ import (
 
 // SnapshotTimeout bounds each complete Herdr state read so startup and
 // activity refreshes cannot leave the selector waiting on a hung daemon.
-const SnapshotTimeout = 2 * time.Second
+const (
+	SnapshotTimeout     = 2 * time.Second
+	SessionsListTimeout = 2 * time.Second
+)
 
 // Candidate is one project discovered by a provider. Path is the raw path as
 // observed; NormalizedPath is filled by the resolver (left empty here).
@@ -102,6 +106,9 @@ type HerdrDriver interface {
 	// Snapshot returns one complete Herdr state generation through the official
 	// `herdr api snapshot` command.
 	Snapshot(ctx context.Context) (Snapshot, error)
+	// ListSessions returns local session records through
+	// `herdr session list --json`.
+	ListSessions(ctx context.Context) ([]Session, error)
 	// FocusOrCreate decides focus-or-create solely from cand: if
 	// cand.Source == config.SourceHerdr it focuses the workspace identified by
 	// cand.Meta["workspace_id"], otherwise it creates a new focused workspace
@@ -185,6 +192,17 @@ type Pane struct {
 	AgentStatus   string
 }
 
+// Session is the CLI-reported identity and optional metadata for one local
+// Herdr session. A named session is attachable regardless of the optional
+// directory or socket fields.
+type Session struct {
+	Name       string
+	Running    bool
+	Default    bool
+	SessionDir string
+	SocketPath string
+}
+
 // Snapshot is one coherent Herdr state generation. Its records intentionally
 // retain only the fields Shep consumes; unknown Herdr fields are ignored by the
 // CLI driver so newer daemon versions remain usable.
@@ -238,6 +256,40 @@ func HerdrCandidates(snapshot Snapshot) []Candidate {
 			Source:  config.SourceHerdr,
 			Missing: missing,
 			Meta:    meta,
+		})
+	}
+	return candidates
+}
+
+// SessionCandidates maps actionable named sessions to flat picker rows. The
+// name is the attach identity; session_dir remains display metadata and is
+// never inspected as a filesystem path.
+func SessionCandidates(sessions []Session, getenv func(string) string) []Candidate {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	currentSocket := getenv("HERDR_SOCKET_PATH")
+	currentSession := getenv("HERDR_SESSION")
+	candidates := make([]Candidate, 0, len(sessions))
+	for _, session := range sessions {
+		if session.Name == "" {
+			continue
+		}
+		if (currentSocket != "" && session.SocketPath != "" && currentSocket == session.SocketPath) ||
+			(currentSession != "" && currentSession == session.Name) {
+			continue
+		}
+		candidates = append(candidates, Candidate{
+			Path:   session.SessionDir,
+			Label:  session.Name,
+			Source: config.SourceSessions,
+			Meta: map[string]string{
+				"session_name": session.Name,
+				"running":      strconv.FormatBool(session.Running),
+				"default":      strconv.FormatBool(session.Default),
+				"session_dir":  session.SessionDir,
+				"socket_path":  session.SocketPath,
+			},
 		})
 	}
 	return candidates
@@ -354,6 +406,7 @@ func NewRegistry(cfg *config.Config, probes config.Probes, herdrDriver HerdrDriv
 	return &Registry{
 		providers: map[string]Provider{
 			config.SourceHerdr:      &herdrProvider{driver: herdrDriver, probes: probes, cfg: cfg},
+			config.SourceSessions:   &sessionsProvider{driver: herdrDriver, probes: probes},
 			config.SourceWorkspaces: &workspacesProvider{cfg: cfg},
 			config.SourceZoxide:     &zoxideProvider{probes: probes, cfg: cfg},
 			config.SourceProjects:   &projectsProvider{cfg: cfg, root: ""},
@@ -380,6 +433,7 @@ func NewScopedRegistry(cfg *config.Config, probes config.Probes, herdrDriver Her
 	return &Registry{
 		providers: map[string]Provider{
 			config.SourceHerdr:      &herdrProvider{driver: herdrDriver, probes: probes, cfg: scoped},
+			config.SourceSessions:   &sessionsProvider{driver: herdrDriver, probes: probes},
 			config.SourceWorkspaces: &workspacesProvider{cfg: scoped},
 			config.SourceZoxide:     &zoxideProvider{probes: probes, cfg: scoped, root: root},
 			// Intentional asymmetry: projectsProvider reads the full cfg, not
@@ -479,6 +533,8 @@ func (r *Registry) iconFor(name string) string {
 	switch name {
 	case config.SourceHerdr:
 		return r.cfg.Sources.Herdr.Icon
+	case config.SourceSessions:
+		return r.cfg.Sources.Sessions.Icon
 	case config.SourceWorkspaces:
 		return r.cfg.Sources.Workspaces.Icon
 	case config.SourceZoxide:
@@ -583,6 +639,35 @@ func (h *herdrProvider) List(ctx context.Context) ([]Candidate, error) {
 		return nil, err
 	}
 	return HerdrCandidates(snapshot), nil
+}
+
+// --- sessions provider ---
+
+// sessionsProvider performs the one startup-only session-list command. It has
+// no snapshot state, so it cannot participate in the active-daemon refresh.
+type sessionsProvider struct {
+	driver HerdrDriver
+	probes config.Probes
+	getenv func(string) string
+}
+
+func (*sessionsProvider) Name() string { return config.SourceSessions }
+
+func (*sessionsProvider) enabled(_ *config.Config, probes config.Probes) bool {
+	return probes.Herdr
+}
+
+func (p *sessionsProvider) List(ctx context.Context) ([]Candidate, error) {
+	if p.driver == nil {
+		return nil, nil
+	}
+	listCtx, cancel := context.WithTimeout(ctx, SessionsListTimeout)
+	defer cancel()
+	sessions, err := p.driver.ListSessions(listCtx)
+	if err != nil {
+		return nil, err
+	}
+	return SessionCandidates(sessions, p.getenv), nil
 }
 
 // --- zoxide provider ---

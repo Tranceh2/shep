@@ -48,6 +48,10 @@ type App struct {
 	// selectorBuilder overrides the `shep open` selector cascade for tests.
 	// nil falls back to the default [Direct, Fzf] cascade.
 	selectorBuilder func() *selector.Cascade
+	// sessionAttach runs the foreground `herdr session attach` child. It stays
+	// separate from HerdrDriver because attach must inherit terminal stdio rather
+	// than use the driver's captured-output CommandRunner.
+	sessionAttach sessionAttachFunc
 	// chosenTarget records a target override chosen by the interactive TUI
 	// picker (ctrl+t => "tab", ctrl+p => "pane"). Empty means "no override":
 	// runOpen then uses the --target flag value (default "workspace"). It is
@@ -117,6 +121,11 @@ func WithHerdrDriver(d source.HerdrDriver) Option {
 		a.herdrDriver = d
 		a.herdrDriverInjected = true
 	}
+}
+
+// WithSessionAttach injects the blocking session-attach boundary for tests.
+func WithSessionAttach(attach sessionAttachFunc) Option {
+	return func(a *App) { a.sessionAttach = attach }
 }
 
 // setChosenTarget records a target override chosen by the interactive TUI

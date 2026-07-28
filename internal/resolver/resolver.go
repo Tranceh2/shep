@@ -53,11 +53,10 @@ func Normalize(input string) (string, error) {
 // workspaces-sourced "ECORP" and a zoxide-sourced "ecorp" that are the SAME
 // real directory).
 //
-// herdr-sourced candidates are EXEMPT from this collapse: each models an
-// already-open Herdr workspace (the "resume" option), and two of them may
-// legitimately share a label+path. Any pair where either candidate is
-// herdr-sourced is skipped, so an open workspace is never hidden behind a
-// non-herdr "open new" candidate at the same path. The returned slice reuses
+// herdr- and sessions-sourced candidates are EXEMPT from this collapse: each
+// is an independently actionable daemon target and may legitimately share a
+// label+path. Any pair where either candidate uses either source is skipped,
+// so a resume or attach option is never hidden behind another source. The returned slice reuses
 // the input order for the survivors so provider order from the registry is
 // preserved. Candidates carry a defensive copy of Meta from the source
 // package; this function only sets NormalizedPath on the survivors.
@@ -88,7 +87,8 @@ func Dedup(candidates []source.Candidate) []source.Candidate {
 			// either — doing so would hide the resume option from the picker.
 			// So any pair touching a herdr candidate is exempt; the existing
 			// label+path check is preserved verbatim for every other pair.
-			if kept.Source == config.SourceHerdr || c.Source == config.SourceHerdr {
+			if kept.Source == config.SourceHerdr || c.Source == config.SourceHerdr ||
+				kept.Source == config.SourceSessions || c.Source == config.SourceSessions {
 				continue
 			}
 			if strings.EqualFold(kept.Label, c.Label) && pathutil.SameDir(kept.NormalizedPath, norm) {

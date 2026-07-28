@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -18,6 +19,11 @@ import (
 	"github.com/tranceh2/shep/internal/templates"
 	"github.com/tranceh2/shep/internal/tui"
 )
+
+// sessionAttachFunc is the command-layer seam for a foreground session
+// attach. It receives the resolved binary, validated session name, and already
+// filtered child environment; it must block until the child exits.
+type sessionAttachFunc func(context.Context, string, string, []string) error
 
 // openCmd builds `shep open [query]`. The command resolves the query (or the
 // --path override) to a single candidate, drilling into a nested picker when
@@ -166,6 +172,7 @@ func layoutFromConfig(t config.TUIConfig, sources []string, sourceConfigs ...con
 	s := sourceConfigs[0]
 	layout.LabelFormats = tui.LabelFormats{
 		Herdr:      s.Herdr.LabelFormat,
+		Sessions:   s.Sessions.LabelFormat,
 		Workspaces: s.Workspaces.LabelFormat,
 		Zoxide:     s.Zoxide.LabelFormat,
 		Projects:   s.Projects.LabelFormat,
@@ -631,6 +638,19 @@ func splitNonEmpty(s, sep string) []string {
 // herdr workspaces, group/template entries, and plain paths surface a clear
 // error instead.
 func (a *App) launch(ctx context.Context, cand source.Candidate, action tui.RowAction, target string, currentPane *source.Pane, out, errOut io.Writer) error {
+	if cand.Source == config.SourceSessions {
+		if target == "tab" || target == "pane" {
+			if currentPane == nil {
+				fmt.Fprintf(errOut, "--target=%s requires shep to be running inside a herdr workspace pane\n", target)
+				return errExitOne
+			}
+			if reason := disallowTarget(cand, target); reason != "" {
+				fmt.Fprintln(errOut, reason)
+				return errExitOne
+			}
+		}
+		return a.launchSessionAttach(ctx, cand, errOut)
+	}
 	if cand.Missing {
 		fmt.Fprintf(errOut, "path does not exist: %s\n", displayPath(cand))
 		return errExitOne
@@ -668,6 +688,52 @@ func (a *App) launch(ctx context.Context, cand source.Candidate, action tui.RowA
 		// guards at the cobra layer): the historical FocusOrCreate + Apply path.
 		return a.launchWorkspace(ctx, driver, cand, out, errOut)
 	}
+}
+
+// launchSessionAttach runs the session CLI after the picker has restored the
+// terminal. Session candidates are daemon identities, not paths, so this
+// dispatch intentionally precedes the generic Missing and driver fallbacks.
+func (a *App) launchSessionAttach(ctx context.Context, cand source.Candidate, errOut io.Writer) error {
+	name := cand.Meta["session_name"]
+	if name == "" {
+		fmt.Fprintln(errOut, "warning: herdr session attach: missing session name")
+		return errExitOne
+	}
+	attach := a.sessionAttach
+	if attach == nil {
+		attach = runSessionAttach
+	}
+	if err := attach(ctx, a.Config().HerdrBinary(), name, stripHerdrEnv(os.Environ())); err != nil {
+		fmt.Fprintf(errOut, "warning: herdr session attach failed: %v\n", err)
+		return errExitOne
+	}
+	return nil
+}
+
+// runSessionAttach invokes the only foreground child in the sessions flow.
+// argv is fixed, stdio is inherited, and Run waits for the attach client to
+// finish before shep exits.
+func runSessionAttach(ctx context.Context, binary, name string, env []string) error {
+	cmd := exec.CommandContext(ctx, binary, "session", "attach", name)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = env
+	return cmd.Run()
+}
+
+// stripHerdrEnv removes every Herdr context variable from a child environment
+// while preserving unrelated entries and their original order exactly.
+func stripHerdrEnv(env []string) []string {
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(key, "HERDR_") {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
 }
 
 // launchChildTab routes Enter on a RowActionFocusTab row (a synthesized

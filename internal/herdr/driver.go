@@ -150,6 +150,21 @@ type snapshotEnvelope struct {
 	} `json:"result"`
 }
 
+// sessionsEnvelope is the verified `herdr session list --json` 0.7.4 shape.
+// It intentionally has no result wrapper: accepting a legacy shape would hide
+// incompatible output behind an apparently valid empty list.
+type sessionsEnvelope struct {
+	Sessions []rawSession `json:"sessions"`
+}
+
+type rawSession struct {
+	Name       string `json:"name"`
+	Running    bool   `json:"running"`
+	Default    bool   `json:"default"`
+	SessionDir string `json:"session_dir"`
+	SocketPath string `json:"socket_path"`
+}
+
 type rawSnapshot struct {
 	Workspaces         []rawWorkspace `json:"workspaces"`
 	Tabs               []rawTab       `json:"tabs"`
@@ -172,6 +187,37 @@ func (d *Driver) Snapshot(ctx context.Context) (source.Snapshot, error) {
 		return source.Snapshot{}, fmt.Errorf("herdr api snapshot: parse: %w", err)
 	}
 	return rawSnapshotToSnapshot(env.Result.Snapshot), nil
+}
+
+// ListSessions lists local Herdr sessions through the official CLI boundary.
+// Only the verified top-level 0.7.4 envelope is accepted; unknown fields are
+// ignored and incomplete records without a name are not actionable.
+func (d *Driver) ListSessions(ctx context.Context) ([]source.Session, error) {
+	out, err := d.run.Run(ctx, d.binary, "session", "list", "--json")
+	if err != nil {
+		return nil, fmt.Errorf("herdr session list: %w", err)
+	}
+	var env sessionsEnvelope
+	if err := json.Unmarshal(out, &env); err != nil {
+		return nil, fmt.Errorf("herdr session list: parse: %w", err)
+	}
+	if env.Sessions == nil {
+		return nil, errors.New("herdr session list: missing sessions envelope")
+	}
+	sessions := make([]source.Session, 0, len(env.Sessions))
+	for _, raw := range env.Sessions {
+		if raw.Name == "" {
+			continue
+		}
+		sessions = append(sessions, source.Session{
+			Name:       raw.Name,
+			Running:    raw.Running,
+			Default:    raw.Default,
+			SessionDir: raw.SessionDir,
+			SocketPath: raw.SocketPath,
+		})
+	}
+	return sessions, nil
 }
 
 func rawSnapshotToSnapshot(raw rawSnapshot) source.Snapshot {

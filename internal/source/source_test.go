@@ -5,7 +5,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/tranceh2/shep/internal/config"
 )
@@ -15,6 +17,25 @@ type fakeDriver struct {
 	detect     bool
 	workspaces []Workspace
 	listErr    error
+}
+
+// sessionDriver composes the existing fake with an observable session-list
+// boundary so session provider tests never shell out to Herdr.
+type sessionDriver struct {
+	fakeDriver
+	sessions     []Session
+	sessionsErr  error
+	sessionsCall int
+	deadline     time.Time
+}
+
+func (d *sessionDriver) ListSessions(ctx context.Context) ([]Session, error) {
+	d.sessionsCall++
+	d.deadline, _ = ctx.Deadline()
+	if d.sessionsErr != nil {
+		return nil, d.sessionsErr
+	}
+	return append([]Session(nil), d.sessions...), nil
 }
 
 func (f fakeDriver) Detect(context.Context) bool { return f.detect }
@@ -31,6 +52,7 @@ func (f fakeDriver) Snapshot(context.Context) (Snapshot, error) {
 	}
 	return snapshot, nil
 }
+func (fakeDriver) ListSessions(context.Context) ([]Session, error) { return nil, nil }
 func (fakeDriver) FocusOrCreate(context.Context, Candidate) (FocusResult, error) {
 	return FocusResult{}, errors.New("fakeDriver does not implement FocusOrCreate")
 }
@@ -197,6 +219,101 @@ func TestHerdrProvider_MissingDerivedCWDMarkedMissing(t *testing.T) {
 	}
 	if !byID["w2"].Missing || byID["w2"].Path != "" {
 		t.Errorf("missing-CWD workspace must remain visible and Missing, got %+v", byID["w2"])
+	}
+}
+
+// TestSessionsProvider_MapsActionableNamedSessions verifies the sessions
+// provider is a one-shot, flat source: it carries exact metadata, never marks
+// a named session Missing, and accepts absent directory/socket metadata.
+func TestSessionsProvider_MapsActionableNamedSessions(t *testing.T) {
+	t.Parallel()
+	driver := &sessionDriver{fakeDriver: fakeDriver{detect: true}, sessions: []Session{
+		{Name: "default", Running: true, Default: true, SessionDir: "/shared", SocketPath: "/tmp/default.sock"},
+		{Name: "stopped", SessionDir: "/shared"},
+	}}
+	p := &sessionsProvider{driver: driver, probes: config.Probes{Herdr: true}, getenv: func(string) string { return "" }}
+
+	candidates, err := p.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if driver.sessionsCall != 1 {
+		t.Fatalf("session list calls = %d, want one", driver.sessionsCall)
+	}
+	if driver.deadline.IsZero() || time.Until(driver.deadline) > SessionsListTimeout || time.Until(driver.deadline) <= 0 {
+		t.Fatalf("session list deadline = %v, want bounded positive %v", driver.deadline, SessionsListTimeout)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("candidates = %+v, want two named sessions", candidates)
+	}
+	for _, candidate := range candidates {
+		if candidate.Source != config.SourceSessions || candidate.Missing {
+			t.Errorf("candidate = %+v, sessions must remain selectable and non-missing", candidate)
+		}
+	}
+	if got, want := candidates[0].Meta, map[string]string{
+		"session_name": "default", "running": "true", "default": "true", "session_dir": "/shared", "socket_path": "/tmp/default.sock",
+	}; !reflect.DeepEqual(got, want) {
+		t.Errorf("default metadata = %#v, want %#v", got, want)
+	}
+	if got, want := candidates[1].Meta, map[string]string{
+		"session_name": "stopped", "running": "false", "default": "false", "session_dir": "/shared", "socket_path": "",
+	}; !reflect.DeepEqual(got, want) {
+		t.Errorf("partial metadata = %#v, want %#v", got, want)
+	}
+}
+
+// TestSessionsProvider_ExcludesOnlyProvenSelfAttach checks both exact identity
+// proofs and confirms that unmatched or absent environment values retain rows.
+func TestSessionsProvider_ExcludesOnlyProvenSelfAttach(t *testing.T) {
+	t.Parallel()
+	sessions := []Session{
+		{Name: "alpha", SocketPath: "/tmp/alpha.sock"},
+		{Name: "beta", SocketPath: "/tmp/beta.sock"},
+	}
+	for _, tt := range []struct {
+		name string
+		env  map[string]string
+		want []string
+	}{
+		{name: "no proof keeps all", env: map[string]string{}, want: []string{"alpha", "beta"}},
+		{name: "socket exact match excludes alpha", env: map[string]string{"HERDR_SOCKET_PATH": "/tmp/alpha.sock"}, want: []string{"beta"}},
+		{name: "session exact match excludes beta", env: map[string]string{"HERDR_SESSION": "beta"}, want: []string{"alpha"}},
+		{name: "near match is not proof", env: map[string]string{"HERDR_SESSION": "Beta", "HERDR_SOCKET_PATH": "/tmp/alpha.sock/"}, want: []string{"alpha", "beta"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			driver := &sessionDriver{fakeDriver: fakeDriver{detect: true}, sessions: sessions}
+			p := &sessionsProvider{driver: driver, probes: config.Probes{Herdr: true}, getenv: func(key string) string { return tt.env[key] }}
+			got, err := p.List(context.Background())
+			if err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			names := make([]string, 0, len(got))
+			for _, candidate := range got {
+				names = append(names, candidate.Meta["session_name"])
+			}
+			if !reflect.DeepEqual(names, tt.want) {
+				t.Errorf("visible names = %v, want %v", names, tt.want)
+			}
+		})
+	}
+}
+
+// TestRegistry_SessionsFailureIsIsolated verifies a failed bounded sessions
+// lookup yields no session rows while unrelated configured sources remain.
+func TestRegistry_SessionsFailureIsIsolated(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.General.Sources = []string{config.SourceSessions, config.SourceWorkspaces}
+	cfg.Workspaces = []config.WorkspaceConfig{{Name: "still-here", Path: t.TempDir()}}
+	driver := &sessionDriver{fakeDriver: fakeDriver{detect: true}, sessionsErr: context.DeadlineExceeded}
+
+	candidates, err := NewRegistry(cfg, config.Probes{Herdr: true}, driver).Collect(context.Background())
+	if err == nil {
+		t.Fatal("expected isolated sessions error")
+	}
+	if len(candidates) != 1 || candidates[0].Source != config.SourceWorkspaces {
+		t.Errorf("candidates = %+v, want only unaffected workspace", candidates)
 	}
 }
 

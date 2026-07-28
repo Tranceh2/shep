@@ -90,6 +90,9 @@ func rowIdentity(c source.Candidate) string {
 	if id := c.Meta["workspace_id"]; id != "" {
 		return "ws:" + id
 	}
+	if name := c.Meta["session_name"]; name != "" {
+		return "session:" + name
+	}
 	key := c.NormalizedPath
 	if key == "" {
 		key = c.Path

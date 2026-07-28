@@ -253,6 +253,23 @@ func TestSnapshotRefresh_FirstAppearanceGetsConfiguredHerdrIcon(t *testing.T) {
 	}
 }
 
+// TestSpliceHerdrCandidates_LeavesSessionsUntouched is an approval test for
+// the refresh boundary: snapshot replacement may only alter SourceHerdr rows.
+func TestSpliceHerdrCandidates_LeavesSessionsUntouched(t *testing.T) {
+	t.Parallel()
+	session := source.Candidate{Source: config.SourceSessions, Label: "alpha", Meta: map[string]string{"session_name": "alpha"}}
+	base := []source.Candidate{
+		{Source: config.SourceZoxide, Label: "history", Path: "/history"},
+		session,
+		{Source: config.SourceHerdr, Label: "old", Meta: map[string]string{"workspace_id": "w1"}},
+	}
+	replacement := []source.Candidate{{Source: config.SourceHerdr, Label: "new", Meta: map[string]string{"workspace_id": "w1"}}}
+	got := spliceHerdrCandidates(base, replacement)
+	if len(got) != 3 || got[1].Source != session.Source || got[1].Label != session.Label || got[1].Meta["session_name"] != "alpha" || got[2].Label != "new" {
+		t.Errorf("spliced candidates = %+v, want untouched session and replaced Herdr row", got)
+	}
+}
+
 func TestSnapshotRefresh_FailureAndStaleResponseRetainPriorGeneration(t *testing.T) {
 	initial := snapshotGeneration("w1", "w1:p1", "working")
 	driver := &scriptedSnapshotDriver{responses: []snapshotDriverResponse{{err: errors.New("daemon unavailable")}}}
