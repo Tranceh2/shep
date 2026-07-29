@@ -81,6 +81,27 @@ func TestDriverRenamePane_RejectsInvalidRequestsWithoutExec(t *testing.T) {
 	}
 }
 
+func TestDriverRenamePane_RejectsFlagLikeLabelsWithoutExec(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		label string
+	}{
+		{name: "clear flag", label: "--clear"},
+		{name: "short flag", label: "-x"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &fakeRunner{}
+			err := New("herdr", WithRunner(runner)).RenamePane(context.Background(), "w1:p1", &tt.label)
+			if err == nil || !strings.Contains(err.Error(), "w1:p1") || !strings.Contains(err.Error(), tt.label) || !strings.Contains(err.Error(), "positional label") {
+				t.Fatalf("RenamePane error = %v, want pane, label, and positional-label context", err)
+			}
+			if len(runner.calls) != 0 {
+				t.Fatalf("calls = %v, want no exec", runner.calls)
+			}
+		})
+	}
+}
+
 func TestDriverRenamePane_WrapsFailureWithPaneAndLabel(t *testing.T) {
 	label := "my logs"
 	runner := &fakeRunner{script: []fakeCall{{match: "herdr pane rename w1:p1 my logs", err: errors.New("exit status 1")}}}

@@ -876,9 +876,10 @@ name = "x"
 func TestLoad_TemplateTabsValidation(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name   string
-		doc    string
-		errSub string
+		name           string
+		doc            string
+		errSub         string
+		wantErrSubstrs []string
 	}{
 		{
 			name: "missing root",
@@ -974,7 +975,8 @@ command = ""
 id = "logs"
 command = "tail -f app.log"
 `,
-			errSub: "layout",
+			errSub:         "layout",
+			wantErrSubstrs: []string{"label"},
 		},
 	}
 	for _, tc := range cases {
@@ -992,8 +994,10 @@ command = "tail -f app.log"
 			if !strings.Contains(err.Error(), tc.errSub) {
 				t.Errorf("error %q must contain %q", err.Error(), tc.errSub)
 			}
-			if tc.name == "branch cannot set label" && !strings.Contains(err.Error(), "label") {
-				t.Errorf("error %q must mention label", err.Error())
+			for _, want := range tc.wantErrSubstrs {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q must mention %q", err.Error(), want)
+				}
 			}
 		})
 	}

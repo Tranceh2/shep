@@ -112,7 +112,7 @@ func (d *openDriver) RenamePane(_ context.Context, paneID string, label *string)
 		value = *label
 	}
 	d.paneCalls = append(d.paneCalls, "rename-pane:"+paneID+":"+value)
-	return nil
+	return errors.New("openDriver RenamePane unexpected")
 }
 func (d *openDriver) SplitPane(_ context.Context, paneID, direction string, ratio float64, cwd string, focus bool) (source.Pane, error) {
 	if d.splitPaneErr != nil {

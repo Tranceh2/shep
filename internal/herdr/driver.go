@@ -431,6 +431,8 @@ func (d *Driver) RenamePane(ctx context.Context, paneID string, label *string) e
 	requested := *label
 	if requested == "" {
 		requested = "--clear"
+	} else if strings.HasPrefix(requested, "-") {
+		return fmt.Errorf("herdr pane rename %s %q: cannot send a label starting with '-' as a positional label", paneID, requested)
 	}
 	if _, err := d.run.Run(ctx, d.binary, "pane", "rename", paneID, requested); err != nil {
 		return fmt.Errorf("herdr pane rename %s %q: %w", paneID, requested, err)

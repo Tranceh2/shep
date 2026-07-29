@@ -169,8 +169,9 @@ command = "k9s"
 # means a plain shell). Node ids are internal references scoped to their own
 # tab; they are not persistent Herdr labels. A leaf may set label to choose its
 # persistent pane label: omit label to preserve the current label, set label =
-# "" to clear it, or set a non-empty value to rename it. Branch nodes cannot
-# set label.
+# "" to clear it, or set a non-empty value to rename it. Labels cannot begin
+# with '-' due to a Herdr CLI limitation; use label = "" to clear. Branch nodes
+# cannot set label.
 #
 # focus = { tab = "...", node = "..." } is declared once at the template
 # level (never per tab/node): focus.tab names a declared tab by its name;
