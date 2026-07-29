@@ -999,6 +999,41 @@ command = "tail -f app.log"
 	}
 }
 
+// TestLoad_RejectsExplicitEmptyBranchLabel confirms an explicitly empty label
+// is still presence-aware and rejected on a branch at config load.
+func TestLoad_RejectsExplicitEmptyBranchLabel(t *testing.T) {
+	t.Parallel()
+	const doc = `
+[[templates.dev.tabs]]
+name = "code"
+root = "empty-layout"
+[[templates.dev.tabs.nodes]]
+id = "empty-layout"
+split = "rows"
+children = ["shell", "logs"]
+label = ""
+[[templates.dev.tabs.nodes]]
+id = "shell"
+command = ""
+[[templates.dev.tabs.nodes]]
+id = "logs"
+command = "tail -f app.log"
+`
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected explicit empty branch label to fail at load")
+	}
+	for _, want := range []string{"templates.dev.tabs[0]", "code", "empty-layout", "label"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q must contain %q", err.Error(), want)
+		}
+	}
+}
+
 // TestLoad_TemplateTabsValid confirms the canonical dev template from the
 // spec parses and validates cleanly.
 func TestLoad_TemplateTabsValid(t *testing.T) {
