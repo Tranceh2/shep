@@ -189,6 +189,54 @@ func TestApply_CommandFailureDoesNotRevertRename(t *testing.T) {
 	}
 }
 
+func TestApply_CommandFailureIncludesNodePaneAndOperation(t *testing.T) {
+	t.Parallel()
+	runErr := errors.New("command failed")
+	d := &fakeDriver{runErr: runErr}
+	tpl := config.TemplateConfig{Tabs: []config.TemplateTab{{Name: "code", Root: "main", Nodes: []config.TemplateNode{
+		{ID: "main", Command: "bad-command"},
+	}}}}
+
+	err := Apply(context.Background(), d, Target{WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj"}, tpl)
+	if err == nil || !strings.Contains(err.Error(), `node "main"`) || !strings.Contains(err.Error(), "w1:p1") || !strings.Contains(err.Error(), "run command") {
+		t.Fatalf("Apply error = %v, want node, pane, and run-command context", err)
+	}
+	if !errors.Is(err, runErr) {
+		t.Fatalf("Apply error = %v, want wrapped command failure", err)
+	}
+}
+
+func TestApply_OmittedLabelDoesNotReconcilePriorPaneOnSubsequentApply(t *testing.T) {
+	t.Parallel()
+	d := &fakeDriver{}
+	target := Target{WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj"}
+	initial := config.TemplateConfig{Tabs: []config.TemplateTab{{Name: "code", Root: "editor", Nodes: []config.TemplateNode{
+		{ID: "editor", Label: stringPtr("x"), Command: "first"},
+	}}}}
+	if err := Apply(context.Background(), d, target, initial); err != nil {
+		t.Fatalf("initial Apply: %v", err)
+	}
+	if got, want := strings.Join(d.paneCalls, "|"), "rename-pane:w1:p1:x"; got != want {
+		t.Fatalf("initial pane calls = %v, want %v", d.paneCalls, want)
+	}
+
+	// The edited template omits editor's label and adds an unrelated leaf.
+	edited := config.TemplateConfig{Tabs: []config.TemplateTab{{Name: "code", Root: "layout", Nodes: []config.TemplateNode{
+		{ID: "layout", Split: config.SplitRows, Children: []string{"editor", "logs"}},
+		{ID: "editor", Command: "second"},
+		{ID: "logs", Command: "new"},
+	}}}}
+	if err := Apply(context.Background(), d, target, edited); err != nil {
+		t.Fatalf("edited Apply: %v", err)
+	}
+	if got, want := strings.Join(d.paneCalls, "|"), "rename-pane:w1:p1:x"; got != want {
+		t.Fatalf("pane calls after omitted label = %v, want prior rename only %v", d.paneCalls, want)
+	}
+	if got := strings.Join(d.ran, "|"); !strings.Contains(got, "run:w1:p1:second") || !strings.Contains(got, "run:p-1:new") {
+		t.Fatalf("subsequent apply did not run existing and unrelated leaves: %v", d.ran)
+	}
+}
+
 func TestApply_EmptyLabelClearsWithoutReconciliation(t *testing.T) {
 	t.Parallel()
 	d := &fakeDriver{}

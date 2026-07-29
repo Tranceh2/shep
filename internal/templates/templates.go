@@ -198,7 +198,7 @@ func applyNode(ctx context.Context, driver source.HerdrDriver, cwd, binary strin
 			// CloseOnExit wraps the command via the shared helper; see wrapCloseOnExit for rationale.
 			cmd := wrapCloseOnExit(node.Command, paneID, binary, node.CloseOnExit)
 			if err := driver.RunPane(ctx, paneID, cmd); err != nil {
-				return err
+				return fmt.Errorf("run command for node %q (%s): %w", node.ID, paneID, err)
 			}
 		}
 		return nil
