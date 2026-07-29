@@ -80,6 +80,9 @@ func (fakeDriver) CreateTab(context.Context, string, string, string, bool) (Tab,
 func (fakeDriver) RenameTab(context.Context, string, string) error {
 	return errors.New("fakeDriver does not implement RenameTab")
 }
+func (fakeDriver) RenamePane(context.Context, string, *string) error {
+	return errors.New("fakeDriver does not implement RenamePane")
+}
 func (fakeDriver) SplitPane(context.Context, string, string, float64, string, bool) (Pane, error) {
 	return Pane{}, errors.New("fakeDriver does not implement SplitPane")
 }

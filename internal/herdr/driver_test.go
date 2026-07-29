@@ -3,6 +3,7 @@ package herdr
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -13,6 +14,7 @@ import (
 type fakeRunner struct {
 	script []fakeCall
 	calls  []string
+	argv   [][]string
 }
 
 type fakeCall struct {
@@ -24,6 +26,7 @@ type fakeCall struct {
 func (f *fakeRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
 	key := strings.TrimSpace(name + " " + strings.Join(args, " "))
 	f.calls = append(f.calls, key)
+	f.argv = append(f.argv, append([]string{name}, args...))
 	for i, call := range f.script {
 		if call.match == key {
 			f.script = append(f.script[:i], f.script[i+1:]...)
@@ -32,6 +35,62 @@ func (f *fakeRunner) Run(_ context.Context, name string, args ...string) ([]byte
 	}
 	return nil, errors.New("not scripted: " + key)
 }
+
+func TestDriverRenamePane_UsesArgvSafeLabels(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		label *string
+		want  []string
+	}{
+		{name: "plain label", label: stringPtr("api"), want: []string{"herdr", "pane", "rename", "w1:p1", "api"}},
+		{name: "spaces and shell metacharacters stay one argument", label: stringPtr("my logs; rm -rf / $`\\|&"), want: []string{"herdr", "pane", "rename", "w1:p1", "my logs; rm -rf / $`\\|&"}},
+		{name: "clear", label: stringPtr(""), want: []string{"herdr", "pane", "rename", "w1:p1", "--clear"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &fakeRunner{script: []fakeCall{{match: strings.Join(tt.want, " ")}}}
+			if err := New("herdr", WithRunner(runner)).RenamePane(context.Background(), "w1:p1", tt.label); err != nil {
+				t.Fatalf("RenamePane: %v", err)
+			}
+			if len(runner.argv) != 1 || !reflect.DeepEqual(runner.argv[0], tt.want) {
+				t.Fatalf("argv = %v, want %v", runner.argv, tt.want)
+			}
+		})
+	}
+}
+
+func TestDriverRenamePane_RejectsInvalidRequestsWithoutExec(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		pane  string
+		label *string
+		want  string
+	}{
+		{name: "empty pane id", want: "empty pane id", pane: "", label: stringPtr("api")},
+		{name: "nil label", want: "nil label", pane: "w1:p1"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &fakeRunner{}
+			err := New("herdr", WithRunner(runner)).RenamePane(context.Background(), tt.pane, tt.label)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("RenamePane error = %v, want %q", err, tt.want)
+			}
+			if len(runner.calls) != 0 {
+				t.Fatalf("calls = %v, want no exec", runner.calls)
+			}
+		})
+	}
+}
+
+func TestDriverRenamePane_WrapsFailureWithPaneAndLabel(t *testing.T) {
+	label := "my logs"
+	runner := &fakeRunner{script: []fakeCall{{match: "herdr pane rename w1:p1 my logs", err: errors.New("exit status 1")}}}
+	err := New("herdr", WithRunner(runner)).RenamePane(context.Background(), "w1:p1", &label)
+	if err == nil || !strings.Contains(err.Error(), "w1:p1") || !strings.Contains(err.Error(), label) {
+		t.Fatalf("RenamePane error = %v, want pane and label context", err)
+	}
+}
+
+func stringPtr(value string) *string { return &value }
 
 func TestDriverSnapshot_ParsesOnlyFullGeneration(t *testing.T) {
 	runner := &fakeRunner{script: []fakeCall{{match: "herdr api snapshot", out: []byte(`{

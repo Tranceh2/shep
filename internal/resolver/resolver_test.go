@@ -427,6 +427,9 @@ func (fakeErrDriver) CreateTab(context.Context, string, string, string, bool) (s
 func (fakeErrDriver) RenameTab(context.Context, string, string) error {
 	return errors.New("fakeErrDriver does not implement RenameTab")
 }
+func (fakeErrDriver) RenamePane(context.Context, string, *string) error {
+	return errors.New("fakeErrDriver does not implement RenamePane")
+}
 func (fakeErrDriver) SplitPane(context.Context, string, string, float64, string, bool) (source.Pane, error) {
 	return source.Pane{}, errors.New("fakeErrDriver does not implement SplitPane")
 }
@@ -466,6 +469,9 @@ func (fakeWorkspacesDriver) CreateTab(context.Context, string, string, string, b
 }
 func (fakeWorkspacesDriver) RenameTab(context.Context, string, string) error {
 	return errors.New("fakeWorkspacesDriver does not implement RenameTab")
+}
+func (fakeWorkspacesDriver) RenamePane(context.Context, string, *string) error {
+	return errors.New("fakeWorkspacesDriver does not implement RenamePane")
 }
 func (fakeWorkspacesDriver) SplitPane(context.Context, string, string, float64, string, bool) (source.Pane, error) {
 	return source.Pane{}, errors.New("fakeWorkspacesDriver does not implement SplitPane")

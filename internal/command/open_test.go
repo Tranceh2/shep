@@ -105,6 +105,9 @@ func (d *openDriver) RenameTab(_ context.Context, tabID, label string) error {
 	d.renamed = append(d.renamed, "rename:"+tabID+":"+label)
 	return nil
 }
+func (d *openDriver) RenamePane(context.Context, string, *string) error {
+	return errors.New("openDriver does not implement RenamePane")
+}
 func (d *openDriver) SplitPane(_ context.Context, paneID, direction string, ratio float64, cwd string, focus bool) (source.Pane, error) {
 	if d.splitPaneErr != nil {
 		return source.Pane{}, d.splitPaneErr
@@ -1240,6 +1243,9 @@ func (*recordingDriver) CreateTab(context.Context, string, string, string, bool)
 	return source.Tab{}, source.Pane{}, errors.New("not used")
 }
 func (*recordingDriver) RenameTab(context.Context, string, string) error {
+	return errors.New("not used")
+}
+func (*recordingDriver) RenamePane(context.Context, string, *string) error {
 	return errors.New("not used")
 }
 func (*recordingDriver) SplitPane(context.Context, string, string, float64, string, bool) (source.Pane, error) {

@@ -138,6 +138,10 @@ type HerdrDriver interface {
 	CreateTab(ctx context.Context, workspaceID, cwd, label string, focus bool) (Tab, Pane, error)
 	// RenameTab renames tabID via `herdr tab rename <tab_id> <label>`.
 	RenameTab(ctx context.Context, tabID, label string) error
+	// RenamePane renames or clears paneID's persistent Herdr label. A nil label
+	// is invalid; a non-nil empty label clears, and a non-empty label renames.
+	// The label is passed to Herdr as one argv element.
+	RenamePane(ctx context.Context, paneID string, label *string) error
 	// SplitPane splits paneID via
 	// `herdr pane split <pane_id> --direction <direction> --ratio <ratio> --cwd <cwd> [--focus|--no-focus]`,
 	// returning the newly created pane. direction is "down" or "right";

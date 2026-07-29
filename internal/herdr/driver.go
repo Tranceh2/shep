@@ -418,6 +418,26 @@ func (d *Driver) RenameTab(ctx context.Context, tabID, label string) error {
 	return nil
 }
 
+// RenamePane renames or clears paneID's persistent Herdr label. A nil label
+// is a caller error; a non-nil empty label maps to --clear. Non-empty labels
+// are passed as one argv element, preserving spaces and shell metacharacters.
+func (d *Driver) RenamePane(ctx context.Context, paneID string, label *string) error {
+	if paneID == "" {
+		return errors.New("herdr pane rename: empty pane id")
+	}
+	if label == nil {
+		return errors.New("herdr pane rename: nil label")
+	}
+	requested := *label
+	if requested == "" {
+		requested = "--clear"
+	}
+	if _, err := d.run.Run(ctx, d.binary, "pane", "rename", paneID, requested); err != nil {
+		return fmt.Errorf("herdr pane rename %s %q: %w", paneID, requested, err)
+	}
+	return nil
+}
+
 // SplitPane splits paneID via
 // `herdr pane split <pane_id> --direction <direction> --ratio <ratio> --cwd <cwd> [--focus|--no-focus]`,
 // returning the newly created pane. ratio is the fraction of the ORIGINAL

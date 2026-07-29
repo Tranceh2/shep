@@ -50,6 +50,10 @@ func (f *fakeDriver) RenameTab(_ context.Context, tabID, label string) error {
 	return nil
 }
 
+func (f *fakeDriver) RenamePane(context.Context, string, *string) error {
+	return errors.New("not implemented")
+}
+
 func (f *fakeDriver) SplitPane(_ context.Context, paneID, direction string, ratio float64, cwd string, focus bool) (source.Pane, error) {
 	if f.splitErr != nil {
 		return source.Pane{}, f.splitErr
