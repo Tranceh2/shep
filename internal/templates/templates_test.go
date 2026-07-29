@@ -15,13 +15,17 @@ import (
 // focus flags on CreateTab/SplitPane are captured in created entries so the
 // new focus-at-creation-time behaviour is observable.
 type fakeDriver struct {
-	tabSeq   int
-	paneSeq  int
-	created  []string // "tab:<workspace>:<cwd>:<label>:<focus>" / "split:<pane>:<dir>:<ratio>:<cwd>:<focus>"
-	renamed  []string // "rename:<tab>:<label>"
-	ran      []string // "run:<pane>:<command>"
-	focused  []string // "focus-tab:<id>"
-	splitErr error
+	tabSeq    int
+	paneSeq   int
+	created   []string // "tab:<workspace>:<cwd>:<label>:<focus>" / "split:<pane>:<dir>:<ratio>:<cwd>:<focus>"
+	renamed   []string // "rename:<tab>:<label>"
+	paneCalls []string // "rename-pane:<pane>:<label>"
+	calls     []string // mutation order across split, rename, and run
+	ran       []string // "run:<pane>:<command>"
+	focused   []string // "focus-tab:<id>"
+	splitErr  error
+	renameErr error
+	runErr    error
 }
 
 func (f *fakeDriver) Detect(context.Context) bool { return true }
@@ -50,8 +54,17 @@ func (f *fakeDriver) RenameTab(_ context.Context, tabID, label string) error {
 	return nil
 }
 
-func (f *fakeDriver) RenamePane(context.Context, string, *string) error {
-	return errors.New("not implemented")
+func (f *fakeDriver) RenamePane(_ context.Context, paneID string, label *string) error {
+	value := "<nil>"
+	if label != nil {
+		value = *label
+	}
+	f.paneCalls = append(f.paneCalls, "rename-pane:"+paneID+":"+value)
+	f.calls = append(f.calls, "rename-pane:"+paneID+":"+value)
+	if f.renameErr != nil {
+		return f.renameErr
+	}
+	return nil
 }
 
 func (f *fakeDriver) SplitPane(_ context.Context, paneID, direction string, ratio float64, cwd string, focus bool) (source.Pane, error) {
@@ -61,12 +74,14 @@ func (f *fakeDriver) SplitPane(_ context.Context, paneID, direction string, rati
 	f.paneSeq++
 	newID := seqID("p", f.paneSeq)
 	f.created = append(f.created, "split:"+paneID+":"+direction+":"+ratioStr(ratio)+":"+cwd+":"+focusStr(focus))
+	f.calls = append(f.calls, "split:"+paneID+":"+direction)
 	return source.Pane{ID: newID}, nil
 }
 
 func (f *fakeDriver) RunPane(_ context.Context, paneID, command string) error {
 	f.ran = append(f.ran, "run:"+paneID+":"+command)
-	return nil
+	f.calls = append(f.calls, "run:"+paneID+":"+command)
+	return f.runErr
 }
 
 func (f *fakeDriver) FocusTab(_ context.Context, tabID string) error {
@@ -99,6 +114,109 @@ func focusStr(b bool) string {
 		return "focus"
 	}
 	return "nofocus"
+}
+
+func stringPtr(value string) *string { return &value }
+
+func TestApply_LabelRunsAfterPaneResolutionAndBeforeCommand(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		tpl       config.TemplateConfig
+		wantCalls []string
+	}{
+		{
+			name: "root reused leaf",
+			tpl: config.TemplateConfig{Tabs: []config.TemplateTab{{Name: "code", Root: "main", Nodes: []config.TemplateNode{
+				{ID: "main", Label: stringPtr("shell"), Command: "nvim"},
+			}}}},
+			wantCalls: []string{"rename-pane:w1:p1:shell", "run:w1:p1:nvim"},
+		},
+		{
+			name: "split-created leaf",
+			tpl: config.TemplateConfig{Tabs: []config.TemplateTab{{Name: "code", Root: "main", Nodes: []config.TemplateNode{
+				{ID: "main", Split: config.SplitRows, Children: []string{"editor", "terminal"}, Sizes: []int{80, 20}},
+				{ID: "editor", Command: "nvim"},
+				{ID: "terminal", Label: stringPtr("logs"), Command: "tail -f app.log"},
+			}}}},
+			wantCalls: []string{"split:w1:p1:down", "run:w1:p1:nvim", "rename-pane:p-1:logs", "run:p-1:tail -f app.log"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			d := &fakeDriver{}
+			err := Apply(context.Background(), d, Target{WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj"}, tc.tpl)
+			if err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+			if strings.Join(d.calls, "|") != strings.Join(tc.wantCalls, "|") {
+				t.Errorf("calls = %v, want %v", d.calls, tc.wantCalls)
+			}
+		})
+	}
+}
+
+func TestApply_LabelFailureStopsCommandAndSiblings(t *testing.T) {
+	t.Parallel()
+	d := &fakeDriver{renameErr: errors.New("rename failed")}
+	tpl := config.TemplateConfig{Tabs: []config.TemplateTab{{Name: "code", Root: "main", Nodes: []config.TemplateNode{
+		{ID: "main", Split: config.SplitRows, Children: []string{"first", "second"}},
+		{ID: "first", Label: stringPtr("first-label"), Command: "first-command"},
+		{ID: "second", Label: stringPtr("second-label"), Command: "second-command"},
+	}}}}
+	err := Apply(context.Background(), d, Target{WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj"}, tpl)
+	if err == nil || !strings.Contains(err.Error(), `node "first"`) || !strings.Contains(err.Error(), "w1:p1") || !strings.Contains(err.Error(), "rename") {
+		t.Fatalf("Apply error = %v, want contextual rename failure", err)
+	}
+	if len(d.ran) != 0 || len(d.paneCalls) != 1 {
+		t.Errorf("rename failure must not run or process siblings: paneCalls=%v ran=%v", d.paneCalls, d.ran)
+	}
+}
+
+func TestApply_CommandFailureDoesNotRevertRename(t *testing.T) {
+	t.Parallel()
+	d := &fakeDriver{runErr: errors.New("command failed")}
+	tpl := config.TemplateConfig{Tabs: []config.TemplateTab{{Name: "code", Root: "main", Nodes: []config.TemplateNode{
+		{ID: "main", Label: stringPtr("shell"), Command: "bad-command"},
+	}}}}
+	err := Apply(context.Background(), d, Target{WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj"}, tpl)
+	if err == nil || !strings.Contains(err.Error(), "command failed") {
+		t.Fatalf("Apply error = %v, want command failure", err)
+	}
+	if len(d.paneCalls) != 1 || d.paneCalls[0] != "rename-pane:w1:p1:shell" {
+		t.Errorf("rename calls = %v, want one non-reverted rename", d.paneCalls)
+	}
+}
+
+func TestApply_EmptyLabelClearsWithoutReconciliation(t *testing.T) {
+	t.Parallel()
+	d := &fakeDriver{}
+	tpl := config.TemplateConfig{Tabs: []config.TemplateTab{{Name: "code", Root: "main", Nodes: []config.TemplateNode{
+		{ID: "main", Label: stringPtr(""), Command: "shell"},
+		{ID: "unused", Label: nil, Command: "not-run"},
+	}}}}
+	err := Apply(context.Background(), d, Target{WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj"}, tpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(d.paneCalls) != 1 || d.paneCalls[0] != "rename-pane:w1:p1:" {
+		t.Errorf("paneCalls = %v, want one clear call with an empty non-nil label", d.paneCalls)
+	}
+}
+
+func TestApply_OmittedLabelDoesNotUseNodeID(t *testing.T) {
+	t.Parallel()
+	d := &fakeDriver{}
+	tpl := config.TemplateConfig{Tabs: []config.TemplateTab{{Name: "code", Root: "editor", Nodes: []config.TemplateNode{
+		{ID: "editor", Command: "nvim"},
+	}}}}
+	if err := Apply(context.Background(), d, Target{WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj"}, tpl); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(d.paneCalls) != 0 {
+		t.Errorf("omitted label emitted pane rename calls: %v", d.paneCalls)
+	}
 }
 
 // TestApply_FlatCommandRunsInRootPane confirms a Command-only template (no

@@ -189,6 +189,11 @@ func applyNode(ctx context.Context, driver source.HerdrDriver, cwd, binary strin
 		return fmt.Errorf("node %q not found", nodeID)
 	}
 	if !node.IsBranch() {
+		if node.Label != nil {
+			if err := driver.RenamePane(ctx, paneID, node.Label); err != nil {
+				return fmt.Errorf("rename pane for node %q (%s): %w", node.ID, paneID, err)
+			}
+		}
 		if node.Command != "" {
 			// CloseOnExit wraps the command via the shared helper; see wrapCloseOnExit for rationale.
 			cmd := wrapCloseOnExit(node.Command, paneID, binary, node.CloseOnExit)
