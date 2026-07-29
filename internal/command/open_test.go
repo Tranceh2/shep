@@ -52,6 +52,7 @@ type openDriver struct {
 	sessionsCalls     int
 
 	renamed      []string
+	paneCalls    []string // "rename-pane:<pane>:<label>"
 	ran          []string
 	created      []string // "tab:<ws>:<cwd>:<label>:<focus>" / "split:<pane>:<dir>:<ratio>:<cwd>:<focus>"
 	focused      []string
@@ -105,8 +106,13 @@ func (d *openDriver) RenameTab(_ context.Context, tabID, label string) error {
 	d.renamed = append(d.renamed, "rename:"+tabID+":"+label)
 	return nil
 }
-func (d *openDriver) RenamePane(context.Context, string, *string) error {
-	return errors.New("openDriver does not implement RenamePane")
+func (d *openDriver) RenamePane(_ context.Context, paneID string, label *string) error {
+	value := "<nil>"
+	if label != nil {
+		value = *label
+	}
+	d.paneCalls = append(d.paneCalls, "rename-pane:"+paneID+":"+value)
+	return nil
 }
 func (d *openDriver) SplitPane(_ context.Context, paneID, direction string, ratio float64, cwd string, focus bool) (source.Pane, error) {
 	if d.splitPaneErr != nil {
@@ -907,6 +913,27 @@ func TestOpen_TemplateAppliesOnCreatedWorkspace(t *testing.T) {
 	}
 	if len(driver.ran) != 1 || driver.ran[0] != "run:wA:p1:nvim" {
 		t.Errorf("expected nvim run in root pane, got %v", driver.ran)
+	}
+}
+
+// TestOpen_SourcePaneLabelFormatNeverRenamesOmittedLeaf is a boundary
+// characterization: source pane formats render picker rows, while template
+// leaves without an explicit label preserve the Herdr pane label.
+func TestOpen_SourcePaneLabelFormatNeverRenamesOmittedLeaf(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Sources.Herdr.PaneLabelFormat = "display={{.Label}}"
+	cfg.Templates["default"] = config.TemplateConfig{
+		Tabs: []config.TemplateTab{
+			{Name: "code", Root: "main", Nodes: []config.TemplateNode{{ID: "main", Command: "nvim"}}},
+		},
+	}
+
+	driver := runOpenTemplate(t, cfg)
+	if len(driver.ran) != 1 || driver.ran[0] != "run:wA:p1:nvim" {
+		t.Fatalf("template command = %v, want one root-pane run", driver.ran)
+	}
+	if len(driver.paneCalls) != 0 {
+		t.Fatalf("source pane label format caused Herdr rename calls: %v", driver.paneCalls)
 	}
 }
 

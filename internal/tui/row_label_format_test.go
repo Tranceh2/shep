@@ -194,6 +194,22 @@ func TestRowPrimaryText_EmptyRenderedLabelFallsBackToPath(t *testing.T) {
 // TestRowPrimaryText_SessionsUsesConfiguredFormatAndStatusSuffixes verifies
 // sessions follow source icon/label conventions while rendering stable state
 // metadata outside the template body.
+func TestRowPrimaryText_SourcePaneFormatIsPresentationOnly(t *testing.T) {
+	m := newRenderTestModel(ThemeMocha, FocusList)
+	m.layout.LabelFormats = LabelFormats{Pane: "display={{.Label}}"}
+	row := Row{Kind: RowPane, Depth: 2, IsLast: true, Candidate: source.Candidate{
+		Label: "persistent", Path: "/srv/pane", Meta: map[string]string{"pane_id": "w1:p1"},
+	}}
+
+	got, _ := m.rowPrimaryText(row)
+	if want := wantRowPrimary(m, row, "", "display=persistent"); got != want {
+		t.Fatalf("rowPrimaryText() = %q, want %q", got, want)
+	}
+	if got := row.Candidate.Meta["pane_id"]; got != "w1:p1" {
+		t.Errorf("pane identity changed while rendering: %q", got)
+	}
+}
+
 func TestRowPrimaryText_SessionsUsesConfiguredFormatAndStatusSuffixes(t *testing.T) {
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	m.layout.LabelFormats = LabelFormats{Sessions: "session={{.Label}}"}
