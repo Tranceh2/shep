@@ -166,7 +166,11 @@ command = "k9s"
 # shell, a root node id plus [[templates.<name>.tabs.nodes]]. A node with
 # split + children is layout-only (rows stacks top/bottom, cols places
 # side by side); a node without split is a real pane running command (empty
-# means a plain shell). Node ids are scoped to their own tab.
+# means a plain shell). Node ids are internal references scoped to their own
+# tab; they are not persistent Herdr labels. A leaf may set label to choose its
+# persistent pane label: omit label to preserve the current label, set label =
+# "" to clear it, or set a non-empty value to rename it. Branch nodes cannot
+# set label.
 #
 # focus = { tab = "...", node = "..." } is declared once at the template
 # level (never per tab/node): focus.tab names a declared tab by its name;

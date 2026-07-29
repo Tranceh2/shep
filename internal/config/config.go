@@ -402,6 +402,7 @@ type TemplateNode struct {
 	Sizes       []int    `toml:"sizes,omitempty"`
 	Command     string   `toml:"command,omitempty"`
 	CloseOnExit bool     `toml:"close_on_exit,omitempty"`
+	Label       *string  `toml:"label,omitempty"`
 }
 
 // IsBranch reports whether the node is a layout-only branch (Split set).
@@ -929,6 +930,9 @@ func validateTemplateNode(prefix, tabName string, n TemplateNode, byID map[strin
 		}
 		if n.CloseOnExit {
 			return fmt.Errorf("%s (%q): node %q is a branch (split set) and cannot also set close_on_exit", prefix, tabName, n.ID)
+		}
+		if n.Label != nil {
+			return fmt.Errorf("%s (%q): branch node %q cannot set label", prefix, tabName, n.ID)
 		}
 		return nil
 	}

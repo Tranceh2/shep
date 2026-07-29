@@ -60,6 +60,53 @@ func TestDefaults_SourcesOrder(t *testing.T) {
 	}
 }
 
+// TestLoad_TemplateNodeLabelPresence pins the TOML decoder contract for the
+// optional leaf label: omitted preserves, empty clears, and non-empty renames.
+func TestLoad_TemplateNodeLabelPresence(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		labelLine string
+		want      *string
+	}{
+		{name: "omitted", want: nil},
+		{name: "explicit empty", labelLine: `label = ""`, want: stringPtr("")},
+		{name: "non-empty", labelLine: `label = "x"`, want: stringPtr("x")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			doc := "[[templates.dev.tabs]]\nname = \"code\"\nroot = \"shell\"\n\n[[templates.dev.tabs.nodes]]\nid = \"shell\"\ncommand = \"\"\n"
+			if tc.labelLine != "" {
+				doc += tc.labelLine + "\n"
+			}
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			got := cfg.Templates["dev"].Tabs[0].Nodes[0].Label
+			if tc.want == nil {
+				if got != nil {
+					t.Fatalf("label = %q, want omitted nil", *got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("label is nil, want pointer to %q", *tc.want)
+			}
+			if *got != *tc.want {
+				t.Errorf("label = %q, want %q", *got, *tc.want)
+			}
+		})
+	}
+}
+
+func stringPtr(value string) *string { return &value }
+
 // TestSessionsSource_OptInRegistration verifies sessions is accepted when
 // configured, carries its source presentation defaults, and never joins the
 // default source order.
@@ -910,6 +957,25 @@ command = ""
 `,
 			errSub: "branch",
 		},
+		{
+			name: "branch cannot set label",
+			doc: `[[templates.dev.tabs]]
+name = "code"
+root = "layout"
+[[templates.dev.tabs.nodes]]
+id = "layout"
+split = "rows"
+children = ["shell", "logs"]
+label = "group"
+[[templates.dev.tabs.nodes]]
+id = "shell"
+command = ""
+[[templates.dev.tabs.nodes]]
+id = "logs"
+command = "tail -f app.log"
+`,
+			errSub: "layout",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -925,6 +991,9 @@ command = ""
 			}
 			if !strings.Contains(err.Error(), tc.errSub) {
 				t.Errorf("error %q must contain %q", err.Error(), tc.errSub)
+			}
+			if tc.name == "branch cannot set label" && !strings.Contains(err.Error(), "label") {
+				t.Errorf("error %q must mention label", err.Error())
 			}
 		})
 	}
@@ -981,6 +1050,11 @@ root = "main"
 	}
 	if got, want := len(tab.Nodes), 3; got != want {
 		t.Fatalf("nodes len: got %d want %d", got, want)
+	}
+	for _, node := range tab.Nodes {
+		if node.Label != nil {
+			t.Errorf("legacy node %q label = %q, want nil", node.ID, *node.Label)
+		}
 	}
 }
 
