@@ -1,180 +1,70 @@
 package tui
 
 import (
-	"reflect"
 	"strings"
 	"testing"
-
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
 )
 
-// render_roles_test.go — the visual redesign's render-role contract:
+// render_roles_test.go — the visual feedback contract:
 //
-//   - sourceBadge maps every source to its badge text, with a declared
-//     [[integrations]] source rendering its own NAME uppercased (and
-//     truncated sensibly), and no badge for source-less candidates.
-//   - badge collapse in narrow terminals: below badgeMinTerminalWidth text
-//     source badges disappear (icons/pins/status markers keep the structure).
-//   - status label mapping: agent_status -> WORKING/IDLE/DONE/BLOCKED/UNKNOWN.
-//   - keycap plain structure: [chord] label — no mouse language anywhere.
+//   - source identity is rendered by configured row icons, without source-name
+//     badges or reserved badge width.
+//   - pane rows retain compact status icons, while no textual TAB/PANE badges
+//     are rendered.
+//   - footer shortcuts use clean key tokens and action labels.
 //
 // Assertions are structural (plain text after stripNonSGRANSI); style-property
 // checks live in theme_test.go, forced-profile ANSI checks are avoided
 // (headless test runs run a no-color profile — see spinner_style_test.go for
 // the single, deliberate exception).
 
-// TestSourceBadge_SourceMappingAndIntegrations proves the badge text per
-// source, integration name uppercasing/truncation, and the empty case: a
-// direct --path candidate (no source) earns no badge.
-func TestSourceBadge_SourceMappingAndIntegrations(t *testing.T) {
+// TestRowIcons_AreTheOnlySourceIdentity proves each configured source row
+// keeps its icon and does not render a source-name badge.
+func TestRowIcons_AreTheOnlySourceIdentity(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		name   string
-		source string
-		want   string
-	}{
-		{"herdr", config.SourceHerdr, "HERDR"},
-		{"projects", config.SourceProjects, "PROJECTS"},
-		{"zoxide", config.SourceZoxide, "ZOXIDE"},
-		{"configured workspaces read CONFIG", config.SourceWorkspaces, "CONFIG"},
-		{"sessions", config.SourceSessions, "SESSION"},
-		{"integration name uppercased", "hermes", "HERMES"},
-		{"integration name truncated sensibly", "a-very-long-integration-name", "A-VERY-LONG-I…"},
-		{"direct-path candidate has no badge", "", ""},
+	rows := []Row{
+		{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceHerdr, Path: "/herdr", Icon: "H"}},
+		{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceWorkspaces, Path: "/config", Icon: "C"}},
+		{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceZoxide, Path: "/zoxide", Icon: "Z"}},
+		{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceProjects, Path: "/projects", Icon: "P"}},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := sourceBadge(tt.source); got != tt.want {
-				t.Errorf("sourceBadge(%q) = %q, want %q", tt.source, got, tt.want)
+	m := newRenderTestModel(ThemePlain, FocusList)
+	for _, row := range rows {
+		primary, _ := m.rowDisplayText(row)
+		got := stripNonSGRANSI(primary)
+		if !strings.Contains(got, row.Candidate.Icon+" ") {
+			t.Errorf("row %q = %q, missing configured icon", row.Candidate.Source, got)
+		}
+		for _, badge := range []string{"HERDR", "CONFIG", "ZOXIDE", "PROJECTS", "SESSION"} {
+			if strings.Contains(got, badge) {
+				t.Errorf("row %q = %q, contains redundant source badge %q", row.Candidate.Source, got, badge)
 			}
-		})
-	}
-}
-
-// TestSourceBadgeStyleFor_BindingAndPlain proves each declared source binds a
-// dedicated badge style; integration/unknown sources fall back to the
-// integration accent badge; plain keeps bold structure with no color and the
-// dim variant goes faint. Style identity is proven by GetForeground()
-// equality (lipgloss.Style is not comparable — wrap in reflect.DeepEqual).
-func TestSourceBadgeStyleFor_BindingAndPlainStructure(t *testing.T) {
-	t.Parallel()
-	s := newPalette(themes[ThemeMocha])
-	if fg := s.sourceBadgeStyleFor(config.SourceHerdr).GetForeground(); !reflect.DeepEqual(fg, s.sourceHerdrStyle.GetForeground()) {
-		t.Errorf("herdr badge fg = %#v, want the dedicated herdr role %#v", fg, s.sourceHerdrStyle.GetForeground())
-	}
-	if fg := s.sourceBadgeStyleFor(config.SourceWorkspaces).GetForeground(); !reflect.DeepEqual(fg, s.sourceWorkspacesStyle.GetForeground()) {
-		t.Errorf("workspaces badge fg = %#v, want the dedicated CONFIG role", fg)
-	}
-	if fg := s.sourceBadgeStyleFor("hermes").GetForeground(); fg != nil && !reflect.DeepEqual(fg, s.sourceBadgeStyle.GetForeground()) {
-		t.Errorf("integration badge fg = %#v, want the integration accent role", fg)
-	}
-	if s.sourceHerdrStyle.GetForeground() == s.sourceProjectsStyle.GetForeground() {
-		t.Error("herdr and projects badge colors must differ (color is secondary but present)")
-	}
-
-	plain := newPalette(themes[ThemePlain])
-	herdr := plain.sourceBadgeStyleFor(config.SourceHerdr)
-	if !herdr.GetBold() {
-		t.Error("plain herdr badge must be bold (structural emphasis)")
-	}
-	if fg := herdr.GetForeground(); fg != (lipgloss.NoColor{}) {
-		t.Errorf("plain herdr badge fg = %#v, want no color", fg)
-	}
-	if !herdr.Faint(true).GetFaint() {
-		t.Error("plain dim badge must be faint")
-	}
-}
-
-// TestRowBadgeParts_NarrowCollapsesSourceBadge proves the narrow
-// badgeMinTerminalWidth rule: no text source badge at narrow widths, badge
-// granted at wide widths, and the badge text width matches its plain text.
-func TestRowBadgeParts_NarrowCollapsesSourceBadge(t *testing.T) {
-	t.Parallel()
-	row := Row{Kind: RowCandidate, Candidate: herdrCandidate("backend", "/srv/backend", "w1")}
-	build := func(width int) Model {
-		m := newRenderTestModel(ThemeMocha, FocusList)
-		m.width = width
-		return m
-	}
-
-	badges, w := build(64).rowBadgeParts(row, true)
-	if badges != "" || w != 0 {
-		t.Errorf("narrow (64) badges = %q width %d, want none (text badge hidden)", badges, w)
-	}
-
-	badges, w = build(120).rowBadgeParts(row, true)
-	if !strings.Contains(stripNonSGRANSI(badges), "HERDR") {
-		t.Errorf("wide (120) badges = %q, want the HERDR badge", badges)
-	}
-	if w != len("HERDR") {
-		t.Errorf("wide (120) badge width = %d, want %d", w, len("HERDR"))
-	}
-}
-
-// TestRowBadgeParts_StatusBadgePerKind proves the pane status text badge
-// mapping (panes only; a tab row carries no status).
-func TestRowBadgeParts_StatusBadgePerKind(t *testing.T) {
-	t.Parallel()
-	m := newRenderTestModel(ThemeMocha, FocusList)
-	m.width = 120
-	pane := Row{
-		Kind: RowPane,
-		Candidate: source.Candidate{
-			Label: "p1", Path: "/srv/api",
-			Meta: map[string]string{"agent_status": "working"},
-		},
-	}
-	badges, w := m.rowBadgeParts(pane, true)
-	if got := stripNonSGRANSI(badges); got != "PANE WORKING" {
-		t.Errorf("pane badges = %q, want the PANE WORKING status text badges", got)
-	}
-	if w != len("PANE WORKING") {
-		t.Errorf("pane badge width = %d, want %d", w, len("PANE WORKING"))
-	}
-	if badges2, w2 := m.rowBadgeParts(Row{Kind: RowTab}, true); stripNonSGRANSI(badges2) != "TAB" || w2 != len("TAB") {
-		t.Errorf("tab badges = %q/%d, want the TAB status text badge", badges2, w2)
-	}
-}
-
-// TestStatusBadgeLabel_Mapping proves the status labels are uppercase text —
-// color is never the signal; every status carries a text label.
-func TestStatusBadgeLabel_Mapping(t *testing.T) {
-	t.Parallel()
-	tests := []struct{ status, want string }{
-		{StatusIdle, "IDLE"},
-		{StatusWorking, "WORKING"},
-		{StatusBlocked, "BLOCKED"},
-		{StatusDone, "DONE"},
-		{StatusUnknown, "UNKNOWN"},
-		{"", ""},
-		{"bogus", ""},
-	}
-	for _, tt := range tests {
-		if got := statusBadgeLabel(tt.status); got != tt.want {
-			t.Errorf("statusBadgeLabel(%q) = %q, want %q", tt.status, got, tt.want)
 		}
 	}
 }
 
-// TestRenderKeycap_PlainStructure proves the keycap shape is [chord] label in
-// every theme (plain included): the footer structure is theme-independent.
+// TestRenderKeycap_PlainStructure proves the clean shortcut shape is key label
+// in every theme (plain included), with no bracket decoration.
 func TestRenderKeycap_PlainStructure(t *testing.T) {
 	t.Parallel()
 	for _, theme := range []string{ThemeMocha, ThemePlain} {
 		m := newRenderTestModel(theme, FocusList)
 		got := renderKeycap(m.styles, "enter", "open")
-		if !strings.HasPrefix(got, "[enter] open") {
-			t.Errorf("theme %s renderKeycap = %q, want the [enter] open structure", theme, got)
+		if !strings.HasPrefix(got, "enter open") {
+			t.Errorf("theme %s renderKeycap = %q, want the enter open structure", theme, got)
+		}
+		if strings.ContainsAny(got, "[]") {
+			t.Errorf("theme %s renderKeycap = %q, must not contain brackets", theme, got)
 		}
 	}
 }
 
-// TestFooterHints_NarrowDropsTabFirst proves the narrow footer drops the
-// [tab] keycap first and never loses the essential [?]/[esc] keycaps.
-func TestFooterHints_NarrowDropsTabFirst(t *testing.T) {
+// TestFooterHints_NarrowDropsPreviewFirst proves narrow mode drops preview
+// first and retains the high-value help/quit hints.
+func TestFooterHints_NarrowDropsPreviewFirst(t *testing.T) {
 	t.Parallel()
 	cands := []source.Candidate{herdrCandidate("backend", "/srv/backend", "w1")}
 	wide := NewModelWithLayout(cands, nil, Layout{Theme: ThemeMocha})
@@ -183,17 +73,17 @@ func TestFooterHints_NarrowDropsTabFirst(t *testing.T) {
 	narrowM, _ = update(t, narrowM, sizeMsg(64, 24))
 
 	narrowPlain := stripNonSGRANSI(narrowM.footerHints())
-	if strings.Contains(narrowPlain, "[tab]") {
-		t.Errorf("narrow footer = %q, must drop the [tab] keycap first", narrowPlain)
+	if strings.Contains(narrowPlain, "tab preview") {
+		t.Errorf("narrow footer = %q, must drop the preview hint first", narrowPlain)
 	}
-	for _, essential := range []string{"[esc]", "[?]"} {
+	for _, essential := range []string{"? help", "esc quit"} {
 		if !strings.Contains(narrowPlain, essential) {
 			t.Errorf("narrow footer = %q, want %q retained", narrowPlain, essential)
 		}
 	}
 	widePlain := stripNonSGRANSI(wide.footerHints())
-	if !strings.Contains(widePlain, "[tab] preview") {
-		t.Errorf("wide footer = %q, want the [tab] preview keycap", widePlain)
+	if !strings.Contains(widePlain, "tab preview") {
+		t.Errorf("wide footer = %q, want the tab preview hint", widePlain)
 	}
 }
 

@@ -126,7 +126,7 @@ func TestHelpBodyText_MatchesApprovedContent(t *testing.T) {
 		"  up/down, ctrl+j/ctrl+k    move the cursor",
 		"  left/right                collapse/expand a workspace's tabs/panes",
 		"  enter                     open the highlighted row",
-		"  alt+p                     pin/unpin the highlighted top-level candidate",
+		"  ctrl+f                    pin/unpin the highlighted top-level candidate",
 		"  tab / shift+tab           switch focus between list and preview",
 		"  ctrl+u                    clear the query",
 		"  backspace                 delete the last query character",
@@ -171,10 +171,10 @@ func TestFooterHints_TabRowShowsFocusTabLabel(t *testing.T) {
 	m.rows = []Row{{Kind: RowTab, Action: RowActionFocusTab, Candidate: source.Candidate{Label: "api", Meta: map[string]string{"tab_id": "t1"}}}}
 	m.cursor = 0
 	got := m.footerHints()
-	if !strings.Contains(got, "[enter] Focus tab") {
-		t.Errorf("footerHints() = %q, want it to contain the tab-row Enter keycap \"[enter] Focus tab\"", got)
+	if !strings.Contains(got, "enter Focus tab") {
+		t.Errorf("footerHints() = %q, want it to contain the tab-row Enter hint \"enter Focus tab\"", got)
 	}
-	if strings.Contains(got, "[enter] open") {
+	if strings.Contains(got, "enter open") {
 		t.Errorf("footerHints() = %q, must not show the generic \"open\" label for a tab row", got)
 	}
 }
@@ -187,8 +187,8 @@ func TestFooterHints_CandidateRowKeepsOpenLabel(t *testing.T) {
 	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
 	m, _ = update(t, m, sizeMsg(120, 36))
 	got := m.footerHints()
-	if !strings.Contains(got, "[enter] open") {
-		t.Errorf("footerHints() = %q, want the candidate-row \"open\" Enter keycap", got)
+	if !strings.Contains(got, "enter open") {
+		t.Errorf("footerHints() = %q, want the candidate-row \"open\" Enter hint", got)
 	}
 	if strings.Contains(strings.ToLower(got), "create") {
 		t.Errorf("footerHints() = %q, must not promise \"create\"", got)

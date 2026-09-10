@@ -452,52 +452,6 @@ func TestStyleRoles_RedesignRoleBindings(t *testing.T) {
 	}
 }
 
-// TestStyleRoles_SourceBadgeRoles proves every color flavor binds one
-// dedicated source-badge color role per source (herdr/projects/zoxide/
-// workspaces/sessions), all five roles are mutually distinct, integration
-// badges lean on the accent, and the plain theme keeps bold text with no
-// color escape at all.
-func TestStyleRoles_SourceBadgeRoles(t *testing.T) {
-	t.Parallel()
-	for _, th := range allColorThemes() {
-		s := newPalette(th)
-		if fg := s.sourceHerdrStyle.GetForeground(); fg != lipgloss.Color(th.SourceHerdr) {
-			t.Errorf("%s: sourceHerdrStyle fg = %#v, want %q", th.Name, fg, th.SourceHerdr)
-		}
-		if fg := s.sourceProjectsStyle.GetForeground(); fg != lipgloss.Color(th.SourceProjects) {
-			t.Errorf("%s: sourceProjectsStyle fg = %#v, want %q", th.Name, fg, th.SourceProjects)
-		}
-		if fg := s.sourceZoxideStyle.GetForeground(); fg != lipgloss.Color(th.SourceZoxide) {
-			t.Errorf("%s: sourceZoxideStyle fg = %#v, want %q", th.Name, fg, th.SourceZoxide)
-		}
-		if fg := s.sourceWorkspacesStyle.GetForeground(); fg != lipgloss.Color(th.SourceWorkspaces) {
-			t.Errorf("%s: sourceWorkspacesStyle fg = %#v, want %q", th.Name, fg, th.SourceWorkspaces)
-		}
-		if fg := s.sourceSessionsStyle.GetForeground(); fg != lipgloss.Color(th.SourceSessions) {
-			t.Errorf("%s: sourceSessionsStyle fg = %#v, want %q", th.Name, fg, th.SourceSessions)
-		}
-		if fg := s.sourceBadgeStyle.GetForeground(); fg != lipgloss.Color(th.Accent) {
-			t.Errorf("%s: sourceBadgeStyle (integrations) fg = %#v, want accent %q", th.Name, fg, th.Accent)
-		}
-		if s.sourceHerdrStyle.GetForeground() == s.sourceZoxideStyle.GetForeground() {
-			t.Errorf("%s: herdr and zoxide badge colors must differ", th.Name)
-		}
-	}
-	// Plain: the badges keep their structural emphasis (bold), zero color.
-	plain := newPalette(themes[ThemePlain])
-	for _, st := range []lipgloss.Style{
-		plain.sourceHerdrStyle, plain.sourceProjectsStyle, plain.sourceZoxideStyle,
-		plain.sourceWorkspacesStyle, plain.sourceSessionsStyle, plain.sourceBadgeStyle,
-	} {
-		if !st.GetBold() {
-			t.Error("plain source badge must be bold (structural emphasis)")
-		}
-		if fg := st.GetForeground(); fg != (lipgloss.NoColor{}) {
-			t.Errorf("plain source badge fg = %#v, want no color", fg)
-		}
-	}
-}
-
 // TestStyleRoles_FlavorMirrorsSpecHexes proves the mocha flavor carries the
 // approved design's exact hex values (the binding palette anchor) and that
 // secondary differs from both text and muted in every flavor.
@@ -506,10 +460,7 @@ func TestStyleRoles_FlavorMirrorsSpecHexes(t *testing.T) {
 	mocha := themes[ThemeMocha]
 	if mocha.Accent != "#cba6f7" || mocha.Text != "#cdd6f4" || mocha.Secondary != "#a6adc8" ||
 		mocha.Muted != "#6c7086" || mocha.SelectedSurface != "#313244" ||
-		mocha.UnfocusedSurface != "#1e1e2e" || mocha.Rule != "#585b70" ||
-		mocha.SourceHerdr != "#89b4fa" || mocha.SourceProjects != "#a6e3a1" ||
-		mocha.SourceZoxide != "#94e2d5" || mocha.SourceWorkspaces != "#f9e2af" ||
-		mocha.SourceSessions != "#fab387" {
+		mocha.UnfocusedSurface != "#1e1e2e" || mocha.Rule != "#585b70" {
 		t.Errorf("mocha theme hexes drifted from the approved design: %+v", mocha)
 	}
 	for _, th := range allColorThemes() {

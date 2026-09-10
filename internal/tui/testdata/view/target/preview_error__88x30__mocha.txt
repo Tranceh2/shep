@@ -1,7 +1,7 @@
 [/] type to filter…                                                         2 candidates
 ╭──────────────────────────────────────────────╮ ╭ PREVIEW · alpha ────────────────────╮
-│ ❯ /a                                  ZOXIDE │ │ label  alpha                        │
-│   /b                                  ZOXIDE │ │ path   /a                           │
+│ ❯ /a                                         │ │ label  alpha                        │
+│   /b                                         │ │ path   /a                           │
 │                                              │ │ source zoxide                       │
 │                                              │ │                                     │
 │                                              │ │ ! preview error                     │
@@ -27,4 +27,4 @@
 │                                              │ │                                     │
 │                                              │ │                                     │
 ╰──────────────────────────────────────────────╯ ╰─────────────────────────────────────╯
-/a  [enter] open  [tab] preview  [?] help  [esc] quit
+enter open   tab preview   ? help   esc quit

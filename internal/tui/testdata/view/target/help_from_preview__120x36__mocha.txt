@@ -3,7 +3,7 @@
 │   up/down, ctrl+j/ctrl+k    move the cursor                                                                          │
 │   left/right                collapse/expand a workspace's tabs/panes                                                 │
 │   enter                     open the highlighted row                                                                 │
-│   alt+p                     pin/unpin the highlighted top-level candidate                                            │
+│   ctrl+f                    pin/unpin the highlighted top-level candidate                                            │
 │   tab / shift+tab           switch focus between list and preview                                                    │
 │   ctrl+u                    clear the query                                                                          │
 │   backspace                 delete the last query character                                                          │
@@ -33,4 +33,4 @@
 │                                                                                                                      │
 │                                                                                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-/srv/backend  [enter] open  [tab] preview  [?] help  [esc] quit
+enter open   tab preview   ? help   esc quit

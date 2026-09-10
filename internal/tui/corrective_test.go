@@ -336,55 +336,18 @@ func TestRowDisplayText_ZoxideAndProjectsShowFullPathNoSecondary(t *testing.T) {
 	}
 }
 
-// === 7. Footer keycaps + optional full-path ===
+// === 7. Footer shortcuts are path-free and unboxed ===
 
-// TestRenderFooter_ShowsFullPathAndPreservesHints proves the footer shows the
-// full path of the currently highlighted row only alongside ample keycap room
-// (the redesign: the keycap footer is the default; the preview's identity
-// section owns the path), with the keycaps still present.
-func TestRenderFooter_ShowsFullPathAndPreservesHints(t *testing.T) {
+// TestRenderFooter_HasNoSelectedPathOrBrackets proves the footer remains a
+// compact shortcut contract at both standard and narrow widths.
+func TestRenderFooter_HasNoSelectedPathOrBrackets(t *testing.T) {
 	t.Parallel()
 	m := NewModelWithLayout([]source.Candidate{zoxideCandidate("alpha", "/home/dev/alpha")}, nil, Layout{Theme: ThemeMocha})
-	m, _ = update(t, m, sizeMsg(120, 36))
-	footer := stripNonSGRANSI(m.renderFooter())
-	if !strings.Contains(footer, "/home/dev/alpha") {
-		t.Errorf("footer missing full path: %q", footer)
-	}
-	if !strings.Contains(footer, "[enter] open") || !strings.Contains(footer, "[esc] quit") {
-		t.Errorf("footer missing keycaps: %q", footer)
-	}
-}
-
-// TestRenderFooter_DropsPathNarrowBeforeHints proves that at a narrow width
-// the footer drops the optional path segment entirely first (the keycaps are
-// never truncated for a path's sake) and keeps rendering the keycaps alone.
-func TestRenderFooter_DropsPathNarrowBeforeHints(t *testing.T) {
-	t.Parallel()
-	longPath := "/home/dev/a/very/deeply/nested/project/directory/name"
-	m := NewModelWithLayout([]source.Candidate{zoxideCandidate("name", longPath)}, nil, Layout{Theme: ThemeMocha})
-	m, _ = update(t, m, sizeMsg(60, 20))
-	footer := stripNonSGRANSI(m.renderFooter())
-	if strings.Contains(footer, "/home/dev") {
-		t.Errorf("narrow footer must drop the optional path segment: %q", footer)
-	}
-	if !strings.Contains(footer, "[enter]") || !strings.Contains(footer, "[esc] quit") {
-		t.Errorf("narrow footer must keep the essential keycaps: %q", footer)
-	}
-
-	// At an extremely narrow width, the footer still fits its keycaps.
-	m2, _ := update(t, m, sizeMsg(15, 20))
-	narrowFooter := stripNonSGRANSI(m2.renderFooter())
-	if strings.Contains(narrowFooter, "…") && !strings.Contains(narrowFooter, "[enter]") {
-		t.Errorf("expected a keycaps-only degrade at extremely narrow width: %q", narrowFooter)
-	}
-}
-
-// TestFooterPathSegment_EmptyWhenNothingHighlighted proves footerPathSegment
-// returns "" when there is nothing highlighted (empty rows).
-func TestFooterPathSegment_EmptyWhenNothingHighlighted(t *testing.T) {
-	t.Parallel()
-	m := NewModel(nil, nil)
-	if got := m.footerPathSegment(); got != "" {
-		t.Errorf("footerPathSegment() = %q, want empty with no candidates", got)
+	for _, size := range []struct{ width, height int }{{120, 36}, {60, 20}, {15, 20}} {
+		m, _ = update(t, m, sizeMsg(size.width, size.height))
+		footer := stripNonSGRANSI(m.renderFooter())
+		if strings.Contains(footer, "/home/dev/alpha") || strings.ContainsAny(footer, "[]") {
+			t.Errorf("footer at %dx%d = %q, must contain neither selected path nor brackets", size.width, size.height, footer)
+		}
 	}
 }

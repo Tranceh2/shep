@@ -9,8 +9,8 @@ import (
 
 // TestRenderHeader_MultiSourceMatches_KeepsCandidateCount proves a non-empty
 // query with matches from more than one source keeps the palette's compact
-// total count. Source badges on the rows explain WHERE matches came from;
-// the header reports only the result total.
+// total count. The row icons distinguish sources; the header reports only the
+// result total.
 func TestRenderHeader_MultiSourceMatches_ShowsPerSourceCounts(t *testing.T) {
 	t.Parallel()
 	cands := []source.Candidate{
@@ -28,7 +28,7 @@ func TestRenderHeader_MultiSourceMatches_ShowsPerSourceCounts(t *testing.T) {
 		t.Errorf("header = %q, want the compact candidate count", plain)
 	}
 	if strings.Contains(plain, "herdr 1") || strings.Contains(plain, "zoxide 1") {
-		t.Errorf("header = %q, source breakdown belongs in row badges, not the header", plain)
+		t.Errorf("header = %q, source breakdown must not replace the result total", plain)
 	}
 }
 

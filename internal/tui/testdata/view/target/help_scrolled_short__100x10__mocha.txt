@@ -7,4 +7,4 @@
 │ Session                                                                                          │
 │   esc, ctrl+c, ctrl+g       cancel the picker                                                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-/srv/backend  [enter] open  [?] help  [esc] quit
+enter open   ? help   esc quit

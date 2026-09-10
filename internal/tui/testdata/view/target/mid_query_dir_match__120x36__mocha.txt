@@ -1,7 +1,7 @@
 SHEP  Switch workspace                                                                                            1 of 3
 [/] alpha
 ╭────────────────────────────────────────────────────────────────╮ ╭ PREVIEW · alpha-dir ──────────────────────────────╮
-│ ❯ /home/dev/alpha-dir                                   ZOXIDE │ │ label  alpha-dir                                  │
+│ ❯ /home/dev/alpha-dir                                          │ │ label  alpha-dir                                  │
 │                                                                │ │ path   /home/dev/alpha-dir                        │
 │                                                                │ │ source zoxide                                     │
 │                                                                │ │                                                   │
@@ -34,4 +34,4 @@ SHEP  Switch workspace                                                          
 │                                                                │ │                                                   │
 ╰────────────────────────────────────────────────────────────────╯ │                                                   │
                                                                    ╰───────────────────────────────────────────────────╯
-/home/dev/alpha-dir  [enter] open  [tab] preview  [?] help  [esc] quit
+enter open   tab preview   ? help   esc quit

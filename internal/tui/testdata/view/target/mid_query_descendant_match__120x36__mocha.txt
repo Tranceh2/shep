@@ -1,8 +1,8 @@
 SHEP  Switch workspace                                                                                            1 of 1
 [/] api
 ╭────────────────────────────────────────────────────────────────╮ ╭ PREVIEW · backend ────────────────────────────────╮
-│ ❯ backend · /srv/backend                                 HERDR │ │ label  backend                                    │
-│       └─ ◫ api · /srv/backend                              TAB │ │ path   /srv/backend                               │
+│ ❯ backend · /srv/backend                                       │ │ label  backend                                    │
+│       └─ ◫ api · /srv/backend                                  │ │ path   /srv/backend                               │
 │                                                                │ │                                                   │
 │                                                                │ │                                                   │
 │                                                                │ │                                                   │
@@ -34,4 +34,4 @@ SHEP  Switch workspace                                                          
 │                                                                │ │                                                   │
 ╰────────────────────────────────────────────────────────────────╯ │                                                   │
                                                                    ╰───────────────────────────────────────────────────╯
-/srv/backend  [enter] open  [tab] preview  [?] help  [esc] quit
+enter open   tab preview   ? help   esc quit

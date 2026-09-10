@@ -3,7 +3,7 @@
 # into an existing [keys] table or [[keys.command]] list; do not duplicate
 # [keys].
 [[keys.command]]
-key = "prefix+alt+p" # Pick any key your config does not already bind.
+key = "prefix+ctrl+f" # Pick any key your config does not already bind.
 type = "popup"
 command = "shep open"
 

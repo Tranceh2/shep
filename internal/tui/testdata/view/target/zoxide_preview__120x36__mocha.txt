@@ -1,7 +1,7 @@
 SHEP  Switch workspace                                                                                      1 candidates
 [/] type to filter…
 ╭────────────────────────────────────────────────────────────────╮ ╭ PREVIEW · tmp ────────────────────────────────────╮
-│ ❯ /tmp                                                  ZOXIDE │ │ label  tmp                                        │
+│ ❯ /tmp                                                         │ │ label  tmp                                        │
 │                                                                │ │ path   /tmp                                       │
 │                                                                │ │ source zoxide                                     │
 │                                                                │ │                                                   │
@@ -34,4 +34,4 @@ SHEP  Switch workspace                                                          
 │                                                                │ │                                                   │
 ╰────────────────────────────────────────────────────────────────╯ │                                                   │
                                                                    ╰───────────────────────────────────────────────────╯
-/tmp  [enter] open  [tab] preview  [?] help  [esc] quit
+enter open   tab preview   ? help   esc quit

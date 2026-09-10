@@ -1,10 +1,10 @@
 SHEP  Switch workspace                                                                  7 candidates
 [/] type to filter…
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ ❯ backend · /srv/backend                                                                   HERDR │
-│   frontend · /srv/frontend                                                                 HERDR │
-│   notes                                                                                   CONFIG │
-│   /tmp                                                                                    ZOXIDE │
+│ ❯ backend · /srv/backend                                                                         │
+│   frontend · /srv/frontend                                                                       │
+│   notes                                                                                          │
+│   /tmp                                                                                           │
 │                                                                                                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-/srv/backend  [enter] open  [?] help  [esc] quit
+enter open   ? help   esc quit

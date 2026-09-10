@@ -91,7 +91,7 @@ func scrollViewport(vp *viewport.Model, key string) bool {
 // exclusively to handleHelpFocusedKey (help is modal: only "?"/Esc close it,
 // only ctrl+c/ctrl+g cancel through it, everything else is swallowed).
 // Otherwise, global bindings ("?"/esc/ctrl+c/ctrl+g/tab/shift+tab/ctrl+t/
-// ctrl+p) are checked next regardless of focus, and the remainder branches
+// ctrl+p/ctrl+f) are checked next regardless of focus, and the remainder branches
 // on m.focus: FocusPreview routes navigation to the preview viewport and any
 // printable rune (including "q" — it is an ordinary query character, NOT a
 // cancel key; only esc/ctrl+c/ctrl+g cancel) bounces focus back to the list
@@ -134,13 +134,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.selectWithTarget("tab")
 	case "ctrl+p":
 		return m.selectWithTarget("pane")
+	case "ctrl+f":
+		if m.layout.PinToggler != nil {
+			return m.togglePin()
+		}
 	}
 
 	if m.focus == FocusPreview {
 		return m.handlePreviewFocusedKey(msg)
-	}
-	if msg.String() == "alt+p" && m.layout.PinToggler != nil {
-		return m.togglePin()
 	}
 	return m.handleListFocusedKey(msg)
 }

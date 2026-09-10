@@ -31,22 +31,6 @@ const minPreviewHeight = 12
 // right-aligned count.
 const headerWideBreakpoint = 100
 
-// badgeMinTerminalWidth is the terminal width below which row text source
-// badges are hidden (narrow list-only widths): rows keep the icon/pin/status
-// shape markers, the source distinction falls back to the row's own icon.
-const badgeMinTerminalWidth = 72
-
-// badgeMinContentWidth is the smallest row-content width for which a
-// right-side badge slot is granted: below this the badge would squeeze the
-// label below a readable floor, so it is dropped entirely (truncation eats
-// label/path first, but never down to nothing before the badge leaves).
-const badgeMinContentWidth = 24
-
-// statusBadgeMinContentWidth is the row content floor for a pane status text
-// badge (WORKING/IDLE/DONE/BLOCKED/UNKNOWN) — a pane row must keep at least
-// this many label cells for the badge to earn a slot.
-const statusBadgeMinContentWidth = 28
-
 // chromeRows is the fixed vertical overhead of the list pane deducted from
 // the reported terminal height before capping visible rows: the border's
 // top+bottom edges (2). The old query line that used to live inside the list
@@ -63,12 +47,11 @@ const previewChromeRows = 2
 const minList = 20
 const minPrev = 10
 
-// footerSeparator joins footer keycap groups with wide, low-emphasis
-// spacing (two spaces — no "·" and no "/" between keycaps).
-const footerSeparator = "  "
+// footerSeparator separates shortcut groups without suggesting button chrome.
+const footerSeparator = "   "
 
 // View renders the responsive two-pane (or single-pane) UI plus a compact,
-// contextual keycap footer line. The active mode (m.mode, computed on
+// contextual shortcut footer line. The active mode (m.mode, computed on
 // tea.WindowSizeMsg — see nextResponsiveMode) decides the shape: modeWide
 // splits list/preview side by side, modeListOnly shows only the list. The "?"
 // help overlay (m.focus == FocusHelp) replaces the body entirely when active.
@@ -157,7 +140,7 @@ func (m Model) emptyStateLines() []string {
 	if m.query != "" {
 		return []string{
 			"No matches for \"" + m.query + "\"",
-			"[esc] clear query",
+			"esc clear query",
 		}
 	}
 	if m.loadingCandidates && len(m.baseFlatCandidates()) == 0 {
@@ -200,16 +183,16 @@ func (m Model) headerCountText() string {
 		}
 		return strconv.Itoa(n) + " candidates (loading…)"
 	case m.query != "":
-		// Querying always uses the compact total form. The palette's source
-		// badges explain WHERE each visible row came from; the header's job is
-		// only to report N of M candidates.
+		// Querying always uses the compact total form. The row icons distinguish
+		// sources; the header's job is only to report N of M candidates.
 		return strconv.Itoa(m.visibleTopLevelCount()) + " of " + strconv.Itoa(n)
 	default:
 		return strconv.Itoa(n) + " candidates"
 	}
 }
 
-// renderHeader builds the app/search header above the body.
+// renderHeader builds the app/search header above the body. Its search token
+// remains bracketed because it is a search affordance, not a footer shortcut.
 //
 // Wide (>= headerWideBreakpoint): two lines —
 //
@@ -363,91 +346,15 @@ type rowPart struct {
 
 // renderRowLine renders one row with a stable two-cell marker gutter. The
 // selected FocusList row fills it with the configured cursor plus one space;
-// all other rows keep it blank while preserving their own text styles. A
-// right-side badge slot (see rowBadgeParts) is reserved from the row's width
-// budget so labels/paths truncate first and badges never move.
+// all other rows keep it blank while preserving their own text styles. Source
+// identity is communicated by the row icon, so the full width is available to
+// the label/path text and no redundant right-side badge slot is reserved.
 func (m Model) renderRowLine(row Row, isCursor bool, width int) string {
 	parts := m.rowLineParts(row)
-	badges, badgeW := m.rowBadgeParts(row, isCursor)
-	contentW := width - badgeW
-	if badges != "" && width-cursorPrefixWidth-badgeW < badgeMinContentWidth {
-		// Not enough label room for the badge slot: drop the badges rather
-		// than squeeze the row.
-		badges, contentW = "", width
-	}
 	if isCursor {
-		return m.renderSelectedFromParts(parts, contentW) + badges
+		return m.renderSelectedFromParts(parts, width)
 	}
-	return m.renderUnselectedFromParts(parts, contentW) + badges
-}
-
-// rowBadgeParts composes the right-side badge-slot text for one row (a single
-// space between badges) and its total visible width, or ("", 0) when no badge
-// earns a slot. Top-level candidate rows carry a text source badge
-// (HERDR/PROJECTS/ZOXIDE/CONFIG/SESSION/integration name) in its source
-// color; pane rows carry a WORKING/IDLE/DONE/BLOCKED/UNKNOWN status text
-// badge in the pane's own status style. Unselected (non-cursor, or cursor
-// while the preview owns focus) rows render the same badges dimmed (faint) —
-// dimmer treatment, same structure. Text badges are hidden below
-// badgeMinTerminalWidth: narrow list-only rows keep the icon/pin/status
-// shape markers instead.
-func (m Model) rowBadgeParts(row Row, isCursor bool) (string, int) {
-	emphasize := isCursor && m.focus == FocusList
-	var segments, texts []string
-	switch row.Kind {
-	case RowCandidate:
-		if m.width >= badgeMinTerminalWidth {
-			if badge := sourceBadge(row.Candidate.Source); badge != "" {
-				style := m.styles.sourceBadgeStyleFor(row.Candidate.Source)
-				if !emphasize {
-					style = style.Faint(true)
-				}
-				segments = append(segments, style.Render(badge))
-				texts = append(texts, badge)
-			}
-		}
-	case RowTab:
-		style := m.styles.sourceBadgeStyleFor(config.SourceHerdr)
-		if !emphasize {
-			style = style.Faint(true)
-		}
-		segments = append(segments, style.Render("TAB"))
-		texts = append(texts, "TAB")
-	case RowPane:
-		if m.width-cursorPrefixWidth >= statusBadgeMinContentWidth {
-			style := m.styles.sourceBadgeStyleFor(config.SourceHerdr)
-			if !emphasize {
-				style = style.Faint(true)
-			}
-			segments = append(segments, style.Render("PANE"))
-			texts = append(texts, "PANE")
-		}
-		status := m.paneStatusText(row)
-		label := statusBadgeLabel(status)
-		if label != "" && m.width-cursorPrefixWidth >= statusBadgeMinContentWidth {
-			style := m.styles.statusStyle(status)
-			if !emphasize {
-				style = style.Faint(true)
-			}
-			segments = append(segments, style.Render(label))
-			texts = append(texts, label)
-		}
-	}
-	if len(segments) == 0 {
-		return "", 0
-	}
-	joined := strings.Join(segments, " ")
-	return joined, lipgloss.Width(strings.Join(texts, " "))
-}
-
-// paneStatusText returns the agent_status a pane row exposes for its status
-// text badge, or "" when the row is not a pane row or reports no status
-// (no status = no badge, matching agentStatusIcon's contract).
-func (m Model) paneStatusText(row Row) string {
-	if row.Kind != RowPane {
-		return ""
-	}
-	return row.Candidate.Meta["agent_status"]
+	return m.renderUnselectedFromParts(parts, width)
 }
 
 // rowLineParts builds the styled parts for one row, independent of
@@ -1205,53 +1112,6 @@ func splitBothPercent(width int, listFrac, prevFrac float64) (int, int) {
 	return list, prev
 }
 
-// sourceBadge returns the plain text of a candidate row's source badge:
-// HERDR / PROJECTS / ZOXIDE / CONFIG (configured workspaces) / SESSION
-// sources; a declared [[integrations]] source renders its own name
-// uppercased. A candidate with no source (e.g. a direct --path) earns no
-// badge. Integration names are truncated to keep the badge slot bounded.
-func sourceBadge(source string) string {
-	switch source {
-	case config.SourceHerdr:
-		return "HERDR"
-	case config.SourceProjects:
-		return "PROJECTS"
-	case config.SourceZoxide:
-		return "ZOXIDE"
-	case config.SourceWorkspaces:
-		return "CONFIG"
-	case config.SourceSessions:
-		return "SESSION"
-	case "":
-		return ""
-	default:
-		// A declared [[integrations]] source renders its integration name
-		// uppercased, truncated sensibly for the badge slot.
-		name := strings.ToUpper(source)
-		return truncateToWidth(name, 14)
-	}
-}
-
-// statusBadgeLabel maps an agent_status to the pane row's status text badge,
-// or "" when unknown/absent (exercised by the badges' own unit tests via
-// paneStatusText's callers; the style comes from styleSet.statusStyle).
-func statusBadgeLabel(status string) string {
-	switch status {
-	case StatusIdle:
-		return "IDLE"
-	case StatusWorking:
-		return "WORKING"
-	case StatusBlocked:
-		return "BLOCKED"
-	case StatusDone:
-		return "DONE"
-	case StatusUnknown:
-		return "UNKNOWN"
-	default:
-		return ""
-	}
-}
-
 // pinBadge returns the pinned-candidate marker glyph for the model's icon
 // tier — "•" for Unicode tiers, a plain ASCII "*" for the ASCII tier — so a
 // pinned row keeps its shape marker in every mode (ASCII
@@ -1263,12 +1123,11 @@ func pinBadge(isASCII bool) string {
 	return "•"
 }
 
-// renderKeycap renders one footer keycap: the chord token in brackets (bold)
-// followed by the action label in the secondary role — the pure, styled form
-// footerHints composes its groups from. The plain theme renders the same
-// structure with the keycap token bold.
+// renderKeycap renders one clean footer shortcut: an accented/bold chord token
+// followed by a secondary action label. It intentionally has no brackets or
+// box-like decoration.
 func renderKeycap(s styleSet, key, label string) string {
-	return s.keycapStyle.Render("["+key+"]") + " " + s.keycapLabelStyle.Render(label)
+	return s.keycapStyle.Render(key) + " " + s.keycapLabelStyle.Render(label)
 }
 
 // paneContentWidth converts a pane's outer width budget into the inner
@@ -1313,51 +1172,16 @@ func (m Model) paneBoxStyle(outerHeight int, focused bool) lipgloss.Style {
 	return style.Height(inner)
 }
 
-// footerPathHintGap separates the footer's optional full-path segment from
-// its keycap groups.
-const footerPathHintGap = "  "
-
-// footerGoodPathWidth is the smallest trailing-room allotment for which the
-// footer still renders the selected row's full-path segment. The redesign
-// REMOVES the path from the footer by default (the preview pane's identity
-// section owns it now): it returns only when there is clearly ample width
-// left after the keycaps, never as a squeezed sliver.
-const footerGoodPathWidth = 32
-
-// footerNarrowKeycapWidth is the width below which the footer truncates its
-// keycap set to the essential four (enter / alt+p / ? / esc), dropping the
-// [tab] and Herdr-target keycaps first.
+// footerNarrowKeycapWidth is the width below which the footer keeps only the
+// highest-value hints, dropping preview and Herdr-target actions first.
 const footerNarrowKeycapWidth = 72
 
-// renderFooter builds the compact, contextual keycap footer line:
-//
-//	[enter] open   [tab] preview   [alt+p] pin   [?] help   [esc] quit
-//
-// Chord tokens render through renderKeycap (bold token, secondary action
-// label) with wide two-space group spacing. The selected path is no longer
-// shown by default (the preview's identity section shows it) — it returns
-// only when there is ample trailing width (footerGoodPathWidth). The
-// contextual hints remain truthful: Enter's label comes from the highlighted
-// row's action descriptor, alt+p reads unpin/unavailable per row, and the
-// Herdr ctrl+t/ctrl+p target keycaps only appear when both shep is running
-// inside a Herdr pane AND the highlighted candidate supports a
-// current-workspace target.
+// renderFooter builds the compact, contextual shortcut footer. The selected
+// path is deliberately absent: the row and preview already show it.
 func (m Model) renderFooter() string {
-	hints := m.footerHints()
-	path := m.footerPathSegment()
-	if path == "" || m.width <= 0 {
-		return m.renderFooterHintsOnly(hints)
-	}
-	avail := m.width - lipgloss.Width(hints) - lipgloss.Width(footerPathHintGap)
-	if avail < footerGoodPathWidth {
-		return m.renderFooterHintsOnly(hints)
-	}
-	line := truncateFromLeftToWidth(path, avail) + footerPathHintGap + hints
-	return lipgloss.NewStyle().Width(m.width).Render(m.styles.mutedStyle.Render(line))
+	return m.renderFooterHintsOnly(m.footerHints())
 }
 
-// renderFooterHintsOnly renders the keycaps-only footer (no room for the
-// optional path, or nothing highlighted) — padded and truncated to width.
 func (m Model) renderFooterHintsOnly(hints string) string {
 	if m.width <= 0 {
 		return m.styles.mutedStyle.Render(hints)
@@ -1365,24 +1189,9 @@ func (m Model) renderFooterHintsOnly(hints string) string {
 	return lipgloss.NewStyle().Width(m.width).Render(m.styles.mutedStyle.Render(truncateToWidth(hints, m.width)))
 }
 
-// footerPathSegment returns the full Path of the currently highlighted row,
-// or "" when nothing is highlighted (empty rows) or the row has no path —
-// the footer's optional full-path segment (shown only at ample width; see
-// renderFooter).
-func (m Model) footerPathSegment() string {
-	cand, ok := m.currentCandidate()
-	if !ok {
-		return ""
-	}
-	return cand.Path
-}
-
-// footerHints assembles the footer's keycap groups as styled keycap strings.
-// Every keycap is built from a shared keyBinding value (see keymap.go) so its
-// chord/label text is never independently retyped here — the same values feed
-// the "?" help overlay's matching lines in helpBodyText. Narrow terminals
-// (< footerNarrowKeycapWidth) keep the essential four keycaps
-// (enter/alt+p/?/esc) and drop the [tab] and Herdr-target keycaps first.
+// footerHints assembles the footer's clean shortcut groups as styled tokens
+// and secondary action labels. The same keyBinding values feed the help
+// overlay, so user-facing key notation cannot drift between surfaces.
 func (m Model) footerHints() string {
 	narrow := m.width >= 0 && m.width < footerNarrowKeycapWidth
 	type keycap struct{ key, label string }
@@ -1395,7 +1204,7 @@ func (m Model) footerHints() string {
 	if row, ok := m.currentRow(); ok {
 		caps = append(caps, keycap{keyBindingEnter.footerChord, rowActionDescriptor(row).FooterLabel})
 	}
-	// The [tab] preview keycap is only advertised when a preview pane is
+	// The preview hint is only advertised when a preview pane is
 	// actually on screen: in modeListOnly there is nothing for Tab to focus,
 	// so advertising it would promise an action the layout cannot deliver.
 	if !narrow && m.mode != modeListOnly {

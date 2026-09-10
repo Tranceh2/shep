@@ -1,9 +1,9 @@
 SHEP  Switch workspace                                                                                      1 candidates
 [/] type to filter…
 ╭────────────────────────────────────────────────────────────────╮ ╭ PREVIEW · /srv/api ───────────────────────────────╮
-│   backend · /srv/backend                                 HERDR │ │ path   /srv/api                                   │
-│       └─ ◫ api · /srv/api                                  TAB │ │ kind   herdr pane                                 │
-│ ❯       └─ /srv/api                                       PANE │ │ tab    api                                        │
+│   backend · /srv/backend                                       │ │ path   /srv/api                                   │
+│       └─ ◫ api · /srv/api                                      │ │ kind   herdr pane                                 │
+│ ❯       └─ /srv/api                                            │ │ tab    api                                        │
 │                                                                │ │                                                   │
 │                                                                │ │                                                   │
 │                                                                │ │                                                   │
@@ -34,4 +34,4 @@ SHEP  Switch workspace                                                          
 │                                                                │ │                                                   │
 ╰────────────────────────────────────────────────────────────────╯ │                                                   │
                                                                    ╰───────────────────────────────────────────────────╯
-/srv/api  [enter] Focus containing tab  [tab] preview  [?] help  [esc] quit
+enter Focus containing tab   tab preview   ? help   esc quit

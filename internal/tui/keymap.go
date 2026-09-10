@@ -28,7 +28,7 @@ const (
 	keyChordCtrlT     = "ctrl+t"
 	keyChordCtrlP     = "ctrl+p"
 	keyChordCtrlL     = "ctrl+l"
-	keyChordPin       = "alt+p"
+	keyChordPin       = "ctrl+f"
 	keyChordEsc       = "esc"
 	keyChordQuestion  = "?"
 	keyChordCtrlC     = "ctrl+c"

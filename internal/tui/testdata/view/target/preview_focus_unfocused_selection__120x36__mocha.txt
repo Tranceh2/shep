@@ -1,13 +1,13 @@
 SHEP  Switch workspace                                                                                      7 candidates
 [/] type to filter…
 ╭────────────────────────────────────────────────────────────────╮ ╭ PREVIEW · backend ────────────────────────────────╮
-│   backend · /srv/backend                                 HERDR │ │ label  backend                                    │
-│   frontend · /srv/frontend                               HERDR │ │ path   /srv/backend                               │
-│   notes                                                 CONFIG │ │                                                   │
-│   /tmp                                                  ZOXIDE │ │                                                   │
-│   /home/dev/Downloads                                   ZOXIDE │ │                                                   │
-│   /home/dev/shep                                      PROJECTS │ │                                                   │
-│   /home/dev/dotfiles                                  PROJECTS │ │                                                   │
+│   backend · /srv/backend                                       │ │ label  backend                                    │
+│   frontend · /srv/frontend                                     │ │ path   /srv/backend                               │
+│   notes                                                        │ │                                                   │
+│   /tmp                                                         │ │                                                   │
+│   /home/dev/Downloads                                          │ │                                                   │
+│   /home/dev/shep                                               │ │                                                   │
+│   /home/dev/dotfiles                                           │ │                                                   │
 │                                                                │ │                                                   │
 │                                                                │ │                                                   │
 │                                                                │ │                                                   │
@@ -34,4 +34,4 @@ SHEP  Switch workspace                                                          
 │                                                                │ │                                                   │
 ╰────────────────────────────────────────────────────────────────╯ │                                                   │
                                                                    ╰───────────────────────────────────────────────────╯
-/srv/backend  [enter] open  [tab] preview  [?] help  [esc] quit
+enter open   tab preview   ? help   esc quit

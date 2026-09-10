@@ -21,4 +21,4 @@
 │                                                              │
 │                                                              │
 ╰──────────────────────────────────────────────────────────────╯
-[enter] open  [?] help  [esc] quit
+enter open   ? help   esc quit

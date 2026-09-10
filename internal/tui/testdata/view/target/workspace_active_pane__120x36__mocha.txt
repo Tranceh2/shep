@@ -1,7 +1,7 @@
 SHEP  Switch workspace                                                                                      1 candidates
 [/] type to filter…
 ╭────────────────────────────────────────────────────────────────╮ ╭ PREVIEW · backend ────────────────────────────────╮
-│ ❯ backend · /srv/backend                                 HERDR │ │ label  backend                                    │
+│ ❯ backend · /srv/backend                                       │ │ label  backend                                    │
 │                                                                │ │ path   /srv/backend                               │
 │                                                                │ │                                                   │
 │                                                                │ │ agent  working                                    │
@@ -34,4 +34,4 @@ SHEP  Switch workspace                                                          
 │                                                                │ │                                                   │
 ╰────────────────────────────────────────────────────────────────╯ │                                                   │
                                                                    ╰───────────────────────────────────────────────────╯
-/srv/backend  [enter] open  [tab] preview  [?] help  [esc] quit
+enter open   tab preview   ? help   esc quit

@@ -20,7 +20,6 @@ import (
 	"os"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/tranceh2/shep/internal/config"
 )
 
 // Theme names, mirrored in config.TUIThemeMocha etc. so config validation and
@@ -52,7 +51,7 @@ const (
 type Theme struct {
 	Name             string
 	NoColor          bool
-	Accent           string // accent: query text, active focus, focused border, integrations badge
+	Accent           string // accent: query text, active focus, focused border
 	Text             string // text: labels/main content, help headings
 	Secondary        string // secondary: paths, metadata, footer hint action labels
 	Muted            string // muted: genuinely low-priority text (footer hints counts, unknown status, descendant rows)
@@ -63,26 +62,11 @@ type Theme struct {
 	Err              string // err (Red): blocked status, preview error
 	Teal             string // teal: done status
 	Success          string // success (Green): idle status
-	SourceHerdr      string // source badge: Herdr workspaces
-	SourceProjects   string // source badge: discovered projects
-	SourceZoxide     string // source badge: zoxide directories
-	SourceWorkspaces string // source badge: configured [[workspaces]] entries
-	SourceSessions   string // source badge: sessions
 }
 
 // Catppuccin's four official flavors. Hex values are the semantic token
 // table (accent/text/secondary/muted/selectedSurface/unfocusedSurface/rule/
-// warn/err/teal/success + per-source badge colors), sourced from
-// https://catppuccin.com per flavor. The color roles follow the visual
-// redesign: accent = query text/active focus/focused border/integrations,
-// text = labels/main content, secondary = paths/metadata, muted = only
-// genuinely low-priority text, source badge colors differentiate the picker's
-// sources (herdr Blue, projects Green, zoxide Teal, workspaces Yellow,
-// sessions Peach); every badge carries a text label so color alone is never
-// the signal. selectedSurface is the focused row surface (Catppuccin
-// surface1), unfocusedSurface the surface1 shade down (base/overlay tones),
-// rule the border hex, warn Catppuccin Yellow, err Catppuccin Red (also
-// backs preview errors), teal/success the official Teal/Green swatches.
+// warn/err/teal/success), sourced from https://catppuccin.com per flavor.
 //
 // The working/blocked/done/idle status role assignments mirror herdr's own
 // verified agent_icon convention (herdr's src/ui/status.rs): working=warn
@@ -93,29 +77,21 @@ var themes = map[string]Theme{
 		Name: ThemeMocha, Accent: "#cba6f7", Text: "#cdd6f4", Secondary: "#a6adc8", Muted: "#6c7086",
 		SelectedSurface: "#313244", UnfocusedSurface: "#1e1e2e", Rule: "#585b70",
 		Warn: "#f9e2af", Err: "#f38ba8", Teal: "#94e2d5", Success: "#a6e3a1",
-		SourceHerdr: "#89b4fa", SourceProjects: "#a6e3a1", SourceZoxide: "#94e2d5",
-		SourceWorkspaces: "#f9e2af", SourceSessions: "#fab387",
 	},
 	ThemeMacchiato: {
 		Name: ThemeMacchiato, Accent: "#c6a0f6", Text: "#cad3f5", Secondary: "#a5adcb", Muted: "#6e738d",
 		SelectedSurface: "#363a4f", UnfocusedSurface: "#1e2030", Rule: "#5b6078",
 		Warn: "#eed49f", Err: "#ed8796", Teal: "#8bd5ca", Success: "#a6da95",
-		SourceHerdr: "#8aadf4", SourceProjects: "#a6da95", SourceZoxide: "#8bd5ca",
-		SourceWorkspaces: "#eed49f", SourceSessions: "#f5a97f",
 	},
 	ThemeFrappe: {
 		Name: ThemeFrappe, Accent: "#ca9ee6", Text: "#c6d0f5", Secondary: "#a5b0ce", Muted: "#737994",
 		SelectedSurface: "#414559", UnfocusedSurface: "#292c3c", Rule: "#626880",
 		Warn: "#e5c890", Err: "#e78284", Teal: "#81c8be", Success: "#a6d189",
-		SourceHerdr: "#8caaee", SourceProjects: "#a6d189", SourceZoxide: "#81c8be",
-		SourceWorkspaces: "#e5c890", SourceSessions: "#ef9f76",
 	},
 	ThemeLatte: {
 		Name: ThemeLatte, Accent: "#8839ef", Text: "#4c4f69", Secondary: "#5c5f77", Muted: "#8c8fa1",
 		SelectedSurface: "#ccd0da", UnfocusedSurface: "#e6e9ef", Rule: "#9ca0b0",
 		Warn: "#df8e1d", Err: "#d20f39", Teal: "#179299", Success: "#40a02b",
-		SourceHerdr: "#1e66f5", SourceProjects: "#40a02b", SourceZoxide: "#179299",
-		SourceWorkspaces: "#df8e1d", SourceSessions: "#fe640b",
 	},
 	ThemePlain: {
 		Name: ThemePlain, NoColor: true,
@@ -179,8 +155,7 @@ func resolveTheme(configTheme string) Theme {
 // renderSelectedFromParts. The *Unfocused variants apply when the preview
 // pane owns focus (FocusPreview).
 // The plain (NoColor) fallbacks rely purely on structural attributes: a
-// source badge emphasizes with bold and dims with faint; the keycap token is
-// bold; the preview rule is faint.
+// key tokens are bold; the preview rule is faint.
 type styleSet struct {
 	queryStyle                  lipgloss.Style
 	rowStyle                    lipgloss.Style
@@ -207,12 +182,6 @@ type styleSet struct {
 	pinStyle                    lipgloss.Style
 	keycapStyle                 lipgloss.Style
 	keycapLabelStyle            lipgloss.Style
-	sourceHerdrStyle            lipgloss.Style
-	sourceProjectsStyle         lipgloss.Style
-	sourceZoxideStyle           lipgloss.Style
-	sourceWorkspacesStyle       lipgloss.Style
-	sourceSessionsStyle         lipgloss.Style
-	sourceBadgeStyle            lipgloss.Style // integration/unknown source badges
 }
 
 // newPalette builds the full styleSet for t. A NoColor theme (ThemePlain, or
@@ -252,12 +221,6 @@ func newPalette(t Theme) styleSet {
 			pinStyle:                    lipgloss.NewStyle(),
 			keycapStyle:                 lipgloss.NewStyle().Bold(true),
 			keycapLabelStyle:            lipgloss.NewStyle(),
-			sourceHerdrStyle:            lipgloss.NewStyle().Bold(true),
-			sourceProjectsStyle:         lipgloss.NewStyle().Bold(true),
-			sourceZoxideStyle:           lipgloss.NewStyle().Bold(true),
-			sourceWorkspacesStyle:       lipgloss.NewStyle().Bold(true),
-			sourceSessionsStyle:         lipgloss.NewStyle().Bold(true),
-			sourceBadgeStyle:            lipgloss.NewStyle().Bold(true),
 		}
 	}
 	return styleSet{
@@ -286,34 +249,6 @@ func newPalette(t Theme) styleSet {
 		pinStyle:                    lipgloss.NewStyle().Foreground(lipgloss.Color(t.Warn)),
 		keycapStyle:                 lipgloss.NewStyle().Foreground(lipgloss.Color(t.Text)).Bold(true),
 		keycapLabelStyle:            lipgloss.NewStyle().Foreground(lipgloss.Color(t.Secondary)),
-		sourceHerdrStyle:            lipgloss.NewStyle().Foreground(lipgloss.Color(t.SourceHerdr)),
-		sourceProjectsStyle:         lipgloss.NewStyle().Foreground(lipgloss.Color(t.SourceProjects)),
-		sourceZoxideStyle:           lipgloss.NewStyle().Foreground(lipgloss.Color(t.SourceZoxide)),
-		sourceWorkspacesStyle:       lipgloss.NewStyle().Foreground(lipgloss.Color(t.SourceWorkspaces)),
-		sourceSessionsStyle:         lipgloss.NewStyle().Foreground(lipgloss.Color(t.SourceSessions)),
-		sourceBadgeStyle:            lipgloss.NewStyle().Foreground(lipgloss.Color(t.Accent)),
-	}
-}
-
-// sourceBadgeStyleFor maps a source.Candidate.Source value to the dedicated
-// source-badge style in s. The declared integration/unknown sources fall back
-// to the integration accent badge (the integration's name is uppercased by
-// the rendering helper; the color leans on the accent so integrations read as
-// third-party surface).
-func (s styleSet) sourceBadgeStyleFor(source string) lipgloss.Style {
-	switch source {
-	case config.SourceHerdr:
-		return s.sourceHerdrStyle
-	case config.SourceProjects:
-		return s.sourceProjectsStyle
-	case config.SourceZoxide:
-		return s.sourceZoxideStyle
-	case config.SourceWorkspaces:
-		return s.sourceWorkspacesStyle
-	case config.SourceSessions:
-		return s.sourceSessionsStyle
-	default:
-		return s.sourceBadgeStyle
 	}
 }
 

@@ -495,73 +495,42 @@ func TestRenderRowLine_NonCursorKeepsBlankGutterOutsideFocusList(t *testing.T) {
 	}
 }
 
-// --- Visual redesign badge-slot additions ---
+// --- Row width and selection invariants ---
 
-// newRenderTestModelWidth clones the render-test model with a width override
-// so badge-slot geometry tests can drive the reservation math directly.
+// newRenderTestModelWidth clones the render-test model with a width override.
 func newRenderTestModelWidth(themeName string, width int) Model {
 	m := newRenderTestModel(themeName, FocusList)
 	m.width = width
 	return m
 }
 
-// TestRenderRowLine_BadgeSurvivesTruncation proves the right-side badge slot
-// is fixed: at widths far too narrow for the full label/path, truncation eats
-// the label/path only — the badge text still lands on every line, never the
-// selection marker.
-func TestRenderRowLine_BadgeSurvivesTruncation(t *testing.T) {
+// TestRenderRowLine_ReclaimsBadgeWidth proves source-name badges no longer
+// consume row width and configured icons remain the source distinction.
+func TestRenderRowLine_ReclaimsBadgeWidth(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModelWidth(ThemeMocha, 120)
-	longPath := "/workspace/services/catalog/filename.go"
-	row := Row{Kind: RowCandidate, Candidate: source.Candidate{Path: longPath, Source: config.SourceHerdr}}
-
-	for _, width := range []int{40, 36, 32} {
-		got := stripNonSGRANSI(m.renderRowLine(row, false, width))
-		if !strings.HasSuffix(strings.TrimRight(got, " "), "HERDR") {
-			t.Errorf("width %d: row = %q, want the HERDR badge kept at the right edge", width, got)
-		}
-		if !strings.Contains(got, "…") {
-			t.Errorf("width %d: row = %q, want the label/path truncated first", width, got)
-		}
+	row := Row{Kind: RowCandidate, Candidate: source.Candidate{Path: "/workspace/services/catalog/filename.go", Source: config.SourceHerdr, Icon: "H"}}
+	got := stripNonSGRANSI(m.renderRowLine(row, false, 40))
+	if strings.Contains(got, "HERDR") {
+		t.Errorf("row = %q, source badge must be absent", got)
+	}
+	if !strings.Contains(got, "H ") {
+		t.Errorf("row = %q, configured source icon must remain", got)
 	}
 }
 
-// TestRenderRowLine_BadgeSlotFixed proves the badge sits in a reserved
-// right-side slot: the plain badge text ends the row at the same column for
-// both a short and a long label row.
-func TestRenderRowLine_BadgeSlotFixed(t *testing.T) {
-	t.Parallel()
-	m := newRenderTestModelWidth(ThemeMocha, 120)
-	short := Row{Kind: RowCandidate, Candidate: source.Candidate{Path: "/a", Source: config.SourceHerdr}}
-	long := Row{Kind: RowCandidate, Candidate: source.Candidate{Path: "/a/very/deeply/nested/dir/path/segment", Source: config.SourceHerdr}}
-
-	for _, row := range []Row{short, long} {
-		got := m.renderRowLine(row, false, 120)
-		plain := stripNonSGRANSI(got)
-		badgeStart := strings.Index(plain, "HERDR")
-		if badgeStart != len(plain)-len("HERDR") {
-			t.Errorf("row badge not at the right edge (%q)", plain)
-		}
-		if w := ansi.StringWidth(got); w != 120 {
-			t.Errorf("row width = %d, want exactly 120 with the reserved slot", w)
-		}
-	}
-}
-
-// TestRenderRowLine_SelectionVisibleInPlainWithBadges proves the plain theme
-// keeps the visible selection marker (the ❯ gutter or the ASCII variant)
-// even when a badge slot is reserved.
-func TestRenderRowLine_SelectionVisibleInPlainWithBadges(t *testing.T) {
+// TestRenderRowLine_SelectionVisibleInPlain proves the plain theme keeps the
+// visible selection marker with source badge chrome removed.
+func TestRenderRowLine_SelectionVisibleInPlain(t *testing.T) {
 	t.Parallel()
 	row := Row{Kind: RowCandidate, Candidate: source.Candidate{Path: "/a", Source: config.SourceHerdr}}
-
 	m := newRenderTestModelWidth(ThemePlain, 120)
 	got := stripNonSGRANSI(m.renderRowLine(row, true, 120))
 	if !strings.HasPrefix(got, "❯ ") {
-		t.Errorf("plain selected row = %q, want the ❯ gutter with the badge slot", got)
+		t.Errorf("plain selected row = %q, want the ❯ gutter", got)
 	}
-	if !strings.Contains(got, "HERDR") {
-		t.Errorf("plain selected row = %q, want the text badge", got)
+	if strings.Contains(got, "HERDR") {
+		t.Errorf("plain selected row = %q, source badge must be absent", got)
 	}
 
 	m.layout.Icons = IconsASCII
@@ -573,7 +542,7 @@ func TestRenderRowLine_SelectionVisibleInPlainWithBadges(t *testing.T) {
 
 // TestRenderRowLine_ASCIIEmitsNoUnicodeOnlyGlyphs proves the ASCII icon tier
 // never renders a Unicode-only glyph in redesigned affordances (the pin
-// marker degrades to "*", badges stay text).
+// marker degrades to "*").
 func TestRenderRowLine_ASCIIEmitsNoUnicodeOnlyGlyphs(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModelWidth(ThemeMocha, 120)

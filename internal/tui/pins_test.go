@@ -12,39 +12,41 @@ import (
 )
 
 func pinKeyMsg() tea.KeyMsg {
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p"), Alt: true}
+	return tea.KeyMsg{Type: tea.KeyCtrlF}
 }
 
-func plainPKeyMsg() tea.KeyMsg {
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")}
+func plainKeyMsg(r rune) tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}}
 }
 
-func TestPlainPWithPinTogglerAppendsQueryAndDoesNotPersist(t *testing.T) {
-	candidate := source.Candidate{Source: "projects", Path: "/palm", Label: "palm"}
-	called := false
-	m := NewModelWithLayout([]source.Candidate{
-		candidate,
-		{Source: "projects", Path: "/other", Label: "other"},
-	}, nil, Layout{
-		PinToggler: func(context.Context, source.Candidate) PinToggleResultMsg {
-			called = true
-			return PinToggleResultMsg{Pinned: true}
-		},
-	})
-	m, _ = update(t, m, sizeMsg(120, 36))
-	m, _ = update(t, m, plainPKeyMsg())
-	if m.query != "p" || m.lastAppliedQuery != "p" {
-		t.Fatalf("plain p produced query=%q lastAppliedQuery=%q, want both %q", m.query, m.lastAppliedQuery, "p")
-	}
-	if len(m.rows) != 1 || m.rows[0].Candidate.Label != "palm" {
-		t.Fatalf("plain p did not rebuild the filtered rows: %+v", m.rows)
-	}
-	if called {
-		t.Fatal("plain p invoked pin persistence")
+func TestPrintableFAndPWithPinTogglerAppendQueryAndDoNotPersist(t *testing.T) {
+	for _, r := range []rune{'f', 'p'} {
+		t.Run(string(r), func(t *testing.T) {
+			candidate := source.Candidate{Source: "projects", Path: "/palm", Label: "palm"}
+			called := false
+			m := NewModelWithLayout([]source.Candidate{
+				candidate,
+				{Source: "projects", Path: "/other", Label: "other"},
+			}, nil, Layout{
+				PinToggler: func(context.Context, source.Candidate) PinToggleResultMsg {
+					called = true
+					return PinToggleResultMsg{Pinned: true}
+				},
+			})
+			m, _ = update(t, m, sizeMsg(120, 36))
+			m, _ = update(t, m, plainKeyMsg(r))
+			if m.query != string(r) {
+				t.Fatalf("plain %c produced query=%q, want %q", r, m.query, string(r))
+			}
+			if called {
+				t.Fatalf("plain %c invoked pin persistence", r)
+			}
+		})
 	}
 }
 
-func TestAltPWithPinTogglerInvokesPersistence(t *testing.T) {
+func TestCtrlFWithPinTogglerInvokesPersistence(t *testing.T) {
+
 	candidate := source.Candidate{Source: "projects", Path: "/repo", Label: "repo"}
 	called := false
 	m := NewModelWithLayout([]source.Candidate{candidate}, nil, Layout{
@@ -56,20 +58,20 @@ func TestAltPWithPinTogglerInvokesPersistence(t *testing.T) {
 	m, _ = update(t, m, sizeMsg(120, 36))
 	m, cmd := update(t, m, pinKeyMsg())
 	if cmd == nil {
-		t.Fatal("alt+p did not return a persistence command")
+		t.Fatal("ctrl+f did not return a persistence command")
 	}
 	if m.query != "" {
-		t.Fatalf("alt+p changed query to %q", m.query)
+		t.Fatalf("ctrl+f changed query to %q", m.query)
 	}
 	if called {
 		t.Fatal("pin callback ran synchronously; expected a tea.Cmd")
 	}
 	result := cmd()
 	if _, ok := result.(PinToggleResultMsg); !ok {
-		t.Fatalf("alt+p command returned %T, want PinToggleResultMsg", result)
+		t.Fatalf("ctrl+f command returned %T, want PinToggleResultMsg", result)
 	}
 	if !called {
-		t.Fatal("alt+p did not invoke pin persistence")
+		t.Fatal("ctrl+f did not invoke pin persistence")
 	}
 }
 
@@ -101,7 +103,7 @@ func TestPinTopLevelRowUpdatesStateMarkerAndFooter(t *testing.T) {
 	if !strings.Contains(primary, "•") {
 		t.Fatal("pinned row did not render the pin marker")
 	}
-	if !strings.Contains(m.footerHints(), "[alt+p] unpin") {
+	if !strings.Contains(m.footerHints(), "ctrl+f unpin") {
 		t.Fatalf("footer = %q, want contextual unpin hint", m.footerHints())
 	}
 }
@@ -122,7 +124,7 @@ func TestPinChildRowIsTruthfulNoOp(t *testing.T) {
 	if cmd != nil || called {
 		t.Fatal("child pin unexpectedly invoked persistence")
 	}
-	if !strings.Contains(m.pinStatus, "child rows") || !strings.Contains(m.footerHints(), "[alt+p] unavailable") {
+	if !strings.Contains(m.pinStatus, "child rows") || !strings.Contains(m.footerHints(), "ctrl+f unavailable") {
 		t.Fatalf("child feedback was not truthful: footer=%q status=%q", m.footerHints(), m.pinStatus)
 	}
 }

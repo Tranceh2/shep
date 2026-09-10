@@ -1,7 +1,7 @@
 SHEP  Switch workspace                                                                                      1 candidates
 [/] type to filter…
 ╭────────────────────────────────────────────────────────────────╮ ╭ PREVIEW · shep ───────────────────────────────────╮
-│ ❯ /home/dev/shep                                      PROJECTS │ │ label  shep                                       │
+│ ❯ /home/dev/shep                                               │ │ label  shep                                       │
 │                                                                │ │ path   /home/dev/shep                             │
 │                                                                │ │ source projects                                   │
 │                                                                │ │                                                   │
@@ -34,4 +34,4 @@ SHEP  Switch workspace                                                          
 │                                                                │ │                                                   │
 ╰────────────────────────────────────────────────────────────────╯ │                                                   │
                                                                    ╰───────────────────────────────────────────────────╯
-/home/dev/shep  [enter] open  [tab] preview  [?] help  [esc] quit
+enter open   tab preview   ? help   esc quit

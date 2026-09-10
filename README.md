@@ -157,7 +157,7 @@ are rejected with a row/key error. Use the typed row fields for `command`,
 `template`, and `close_on_exit`; `integration` is set internally.
 
 A row with `path` and no `command`/`template` behaves like a zoxide/projects
-row. In the built-in picker, `Alt+P` toggles a top-level row's pin; pins are
+row. In the built-in picker, `Ctrl+F` toggles a top-level row's pin; pins are
 stored in Shep's existing private SQLite ranking state, not in config.toml.
 External selectors such as fzf receive pinned-first ordering but cannot toggle
 pins. A pathless integration row uses `id` as its stable identity when present;
@@ -614,7 +614,7 @@ install ./cmd/shep`, or `make install` from a clone of this repository).
 
 ```toml
 [[keys.command]]
-key = "prefix+alt+p" # Pick any key your config does not already bind.
+key = "prefix+ctrl+f" # Pick any key your config does not already bind.
 type = "popup"
 command = "shep open"
 ```
