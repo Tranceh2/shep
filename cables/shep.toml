@@ -64,6 +64,6 @@ layout = "landscape"
 size = 50
 
 # Additional projects can be mixed in at the shep level via a type = "group"
-# [[workspaces]] entry (with sources = ["projects", ...]) in shep's own
+# [[workspaces]] entry (with source_order = ["projects", ...]) in shep's own
 # config.toml; the cable itself stays path-agnostic and safe to share across
 # machines.

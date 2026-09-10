@@ -69,6 +69,14 @@ func TestRender(t *testing.T) {
 			data:   data,
 		},
 		{
+			name:   "metadata index field",
+			format: `{{ index .Meta "context" }}`,
+			want:   "cluster prod west",
+			data: rowformat.Context{
+				Meta: map[string]string{"context": "cluster prod west"},
+			},
+		},
+		{
 			name:   "conditional label present",
 			format: "{{if .Label}}{{.Label}} · {{end}}{{.Path}}",
 			want:   "shep · /workspace/shep",

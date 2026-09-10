@@ -16,6 +16,7 @@ import (
 
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/pathutil"
+	"github.com/tranceh2/shep/internal/ranking"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -40,37 +41,24 @@ func Normalize(input string) (string, error) {
 	return pathutil.Normalize(input)
 }
 
-// Dedup normalises each candidate and removes path collisions, keeping the
-// first-seen candidate whenever another already-kept candidate matches on
-// BOTH filesystem identity (pathutil.SameDir — device+inode, not a string
-// comparison) AND label (compared case-insensitively via strings.EqualFold).
-// That composite check preserves explicitly named workspaces that target
-// the same path (e.g. "ECORP" and "k8s-ecorp" at /srv/ecorp) as distinct
-// candidates — EqualFold only ignores case, so genuinely different names
-// still stay distinct — while still collapsing true duplicates from
-// different providers, including two candidates whose paths and/or labels
-// differ only in case on a case-insensitive filesystem (e.g. a
-// workspaces-sourced "ECORP" and a zoxide-sourced "ecorp" that are the SAME
-// real directory).
+// Dedup normalises each candidate and removes duplicate candidates. Integration
+// candidates are actionable routes, so their stable ranking.Identity is the
+// deduplication key and filesystem path/label collisions are irrelevant. Other
+// non-Herdr candidates retain the established path+case-insensitive-label rule.
+// Herdr- and sessions-sourced candidates are exempt from non-integration
+// collapse: each is an independently actionable daemon target and may
+// legitimately share a label+path. The returned slice preserves input order;
+// survivors carry a defensive Meta copy and their NormalizedPath.
 //
-// herdr- and sessions-sourced candidates are EXEMPT from this collapse: each
-// is an independently actionable daemon target and may legitimately share a
-// label+path. Any pair where either candidate uses either source is skipped,
-// so a resume or attach option is never hidden behind another source. The returned slice reuses
-// the input order for the survivors so provider order from the registry is
-// preserved. Candidates carry a defensive copy of Meta from the source
-// package; this function only sets NormalizedPath on the survivors.
-//
-// This is an O(N^2) scan rather than an O(1) map lookup, because SameDir
-// cannot be expressed as a map key (it depends on a Stat syscall, not just
-// the two normalized strings). Picker-sized candidate lists are well under
-// 100 entries and this runs once per `shep open` invocation, so the cost is
-// a handful of Stat calls, not a hot path.
+// This is an O(N^2) scan for path-backed non-integration candidates because
+// SameDir depends on a Stat syscall. Integration identity lookup is O(1).
 func Dedup(candidates []source.Candidate) []source.Candidate {
 	if len(candidates) == 0 {
 		return nil
 	}
 	out := make([]source.Candidate, 0, len(candidates))
+	nonIntegrationLabelBuckets := make(map[string][]int, len(candidates))
+	integrationIdentities := make(map[string]struct{}, len(candidates))
 	for _, c := range candidates {
 		norm, err := Normalize(c.Path)
 		if err != nil {
@@ -78,20 +66,34 @@ func Dedup(candidates []source.Candidate) []source.Candidate {
 			// broken candidate does not silently swallow others.
 			norm = c.Path
 		}
-		duplicate := false
-		for _, kept := range out {
-			// herdr-sourced candidates model already-open Herdr workspaces
-			// (the "resume" option). Two may legitimately share a label+path
-			// (two open workspaces at the same repo), and a herdr workspace
-			// must never be collapsed against a non-herdr "open new" candidate
-			// either — doing so would hide the resume option from the picker.
-			// So any pair touching a herdr candidate is exempt; the existing
-			// label+path check is preserved verbatim for every other pair.
-			if kept.Source == config.SourceHerdr || c.Source == config.SourceHerdr ||
-				kept.Source == config.SourceSessions || c.Source == config.SourceSessions {
-				continue
+		clone := c.Clone()
+		clone.NormalizedPath = norm
+
+		if c.Meta["integration"] == "true" {
+			identity := ranking.Identity(clone)
+			if identity != "" {
+				if _, duplicate := integrationIdentities[identity]; duplicate {
+					continue
+				}
+				integrationIdentities[identity] = struct{}{}
 			}
-			if strings.EqualFold(kept.Label, c.Label) && pathutil.SameDir(kept.NormalizedPath, norm) {
+			out = append(out, clone)
+			continue
+		}
+
+		// Herdr- and sessions-sourced candidates model already-open daemon
+		// targets. Any pair touching either source is exempt, so a resume or
+		// attach option is never hidden behind another source.
+		if c.Source == config.SourceHerdr || c.Source == config.SourceSessions {
+			out = append(out, clone)
+			continue
+		}
+
+		labelKey := strings.ToLower(c.Label)
+		duplicate := false
+		for _, keptIdx := range nonIntegrationLabelBuckets[labelKey] {
+			kept := out[keptIdx]
+			if kept.NormalizedPath == norm || pathutil.SameDir(kept.NormalizedPath, norm) {
 				duplicate = true
 				break
 			}
@@ -99,16 +101,16 @@ func Dedup(candidates []source.Candidate) []source.Candidate {
 		if duplicate {
 			continue
 		}
-		clone := c.Clone()
-		clone.NormalizedPath = norm
 		out = append(out, clone)
+		nonIntegrationLabelBuckets[labelKey] = append(nonIntegrationLabelBuckets[labelKey], len(out)-1)
 	}
 	return out
 }
 
 // Match performs a case-insensitive substring search against each candidate's
-// label and normalised path, returning every match. An empty query returns
-// all candidates so the caller can decide how to disambiguate (PL-7).
+// label and normalised path, plus explicit aliases as discrete search terms.
+// An empty query returns all candidates so the caller can decide how to
+// disambiguate (PL-7). Arbitrary Meta is intentionally excluded.
 func Match(candidates []source.Candidate, query string) []source.Candidate {
 	if query == "" {
 		out := make([]source.Candidate, len(candidates))
@@ -117,11 +119,15 @@ func Match(candidates []source.Candidate, query string) []source.Candidate {
 		}
 		return out
 	}
-	needle := strings.ToLower(query)
+	needle := strings.ToLower(strings.TrimSpace(query))
 	out := make([]source.Candidate, 0, len(candidates))
 	for _, c := range candidates {
 		haystack := strings.ToLower(c.Label + " " + c.NormalizedPath + " " + c.Path)
-		if strings.Contains(haystack, needle) {
+		matched := strings.Contains(haystack, needle)
+		if !matched {
+			_, _, matched = source.MatchAlias(query, c.Aliases)
+		}
+		if matched {
 			out = append(out, c.Clone())
 		}
 	}

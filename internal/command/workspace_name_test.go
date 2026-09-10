@@ -25,9 +25,11 @@ func TestWorkspaceLaunchRequestPrecedenceAndBypasses(t *testing.T) {
 		want      string
 	}{
 		{name: "first wildcard", candidate: base, cfg: namingConfig("general", []config.WildcardConfig{{Pattern: "**/services/*", WorkspaceName: "wildcard-one"}, {Pattern: "**/services/*", WorkspaceName: "wildcard-two"}}), want: "wildcard-one"},
+		{name: "zoxide wildcard", candidate: source.Candidate{Path: base.Path, NormalizedPath: base.NormalizedPath, Label: "recent-directory", Source: config.SourceZoxide}, cfg: namingConfig("general-name", []config.WildcardConfig{{Pattern: "**/services/*", WorkspaceName: "wildcard-zoxide"}}), want: "wildcard-zoxide"},
 		{name: "general", candidate: base, cfg: namingConfig("general-name", nil), want: "general-name"},
 		{name: "normalized fallback", candidate: base, cfg: namingConfig("", nil), want: base.NormalizedPath},
 		{name: "explicit workspace", candidate: source.Candidate{Path: base.Path, NormalizedPath: base.NormalizedPath, Label: "explicit", Source: config.SourceWorkspaces}, cfg: namingConfig("general-name", []config.WildcardConfig{{Pattern: "**", WorkspaceName: "wildcard"}}), want: "explicit"},
+		{name: "integration label", candidate: source.Candidate{Path: base.Path, NormalizedPath: base.NormalizedPath, Label: "integration-label", Source: "kubernetes", Meta: map[string]string{"integration": "true"}}, cfg: namingConfig("general-name", []config.WildcardConfig{{Pattern: "**", WorkspaceName: "wildcard"}}), want: "integration-label"},
 		{name: "existing herdr bypass", candidate: source.Candidate{Path: base.Path, Label: "existing", Source: config.SourceHerdr, Meta: map[string]string{"workspace_id": "w1"}}, cfg: namingConfig("general-name", nil), want: ""},
 	}
 	for _, tc := range cases {
@@ -45,6 +47,132 @@ func TestWorkspaceLaunchRequestPrecedenceAndBypasses(t *testing.T) {
 	}
 }
 
+func TestWorkspaceLaunchRequest_IntegrationLabelsRemainDistinct(t *testing.T) {
+	t.Parallel()
+	app := New()
+	app.cfg = namingConfig("general-name", []config.WildcardConfig{{Pattern: "**", WorkspaceName: "ecorp-wildcard"}})
+	candidates := []source.Candidate{
+		{Path: "/srv/ecorp", NormalizedPath: "/srv/ecorp", Label: "kube-prod", Source: "kubernetes", Meta: map[string]string{"integration": "true", "command": "kubectl config get-contexts"}},
+		{Path: "/srv/ecorp", NormalizedPath: "/srv/ecorp", Label: "kube-stage", Source: "kubernetes", Meta: map[string]string{"integration": "true", "command": "kubectl config get-contexts"}},
+	}
+	for _, candidate := range candidates {
+		request, err := app.workspaceLaunchRequest(candidate)
+		if err != nil {
+			t.Fatalf("workspaceLaunchRequest(%q): %v", candidate.Label, err)
+		}
+		if got := string(request.WorkspaceName); got != candidate.Label {
+			t.Errorf("workspace name for %q = %q, want label", candidate.Label, got)
+		}
+	}
+}
+
+func TestWorkspaceLaunchRequest_WorktreeConditionalTemplate(t *testing.T) {
+	t.Parallel()
+	cfg := namingConfig(`{{ if and .IsWorktree (not .IsMainWorktree) }}{{ .RepoName }}@{{ .Branch }}{{ else }}{{ .Path | osBase }}{{ end }}`, nil)
+
+	cases := []struct {
+		name      string
+		candidate source.Candidate
+		want      string
+	}{
+		{
+			name: "primary checkout",
+			candidate: source.Candidate{
+				Path:           "/srv/projects/shep",
+				NormalizedPath: "/srv/projects/shep",
+				Label:          "shep",
+				Source:         config.SourceProjects,
+				Meta: map[string]string{
+					"is_worktree":   "true",
+					"main_worktree": "true",
+					"repo":          "shep",
+					"branch":        "main",
+				},
+			},
+			want: "shep",
+		},
+		{
+			name: "secondary linked worktree with branch",
+			candidate: source.Candidate{
+				Path:           "/trees/shep-feat",
+				NormalizedPath: "/trees/shep-feat",
+				Label:          "shep (feature/x)",
+				Source:         config.SourceProjects,
+				Meta: map[string]string{
+					"is_worktree":   "true",
+					"main_worktree": "false",
+					"repo":          "shep",
+					"branch":        "feature/x",
+				},
+			},
+			want: "shep@feature/x",
+		},
+		{
+			name: "secondary linked worktree detached",
+			candidate: source.Candidate{
+				Path:           "/trees/shep-detached",
+				NormalizedPath: "/trees/shep-detached",
+				Label:          "shep (1234567)",
+				Source:         config.SourceProjects,
+				Meta: map[string]string{
+					"is_worktree":   "true",
+					"main_worktree": "false",
+					"repo":          "shep",
+					"head":          "1234567890abcdef",
+				},
+			},
+			want: "shep@1234567",
+		},
+		{
+			name: "ordinary project without worktrees",
+			candidate: source.Candidate{
+				Path:           "/srv/projects/web-app",
+				NormalizedPath: "/srv/projects/web-app",
+				Label:          "web-app",
+				Source:         config.SourceProjects,
+			},
+			want: "web-app",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app := New()
+			app.cfg = cfg
+			request, err := app.workspaceLaunchRequest(tc.candidate)
+			if err != nil {
+				t.Fatalf("workspaceLaunchRequest: %v", err)
+			}
+			if got := string(request.WorkspaceName); got != tc.want {
+				t.Fatalf("workspace name = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLaunch_PathlessIntegrationWorkspaceFailsFast(t *testing.T) {
+	t.Parallel()
+	app := New()
+	app.cfg = namingConfig("general-name", nil)
+	driver := &openDriver{detect: true}
+	app.probes = config.Probes{Herdr: true}
+	app.herdrDriver = driver
+	var out, errOut strings.Builder
+	_, err := app.launch(context.Background(), source.Candidate{
+		Label:  "kube-prod",
+		Source: "kubernetes",
+		Meta:   map[string]string{"integration": "true", "command": "kubectl get pods"},
+	}, tui.RowActionOpen, "workspace", nil, &out, &errOut)
+	if !errors.Is(err, errExitOne) {
+		t.Fatalf("launch error = %v, want errExitOne", err)
+	}
+	if got, want := errOut.String(), "--target=workspace requires an integration row path\n"; got != want {
+		t.Fatalf("stderr = %q, want %q", got, want)
+	}
+	if driver.lastCand.Path != "" || out.Len() != 0 {
+		t.Fatalf("pathless integration reached Herdr or stdout: candidate=%+v stdout=%q", driver.lastCand, out.String())
+	}
+}
+
 func TestLaunch_RenderErrorOccursBeforeHerdr(t *testing.T) {
 	t.Parallel()
 	cfg := namingConfig(`{{ mustRegexMatch "[" .Path }}`, nil)
@@ -54,7 +182,7 @@ func TestLaunch_RenderErrorOccursBeforeHerdr(t *testing.T) {
 	app.probes = config.Probes{Herdr: true}
 	app.herdrDriver = driver
 	var out, errOut strings.Builder
-	err := app.launch(context.Background(), source.Candidate{Path: "/srv/api", Source: config.SourceProjects}, tui.RowActionOpen, "workspace", nil, &out, &errOut)
+	_, err := app.launch(context.Background(), source.Candidate{Path: "/srv/api", Source: config.SourceProjects}, tui.RowActionOpen, "workspace", nil, &out, &errOut)
 	if !errors.Is(err, errExitOne) {
 		t.Fatalf("launch error = %v, want errExitOne", err)
 	}
@@ -148,8 +276,9 @@ func TestDistinctCandidatesMayReachCreationWithSameRenderedName(t *testing.T) {
 		t.Fatalf("distinct candidate identities were deduplicated: %+v", got)
 	}
 	driver := &openDriver{lastAction: source.HerdrActionCreated, workspaceID: "created-one", rootTabID: "tab-one", rootPaneID: "pane-one"}
+	app.layoutApplier = driver
 	for i, cand := range candidates {
-		if err := app.launchWorkspace(context.Background(), driver, cand, ioDiscard{}, ioDiscard{}); err != nil {
+		if _, err := app.launchWorkspace(context.Background(), driver, cand, ioDiscard{}, ioDiscard{}); err != nil {
 			t.Fatalf("candidate %d launch: %v", i, err)
 		}
 		if driver.lastWorkspaceName != "shared-workspace" {

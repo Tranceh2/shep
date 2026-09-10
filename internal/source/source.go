@@ -3,7 +3,7 @@
 // availability.
 //
 // A Provider yields Candidates; a Registry decides which Providers are
-// enabled for a given Config + Probes snapshot (via [config.General.Sources])
+// enabled for a given Config + Probes snapshot (via [config.General.SourceOrder])
 // and runs them in that order. Normalisation and deduplication are the
 // resolver's job (see internal/resolver); source providers only collect raw,
 // labelled paths.
@@ -11,11 +11,15 @@ package source
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -48,6 +52,7 @@ type Candidate struct {
 	Icon           string
 	Source         string
 	Missing        bool
+	Aliases        []string
 	Meta           map[string]string
 }
 
@@ -55,6 +60,7 @@ type Candidate struct {
 // value cannot bleed back into a provider's cached slice.
 func (c Candidate) Clone() Candidate {
 	out := c
+	out.Aliases = append([]string(nil), c.Aliases...)
 	if c.Meta != nil {
 		out.Meta = make(map[string]string, len(c.Meta))
 		for k, v := range c.Meta {
@@ -82,7 +88,7 @@ func SupportsCurrentWorkspaceTarget(c Candidate) bool {
 	case config.SourceWorkspaces:
 		return c.Meta["command"] != "" && c.Meta["group"] != "true" && c.Meta["template"] == ""
 	default:
-		return false
+		return c.Meta["command"] != "" && c.Meta["group"] != "true" && c.Meta["template"] == ""
 	}
 }
 
@@ -415,60 +421,96 @@ func NewRegistry(cfg *config.Config, probes config.Probes, herdrDriver HerdrDriv
 	if cfg == nil {
 		cfg = config.Defaults()
 	}
-	return &Registry{
-		providers: map[string]Provider{
-			config.SourceHerdr:      &herdrProvider{driver: herdrDriver, probes: probes, cfg: cfg},
-			config.SourceSessions:   &sessionsProvider{driver: herdrDriver, probes: probes},
-			config.SourceWorkspaces: &workspacesProvider{cfg: cfg},
-			config.SourceZoxide:     &zoxideProvider{probes: probes, cfg: cfg},
-			config.SourceProjects:   &projectsProvider{cfg: cfg, root: ""},
-		},
-		cfg:    cfg,
-		probes: probes,
+	providers := map[string]Provider{
+		config.SourceHerdr:      &herdrProvider{driver: herdrDriver, probes: probes, cfg: cfg},
+		config.SourceSessions:   &sessionsProvider{driver: herdrDriver, probes: probes},
+		config.SourceWorkspaces: &workspacesProvider{cfg: cfg},
+		config.SourceZoxide:     &zoxideProvider{probes: probes, cfg: cfg},
+		config.SourceProjects:   &projectsProvider{cfg: cfg, roots: append([]string(nil), cfg.Sources.Projects.Roots...)},
 	}
+	for _, integration := range cfg.Integrations {
+		providers[integration.Name] = &integrationProvider{cfg: integration}
+	}
+	return &Registry{providers: providers, cfg: cfg, probes: probes}
 }
 
 // NewScopedRegistry builds a Registry for a group workspace's nested picker:
 // only the sources named in the group entry run; the projects source scans
 // beneath root instead of contributing nothing, and the zoxide source is
 // scoped to root's descendants instead of surfacing the user's entire
-// unscoped zoxide history inside a group picker.
+// unscoped zoxide history.
 func NewScopedRegistry(cfg *config.Config, probes config.Probes, herdrDriver HerdrDriver, sources []string, root string) *Registry {
+	return NewScopedRegistryWithOrder(cfg, probes, herdrDriver, sources, sources, root)
+}
+
+// NewScopedRegistryWithOrder builds a scoped registry with an explicit effective
+// order. The source list controls which providers are available; order controls
+// which of those providers run and how they are ranked/displayed. Keeping these
+// separate lets a group with omitted source_order inherit the global order while
+// preserving its explicit source membership and lazy integrations.
+func NewScopedRegistryWithOrder(cfg *config.Config, probes config.Probes, herdrDriver HerdrDriver, sources, order []string, root string) *Registry {
+	if len(sources) == 0 {
+		sources = order
+	}
+	return newScopedRegistry(cfg, probes, herdrDriver, sources, order, root, nil)
+}
+
+// NewScopedRegistryForWorkspace applies the group's source order and typed
+// project override while keeping the group path as the sole project root.
+func NewScopedRegistryForWorkspace(cfg *config.Config, probes config.Probes, herdrDriver HerdrDriver, workspace config.WorkspaceConfig, root string) *Registry {
+	return NewScopedRegistryForWorkspaceWithOrder(cfg, probes, herdrDriver, workspace, workspace.SourceOrder, root)
+}
+
+// NewScopedRegistryForWorkspaceWithOrder applies an effective order separately
+// from the workspace's explicit source membership.
+func NewScopedRegistryForWorkspaceWithOrder(cfg *config.Config, probes config.Probes, herdrDriver HerdrDriver, workspace config.WorkspaceConfig, order []string, root string) *Registry {
+	sources := workspace.SourceOrder
+	if len(sources) == 0 {
+		sources = order
+	}
+	return newScopedRegistry(cfg, probes, herdrDriver, sources, order, root, workspace.Sources.Projects)
+}
+
+func newScopedRegistry(cfg *config.Config, probes config.Probes, herdrDriver HerdrDriver, sources, order []string, root string, override *config.ProjectsSourceOverride) *Registry {
 	if cfg == nil {
 		cfg = config.Defaults()
 	}
+	projects := config.MergeProjectsSourceConfig(cfg.Sources.Projects, override)
+	projects.Roots = nil
 	scoped := &config.Config{
-		General:  config.General{Sources: sources, Selector: cfg.General.Selector},
-		Sources:  cfg.Sources,
-		Defaults: cfg.Defaults,
+		General:      config.General{SourceOrder: append([]string(nil), order...), Selector: cfg.General.Selector},
+		Sources:      cfg.Sources,
+		Defaults:     cfg.Defaults,
+		Integrations: append([]config.IntegrationConfig(nil), cfg.Integrations...),
+	}
+	scoped.Sources.Projects = projects
+	providers := map[string]Provider{
+		config.SourceHerdr:      &herdrProvider{driver: herdrDriver, probes: probes, cfg: scoped},
+		config.SourceSessions:   &sessionsProvider{driver: herdrDriver, probes: probes},
+		config.SourceWorkspaces: &workspacesProvider{cfg: scoped},
+		config.SourceZoxide:     &zoxideProvider{probes: probes, cfg: scoped, root: root},
+		// The project provider reads the scoped effective config so local
+		// overrides apply only within this group; the root remains the sole
+		// scan root and global roots are deliberately discarded.
+		config.SourceProjects: &projectsProvider{cfg: scoped, root: root},
+	}
+	for _, integration := range scoped.Integrations {
+		providers[integration.Name] = &integrationProvider{cfg: integration}
 	}
 	return &Registry{
-		providers: map[string]Provider{
-			config.SourceHerdr:      &herdrProvider{driver: herdrDriver, probes: probes, cfg: scoped},
-			config.SourceSessions:   &sessionsProvider{driver: herdrDriver, probes: probes},
-			config.SourceWorkspaces: &workspacesProvider{cfg: scoped},
-			config.SourceZoxide:     &zoxideProvider{probes: probes, cfg: scoped, root: root},
-			// Intentional asymmetry: projectsProvider reads the full cfg, not
-			// scoped. projects only consults cfg.Sources.Projects (markers,
-			// ignore list, MaxDepth...), which is shared verbatim by scoped
-			// (scoped aliases cfg.Sources). Reading cfg directly means a future
-			// scoped-only field could never accidentally silence the projects
-			// scan inside a group picker. Do not "fix" this to scoped without
-			// re-checking that invariant.
-			config.SourceProjects: &projectsProvider{cfg: cfg, root: root},
-		},
-		cfg:    scoped,
-		probes: probes,
+		providers: providers,
+		cfg:       scoped,
+		probes:    probes,
 	}
 }
 
 // Providers returns a defensive copy of the registered providers, in
-// [config.General.Sources] order (unlisted providers are appended after, for
+// [config.General.SourceOrder] order (unlisted providers are appended after, for
 // callers introspecting the full set).
 func (r *Registry) Providers() []Provider {
 	out := make([]Provider, 0, len(r.providers))
 	seen := make(map[string]bool, len(r.providers))
-	for _, name := range r.cfg.General.Sources {
+	for _, name := range r.cfg.General.SourceOrder {
 		if p, ok := r.providers[name]; ok && !seen[name] {
 			out = append(out, p)
 			seen[name] = true
@@ -494,7 +536,7 @@ type gatedProvider interface {
 // Enabled returns the providers that should run, in general.sources order.
 func (r *Registry) Enabled() []Provider {
 	enabled := make([]Provider, 0, len(r.providers))
-	for _, name := range r.cfg.General.Sources {
+	for _, name := range r.cfg.General.SourceOrder {
 		p, ok := r.providers[name]
 		if !ok {
 			continue
@@ -525,7 +567,7 @@ func (r *Registry) Collect(ctx context.Context) ([]Candidate, error) {
 			}
 			continue
 		}
-		icon := r.iconFor(p.Name())
+		icon := r.IconFor(p.Name())
 		// Defensive copy: providers may reuse backing arrays across calls.
 		for _, c := range cands {
 			clone := c.Clone()
@@ -538,10 +580,10 @@ func (r *Registry) Collect(ctx context.Context) ([]Candidate, error) {
 	return out, firstErr
 }
 
-// iconFor returns the configured icon for the named source, or "" when no
+// IconFor returns the configured icon for the named source, or "" when no
 // icon is configured. Centralised so every provider's candidates receive the
 // same icon from a single lookup site.
-func (r *Registry) iconFor(name string) string {
+func (r *Registry) IconFor(name string) string {
 	switch name {
 	case config.SourceHerdr:
 		return r.cfg.Sources.Herdr.Icon
@@ -553,6 +595,11 @@ func (r *Registry) iconFor(name string) string {
 		return r.cfg.Sources.Zoxide.Icon
 	case config.SourceProjects:
 		return r.cfg.Sources.Projects.Icon
+	}
+	for _, integration := range r.cfg.Integrations {
+		if integration.Name == name {
+			return integration.Icon
+		}
 	}
 	return ""
 }
@@ -592,9 +639,13 @@ func (p *workspacesProvider) List(ctx context.Context) ([]Candidate, error) {
 			path = expanded
 		}
 		cand := Candidate{
-			Path:   path,
-			Label:  ws.Name,
-			Source: config.SourceWorkspaces,
+			Path:    path,
+			Label:   ws.Name,
+			Source:  config.SourceWorkspaces,
+			Aliases: append([]string(nil), ws.Aliases...),
+			Meta: map[string]string{
+				"entry_id": workspaceEntryIdentity(path, ws),
+			},
 		}
 		if _, err := os.Stat(path); err != nil {
 			cand.Missing = true
@@ -603,7 +654,7 @@ func (p *workspacesProvider) List(ctx context.Context) ([]Candidate, error) {
 		case ws.Type == config.WorkspaceTypeGroup:
 			cand.Meta = map[string]string{
 				"group":         "true",
-				"group_sources": strings.Join(ws.Sources, ","),
+				"group_sources": strings.Join(ws.SourceOrder, ","),
 			}
 			if ws.Template != "" {
 				cand.Meta["group_template"] = ws.Template
@@ -616,9 +667,22 @@ func (p *workspacesProvider) List(ctx context.Context) ([]Candidate, error) {
 				cand.Meta["close_on_exit"] = "true"
 			}
 		}
+		cand.Meta["entry_id"] = workspaceEntryIdentity(path, ws)
 		out = append(out, cand)
 	}
 	return out, nil
+}
+
+func workspaceEntryIdentity(path string, ws config.WorkspaceConfig) string {
+	normalized := path
+	if canonical, err := pathutil.Normalize(path); err == nil {
+		normalized = canonical
+	}
+	sources := append([]string(nil), ws.SourceOrder...)
+	sort.Strings(sources)
+	payload := strings.Join([]string{normalized, ws.Type, ws.Template, ws.Command, strconv.FormatBool(ws.CloseOnExit), strings.Join(sources, ",")}, "\x00")
+	digest := sha256.Sum256([]byte(payload))
+	return "v1:" + hex.EncodeToString(digest[:])
 }
 
 // --- herdr provider ---
@@ -777,24 +841,32 @@ func isWithinRoot(root, path string) bool {
 // past a directory it has already flagged as a project, to avoid noisy
 // nested matches (e.g. vendored dependencies).
 type projectsProvider struct {
-	cfg  *config.Config
-	root string
+	cfg   *config.Config
+	root  string
+	roots []string
 }
 
 func (projectsProvider) Name() string { return config.SourceProjects }
 
 func (p *projectsProvider) enabled(_ *config.Config, _ config.Probes) bool {
-	return p.root != ""
+	return p.root != "" || len(p.roots) > 0
 }
 
 func (p *projectsProvider) List(ctx context.Context) ([]Candidate, error) {
-	return ListProjects(ctx, p.cfg.Sources.Projects, p.root)
+	if p.root != "" {
+		return ListProjects(ctx, p.cfg.Sources.Projects, p.root)
+	}
+	return ListProjectsRoots(ctx, p.cfg.Sources.Projects, p.roots)
 }
 
 // ListProjects scans root for project directories per cfg. Exported so tests
 // and the command layer can exercise the scan directly. maxDepth <= 0 with
 // Recursive true is treated as depth 1 (immediate children only).
 func ListProjects(ctx context.Context, cfg config.ProjectsSourceConfig, root string) ([]Candidate, error) {
+	return listProjectsWithDiscovery(ctx, cfg, root, DiscoverWorktrees)
+}
+
+func listProjectsWithDiscovery(ctx context.Context, cfg config.ProjectsSourceConfig, root string, discover func(context.Context, string) ([]WorktreeInfo, error)) ([]Candidate, error) {
 	if root == "" {
 		return nil, nil
 	}
@@ -836,11 +908,30 @@ func ListProjects(ctx context.Context, cfg config.ProjectsSourceConfig, root str
 			}
 		}
 		if isProject {
-			out = append(out, Candidate{
-				Path:   dir,
-				Label:  RelativeLabel(dir),
-				Source: config.SourceProjects,
-			})
+			primary := Candidate{Path: dir, Label: RelativeLabel(dir), Source: config.SourceProjects}
+			worktrees, err := discover(ctx, dir)
+			if err != nil {
+				out = append(out, primary)
+				return nil
+			}
+			repoName := filepath.Base(dir)
+			for _, wt := range worktrees {
+				meta := map[string]string{
+					"is_worktree": "true", "branch": wt.Branch, "repo": repoName,
+					"worktree_path": wt.Path, "head": wt.Head,
+				}
+				if pathutil.SameDir(dir, wt.Path) {
+					meta["main_worktree"] = "true"
+					primary.Meta = meta
+					continue
+				}
+				meta["main_worktree"] = "false"
+				out = append(out, Candidate{
+					Path: wt.Path, Label: fmt.Sprintf("%s (%s)", repoName, wt.Branch),
+					Source: config.SourceProjects, Meta: meta,
+				})
+			}
+			out = append(out, primary)
 			return nil // do not descend past a detected project
 		}
 		if depth >= maxDepth {
@@ -871,6 +962,48 @@ func ListProjects(ctx context.Context, cfg config.ProjectsSourceConfig, root str
 		}
 		if err := walk(filepath.Join(root, e.Name()), 1); err != nil {
 			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// ListProjectsRoots scans each configured global root in normalized deterministic
+// order and deduplicates projects by normalized path. An empty roots list is
+// intentionally silent.
+func ListProjectsRoots(ctx context.Context, cfg config.ProjectsSourceConfig, roots []string) ([]Candidate, error) {
+	normalizedRoots := make([]string, 0, len(roots))
+	seenRoots := make(map[string]struct{}, len(roots))
+	for _, root := range roots {
+		normalized, err := pathutil.Normalize(root)
+		if err != nil {
+			continue
+		}
+		if _, exists := seenRoots[normalized]; exists {
+			continue
+		}
+		seenRoots[normalized] = struct{}{}
+		normalizedRoots = append(normalizedRoots, normalized)
+	}
+	sort.Strings(normalizedRoots)
+	var out []Candidate
+	seenProjects := make(map[string]struct{})
+	for _, root := range normalizedRoots {
+		projects, err := ListProjects(ctx, cfg, root)
+		if err != nil {
+			return nil, err
+		}
+		for _, candidate := range projects {
+			normalized, err := pathutil.Normalize(candidate.Path)
+			if err != nil {
+				continue
+			}
+			if _, exists := seenProjects[normalized]; exists {
+				continue
+			}
+			seenProjects[normalized] = struct{}{}
+			candidate.Path = normalized
+			candidate.Label = RelativeLabel(normalized)
+			out = append(out, candidate)
 		}
 	}
 	return out, nil

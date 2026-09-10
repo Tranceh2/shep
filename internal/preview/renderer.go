@@ -135,7 +135,7 @@ func NewRenderer(cfg *config.Config, probes config.Probes, git GitProvider, runn
 // in turn, joining non-empty blocks with a blank line, then caches the
 // result by path and config.
 func (r *defaultRenderer) Render(ctx context.Context, cand source.Candidate) (Result, error) {
-	key := PreviewCacheKey(cand, r.cfg.Preview)
+	key := PreviewCacheKeyWithIntegrations(cand, r.cfg.Preview, r.cfg.Integrations)
 	if cached, ok := r.cache.Get(key); ok {
 		return cached, nil
 	}
@@ -187,12 +187,25 @@ func (r *defaultRenderer) renderSection(ctx context.Context, cand source.Candida
 	case config.PreviewDir:
 		return r.renderDirSection(ctx, cand)
 	default:
+		if cmd, ok := integrationPreviewCommand(r.cfg, cand.Source, name); ok {
+			return r.renderIntegrationCommand(ctx, cmd, cand)
+		}
 		cmd, ok := r.cfg.Preview.Commands[name]
 		if !ok {
 			return "", false
 		}
 		return r.renderCustomCommand(ctx, cmd, cand)
 	}
+}
+
+func integrationPreviewCommand(cfg *config.Config, sourceName, name string) (config.IntegrationPreviewCommand, bool) {
+	for _, integration := range cfg.Integrations {
+		if integration.Name == sourceName {
+			cmd, ok := integration.PreviewCommands[name]
+			return cmd, ok
+		}
+	}
+	return config.IntegrationPreviewCommand{}, false
 }
 
 // resolvePreviewNames implements the documented precedence: sessions always
@@ -239,7 +252,8 @@ func resolvePreviewNames(cfg *config.Config, cand source.Candidate) []string {
 }
 
 // sourcePreview returns the configured [sources.<name>].preview list for the
-// candidate's source, or nil when unset/unknown.
+// candidate's source, or the declared [[integrations]] entry's own preview
+// list for an integration source, or nil when unset/unknown.
 func sourcePreview(cfg *config.Config, sourceName string) []string {
 	switch sourceName {
 	case config.SourceHerdr:
@@ -252,6 +266,11 @@ func sourcePreview(cfg *config.Config, sourceName string) []string {
 		return cfg.Sources.Zoxide.Preview
 	case config.SourceProjects:
 		return cfg.Sources.Projects.Preview
+	}
+	for _, integration := range cfg.Integrations {
+		if integration.Name == sourceName {
+			return integration.Preview
+		}
 	}
 	return nil
 }
@@ -440,17 +459,66 @@ func (r *defaultRenderer) renderCustomCommand(ctx context.Context, cmd config.Pr
 	argv, err := ParseCommand(cmd.Command, rowformat.Context{
 		Path:  renderPath(cand),
 		Label: cand.Label,
+		Icon:  cand.Icon,
+		Meta:  cloneMeta(cand.Meta),
 	})
 	if err != nil {
 		return "", false
 	}
-	runCtx, cancel := boundedContext(ctx, r.cfg.Preview.Timeout)
+	return r.runCommand(ctx, argv, r.cfg.Preview.Timeout, r.cfg.Preview.MaxLines, cand)
+}
+
+func (r *defaultRenderer) renderIntegrationCommand(ctx context.Context, cmd config.IntegrationPreviewCommand, cand source.Candidate) (string, bool) {
+	if r.runner == nil || len(cmd.Command) == 0 || cmd.Command[0] == "" {
+		return "", false
+	}
+	rowContext := rowformat.Context{
+		Path:  renderPath(cand),
+		Label: cand.Label,
+		Icon:  cand.Icon,
+		Meta:  cloneMeta(cand.Meta),
+	}
+	argv := make([]string, len(cmd.Command))
+	for i, token := range cmd.Command {
+		value, err := rowformat.Render(token, rowContext)
+		if err != nil {
+			return "", false
+		}
+		argv[i] = value
+	}
+	timeout := cmd.Timeout
+	maxLines := cmd.MaxLines
+	if timeout <= 0 {
+		timeout = r.cfg.Preview.Timeout
+	}
+	if maxLines <= 0 {
+		maxLines = r.cfg.Preview.MaxLines
+	}
+	return r.runCommand(ctx, argv, timeout, maxLines, cand)
+}
+
+func (r *defaultRenderer) runCommand(ctx context.Context, argv []string, timeout config.Duration, maxLines int, cand source.Candidate) (string, bool) {
+	if r.runner == nil || len(argv) == 0 || argv[0] == "" {
+		return "", false
+	}
+	runCtx, cancel := boundedContext(ctx, timeout)
 	defer cancel()
-	out, err := r.runner.Run(runCtx, argv, cand.Path, r.cfg.Preview.MaxLines)
+	out, err := r.runner.Run(runCtx, argv, cand.Path, maxLines)
 	if err != nil || out == "" {
 		return "", false
 	}
 	return out, true
+}
+
+func cloneMeta(meta map[string]string) map[string]string {
+	if meta == nil {
+		return nil
+	}
+	copy := make(map[string]string, len(meta))
+	for key, value := range meta {
+		copy[key] = value
+	}
+	return copy
 }
 
 // boundedContext applies timeout to ctx when positive, mirroring the escape
@@ -532,7 +600,7 @@ func (r *defaultRenderer) gitLine(ctx context.Context, cand source.Candidate) (s
 	if err != nil {
 		return "", false
 	}
-	return sum.String(), true
+	return formatGitSummary(sum, cand.Meta), true
 }
 
 // renderPath prefers the post-dedup/post-symlink normalised path and falls

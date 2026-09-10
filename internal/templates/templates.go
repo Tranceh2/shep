@@ -2,163 +2,140 @@
 // sizes, commands) to a freshly created Herdr workspace.
 //
 // A template is a full recipe for a freshly created workspace only —
-// existing (focused) workspaces never have a template applied. The first
-// declared tab always reuses/renames the workspace's existing root tab and
-// root pane (created by `herdr workspace create`) instead of leaving it as
-// an unused default tab alongside new ones; every subsequent tab is created
-// fresh. Within a tab, a branch node (Split set) is realised as a sequence
-// of cascading two-way `herdr pane split` calls so an arbitrary number of
-// children can be laid out from Herdr's binary split primitive; a leaf node
-// (no Split) runs its Command in the pane assigned to it (an empty command
-// leaves a plain shell).
+// existing (focused) workspaces never have a template applied.
 //
-// Focus is set entirely at tab/pane creation time via the --focus/--no-focus
-// flags on CreateTab/SplitPane, NOT via post-hoc commands. Herdr's
-// `pane focus` only accepts --direction (not a positional pane id), so the
-// only reliable way to focus an arbitrary pane is at split time. The
-// top-level config.TemplateFocus {tab, node} is resolved into a concrete tab
-// index + node id BEFORE anything is created, then threaded through every
-// CreateTab/SplitPane call so the right tab/pane ends up focused.
+// Layouts are compiled before any I/O: compile.go turns the whole template into
+// one herdr.LayoutApplyParams per tab, and Apply hands each of those to the
+// daemon in a single `layout.apply` socket round trip. Each tab application is
+// atomic, but Herdr exposes no whole-template transaction: a transport/runtime
+// failure after earlier tabs succeed can leave a partial layout. Apply stops at
+// that point and reports the applied progress. The previous implementation
+// walked the node graph issuing one `herdr pane split` subprocess per branch and
+// one `herdr pane run` per leaf; that legacy pane loop is intentionally gone.
+//
+// Two live facts the pure compiler cannot know are filled in here, and only
+// here: the workspace id the layout targets, and the id of the root tab that
+// `herdr workspace create` already opened. The first declared tab reuses that
+// root tab by id so it is renamed in place instead of being left behind as an
+// unused default beside a freshly created one; every later tab leaves tab_id
+// empty so the daemon creates it (D5).
+//
+// Focus is resolved by the compiler and travels as the `focus` flag on each
+// tab's params — no post-hoc focus commands are issued, because Herdr's
+// `pane focus` accepts only --direction, never a positional pane id.
 package templates
 
 import (
 	"context"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/tranceh2/shep/internal/config"
-	"github.com/tranceh2/shep/internal/source"
+	"github.com/tranceh2/shep/internal/herdr"
 )
 
 // validPaneID matches the shape Herdr's own pane ids use. wrapCloseOnExit
-// rejects anything outside this set so a hostile/malformed Herdr response
-// can never smuggle shell metacharacters into the command typed into a
-// pane's interactive shell.
+// rejects anything outside this set so a hostile/malformed pane id can never
+// smuggle shell metacharacters into the command typed into a pane's
+// interactive shell.
 var validPaneID = regexp.MustCompile(`^[A-Za-z0-9:._-]+$`)
 
-// Target identifies the freshly created workspace a template applies to:
-// the workspace id, its initial (root) tab and pane ids, the cwd new
-// tabs/panes should inherit, and the herdr binary name used for the
-// close_on_exit shell-chaining wrap (defaults to "herdr" when empty).
+const defaultHerdrBinary = "herdr"
+
+// LayoutApplier is the seam Apply dispatches through. It mirrors
+// herdr.LayoutApplier so the production client satisfies it directly, while
+// tests capture the dispatched params with no socket and no daemon in the
+// loop (D2, R9.1).
+type LayoutApplier interface {
+	ApplyLayout(ctx context.Context, socketPath string, params herdr.LayoutApplyParams) (*herdr.LayoutApplyResult, error)
+}
+
+// CommandRunner types a command into an already-running pane. It is the
+// narrow remnant of the old driver dependency, kept for RunCommand.
+type CommandRunner interface {
+	RunPane(ctx context.Context, paneID, command string) error
+}
+
+// Target identifies the freshly created workspace a template applies to: the
+// workspace id, the id of the root tab the first declared tab should reuse,
+// the cwd every pane inherits, the Herdr socket the layout is dispatched
+// over, the login shell used by command-backed layout panes, and the pathEnv
+// propagated to those panes. An empty RootTabID means the caller has no tab to
+// donate, so every tab is created fresh.
 type Target struct {
 	WorkspaceID string
 	RootTabID   string
-	RootPaneID  string
 	CWD         string
-	Binary      string
+	SocketPath  string
+	Shell       string
+	PathEnv     string
 }
 
-// Apply realises tpl against target. A Command-only template (no Tabs, the
-// common case for "default"/"k8s"-style templates) runs directly in the
-// existing root pane; an empty Command leaves it a plain shell. A
-// Tabs-based template creates/renames tabs and recursively splits panes per
-// each tab's node graph. Focus (from tpl.Focus) is resolved to a concrete
-// tab index + node id before anything is created, then threaded through
-// every CreateTab/SplitPane via the focus bool so the requested tab/pane
-// receives keyboard focus — no post-hoc focus commands are issued.
+// Apply realises tpl against target by compiling it to one layout per tab and
+// dispatching each tab atomically.
 //
-// When CloseOnExit is true on the TemplateConfig (or on a WorkspaceConfig that
-// materialises a synthetic template), the command is shell-chained with
-// "; <binary> pane close <paneID>" so the pane closes itself once the
-// command's shell returns control (regardless of exit status).
-func Apply(ctx context.Context, driver source.HerdrDriver, target Target, tpl config.TemplateConfig) error {
-	binary := target.Binary
-	if len(tpl.Tabs) == 0 {
-		if tpl.Command == "" {
-			return nil
-		}
-		return driver.RunPane(ctx, target.RootPaneID, wrapCloseOnExit(tpl.Command, target.RootPaneID, binary, tpl.CloseOnExit))
+// Compilation happens in full before the first dispatch, so an invalid
+// geometry — a bad split axis, a cycle, a missing node — fails without a
+// single byte reaching the socket. Herdr has no whole-template transaction;
+// after a successful tab, a later dispatch failure may leave the workspace
+// partially applied. The loop stops immediately and names the applied progress.
+func Apply(ctx context.Context, applier LayoutApplier, target Target, tpl config.TemplateConfig) error {
+	params, err := CompileTemplate(tpl, target.CWD, target.Shell, target.PathEnv)
+	if err != nil {
+		return fmt.Errorf("compile template: %w", err)
 	}
 
-	// Resolve the focus target BEFORE creating anything: which tab index
-	// should end up focused, and (optionally) which node id within it. When
-	// Focus is nil/empty, the default is tab index 0 — the first tab, which
-	// reuses the workspace's already-focused root tab.
-	focusTabIndex, focusNodeID := resolveFocus(tpl)
-
-	for i, tab := range tpl.Tabs {
-		var rootPaneID string
-		if i == 0 {
-			if err := driver.RenameTab(ctx, target.RootTabID, tab.Name); err != nil {
-				return fmt.Errorf("rename root tab to %q: %w", tab.Name, err)
-			}
-			rootPaneID = target.RootPaneID
+	applied := 0
+	for i := range params {
+		// Only the first tab may adopt the workspace's existing root tab;
+		// pinning tab_id on the rest would make every later tab overwrite
+		// that same tab instead of creating its own.
+		// The Herdr daemon requires exactly one target identity: use either
+		// tab_id or workspace_id, not both.
+		if i == 0 && target.RootTabID != "" {
+			params[i].TabID = target.RootTabID
+			params[i].WorkspaceID = ""
 		} else {
-			// Only the focus-target tab is created with --focus; all others
-			// get --no-focus so they never steal focus from the target.
-			focusTab := i == focusTabIndex
-			_, createdPane, err := driver.CreateTab(ctx, target.WorkspaceID, target.CWD, tab.Name, focusTab)
-			if err != nil {
-				return fmt.Errorf("create tab %q: %w", tab.Name, err)
+			params[i].WorkspaceID = target.WorkspaceID
+			params[i].TabID = ""
+		}
+		if _, err := applier.ApplyLayout(ctx, target.SocketPath, params[i]); err != nil {
+			if applied == 0 {
+				return fmt.Errorf("apply layout for tab %q (no previous tabs applied): %w", params[i].TabLabel, err)
 			}
-			rootPaneID = createdPane.ID
+			return fmt.Errorf("apply layout for tab %q after %d tab(s) applied; partial template remains: %w", params[i].TabLabel, applied, err)
 		}
-		// Pane-level focus only matters within the focus tab; every other
-		// tab passes an empty focusNodeID so all its splits are --no-focus.
-		nodeFocus := ""
-		if i == focusTabIndex {
-			nodeFocus = focusNodeID
-		}
-		if err := applyTab(ctx, driver, target.CWD, binary, tab, rootPaneID, nodeFocus); err != nil {
-			return fmt.Errorf("apply tab %q: %w", tab.Name, err)
-		}
+		applied++
 	}
 	return nil
 }
 
-// resolveFocus maps the top-level config.TemplateFocus to a concrete tab
-// index and node id. When Focus is nil or Tab is empty, the default is tab
-// index 0 (the first tab, which reuses the workspace's already-focused root
-// tab). The tab name → index resolution has already been validated at config
-// Load, so a missing match here is treated as index 0 defensively.
-func resolveFocus(tpl config.TemplateConfig) (focusTabIndex int, focusNodeID string) {
-	focusTabIndex = 0
-	focusNodeID = ""
-	if tpl.Focus == nil || tpl.Focus.Tab == "" {
-		return
-	}
-	for i, tab := range tpl.Tabs {
-		if tab.Name == tpl.Focus.Tab {
-			focusTabIndex = i
-			break
-		}
-	}
-	focusNodeID = tpl.Focus.Node
-	return
-}
-
-// applyTab realises one tab's node graph starting at rootPaneID (the tab's
-// already-existing root pane — either the reused workspace root pane or a
-// freshly created tab's root pane). A tab with no nodes is a plain empty
-// shell; nothing more to do. binary is the herdr binary name used for the
-// close_on_exit shell-chaining wrap. focusNodeID is the node id within this
-// tab that should end up with pane focus ("" when no specific pane is
-// targeted, so all splits are --no-focus).
-func applyTab(ctx context.Context, driver source.HerdrDriver, cwd, binary string, tab config.TemplateTab, rootPaneID, focusNodeID string) error {
-	if len(tab.Nodes) == 0 {
+// RunCommand types tpl's command into an existing pane.
+//
+// This is the one place a command still reaches a pane outside layout.apply,
+// and it exists for the --target=tab/--target=pane launches: those open into
+// a container the caller has already created inside a LIVE workspace, where
+// applying a layout would replace the surrounding tab rather than fill the
+// new pane. An empty command leaves the pane a plain shell.
+func RunCommand(ctx context.Context, runner CommandRunner, paneID, binary string, tpl config.TemplateConfig) error {
+	if tpl.Command == "" {
 		return nil
 	}
-	byID := make(map[string]config.TemplateNode, len(tab.Nodes))
-	for _, n := range tab.Nodes {
-		byID[n.ID] = n
+	if err := runner.RunPane(ctx, paneID, wrapCloseOnExit(tpl.Command, paneID, binary, tpl.CloseOnExit)); err != nil {
+		return fmt.Errorf("run command in pane %s: %w", paneID, err)
 	}
-	return applyNode(ctx, driver, cwd, binary, byID, tab.Root, rootPaneID, focusNodeID)
+	return nil
 }
 
 // wrapCloseOnExit returns cmd unchanged when on is false, otherwise appends
-// "; <binary> pane close <paneID>" so the pane closes itself once the
-// command's shell returns control. When binary is empty it defaults to
-// "herdr". This is the single, tested code path for the close_on_exit shell
-// chaining, shared by both the simple-Command Apply branch (top-level
-// templates and workspace commands) and the leaf applyNode branch (per-node
-// close_on_exit). The chaining exists because Herdr's `pane run` types into
-// an already-running interactive shell rather than spawning the command as
-// the pane's root process, and Herdr's CLI/socket API has no native
-// close-on-exit primitive.
+// a shell-quoted close action so the pane closes itself once the command's
+// shell returns control. When binary is empty it defaults to "herdr". The
+// chaining exists because Herdr has no native close-on-exit primitive, so the
+// only way to express it is inside the command itself.
 //
-// paneID is validated against validPaneID before being concatenated into the
-// shell-chained command: a paneID carrying shell metacharacters (a hostile
-// or malformed Herdr response) would otherwise let arbitrary commands run in
+// paneID is validated against validPaneID before being concatenated: a paneID
+// carrying shell metacharacters would otherwise let arbitrary commands run in
 // the pane's shell. A paneID that fails validation degrades to the same
 // defensive no-wrap as on=false or an empty paneID.
 func wrapCloseOnExit(cmd, paneID, binary string, on bool) string {
@@ -166,117 +143,24 @@ func wrapCloseOnExit(cmd, paneID, binary string, on bool) string {
 		return cmd
 	}
 	if binary == "" {
-		binary = "herdr"
+		binary = defaultHerdrBinary
 	}
-	return cmd + "; " + binary + " pane close " + paneID
+	return cmd + "; " + ShellQuote(binary) + " pane close " + ShellQuote(paneID)
 }
 
-// applyNode assigns nodeID's subtree to paneID: a leaf runs its command in
-// paneID (wrapped with "; <binary> pane close <paneID>" when CloseOnExit is
-// set, so the pane closes itself once the command's shell returns control);
-// a branch splits paneID via cascading two-way splits, assigning each child
-// in turn, then recurses into each child's own subtree.
-//
-// focusNodeID controls the --focus/--no-focus flag on every SplitPane: a
-// split's NEW pane gets --focus only when the focus node is reachable through
-// the children that will occupy that new pane (children[i+1..]); otherwise
-// --no-focus so the current (kept) pane retains focus. This is the sole
-// mechanism for pane-level focus because Herdr's `pane focus` command does
-// not accept a positional pane id (only --direction).
-func applyNode(ctx context.Context, driver source.HerdrDriver, cwd, binary string, byID map[string]config.TemplateNode, nodeID, paneID, focusNodeID string) error {
-	node, ok := byID[nodeID]
-	if !ok {
-		return fmt.Errorf("node %q not found", nodeID)
+// ShellCommand returns argv as POSIX shell words. RunPane types shell text into
+// an existing pane, so every configured value must remain data rather than shell
+// source. Single-quote escaping preserves spaces, metacharacters, and quotes.
+func ShellCommand(argv ...string) string {
+	quoted := make([]string, len(argv))
+	for i, value := range argv {
+		quoted[i] = ShellQuote(value)
 	}
-	if !node.IsBranch() {
-		if node.Label != nil {
-			if err := driver.RenamePane(ctx, paneID, node.Label); err != nil {
-				return fmt.Errorf("rename pane for node %q (%s): %w", node.ID, paneID, err)
-			}
-		}
-		if node.Command != "" {
-			// CloseOnExit wraps the command via the shared helper; see wrapCloseOnExit for rationale.
-			cmd := wrapCloseOnExit(node.Command, paneID, binary, node.CloseOnExit)
-			if err := driver.RunPane(ctx, paneID, cmd); err != nil {
-				return fmt.Errorf("run command for node %q (%s): %w", node.ID, paneID, err)
-			}
-		}
-		return nil
-	}
-
-	direction := "right"
-	if node.Split == config.SplitRows {
-		direction = "down"
-	}
-	sizes := node.Sizes
-	if len(sizes) == 0 {
-		sizes = make([]int, len(node.Children))
-		for i := range sizes {
-			sizes[i] = 1
-		}
-	}
-	remaining := 0
-	for _, s := range sizes {
-		remaining += s
-	}
-
-	currentPaneID := paneID
-	for i := 0; i < len(node.Children)-1; i++ {
-		ratio := float64(sizes[i]) / float64(remaining)
-		// The new pane from this split will eventually hold children[i+1..].
-		// If the focus node is reachable through any of those children, the
-		// new pane is on the focus path and gets --focus; otherwise --no-focus
-		// so the kept pane (holding child[i]) retains focus.
-		focusNewPane := focusNodeID != "" && focusInSubtree(byID, node.Children[i+1:], focusNodeID)
-		newPane, err := driver.SplitPane(ctx, currentPaneID, direction, ratio, cwd, focusNewPane)
-		if err != nil {
-			return fmt.Errorf("split for child %q: %w", node.Children[i], err)
-		}
-		if err := applyNode(ctx, driver, cwd, binary, byID, node.Children[i], currentPaneID, focusNodeID); err != nil {
-			return err
-		}
-		currentPaneID = newPane.ID
-		remaining -= sizes[i]
-	}
-	return applyNode(ctx, driver, cwd, binary, byID, node.Children[len(node.Children)-1], currentPaneID, focusNodeID)
+	return strings.Join(quoted, " ")
 }
 
-// focusInSubtree reports whether focusNodeID is reachable from any of the
-// given child ids by walking the branch→children graph. Used to decide
-// whether a split's NEW pane is on the path to the focus node.
-func focusInSubtree(byID map[string]config.TemplateNode, childIDs []string, focusNodeID string) bool {
-	for _, childID := range childIDs {
-		if nodeContainsID(byID, childID, focusNodeID) {
-			return true
-		}
-	}
-	return false
-}
-
-// nodeContainsID reports whether targetID is id itself or reachable from id's
-// subtree. Cycles are guarded against (already validated at config Load) by
-// tracking visited nodes.
-func nodeContainsID(byID map[string]config.TemplateNode, id, targetID string) bool {
-	visited := make(map[string]bool)
-	var visit func(string) bool
-	visit = func(cur string) bool {
-		if cur == targetID {
-			return true
-		}
-		if visited[cur] {
-			return false
-		}
-		visited[cur] = true
-		node, ok := byID[cur]
-		if !ok {
-			return false
-		}
-		for _, child := range node.Children {
-			if visit(child) {
-				return true
-			}
-		}
-		return false
-	}
-	return visit(id)
+// ShellQuote returns one POSIX shell word for callers that must append a
+// single externally supplied argument to shell text.
+func ShellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }

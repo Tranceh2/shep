@@ -54,6 +54,25 @@ func PreviewCacheKey(cand source.Candidate, cfg config.PreviewConfig) string {
 	return fmt.Sprintf("%s|%x", candidateFingerprint(cand), sha256.Sum256([]byte(configFingerprint(cfg))))
 }
 
+// PreviewCacheKeyWithIntegrations extends PreviewCacheKey with the integration
+// definitions because local command changes must invalidate cached output too.
+func PreviewCacheKeyWithIntegrations(cand source.Candidate, cfg config.PreviewConfig, integrations []config.IntegrationConfig) string {
+	return fmt.Sprintf("%s|%x", PreviewCacheKey(cand, cfg), sha256.Sum256([]byte(integrationFingerprint(integrations))))
+}
+
+func integrationFingerprint(integrations []config.IntegrationConfig) string {
+	var b strings.Builder
+	for _, integration := range integrations {
+		b.WriteString(strconv.Quote(integration.Name))
+		b.WriteByte('=')
+		b.WriteString(strconv.Quote(fmt.Sprint(integration.Preview)))
+		b.WriteByte(':')
+		b.WriteString(strconv.Quote(fmt.Sprint(integration.PreviewCommands)))
+		b.WriteByte('|')
+	}
+	return b.String()
+}
+
 // candidateFingerprint serialises the parts of a candidate that influence
 // rendered preview output (path, label, source, and metadata such as
 // workspace_id/tab_id) into a stable string. Meta keys are sorted before

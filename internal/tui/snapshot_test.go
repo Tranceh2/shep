@@ -361,3 +361,76 @@ func TestSnapshotRefresh_TimeoutRetainsPriorGeneration(t *testing.T) {
 		t.Errorf("previewErr = %q, want concise refresh diagnostic", m.previewErr)
 	}
 }
+
+func TestSnapshotRefresh_D4Precedence(t *testing.T) {
+	t.Parallel()
+
+	initial := source.Snapshot{
+		Workspaces: []source.Workspace{{ID: "w1", Label: "ws1", CWD: "/ws1", ActiveTabID: "w1:t1", Focused: true}},
+		Tabs:       []source.Tab{{ID: "w1:t1", WorkspaceID: "w1", Label: "tab1", Focused: true, Number: 1, PaneCount: 2}},
+		Panes: []source.Pane{
+			{ID: "p1", WorkspaceID: "w1", TabID: "w1:t1", CWD: "/ws1", Focused: true, AgentStatus: "idle"},
+			{ID: "p2", WorkspaceID: "w1", TabID: "w1:t1", CWD: "/ws1", AgentStatus: "idle"},
+		},
+		FocusedWorkspaceID: "w1",
+		FocusedTabID:       "w1:t1",
+		FocusedPaneID:      "p1",
+	}
+
+	driver := &scriptedSnapshotDriver{}
+	m := newSnapshotModel(driver, initial, "")
+	m.snapshotSeq = 1
+	m.snapshotRequestSeq = 10
+
+	// Set up live observations:
+	// p1: newer than snapshot request (seq 15 > 10) -> must be re-applied onto new tree
+	// p2: older than snapshot request (seq 8 <= 10) -> stale, must be dropped and overridden by snapshot
+	// p_deleted: newer than snapshot request (seq 20 > 10), but absent from new snapshot -> must be dropped
+	m.liveStatuses = map[string]liveObservation{
+		"p1":        {status: "done", seq: 15},
+		"p2":        {status: "working", seq: 8},
+		"p_deleted": {status: "blocked", seq: 20},
+	}
+
+	// New snapshot arrives:
+	// Snapshot reports p1 as "idle" (which should be overridden by live observation "done")
+	// Snapshot reports p2 as "blocked" (which should win over stale live observation "working")
+	newSnapshot := source.Snapshot{
+		Workspaces: []source.Workspace{{ID: "w1", Label: "ws1", CWD: "/ws1", ActiveTabID: "w1:t1", Focused: true}},
+		Tabs:       []source.Tab{{ID: "w1:t1", WorkspaceID: "w1", Label: "tab1", Focused: true, Number: 1, PaneCount: 2}},
+		Panes: []source.Pane{
+			{ID: "p1", WorkspaceID: "w1", TabID: "w1:t1", CWD: "/ws1", Focused: true, AgentStatus: "idle"},
+			{ID: "p2", WorkspaceID: "w1", TabID: "w1:t1", CWD: "/ws1", AgentStatus: "blocked"},
+		},
+		FocusedWorkspaceID: "w1",
+		FocusedTabID:       "w1:t1",
+		FocusedPaneID:      "p1",
+	}
+
+	next, _ := m.Update(snapshotResponseMsg{seq: 1, snapshot: newSnapshot})
+	m2 := next.(Model)
+
+	w1, ok := m2.tree.Fetch(context.Background(), "w1")
+	if !ok {
+		t.Fatal("Fetch(w1) returned ok=false")
+	}
+
+	for _, p := range w1.Panes {
+		if p.ID == "p1" && p.AgentStatus != "done" {
+			t.Errorf("p1 AgentStatus = %q, want \"done\" (re-applied seq > snapshotRequestSeq)", p.AgentStatus)
+		}
+		if p.ID == "p2" && p.AgentStatus != "blocked" {
+			t.Errorf("p2 AgentStatus = %q, want \"blocked\" (snapshot value winning over stale seq <= snapshotRequestSeq)", p.AgentStatus)
+		}
+	}
+
+	if _, exists := m2.liveStatuses["p2"]; exists {
+		t.Error("stale live status for p2 was not deleted from liveStatuses")
+	}
+	if _, exists := m2.liveStatuses["p_deleted"]; exists {
+		t.Error("live status for absent pane p_deleted was not deleted from liveStatuses")
+	}
+	if obs, exists := m2.liveStatuses["p1"]; !exists || obs.status != "done" {
+		t.Errorf("liveStatuses[p1] = %+v (exists=%t), want done", obs, exists)
+	}
+}

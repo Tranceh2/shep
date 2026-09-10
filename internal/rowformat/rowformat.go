@@ -16,15 +16,21 @@ type Context struct {
 	Icon        string
 	TabNumber   string
 	AgentStatus string
+	Meta        map[string]string
 }
 
 // FuncMap is the extension point for future template filters. It intentionally
 // contains no filters until a compatible filter contract is introduced.
 var FuncMap = template.FuncMap{}
 
+// Parse validates format using the shared template function map.
+func Parse(format string) (*template.Template, error) {
+	return template.New("rowformat").Funcs(FuncMap).Parse(format)
+}
+
 // Render evaluates format with data using the shared template function map.
 func Render(format string, data Context) (string, error) {
-	tmpl, err := template.New("rowformat").Funcs(FuncMap).Parse(format)
+	tmpl, err := Parse(format)
 	if err != nil {
 		return "", err
 	}

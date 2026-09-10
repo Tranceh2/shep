@@ -82,6 +82,22 @@ func (g *gitRunner) Summary(ctx context.Context, path string) (GitSummary, error
 	return GitSummary{Branch: branch, Dirty: countNonEmpty(strings.TrimSpace(string(statusOut)))}, nil
 }
 
+func formatGitSummary(summary GitSummary, meta map[string]string) string {
+	line := summary.String()
+	if meta["is_worktree"] != "true" {
+		return line
+	}
+	branch := meta["branch"]
+	if branch == "" {
+		branch = summary.Branch
+	}
+	head := meta["head"]
+	if len(head) > 7 {
+		head = head[:7]
+	}
+	return strings.TrimSpace("[worktree: " + branch + "] " + head + " " + line)
+}
+
 // countNonEmpty returns the number of non-empty lines in s.
 func countNonEmpty(s string) int {
 	if s == "" {

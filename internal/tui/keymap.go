@@ -28,6 +28,7 @@ const (
 	keyChordCtrlT     = "ctrl+t"
 	keyChordCtrlP     = "ctrl+p"
 	keyChordCtrlL     = "ctrl+l"
+	keyChordPin       = "alt+p"
 	keyChordEsc       = "esc"
 	keyChordQuestion  = "?"
 	keyChordCtrlC     = "ctrl+c"
@@ -73,6 +74,10 @@ var (
 		chord: keyChordCtrlP, help: "open in a new pane of the current workspace (list or preview focus)",
 		footerChord: keyChordCtrlP, footerLabel: "pane",
 	}
+	keyBindingPin = keyBinding{
+		chord: keyChordPin, help: "pin/unpin the highlighted top-level candidate",
+		footerChord: keyChordPin, footerLabel: "pin/unpin",
+	}
 	keyBindingHelp = keyBinding{
 		chord: keyChordQuestion + ", " + keyChordEsc, help: "close help and return to what you were doing",
 		footerChord: keyChordQuestion, footerLabel: "help",
@@ -96,6 +101,7 @@ var keyMap = []keySection{
 			{chord: keyChordUpDown, help: "move the cursor"},
 			{chord: keyChordLeftRight, help: "collapse/expand a workspace's tabs/panes"},
 			keyBindingEnter,
+			keyBindingPin,
 			keyBindingTab,
 			{chord: keyChordCtrlU, help: "clear the query"},
 			{chord: keyChordBackspace, help: "delete the last query character"},

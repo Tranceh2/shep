@@ -14,6 +14,68 @@ import (
 
 // TestDefaults_PathAgnostic ensures Defaults() produces no hardcoded absolute
 // user paths and ships with every built-in source enabled.
+func TestDefaults_EnableRanking(t *testing.T) {
+	t.Parallel()
+	if !Defaults().Ranking.Enabled {
+		t.Fatal("ranking should be enabled by default")
+	}
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[ranking]\nenabled = false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Ranking.Enabled {
+		t.Fatal("explicit ranking.enabled=false was ignored")
+	}
+}
+
+func TestLoad_RejectsControlAliases(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	doc := "version = 2\n[[workspaces]]\nname = \"x\"\npath = \"/tmp/x\"\naliases = [\"safe\", \"bad\\nvalue\"]\n"
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Workspaces[0].Aliases; !reflect.DeepEqual(got, []string{"safe"}) {
+		t.Fatalf("aliases = %v, want control characters removed", got)
+	}
+}
+
+func TestLoad_NormalizesAliases(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	doc := `[[workspaces]]
+name = "Kubernetes"
+path = "/tmp/kube"
+aliases = [" k8s ", "KUBE", "k8s", " "]
+
+[[integrations]]
+name = "kube-contexts"
+command = ["printf", "[]"]
+aliases = [" k8s ", "K8S", "kube"]
+`
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := cfg.Workspaces[0].Aliases, []string{"k8s", "KUBE"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("workspace aliases = %v, want %v", got, want)
+	}
+	if got, want := cfg.Integrations[0].Aliases, []string{"k8s", "kube"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("integration aliases = %v, want %v", got, want)
+	}
+}
+
 func TestDefaults_PathAgnostic(t *testing.T) {
 	t.Parallel()
 
@@ -21,8 +83,8 @@ func TestDefaults_PathAgnostic(t *testing.T) {
 	if cfg == nil {
 		t.Fatal("Defaults returned nil")
 	}
-	if len(cfg.General.Sources) != 4 {
-		t.Fatalf("expected 4 default sources, got %d: %v", len(cfg.General.Sources), cfg.General.Sources)
+	if len(cfg.General.SourceOrder) != 4 {
+		t.Fatalf("expected 4 default sources, got %d: %v", len(cfg.General.SourceOrder), cfg.General.SourceOrder)
 	}
 	if cfg.Workspaces == nil {
 		t.Fatal("Defaults Workspaces slice must be non-nil")
@@ -49,7 +111,7 @@ func TestDefaults_PathAgnostic(t *testing.T) {
 func TestDefaults_SourcesOrder(t *testing.T) {
 	t.Parallel()
 	want := []string{SourceHerdr, SourceWorkspaces, SourceZoxide, SourceProjects}
-	got := Defaults().General.Sources
+	got := Defaults().General.SourceOrder
 	if len(got) != len(want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
@@ -107,6 +169,163 @@ func TestLoad_TemplateNodeLabelPresence(t *testing.T) {
 
 func stringPtr(value string) *string { return &value }
 
+// TestLoad_UsesStructuredSourceOrderAndTypedProjectOverrides defines the clean
+// schema contract before the production model is migrated.
+func TestLoad_UsesStructuredSourceOrderAndTypedProjectOverrides(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	const doc = `[general]
+source_order = ["workspaces", "projects"]
+
+[sources.projects]
+roots = ["~/code", "~/code/../code"]
+recursive = true
+max_depth = 4
+markers = ["go.mod"]
+
+[[workspaces]]
+name = "projects"
+type = "group"
+path = "~/code"
+source_order = ["projects"]
+
+[workspaces.sources.projects]
+recursive = false
+max_depth = 0
+markers = []
+ignore = []
+preview = []
+`
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got, want := cfg.General.SourceOrder, []string{SourceWorkspaces, SourceProjects}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("source order = %v, want %v", got, want)
+	}
+	if got, want := cfg.Sources.Projects.Roots, []string{"~/code", "~/code/../code"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("project roots = %v, want %v", got, want)
+	}
+	group := cfg.Workspaces[0]
+	if got, want := group.SourceOrder, []string{SourceProjects}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("group source order = %v, want %v", got, want)
+	}
+	if group.Sources.Projects == nil || group.Sources.Projects.Recursive == nil || *group.Sources.Projects.Recursive {
+		t.Fatalf("explicit false recursive override was not preserved: %+v", group.Sources.Projects)
+	}
+	if group.Sources.Projects.MaxDepth == nil || *group.Sources.Projects.MaxDepth != 0 {
+		t.Fatalf("explicit zero max_depth override was not preserved: %+v", group.Sources.Projects)
+	}
+	if group.Sources.Projects.Markers == nil || len(*group.Sources.Projects.Markers) != 0 {
+		t.Fatalf("explicit empty markers override was not preserved: %+v", group.Sources.Projects)
+	}
+}
+
+// TestLoad_RejectsLegacyListShapedSources protects the intentional clean schema
+// break: sources is reserved for structured provider tables.
+func TestLoad_RejectsLegacyListShapedSources(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("version = 2\n[general]\nsources = [\"herdr\"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("legacy general.sources list should be rejected")
+	}
+}
+
+func TestLoad_ValidatesConfigSchemaVersion(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		doc  string
+		want string
+	}{
+		{name: "current accepted", doc: "version = 2\n", want: ""},
+		{name: "old rejected with migration", doc: "version = 1\n", want: "migrate to version = 2"},
+		{name: "future rejected", doc: "version = 3\n", want: "newer than supported version 2"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(tc.doc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(path)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("Load() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Load() error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestMergeProjectsSourceConfigHonorsExplicitZeroValues verifies field-wise
+// inheritance and replacement semantics independently from TOML decoding.
+func TestMergeProjectsSourceConfigHonorsExplicitZeroValues(t *testing.T) {
+	t.Parallel()
+	markers := []string{}
+	ignore := []string{}
+	preview := []string{}
+	override := &ProjectsSourceOverride{
+		Recursive: &[]bool{false}[0],
+		MaxDepth:  &[]int{0}[0],
+		Markers:   &markers,
+		Ignore:    &ignore,
+		Preview:   &preview,
+	}
+	global := ProjectsSourceConfig{Recursive: true, MaxDepth: 5, Markers: []string{"go.mod"}, Ignore: []string{"vendor"}, Preview: []string{"git"}}
+	got := MergeProjectsSourceConfig(global, override)
+	if got.Recursive || got.MaxDepth != 0 || len(got.Markers) != 0 || len(got.Ignore) != 0 || len(got.Preview) != 0 {
+		t.Fatalf("merged project config did not honor explicit replacements: %+v", got)
+	}
+}
+
+// TestMergeProjectsSourceConfigInheritsOmittedFields proves omitted local
+// fields retain their global values while one present field replaces only that
+// field. Explicit false, zero, and empty-list replacement is covered above.
+func TestMergeProjectsSourceConfigInheritsOmittedFields(t *testing.T) {
+	t.Parallel()
+	global := ProjectsSourceConfig{
+		Recursive: true,
+		MaxDepth:  5,
+		Markers:   []string{"go.mod"},
+		Ignore:    []string{"vendor"},
+		Preview:   []string{"git"},
+	}
+	override := &ProjectsSourceOverride{MaxDepth: &[]int{2}[0]}
+
+	got := MergeProjectsSourceConfig(global, override)
+	if got.Recursive != global.Recursive {
+		t.Errorf("recursive = %v, want inherited %v", got.Recursive, global.Recursive)
+	}
+	if got.MaxDepth != 2 {
+		t.Errorf("max_depth = %d, want explicit override 2", got.MaxDepth)
+	}
+	if !reflect.DeepEqual(got.Markers, global.Markers) {
+		t.Errorf("markers = %v, want inherited %v", got.Markers, global.Markers)
+	}
+	if !reflect.DeepEqual(got.Ignore, global.Ignore) {
+		t.Errorf("ignore = %v, want inherited %v", got.Ignore, global.Ignore)
+	}
+	if !reflect.DeepEqual(got.Preview, global.Preview) {
+		t.Errorf("preview = %v, want inherited %v", got.Preview, global.Preview)
+	}
+
+	got.Markers[0] = "changed"
+	if global.Markers[0] != "go.mod" {
+		t.Fatal("merged markers share backing storage with global configuration")
+	}
+}
+
 // TestSessionsSource_OptInRegistration verifies sessions is accepted when
 // configured, carries its source presentation defaults, and never joins the
 // default source order.
@@ -114,9 +333,9 @@ func TestSessionsSource_OptInRegistration(t *testing.T) {
 	t.Parallel()
 
 	defaults := Defaults()
-	for _, name := range defaults.General.Sources {
+	for _, name := range defaults.General.SourceOrder {
 		if name == SourceSessions {
-			t.Fatalf("sessions must be opt-in, default sources = %v", defaults.General.Sources)
+			t.Fatalf("sessions must be opt-in, default sources = %v", defaults.General.SourceOrder)
 		}
 	}
 	if err := validateSources([]string{SourceSessions}); err != nil {
@@ -131,7 +350,7 @@ func TestSessionsSource_OptInRegistration(t *testing.T) {
 
 	path := filepath.Join(t.TempDir(), "config.toml")
 	const doc = `[general]
-sources = ["sessions"]
+source_order = ["sessions"]
 
 [sources.sessions]
 icon = "S"
@@ -145,7 +364,7 @@ preview = ["session_info"]
 	if err != nil {
 		t.Fatalf("load sessions config: %v", err)
 	}
-	if got, want := cfg.General.Sources, []string{SourceSessions}; !reflect.DeepEqual(got, want) {
+	if got, want := cfg.General.SourceOrder, []string{SourceSessions}; !reflect.DeepEqual(got, want) {
 		t.Errorf("configured sources = %v, want %v", got, want)
 	}
 	if got, want := cfg.Sources.Sessions.Icon, "S"; got != want {
@@ -189,7 +408,7 @@ func TestLoad_RejectsUnknownSourceName(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	doc := "[general]\nsources = [\"herdr\", \"cwd\"]\n"
+	doc := "[general]\nsource_order = [\"herdr\", \"cwd\"]\n"
 	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -202,16 +421,246 @@ func TestLoad_RejectsUnknownSourceName(t *testing.T) {
 	}
 }
 
+func TestLoad_ParsesAndEnablesCommandIntegration(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	doc := `[general]
+source_order = ["herdr", "prs", "projects"]
+
+[[integrations]]
+name = "prs"
+command = ["gh", "pr", "list", "--json", "number,title"]
+icon = "PR"
+timeout = "3s"
+label_format = "PR {{.Label}}"
+preview = ["identity"]
+`
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load integration config: %v", err)
+	}
+	if got, want := len(cfg.Integrations), 1; got != want {
+		t.Fatalf("integrations = %d, want %d", got, want)
+	}
+	got := cfg.Integrations[0]
+	if got.Name != "prs" || len(got.Command) != 5 || got.Icon != "PR" || time.Duration(got.Timeout) != 3*time.Second {
+		t.Errorf("integration = %+v", got)
+	}
+	if got.LabelFormat != "PR {{.Label}}" || !reflect.DeepEqual(got.Preview, []string{"identity"}) {
+		t.Errorf("integration presentation = %+v", got)
+	}
+}
+
+func TestLoad_IntegrationValidationFailsFast(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		doc  string
+		want string
+	}{
+		{name: "empty name", doc: "[[integrations]]\nname = \" \"\ncommand = [\"printf\"]\n", want: "name is required"},
+		{name: "duplicate name", doc: "[[integrations]]\nname = \"prs\"\ncommand = [\"printf\"]\n\n[[integrations]]\nname = \"prs\"\ncommand = [\"printf\"]\n", want: "duplicate"},
+		{name: "built-in collision", doc: "[[integrations]]\nname = \"projects\"\ncommand = [\"printf\"]\n", want: "built-in source"},
+		{name: "empty command", doc: "[[integrations]]\nname = \"prs\"\ncommand = []\n", want: "command is required"},
+		{name: "invalid timeout", doc: "[[integrations]]\nname = \"prs\"\ncommand = [\"printf\"]\ntimeout = \"-1s\"\n", want: "timeout"},
+		{name: "unknown source order", doc: "[general]\nsource_order = [\"prs\"]\n", want: "invalid source_order"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(tt.doc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(path)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Load error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoad_IntegrationTimeoutDefaultsToThreeSeconds(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[[integrations]]\nname = \"prs\"\ncommand = [\"printf\"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got, want := time.Duration(cfg.Integrations[0].Timeout), 3*time.Second; got != want {
+		t.Errorf("integration timeout = %v, want %v", got, want)
+	}
+}
+
+func TestLoad_ParsesIntegrationScopedPreviewCommandsAndInheritsDefaults(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	const doc = `[preview]
+ timeout = "250ms"
+ max_lines = 25
+ commands.shared = { command = "printf global" }
+
+[[integrations]]
+name = "kube-contexts"
+command = ["/path/kube-contexts"]
+preview = ["identity", "cluster", "health"]
+
+[integrations.preview_commands.cluster]
+command = ["/path/kube-preview", "cluster", "{{ index .Meta \"context\" }}"]
+max_lines = 12
+
+[integrations.preview_commands.health]
+command = ["/path/kube-preview", "health", "{{ index .Meta \"context\" }}"]
+timeout = "1s"
+max_lines = 10
+`
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	integration := cfg.Integrations[0]
+	cluster, ok := integration.PreviewCommands["cluster"]
+	if !ok {
+		t.Fatal("cluster preview command was not decoded")
+	}
+	if !reflect.DeepEqual(cluster.Command, []string{"/path/kube-preview", "cluster", `{{ index .Meta "context" }}`}) {
+		t.Errorf("cluster argv = %#v", cluster.Command)
+	}
+	if got, want := time.Duration(cluster.Timeout), 250*time.Millisecond; got != want {
+		t.Errorf("cluster timeout = %v, want inherited %v", got, want)
+	}
+	if cluster.MaxLines != 12 {
+		t.Errorf("cluster max_lines = %d, want 12", cluster.MaxLines)
+	}
+	health := integration.PreviewCommands["health"]
+	if got, want := time.Duration(health.Timeout), time.Second; got != want {
+		t.Errorf("health timeout = %v, want %v", got, want)
+	}
+	if health.MaxLines != 10 {
+		t.Errorf("health max_lines = %d, want 10", health.MaxLines)
+	}
+}
+
+func TestLoad_IntegrationPreviewNamespaceValidation(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		doc  string
+		want string
+	}{
+		{name: "empty argv", doc: "[[integrations]]\nname=\"kube\"\ncommand=[\"printf\"]\n[integrations.preview_commands.cluster]\ncommand=[]\n", want: "preview_commands.cluster: command is required"},
+		{name: "empty argv zero", doc: "[[integrations]]\nname=\"kube\"\ncommand=[\"printf\"]\n[integrations.preview_commands.cluster]\ncommand=[\"\"]\n", want: "preview_commands.cluster: command[0] is required"},
+		{name: "negative timeout", doc: "[[integrations]]\nname=\"kube\"\ncommand=[\"printf\"]\n[integrations.preview_commands.cluster]\ncommand=[\"printf\"]\ntimeout=\"-1s\"\n", want: "preview_commands.cluster: timeout"},
+		{name: "negative max lines", doc: "[[integrations]]\nname=\"kube\"\ncommand=[\"printf\"]\n[integrations.preview_commands.cluster]\ncommand=[\"printf\"]\nmax_lines=-1\n", want: "preview_commands.cluster: max_lines"},
+		{name: "built-in collision", doc: "[[integrations]]\nname=\"kube\"\ncommand=[\"printf\"]\n[integrations.preview_commands.identity]\ncommand=[\"printf\"]\n", want: "preview_commands.identity: collides with built-in"},
+		{name: "global collision", doc: "[preview.commands.cluster]\ncommand=\"printf\"\n\n[[integrations]]\nname=\"kube\"\ncommand=[\"printf\"]\n[integrations.preview_commands.cluster]\ncommand=[\"printf\"]\n", want: "preview_commands.cluster: collides with global"},
+		{name: "foreign local", doc: "[[integrations]]\nname=\"kube-a\"\ncommand=[\"printf\"]\npreview=[\"cluster\"]\n[integrations.preview_commands.other]\ncommand=[\"printf\"]\n\n[[integrations]]\nname=\"kube-b\"\ncommand=[\"printf\"]\n[integrations.preview_commands.cluster]\ncommand=[\"printf\"]\n", want: "integrations[0] (\"kube-a\").preview"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(tt.doc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(path)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Load error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoad_IntegrationLocalNamesMayRepeatAcrossIntegrations(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	const doc = `[[integrations]]
+name = "kube-a"
+command = ["printf"]
+preview = ["cluster"]
+[integrations.preview_commands.cluster]
+command = ["printf", "a"]
+
+[[integrations]]
+name = "kube-b"
+command = ["printf"]
+preview = ["cluster"]
+[integrations.preview_commands.cluster]
+command = ["printf", "b"]
+`
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("same local name across integrations should load: %v", err)
+	}
+}
+
+func TestLoad_GroupSourceOrderAllowsDeclaredIntegrationWithoutGlobalSource(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	const doc = `[[integrations]]
+name = "kube-contexts"
+command = ["printf", "[]"]
+
+[general]
+source_order = ["workspaces"]
+
+[[workspaces]]
+name = "Kubernetes"
+type = "group"
+path = "~/projects"
+source_order = ["kube-contexts"]
+`
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load group integration config: %v", err)
+	}
+	if got, want := cfg.Workspaces[0].SourceOrder, []string{"kube-contexts"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("group source_order = %v, want %v", got, want)
+	}
+}
+
+func TestLoad_GroupSourceOrderRejectsUnknownSource(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	const doc = `version = 2
+
+[[workspaces]]
+name = "Kubernetes"
+type = "group"
+path = "~/projects"
+source_order = ["not-declared"]
+`
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "not-declared") {
+		t.Fatalf("Load error = %v, want unknown group source", err)
+	}
+}
+
 // TestLoad_ParsesSchema covers general, herdr, sources, defaults, tui,
 // workspaces (plain + group), and templates sections of the canonical model.
 func TestLoad_ParsesSchema(t *testing.T) {
 	t.Parallel()
 
 	const doc = `
-version = 1
+version = 2
 
 [general]
-sources = ["herdr", "workspaces", "zoxide", "projects"]
+source_order = ["herdr", "workspaces", "zoxide", "projects"]
 selector = "fzf"
 
 [herdr]
@@ -248,7 +697,7 @@ template = "dev"
 name = "projects"
 type = "group"
 path = "~/projects"
-sources = ["projects", "zoxide"]
+source_order = ["projects", "zoxide"]
 template = "dev"
 
 [[wildcards]]
@@ -270,7 +719,7 @@ description = "development workspace"
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if got, want := len(cfg.General.Sources), 4; got != want {
+	if got, want := len(cfg.General.SourceOrder), 4; got != want {
 		t.Errorf("sources len: got %d want %d", got, want)
 	}
 	if got, want := cfg.Herdr.Binary, "/usr/local/bin/herdr"; got != want {
@@ -316,7 +765,7 @@ description = "development workspace"
 	if got, want := group.Type, WorkspaceTypeGroup; got != want {
 		t.Errorf("workspace2 type: got %q want %q", got, want)
 	}
-	if got, want := len(group.Sources), 2; got != want {
+	if got, want := len(group.SourceOrder), 2; got != want {
 		t.Fatalf("workspace2 sources len: got %d want %d", got, want)
 	}
 	if got, want := len(cfg.Wildcards), 1; got != want {
@@ -387,7 +836,7 @@ func TestLoad_LabelFormatsDefault(t *testing.T) {
 
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte("[general]\nsources = [\"herdr\"]\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("[general]\nsource_order = [\"herdr\"]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -597,7 +1046,7 @@ func TestLoad_SelectorDefaultsToBuiltin(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte("[general]\nsources = [\"herdr\"]\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("[general]\nsource_order = [\"herdr\"]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -803,6 +1252,7 @@ func TestLoad_RejectsUnknownPreviewNameAnywhere(t *testing.T) {
 		{name: "source", doc: "[sources.herdr]\npreview = [\"nope\"]\n"},
 		{name: "workspace", doc: "[[workspaces]]\nname = \"x\"\npath = \"~/x\"\npreview = [\"nope\"]\n"},
 		{name: "wildcard", doc: "[[wildcards]]\npattern = \"*.go\"\npreview = [\"nope\"]\n"},
+		{name: "integration", doc: "[[integrations]]\nname = \"prs\"\ncommand = [\"printf\"]\npreview = [\"nope\"]\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1153,7 +1603,7 @@ func TestLoad_RejectsGroupWorkspaceWithInvalidSource(t *testing.T) {
 name = "g"
 path = "~/g"
 type = "group"
-sources = ["projects", "roots"]
+source_order = ["projects", "roots"]
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
@@ -1222,10 +1672,14 @@ func TestExampleTOML_MatchesCanonicalModel(t *testing.T) {
 	t.Parallel()
 	got := ExampleTOML()
 	for _, want := range []string{
-		"version = 1", "[general]", "sources = [", "[defaults]", "type = ",
+		"version = 2", "[general]", "source_order = [", "[defaults]", "type = ",
 		"template = ", "[tui]", "list_width", "preview_width", `layout = "landscape"`, "[preview]",
 		"[preview.commands.", "[sources.herdr]", "[sources.projects]",
-		"markers = ", "[templates.default]", "[templates.k8s]",
+		"markers = ", "[templates.default]", "[templates.k8s]", "[[integrations]]",
+		`theme accepts "mocha", "macchiato", "frappe",`,
+		`"latte", "plain", or "inherit". "inherit" delegates explicitly to the`,
+		`Exact precedence is NO_COLOR > SHEP_THEME > explicit config theme`,
+		`(except inherit) > Herdr theme > mocha.`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("ExampleTOML missing %q", want)
@@ -1559,10 +2013,10 @@ func TestLoad_TUITheme_DefaultsEmptyAndAccepted(t *testing.T) {
 }
 
 // TestLoad_AcceptsValidTUIThemeValues confirms every documented theme name
-// parses and loads without error.
+// (including "inherit") parses and loads without error.
 func TestLoad_AcceptsValidTUIThemeValues(t *testing.T) {
 	t.Parallel()
-	for _, val := range []string{TUIThemeMocha, TUIThemeMacchiato, TUIThemeFrappe, TUIThemeLatte, TUIThemePlain} {
+	for _, val := range []string{TUIThemeMocha, TUIThemeMacchiato, TUIThemeFrappe, TUIThemeLatte, TUIThemePlain, TUIThemeInherit} {
 		t.Run(val, func(t *testing.T) {
 			t.Parallel()
 			tmp := t.TempDir()
@@ -2114,7 +2568,7 @@ func TestLoad_WorkspaceCloseOnExit_Group_Rejected(t *testing.T) {
 name = "projects"
 type = "group"
 path = "~/projects"
-sources = ["projects"]
+source_order = ["projects"]
 close_on_exit = true
 `
 	tmp := t.TempDir()

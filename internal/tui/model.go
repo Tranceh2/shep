@@ -8,10 +8,10 @@
 // — differentiated only by each row's icon/color per source, with Herdr
 // workspaces able to expand into their open tabs and, per tab, its panes)
 // and a contextual, scrollable preview on the right. Filtering uses
-// internal/fuzzy (via rows.go's fuzzyMatch): empty queries preserve
-// configured source and provider order; non-empty queries rank candidates by
-// fuzzy score with that same stable ordering as a tiebreak (see buildRows'
-// doc comment for the full contract).
+// internal/fuzzy (via rows.go's fuzzyMatch): without an active ranking snapshot,
+// empty queries preserve configured source and provider order; active history
+// ranks empty queries by frecency while non-empty queries retain fuzzy dominance
+// with history only affecting ties and near-ties (see buildRows' doc comment).
 // Tab/Shift+Tab cycles keyboard focus between the list and the preview pane
 // (FocusList/FocusPreview — see the Focus ring in keys.go); while the
 // preview is focused, arrow/page keys scroll it (via bubbles/viewport)
@@ -42,6 +42,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/preview"
+	"github.com/tranceh2/shep/internal/ranking"
+	"github.com/tranceh2/shep/internal/resolver"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -58,19 +60,37 @@ type SnapshotDriver interface {
 // snapshot generation.
 type SnapshotRendererFactory func(source.Snapshot) preview.Renderer
 
+// PinToggleResultMsg is the typed result of one persistence request. The
+// command layer owns the store; Model is the only writer of visible state.
+type PinToggleResultMsg struct {
+	Key       string
+	Candidate source.Candidate
+	Pinned    bool
+	Err       error
+}
+
+// PinToggler is the narrow command boundary used by the TUI for pin changes.
+// It performs no I/O itself; the returned message is delivered to Update.
+type PinToggler func(context.Context, source.Candidate) PinToggleResultMsg
+
 const snapshotTTL = 5 * time.Second
 
 // LabelFormats contains the resolved source-specific row templates needed by
 // render.go. It deliberately carries only presentation strings rather than a
-// config.Config so Model remains a session-only view model.
+// config.Config so Model remains a session-only view model. Integrations maps
+// a declared [[integrations]].name to its resolved label_format, since the
+// set of integration sources is open-ended (unlike the five fixed built-in
+// fields above) and keyed by the same name candidates already carry as
+// Candidate.Source.
 type LabelFormats struct {
-	Herdr      string
-	Sessions   string
-	Workspaces string
-	Zoxide     string
-	Projects   string
-	Tab        string
-	Pane       string
+	Herdr        string
+	Sessions     string
+	Workspaces   string
+	Zoxide       string
+	Projects     string
+	Tab          string
+	Pane         string
+	Integrations map[string]string
 }
 
 // withDefaults lets direct Model/Layout construction retain the historical
@@ -129,7 +149,10 @@ type Layout struct {
 	// LabelFormats carries the loaded, per-source row label templates into the
 	// session-only Model, following the same Layout-carried configuration pattern
 	// as Icons and SourceOrder.
-	LabelFormats LabelFormats
+	LabelFormats    LabelFormats
+	RankingSnapshot ranking.Snapshot
+	StatusDialer    StatusDialer
+	PinToggler      PinToggler
 }
 
 // Orientation values for Layout.Orientation. The empty string means "auto":
@@ -180,8 +203,9 @@ type Model struct {
 	// rows is the current visible, grouped row list — the single source of
 	// truth for rendering and navigation. Rebuilt by applyFilter whenever
 	// the query, expand/collapse state, or tree contents change.
-	rows   []Row
-	cursor int // index into rows
+	rows          []Row
+	cursor        int  // index into rows
+	cursorTouched bool // true only after explicit user navigation
 
 	query            string
 	lastAppliedQuery string
@@ -218,6 +242,11 @@ type Model struct {
 	// or ctrl+p ("pane"). Empty means enter was pressed (or the run was
 	// cancelled), so the caller's --target flag value applies unchanged.
 	chosenTarget string
+	// pinPending prevents overlapping toggles for the same visible action and
+	// pinStatus is the truthful, short feedback shown in the footer.
+	pinPending bool
+	pinKey     string
+	pinStatus  string
 
 	// renderer produces the preview pane content asynchronously for a
 	// RowCandidate row. nil degrades to a built-in label/path/source
@@ -251,7 +280,8 @@ type Model struct {
 	// sourceOrder is the resolved row-group iteration order (see
 	// Layout.SourceOrder), threaded straight into every rowBuildInput by
 	// applyFilter.
-	sourceOrder []string
+	sourceOrder     []string
+	rankingSnapshot ranking.Snapshot
 
 	// focus is which pane currently owns up/down/left/right/page navigation.
 	focus Focus
@@ -282,6 +312,58 @@ type Model struct {
 	// background.
 	spinner        spinner.Model
 	spinnerRunning bool
+
+	producers          []SourceProducer
+	pendingProducers   map[int]bool
+	candidatesBySource map[string][]source.Candidate
+	loadingCandidates  bool
+	startupSnapshot    *source.Snapshot
+
+	liveStatuses       map[string]liveObservation
+	liveSeq            int
+	snapshotRequestSeq int
+	nowFn              func() time.Time
+	liveStatusEvents   <-chan StatusEvent
+}
+
+// SourceResultMsg carries the asynchronously loaded state from an independent
+// producer (workspaces, zoxide, projects, herdr snapshot/tree, ranking).
+type SourceResultMsg struct {
+	Source              string
+	Candidates          []source.Candidate
+	Tree                *TreeExpander
+	SnapshotDriver      SnapshotDriver
+	Snapshot            *source.Snapshot
+	RendererForSnapshot SnapshotRendererFactory
+	HerdrIcon           string
+	Renderer            preview.Renderer
+	CurrentPane         *source.Pane
+	RankingSnapshot     *ranking.Snapshot
+	Err                 error
+	producerID          int
+}
+
+// SourceProducer is an independent candidate or state loader executed concurrently
+// as a tea.Cmd during streaming startup.
+type SourceProducer func(ctx context.Context) SourceResultMsg
+
+type liveObservation struct {
+	status string
+	seq    int
+}
+
+type paneStatusMsg struct {
+	PaneID      string
+	WorkspaceID string
+	TabID       string
+	Status      string
+}
+
+func (m Model) now() time.Time {
+	if m.nowFn != nil {
+		return m.nowFn()
+	}
+	return time.Now()
 }
 
 // previewResponseMsg carries the result of an async candidate preview
@@ -317,13 +399,13 @@ type snapshotResponseMsg struct {
 // in which case the preview pane shows a static built-in summary instead of
 // an async render.
 func NewModel(candidates []source.Candidate, renderer preview.Renderer) Model {
-	return newModelWithLayout(candidates, renderer, context.TODO(), Layout{})
+	return newModelWithLayout(candidates, renderer, context.TODO(), Layout{}, ranking.Snapshot{})
 }
 
 // NewModelWithLayout builds a model like NewModel but with an explicit
 // Layout (list/preview widths, orientation override, and theme).
 func NewModelWithLayout(candidates []source.Candidate, renderer preview.Renderer, layout Layout) Model {
-	return newModelWithLayout(candidates, renderer, context.TODO(), layout)
+	return newModelWithLayout(candidates, renderer, context.TODO(), layout, layout.RankingSnapshot)
 }
 
 // NewModelWithTree builds a tree-expand-aware model: candidates is the flat
@@ -336,8 +418,29 @@ func NewModelWithTree(candidates []source.Candidate, renderer preview.Renderer, 
 	return newModelWithTreeLayout(candidates, renderer, context.TODO(), tree, layout)
 }
 
+// NewModelWithProducers constructs a Model that renders its initial frame
+// immediately in a loading state and streams candidates incrementally from independent
+// concurrent producers launched as tea.Cmds.
+func NewModelWithProducers(producers []SourceProducer, query string, renderer preview.Renderer, renderCtx context.Context, layout Layout) Model {
+	if renderCtx == nil {
+		renderCtx = context.TODO()
+	}
+	m := newModelWithLayout(nil, renderer, renderCtx, layout, layout.RankingSnapshot)
+	m.query = query
+	m.producers = producers
+	m.pendingProducers = make(map[int]bool, len(producers))
+	for i := range producers {
+		m.pendingProducers[i] = true
+	}
+	m.loadingCandidates = len(producers) > 0
+	m.candidatesBySource = make(map[string][]source.Candidate)
+	m.applyFilter()
+	m.refreshPreviewLoadingFlag()
+	return m
+}
+
 func newModelWithTreeLayout(candidates []source.Candidate, renderer preview.Renderer, renderCtx context.Context, tree *TreeExpander, layout Layout) Model {
-	m := newModelWithLayout(candidates, renderer, renderCtx, layout)
+	m := newModelWithLayout(candidates, renderer, renderCtx, layout, layout.RankingSnapshot)
 	m.baseCandidates = make([]source.Candidate, len(candidates))
 	copy(m.baseCandidates, candidates)
 	m.tree = tree
@@ -345,12 +448,16 @@ func newModelWithTreeLayout(candidates []source.Candidate, renderer preview.Rend
 	return m
 }
 
-func newModelWithLayout(candidates []source.Candidate, renderer preview.Renderer, renderCtx context.Context, layout Layout) Model {
+func newModelWithLayout(candidates []source.Candidate, renderer preview.Renderer, renderCtx context.Context, layout Layout, snapshots ...ranking.Snapshot) Model {
 	if renderCtx == nil {
 		renderCtx = context.TODO()
 	}
 	theme := resolveTheme(layout.Theme)
 	styles := newPalette(theme)
+	var snapshot ranking.Snapshot
+	if len(snapshots) > 0 {
+		snapshot = snapshots[0]
+	}
 	m := Model{
 		candidates:         make([]source.Candidate, len(candidates)),
 		selected:           source.Candidate{},
@@ -361,6 +468,7 @@ func newModelWithLayout(candidates []source.Candidate, renderer preview.Renderer
 		styles:             styles,
 		expandedWorkspaces: map[string]bool{},
 		sourceOrder:        layout.SourceOrder,
+		rankingSnapshot:    snapshot,
 		spinner:            spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(styles.previewLoadingStyle)),
 		// mode starts "" (unknown/not yet sized): View treats "" the same
 		// as modeWide (side-by-side, using the same width<=0 fallback
@@ -425,6 +533,12 @@ func (m Model) WithCurrentPane(p *source.Pane) Model {
 	return m
 }
 
+// WithLiveStatus attaches a live status events channel to the model.
+func (m Model) WithLiveStatus(events <-chan StatusEvent) Model {
+	m.liveStatusEvents = events
+	return m
+}
+
 // WithSnapshotRefresh wires a startup generation into the model. The initial
 // state is already resolved by command/open; this method merely establishes
 // the one refresh owner and generation-scoped tree/focus references.
@@ -444,9 +558,29 @@ func (m Model) WithSnapshotRefresh(driver SnapshotDriver, snapshot source.Snapsh
 }
 
 // Init kicks off the first async preview render for the initially
-// highlighted row when a Renderer (or tree, for a pane row) is wired.
+// highlighted row when a Renderer (or tree, for a pane row) is wired, and launches
+// all streaming producers concurrently as bounded tea.Cmds.
 func (m Model) Init() tea.Cmd {
-	return m.initialPreviewCmd()
+	cmds := []tea.Cmd{
+		m.initialPreviewCmd(),
+		waitForStatusCmd(m.renderCtx, m.liveStatusEvents),
+	}
+	for i, producer := range m.producers {
+		cmds = append(cmds, m.makeProducerCmd(i, producer))
+	}
+	return tea.Batch(cmds...)
+}
+
+func (m Model) makeProducerCmd(idx int, p SourceProducer) tea.Cmd {
+	if p == nil {
+		return nil
+	}
+	ctx := m.renderCtx
+	return func() tea.Msg {
+		msg := p(ctx)
+		msg.producerID = idx
+		return msg
+	}
 }
 
 // Update handles key presses, window sizing, and async preview responses.
@@ -458,12 +592,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.mode = nextResponsiveMode(m, m.mode)
 		m.degradeFocusIfPreviewUnavailable()
+	case SourceResultMsg:
+		m, cmd = m.handleSourceResult(msg)
+	case paneStatusMsg:
+		m, cmd = m.handlePaneStatus(msg)
 	case previewResponseMsg:
 		m = m.handlePreviewResponse(msg)
 	case panePreviewMsg:
 		m = m.handlePanePreviewResponse(msg)
 	case snapshotResponseMsg:
 		m, cmd = m.handleSnapshotResponse(msg)
+	case PinToggleResultMsg:
+		m, cmd = m.handlePinToggleResult(msg)
 	case spinner.TickMsg:
 		m, cmd = m.handleSpinnerTick(msg)
 	case tea.KeyMsg:
@@ -474,6 +614,165 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.syncViewport()
 	m.syncHelpViewport()
 	return m, cmd
+}
+
+func (m Model) handleSourceResult(msg SourceResultMsg) (Model, tea.Cmd) {
+	if m.pendingProducers != nil {
+		delete(m.pendingProducers, msg.producerID)
+	}
+	m.loadingCandidates = len(m.pendingProducers) > 0
+
+	if msg.RankingSnapshot != nil {
+		m.rankingSnapshot = *msg.RankingSnapshot
+		if m.startupSnapshot != nil && m.startupSnapshot.FocusedWorkspaceID != "" {
+			m.rankingSnapshot = m.rankingSnapshot.WithCurrentExact(ranking.Identity(source.Candidate{
+				Source: config.SourceHerdr,
+				Meta:   map[string]string{"workspace_id": m.startupSnapshot.FocusedWorkspaceID},
+			}))
+		}
+	}
+
+	if msg.SnapshotDriver != nil {
+		m.snapshotDriver = msg.SnapshotDriver
+	}
+	if msg.RendererForSnapshot != nil {
+		m.rendererForSnapshot = msg.RendererForSnapshot
+	}
+	if msg.HerdrIcon != "" {
+		m.herdrIcon = msg.HerdrIcon
+	}
+	if msg.CurrentPane != nil {
+		m.currentPane = msg.CurrentPane
+	}
+	if msg.Renderer != nil {
+		m.renderer = msg.Renderer
+	}
+	if msg.Tree != nil {
+		m.tree = msg.Tree
+	}
+	if msg.Snapshot != nil {
+		m.startupSnapshot = msg.Snapshot
+		m.lastSnapshotAt = m.now()
+		if m.rankingSnapshot.Active() && msg.Snapshot.FocusedWorkspaceID != "" {
+			m.rankingSnapshot = m.rankingSnapshot.WithCurrentExact(ranking.Identity(source.Candidate{
+				Source: config.SourceHerdr,
+				Meta:   map[string]string{"workspace_id": msg.Snapshot.FocusedWorkspaceID},
+			}))
+		}
+	}
+
+	hasCandidateChanges := false
+	if msg.Source != "ranking" {
+		if m.candidatesBySource == nil {
+			m.candidatesBySource = make(map[string][]source.Candidate)
+		}
+		if len(msg.Candidates) == 0 {
+			if cur, exists := m.candidatesBySource[msg.Source]; exists && len(cur) > 0 {
+				m.candidatesBySource[msg.Source] = nil
+				hasCandidateChanges = true
+			} else if !exists {
+				m.candidatesBySource[msg.Source] = nil
+			}
+		} else {
+			grouped := make(map[string][]source.Candidate)
+			for _, c := range msg.Candidates {
+				src := c.Source
+				if src == "" {
+					src = msg.Source
+				}
+				grouped[src] = append(grouped[src], c)
+			}
+			for src, cands := range grouped {
+				m.candidatesBySource[src] = cands
+				hasCandidateChanges = true
+			}
+		}
+	}
+
+	if hasCandidateChanges || msg.RankingSnapshot != nil {
+		m.rebuildCandidatesFromSources()
+	}
+
+	filterCmd := m.applyFilter()
+	m.refreshPreviewLoadingFlag()
+	previewCmd := m.syncPreviewAfterSelectionChange()
+
+	if msg.Err != nil && len(m.baseFlatCandidates()) == 0 {
+		m.previewErr = msg.Err.Error()
+	} else if len(m.baseFlatCandidates()) > 0 {
+		if msg.Err == nil || m.previewErr == msg.Err.Error() {
+			m.previewErr = ""
+		}
+	}
+
+	return m, tea.Batch(filterCmd, previewCmd, m.maybeStartSpinner())
+}
+
+func (m *Model) rebuildCandidatesFromSources() {
+	order := m.resolvedSourceOrder()
+	var all []source.Candidate
+	seenSources := make(map[string]bool, len(order))
+	for _, src := range order {
+		seenSources[src] = true
+		if cands, ok := m.candidatesBySource[src]; ok && len(cands) > 0 {
+			all = append(all, cands...)
+		}
+	}
+	for src, cands := range m.candidatesBySource {
+		if !seenSources[src] && len(cands) > 0 {
+			all = append(all, cands...)
+		}
+	}
+
+	deduped := resolver.Dedup(all)
+	m.baseCandidates = deduped
+	m.candidates = deduped
+}
+
+func waitForStatusCmd(ctx context.Context, events <-chan StatusEvent) tea.Cmd {
+	if events == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		select {
+		case <-ctx.Done():
+			return nil
+		case ev, ok := <-events:
+			if !ok {
+				return nil
+			}
+			return paneStatusMsg{
+				PaneID:      ev.PaneID,
+				WorkspaceID: ev.WorkspaceID,
+				TabID:       ev.TabID,
+				Status:      ev.Status,
+			}
+		}
+	}
+}
+
+func (m Model) handlePaneStatus(msg paneStatusMsg) (Model, tea.Cmd) {
+	if msg.PaneID == "" {
+		return m, waitForStatusCmd(m.renderCtx, m.liveStatusEvents)
+	}
+	status := normalizeStatus(msg.Status)
+	m.liveSeq++
+	if m.liveStatuses == nil {
+		m.liveStatuses = make(map[string]liveObservation)
+	}
+	m.liveStatuses[msg.PaneID] = liveObservation{
+		status: status,
+		seq:    m.liveSeq,
+	}
+	if m.tree != nil {
+		m.tree.UpdatePaneAgentStatus(msg.PaneID, status)
+	}
+	for i := range m.rows {
+		if m.rows[i].Kind == RowPane && m.rows[i].Candidate.Meta != nil && m.rows[i].Candidate.Meta["pane_id"] == msg.PaneID {
+			m.rows[i].Candidate.Meta["agent_status"] = status
+		}
+	}
+	return m, waitForStatusCmd(m.renderCtx, m.liveStatusEvents)
 }
 
 // degradeFocusIfPreviewUnavailable corrects m.focus/m.prevFocus after a
@@ -539,13 +838,29 @@ func (m Model) handlePanePreviewResponse(msg panePreviewMsg) Model {
 	return m
 }
 
+func (m Model) handlePinToggleResult(msg PinToggleResultMsg) (Model, tea.Cmd) {
+	m.pinPending = false
+	if msg.Err != nil {
+		m.pinStatus = "pin update failed: " + msg.Err.Error()
+		return m, nil
+	}
+	m.rankingSnapshot = m.rankingSnapshot.WithPinned(msg.Key, msg.Pinned)
+	if msg.Pinned {
+		m.pinStatus = "pinned"
+	} else {
+		m.pinStatus = "unpinned"
+	}
+	filterCmd := m.applyFilter()
+	return m, filterCmd
+}
+
 func (m Model) handleSnapshotResponse(msg snapshotResponseMsg) (Model, tea.Cmd) {
 	if msg.seq != m.snapshotSeq {
 		return m, nil
 	}
 	m.snapshotRefreshing = false
 	if msg.err != nil {
-		m.lastSnapshotAt = time.Now()
+		m.lastSnapshotAt = m.now()
 		m.previewErr = "snapshot refresh failed"
 		return m, nil
 	}
@@ -559,6 +874,19 @@ func (m Model) handleSnapshotResponse(msg snapshotResponseMsg) (Model, tea.Cmd) 
 	m.baseCandidates = spliceHerdrCandidates(m.baseCandidates, replacement)
 	m.candidates = m.baseCandidates
 	m.tree = NewTreeExpanderFromSnapshot(msg.snapshot)
+	if len(m.liveStatuses) > 0 {
+		for paneID, obs := range m.liveStatuses {
+			if obs.seq <= m.snapshotRequestSeq {
+				delete(m.liveStatuses, paneID)
+			} else {
+				if m.tree != nil && m.tree.UpdatePaneAgentStatus(paneID, obs.status) {
+					// Pane exists in new generation, keep and re-applied
+				} else {
+					delete(m.liveStatuses, paneID)
+				}
+			}
+		}
+	}
 	if pane, ok := source.ResolveFocusedPane(msg.snapshot); ok {
 		copy := *pane
 		m.currentPane = &copy
@@ -568,7 +896,7 @@ func (m Model) handleSnapshotResponse(msg snapshotResponseMsg) (Model, tea.Cmd) 
 	if m.rendererForSnapshot != nil {
 		m.renderer = m.rendererForSnapshot(msg.snapshot)
 	}
-	m.lastSnapshotAt = time.Now()
+	m.lastSnapshotAt = m.now()
 	m.previewSeq++
 	m.previewText = ""
 	m.previewSections = nil
@@ -685,6 +1013,45 @@ func RunWithSnapshot(ctx context.Context, candidates []source.Candidate, query s
 	return runProgram(ctx, m)
 }
 
+// StartupSnapshot returns the coherent startup snapshot if one was hydrated
+// into the model during streaming or snapshot initialization.
+func (m Model) StartupSnapshot() *source.Snapshot { return m.startupSnapshot }
+
+// RankingSnapshot returns the model's active ranking snapshot.
+func (m Model) RankingSnapshot() ranking.Snapshot { return m.rankingSnapshot }
+
+// CurrentPane returns the resolved Herdr current pane if available.
+func (m Model) CurrentPane() *source.Pane { return m.currentPane }
+
+// RunWithProducers drives a picker through Bubble Tea immediately with independent
+// concurrent candidate producers, entering raw input mode immediately and
+// streaming results progressively as each finishes.
+func RunWithProducers(ctx context.Context, producers []SourceProducer, query string, renderer preview.Renderer, layout Layout) (source.Candidate, RowAction, string, *source.Pane, bool, error) {
+	m := NewModelWithProducers(producers, query, renderer, ctx, layout)
+	return runProgramWithPane(ctx, m)
+}
+
+func runProgramWithPane(ctx context.Context, m Model, opts ...tea.ProgramOption) (source.Candidate, RowAction, string, *source.Pane, bool, error) {
+	ls := startLiveStatus(ctx, m.layout.StatusDialer)
+	if ls != nil {
+		defer func() {
+			_ = ls.Close()
+		}()
+		m = m.WithLiveStatus(ls.Events())
+	}
+	allOpts := make([]tea.ProgramOption, 0, 2+len(opts))
+	allOpts = append(allOpts, tea.WithContext(ctx), tea.WithAltScreen())
+	allOpts = append(allOpts, opts...)
+	p := tea.NewProgram(m, allOpts...)
+	final, err := p.Run()
+	if err != nil {
+		return source.Candidate{}, RowActionOpen, "", nil, false, err
+	}
+	finalModel := final.(Model)
+	cand, action, target, ok, ferr := finalizeRun(finalModel)
+	return cand, action, target, finalModel.CurrentPane(), ok, ferr
+}
+
 // runProgram drives m through a real Bubble Tea program and turns its
 // terminated state into the (Candidate, RowAction, target, ok, error)
 // quintuple both Run and RunWithTree return.
@@ -694,8 +1061,18 @@ func RunWithSnapshot(ctx context.Context, candidates []source.Candidate, query s
 // against any render taller than the previous one. This is not
 // unit-testable (tea.ProgramOption values close over unexported Program
 // fields); verified manually.
-func runProgram(ctx context.Context, m Model) (source.Candidate, RowAction, string, bool, error) {
-	p := tea.NewProgram(m, tea.WithContext(ctx), tea.WithAltScreen())
+func runProgram(ctx context.Context, m Model, opts ...tea.ProgramOption) (source.Candidate, RowAction, string, bool, error) {
+	ls := startLiveStatus(ctx, m.layout.StatusDialer)
+	if ls != nil {
+		defer func() {
+			_ = ls.Close()
+		}()
+		m = m.WithLiveStatus(ls.Events())
+	}
+	allOpts := make([]tea.ProgramOption, 0, 2+len(opts))
+	allOpts = append(allOpts, tea.WithContext(ctx), tea.WithAltScreen())
+	allOpts = append(allOpts, opts...)
+	p := tea.NewProgram(m, allOpts...)
 	final, err := p.Run()
 	if err != nil {
 		return source.Candidate{}, RowActionOpen, "", false, err

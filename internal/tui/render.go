@@ -72,7 +72,7 @@ func (m Model) View() string {
 		previewPane := lipgloss.JoinVertical(
 			lipgloss.Left,
 			m.renderPreviewTopBorder(previewStyle, prevW, m.previewTopBorderText()),
-			previewStyle.Copy().BorderTop(false).Render(m.viewport.View()),
+			previewStyle.BorderTop(false).Render(m.viewport.View()),
 		)
 		body = lipgloss.JoinHorizontal(lipgloss.Top, listPane, gap(), previewPane)
 	}
@@ -116,8 +116,12 @@ func (m Model) renderList(width int) string {
 }
 
 // emptyStateText picks the right "nothing to show" message: no candidates
-// at all (every source came back empty), vs. a query that matched nothing.
+// at all (every source came back empty), vs. a query that matched nothing,
+// vs. candidates still loading asynchronously.
 func (m Model) emptyStateText() string {
+	if m.loadingCandidates && len(m.baseFlatCandidates()) == 0 {
+		return "loading candidates\u2026"
+	}
 	if len(m.baseFlatCandidates()) == 0 {
 		return "no candidates available"
 	}
@@ -148,6 +152,16 @@ func (m Model) renderHeader(width int) string {
 	n := len(m.baseFlatCandidates())
 	var right string
 	switch {
+	case m.loadingCandidates && n == 0:
+		right = m.styles.mutedStyle.Render("loading\u2026")
+	case m.loadingCandidates:
+		if m.query != "" && len(m.visibleSourceCounts()) > 1 {
+			right = m.styles.mutedStyle.Render(formatSourceCounts(m.visibleSourceCounts()))
+		} else if m.query != "" {
+			right = m.styles.mutedStyle.Render(strconv.Itoa(m.visibleTopLevelCount()) + " of " + strconv.Itoa(n))
+		} else {
+			right = m.styles.mutedStyle.Render(strconv.Itoa(n) + " candidates (loading\u2026)")
+		}
 	case m.query != "" && len(m.visibleSourceCounts()) > 1:
 		// A query with matches from more than one source: the per-source
 		// breakdown explains WHERE the matches came from, which the plain
@@ -674,6 +688,14 @@ func (m Model) rowLabelFormat(row Row) string {
 	case config.SourceProjects:
 		return formats.Projects
 	default:
+		// A declared [[integrations]] source resolves its own configured (or
+		// config.Load-defaulted) label_format via the open-ended Integrations
+		// map. Any other/unknown source (a direct --path candidate, or a
+		// synthesized candidate built directly in Go) keeps the historical
+		// path-only fallback.
+		if format, ok := formats.Integrations[row.Candidate.Source]; ok && format != "" {
+			return format
+		}
 		return defaultPathLabelFormat
 	}
 }
@@ -737,10 +759,18 @@ func (m Model) rowPrimaryText(row Row) (primary string, prefixRunes int) {
 		prefix += m.icons().TabIcon + " "
 		text := m.renderRowLabel(row)
 		return prefix + text, len([]rune(prefix))
+	} else if c.Meta["is_worktree"] == "true" {
+		prefix += " "
 	} else if c.Icon != "" {
 		prefix += c.Icon + " "
 	}
+	if row.Kind == RowCandidate && m.rankingSnapshot.IsPinned(c) {
+		prefix += "•" + " "
+	}
 	text := m.renderRowLabel(row)
+	if c.Meta["is_worktree"] == "true" && c.Meta["branch"] != "" {
+		text += " [" + c.Meta["branch"] + "]"
+	}
 	if c.Source == config.SourceSessions {
 		text += sessionStatusSuffix(c)
 	}
@@ -1114,10 +1144,30 @@ func (m Model) footerPathSegment() string {
 // never independently retyped here — the same values feed the "?" help
 // overlay's matching lines in helpBodyText.
 func (m Model) footerHints() string {
-	segments := []string{
-		formatHint(keyBindingEnter.footerChord, keyBindingEnter.footerLabel),
-		formatHint(keyBindingTab.footerChord, keyBindingTab.footerLabel),
+	segments := []string{}
+	// The Enter hint is derived from the highlighted row's action descriptor
+	// (see rowActionDescriptor), so its label is truthful per row kind and
+	// always matches what handleEnter dispatches. With nothing highlighted
+	// (empty rows) there is no row-specific action, so the Enter hint is
+	// omitted entirely (SPEC-NAV-1.7).
+	if row, ok := m.currentRow(); ok {
+		segments = append(segments, formatHint(keyBindingEnter.footerChord, rowActionDescriptor(row).FooterLabel))
+		if m.layout.PinToggler != nil {
+			if row.Kind == RowCandidate {
+				label := keyBindingPin.footerLabel
+				if m.rankingSnapshot.IsPinned(row.Candidate) {
+					label = "unpin"
+				}
+				segments = append(segments, formatHint(keyBindingPin.footerChord, label))
+			} else {
+				segments = append(segments, formatHint(keyBindingPin.footerChord, "pin unavailable"))
+			}
+		}
 	}
+	if m.pinStatus != "" {
+		segments = append(segments, m.pinStatus)
+	}
+	segments = append(segments, formatHint(keyBindingTab.footerChord, keyBindingTab.footerLabel))
 	if cand, ok := m.currentCandidate(); ok && m.currentPane != nil && source.SupportsCurrentWorkspaceTarget(cand) {
 		segments = append(segments,
 			formatHint(keyBindingCtrlT.footerChord, keyBindingCtrlT.footerLabel),
@@ -1151,6 +1201,16 @@ func (m Model) renderHelp() string {
 // into helpViewport.SetContent by syncHelpViewport so the overlay scrolls
 // instead of clipping at a short terminal height.
 func (m Model) helpBodyText() string {
+	// The Enter binding's help description is rendered from the highlighted
+	// row's action descriptor (see rowActionDescriptor), so the "?" overlay
+	// tells the same truth as the footer and as handleEnter's dispatch
+	// (SPEC-NAV-1.8 parity). Every other binding renders its static keyMap
+	// help text. With nothing highlighted, the Enter binding falls back to its
+	// static description.
+	enterHelp := keyBindingEnter.help
+	if row, ok := m.currentRow(); ok {
+		enterHelp = rowActionDescriptor(row).HelpText
+	}
 	var lines []string
 	for i, section := range keyMap {
 		if i > 0 {
@@ -1158,25 +1218,11 @@ func (m Model) helpBodyText() string {
 		}
 		lines = append(lines, m.styles.helpHeadingStyle.Render(section.heading))
 		for _, b := range section.bindings {
+			if b.chord == keyChordEnter {
+				b.help = enterHelp
+			}
 			lines = append(lines, renderHelpLine(b))
 		}
 	}
 	return strings.Join(lines, "\n")
-}
-
-// candidateDisplayText builds the plain "icon label-or-path (missing)" text
-// for a bare source.Candidate — used by preview_body.go's built-in summaries
-// (identity-style sections), independent of any Row wrapper.
-func candidateDisplayText(c source.Candidate) string {
-	row := c.Label
-	if row == "" {
-		row = c.Path
-	}
-	if c.Icon != "" {
-		row = c.Icon + " " + row
-	}
-	if c.Missing {
-		row += " (missing)"
-	}
-	return row
 }

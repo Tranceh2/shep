@@ -11,6 +11,7 @@ import (
 
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/pathutil"
+	"github.com/tranceh2/shep/internal/ranking"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -20,6 +21,18 @@ import (
 // Normalize's behavior (tilde expansion, symlink resolution, trailing-slash
 // trimming, EvalSymlinks-failure fallback) lives in
 // internal/pathutil/normalize_test.go.
+func TestMatch_AliasIsSearchableButArbitraryMetaIsNot(t *testing.T) {
+	t.Parallel()
+	candidates := []source.Candidate{
+		{Label: "Kubernetes", Aliases: []string{"k8s"}, Meta: map[string]string{"secret": "k8s"}},
+		{Label: "other", Meta: map[string]string{"secret": "k8s"}},
+	}
+	matches := Match(candidates, "k8s")
+	if len(matches) != 1 || matches[0].Label != "Kubernetes" {
+		t.Fatalf("matches = %+v, want only alias candidate", matches)
+	}
+}
+
 func TestNormalize_Delegates(t *testing.T) {
 	t.Parallel()
 	input := "~/foo/../foo/bar/"
@@ -148,6 +161,75 @@ func TestDedup_SamePathDifferentLabelPreserved(t *testing.T) {
 	}
 	if !labels["ECORP"] || !labels["k8s-ecorp"] {
 		t.Errorf("expected both labels preserved, got %v", labels)
+	}
+}
+
+func integrationCandidate(label, path, id, command string) source.Candidate {
+	return source.Candidate{
+		Path:   path,
+		Label:  label,
+		Source: "kube-contexts",
+		Meta: map[string]string{
+			"integration":    "true",
+			"integration_id": id,
+			"command":        command,
+		},
+	}
+}
+
+// TestDedup_IntegrationIdentityPreservesRoutes proves integrations do not lose
+// actionable routes merely because their display label and cwd are equal.
+func TestDedup_IntegrationIdentityPreservesRoutes(t *testing.T) {
+	t.Parallel()
+	candidates := []source.Candidate{
+		integrationCandidate("cluster-a", "/repo", "direct:cluster-a", "kubectl --context direct:cluster-a"),
+		integrationCandidate("cluster-a", "/repo", "connect:cluster-a", "kubectl --context connect:cluster-a"),
+	}
+
+	got := Dedup(candidates)
+	if len(got) != 2 {
+		t.Fatalf("Dedup collapsed distinct integration routes: got %d candidates: %+v", len(got), got)
+	}
+	if got[0].Meta["integration_id"] != "direct:cluster-a" || got[1].Meta["integration_id"] != "connect:cluster-a" {
+		t.Fatalf("integration order or identity changed: %+v", got)
+	}
+}
+
+// TestDedup_IntegrationIdentityDuplicateKeepsFirst proves identical stable
+// identities collapse deterministically without using slice position as an id.
+func TestDedup_IntegrationIdentityDuplicateKeepsFirst(t *testing.T) {
+	t.Parallel()
+	first := integrationCandidate("cluster-a", "/first", "cluster-a", "kubectl --context cluster-a")
+	second := integrationCandidate("renamed", "/second", "cluster-a", "kubectl --context cluster-a")
+
+	got := Dedup([]source.Candidate{first, second})
+	if len(got) != 1 {
+		t.Fatalf("identical integration identity must collapse: %+v", got)
+	}
+	if got[0].Path != first.Path {
+		t.Fatalf("duplicate survivor = %q, want first-seen path %q", got[0].Path, first.Path)
+	}
+}
+
+// TestDedup_PathBackedIntegrationUsesExactIdentityButSharesResource proves
+// candidate dedup and pin affinity intentionally use different keys.
+func TestDedup_PathBackedIntegrationUsesExactIdentityButSharesResource(t *testing.T) {
+	t.Parallel()
+	first := integrationCandidate("cluster-a", "/repo", "direct:cluster-a", "kubectl --context direct:cluster-a")
+	second := integrationCandidate("cluster-a", "/repo", "connect:cluster-a", "kubectl --context connect:cluster-a")
+
+	got := Dedup([]source.Candidate{first, second})
+	if len(got) != 2 {
+		t.Fatalf("path-backed integration routes must both survive: %+v", got)
+	}
+	if ranking.Identity(got[0]) == ranking.Identity(got[1]) {
+		t.Fatal("distinct path-backed integration routes share exact identity")
+	}
+	if ranking.Resource(got[0]) != ranking.Resource(got[1]) {
+		t.Fatal("path-backed integration routes must share resource affinity")
+	}
+	if ranking.PinKey(got[0]) != ranking.PinKey(got[1]) {
+		t.Fatal("path-backed integration pins must share the resource key")
 	}
 }
 
@@ -370,7 +452,7 @@ func TestResolveFromSources_PipelineEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := config.Defaults()
-	cfg.General.Sources = []string{config.SourceWorkspaces}
+	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
 	cfg.Workspaces = []config.WorkspaceConfig{{Name: "alpha-ws", Path: alpha}}
 
 	r := source.NewRegistry(cfg, config.Probes{}, nil)
@@ -391,7 +473,7 @@ func TestResolveFromSources_PipelineEndToEnd(t *testing.T) {
 func TestResolveFromSources_PreservePartialError(t *testing.T) {
 	t.Parallel()
 	cfg := config.Defaults()
-	cfg.General.Sources = []string{config.SourceHerdr, config.SourceWorkspaces}
+	cfg.General.SourceOrder = []string{config.SourceHerdr, config.SourceWorkspaces}
 	cfg.Workspaces = []config.WorkspaceConfig{{Name: "ok", Path: t.TempDir()}}
 
 	// herdr driver errors but is gated on; workspaces must still come through.
@@ -509,7 +591,7 @@ func TestDedup_HerdrExempt_AcrossRegistry(t *testing.T) {
 		{config.SourceWorkspaces, config.SourceHerdr},
 	} {
 		cfg := config.Defaults()
-		cfg.General.Sources = order
+		cfg.General.SourceOrder = order
 		cfg.Workspaces = []config.WorkspaceConfig{{Name: "foo", Path: foo}}
 		r := source.NewRegistry(cfg, config.Probes{Herdr: true},
 			fakeWorkspacesDriver{workspaces: []source.Workspace{herdrCand}})

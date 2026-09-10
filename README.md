@@ -44,7 +44,9 @@ go install ./cmd/shep
 shep reads `$XDG_CONFIG_HOME/shep/config.toml`, or `~/.config/shep/config.toml`
 when `XDG_CONFIG_HOME` is unset (this XDG order is used on every platform,
 including macOS). A missing config is fine: shep falls back to built-in defaults
-(every built-in source enabled, no predefined workspaces or templates).
+(all default built-in sources enabled, with the opt-in `sessions` source
+excluded unless explicitly added to `source_order`; no predefined workspaces or
+templates).
 
 Generate a commented example config:
 
@@ -55,25 +57,158 @@ shep init --force  # overwrite an existing config
 
 ### Sources
 
-`[general].sources` lists the enabled built-in sources and their
-merge/display order. Only four names are supported — there is no support for
-arbitrary user-defined providers:
+`[general].source_order` lists the enabled sources and their merge/display
+order. Five built-in names are always available: `herdr`, `sessions`, `workspaces`,
+`zoxide`, and `projects`. `sessions` is opt-in: add it to `source_order` when
+Herdr session rows should be listed. A name declared in `[[integrations]]` (see
+below) extends the set for that config document. Any
+other name fails Load fast:
 
 ```toml
 [general]
-sources = ["herdr", "workspaces", "zoxide", "projects"]
+source_order = ["herdr", "workspaces", "zoxide", "projects"]
 selector = "builtin"   # builtin | fzf | auto
 # Applies only to newly created dynamic workspaces.
 workspace_name = '{{ .Path | osBase | lower }}'
 ```
 
 - **herdr** — active Herdr workspaces.
+- **sessions** — opt-in local Herdr sessions; add `sessions` to
+  `[general].source_order` to enable this source.
 - **workspaces** — predefined `[[workspaces]]` entries (single projects or
   `type = "group"` nested pickers).
 - **zoxide** — your zoxide history.
 - **projects** — directories detected because they contain any configured
-  marker (a file or directory name — not git-only), scanned beneath a
-  `type = "group"` workspace's own path.
+  marker (a file or directory name — not git-only). Top-level discovery scans
+  the global roots in `[sources.projects].roots`; a `type = "group"` workspace
+  scans beneath that group's own path instead.
+- **a declared integration** — an external command's JSON rows (see
+  "Command/JSON integrations" below).
+
+For an empty query, source blocks remain contiguous in `source_order`. Each
+source keeps its local policy: Herdr puts previous/recent entries first and the
+currently focused workspace last; `workspaces` preserves configured order;
+zoxide preserves provider order; and projects apply adaptive ordering only
+within the projects block. A group's explicit `source_order` replaces the global order for that nested
+picker. When it is omitted, the nested registry uses the global order while
+still honoring the group's scoped source membership. Declared integrations
+listed only by a group remain lazy. Its `[workspaces.sources.projects]` table is merged
+field by field with `[sources.projects]`: omitted fields inherit the global
+value, while specified fields apply only to that group. Group-local projects
+always use the group's path rather than global project roots. A declared
+integration may be excluded from `[general].source_order` and included only in
+a group's `source_order`; in that case its command is loaded lazily when that
+group opens, not during the top-level picker.
+
+### Command/JSON integrations
+
+`[[integrations]]` declares a trusted local producer that emits picker rows as a
+JSON array on stdout. `aliases` on the integration apply to every emitted row;
+row-level `aliases` are then combined with them. Shep starts the configured
+provider executable with safe argv execution via `exec.CommandContext` — never
+`sh -c` and never shell interpolation. The provider's JSON is a separate
+trusted action contract: its emitted `command` fields are trusted local code
+configured by the operator and execute with the user's privileges through the
+existing Herdr template shell path. Do not consume untrusted provider output as
+an integration configuration source:
+
+
+
+```toml
+[[integrations]]
+name    = "prs"
+command = ["gh", "pr", "list", "--json", "number,title,headRefName"]
+aliases = ["pull request", "review"]
+icon    = " "
+timeout = "3s"
+
+[general]
+source_order = ["herdr", "workspaces", "prs", "zoxide", "projects"]
+```
+
+`gh`'s own JSON columns do not match the row schema below, so a real `gh pr
+list` integration is usually a small wrapper script that reshapes each PR into
+one row — `command` can point at that script instead of the raw CLI.
+
+Each row is a JSON object:
+
+| field           | type                | required | meaning                                                                 |
+| --------------- | ------------------- | -------- | ------------------------------------------------------------------------ |
+| `id`            | string               | no       | stable row identity for pathless rows; prefer this over the deterministic fallback |
+| `label`         | string               | yes      | display text                                                              |
+| `path`          | string               | no       | required for `--target=workspace`; opens as an ordinary workspace through the normal `shep open` pipeline |
+| `command`       | string               | no       | runs in the root pane of a freshly created workspace, or via `--target=tab`/`--target=pane` inside the current one |
+| `icon`          | string               | no       | overrides `[[integrations]].icon` for this row                           |
+| `template`      | string               | no       | names a `[templates.<name>]` applied instead of `command`                |
+| `close_on_exit` | bool                 | no       | wraps `command` the same way `[[workspaces]]`'s own `close_on_exit` does |
+| `aliases`       | array of strings     | no       | alternate search terms; shared integration aliases combine with row aliases             |
+| `meta`          | map[string]string    | no       | inert string metadata for custom previews and non-reserved consumers; reserved internal keys are rejected |
+
+Aliases affect search only. They are not rendered in the primary row, do not group or filter candidates, and are normalized by trimming whitespace and removing case-insensitive duplicates while preserving the first declaration. Empty aliases are ignored.
+
+Integration row `meta` is inert and cannot change launch, grouping, identity,
+or control behavior. The reserved keys `command`, `template`, `close_on_exit`,
+`group`, `group_sources`, `group_template`, `parent_template`, `workspace_id`,
+`tab_id`, `pane_id`, `integration`, `integration_id`, `active_tab_id`,
+`agent_status`, `branch`, `default`, `entry_id`, `head`, `is_worktree`,
+`main_worktree`, `repo`, `running`, `session_dir`, `session_name`, `socket_path`,
+`tab_label`, `tab_number`, `tab_panes`, `workspace_label`, and `workspace_tabs`
+are rejected with a row/key error. Use the typed row fields for `command`,
+`template`, and `close_on_exit`; `integration` is set internally.
+
+A row with `path` and no `command`/`template` behaves like a zoxide/projects
+row. In the built-in picker, `Alt+P` toggles a top-level row's pin; pins are
+stored in Shep's existing private SQLite ranking state, not in config.toml.
+External selectors such as fzf receive pinned-first ordering but cannot toggle
+pins. A pathless integration row uses `id` as its stable identity when present;
+otherwise Shep hashes the integration name, label, and command deterministically.
+A row with `command` (and no `path`) remains valid for `--target=tab`/`--target=pane`,
+because those targets use the current pane's cwd. It cannot be opened as a
+standalone `--target=workspace` row: Herdr workspace creation requires a cwd,
+and shep fails fast rather than inventing one. A row may set both `path` and
+`command`. There is no parallel launch code: an integration row is an ordinary
+candidate that reuses the exact Meta-driven template/target resolution
+`[[workspaces]]` candidates already go through.
+
+A failing, timing-out (bounded by `timeout`, default `3s`), or malformed
+(non-JSON-array output, a row without `label`) integration command never
+blanks the picker or silently degrades to an empty list: its error surfaces
+through the same partial-failure path a failing Herdr/zoxide/projects source
+already uses, so the rest of the picker keeps working while the failure stays
+visible.
+
+`name` must be unique and must not collide with a built-in source name. To run
+an integration globally, include it in `[general].source_order`. To keep it
+lazy, exclude it there and include it only in a group's `source_order`; it then
+runs only after entering that group.
+
+### Adaptive ranking
+
+Ranking is enabled by default and learns only from successful launches. It stores
+opaque action/resource identities, counts, and timestamps under
+`$XDG_STATE_HOME/shep/ranking.sqlite3` (or `~/.local/state/shep/ranking.sqlite3`)
+with private permissions. Labels, queries, templates, environment data,
+telemetry, and network activity are never stored or emitted. History is retained
+for 180 days and bounded to 10,000 usage keys and 32 recent selections. For a
+non-empty query, ranking is label-first: exact label, word/prefix label match,
+fuzzy label, alias match, then path/allowed metadata. Alias matches rank exact over
+word-prefix over fuzzy within the alias layer. Within the same or near-tie textual quality,
+focusable Herdr workspace/tab/pane actions precede attach/open/create actions;
+history and stable input order are applied afterward. The same precomputed order
+feeds the TUI and fzf, with fzf using input order only as its tie-breaker.
+
+Disable it without touching ranking state:
+
+```toml
+[ranking]
+enabled = false
+```
+
+Clear history at any time, including while disabled:
+
+```sh
+shep ranking clear
+```
 
 `shep open .` (or `shep open --path .`) always opens the current directory
 directly; cwd is never a picker source in `shep list`/`shep open`'s
@@ -91,8 +226,29 @@ template = "dev"
 name = "projects"
 type = "group"
 path = "~/projects"
-sources = ["projects", "zoxide"]
+source_order = ["projects", "zoxide"]
 template = "dev"
+
+# A declared integration can be scoped to a group instead of the global picker.
+# Keep "kube-contexts" out of [general].source_order to load it only after this
+# group opens; its rows still use the normal fuzzy search, ranking, pins,
+# previews, and workspace/tab/pane launch behavior.
+[[integrations]]
+name = "kube-contexts"
+command = ["/path/to/shep/integrations/kube-contexts"]
+icon = "K"
+timeout = "2s"
+
+[[workspaces]]
+name = "Kubernetes"
+type = "group"
+path = "~/projects/kubernetes"
+source_order = ["kube-contexts"]
+
+# Optional group-local project settings merge field by field with the global
+# [sources.projects] table.
+[workspaces.sources.projects]
+max_depth = 5
 
 [[wildcards]]
 pattern = "**/services/*"
@@ -243,7 +399,12 @@ shep open .                 # open the current directory directly
 shep open --path /abs/path  # open the given absolute path directly
 shep preview /abs/path      # render the workspace preview for a path, then exit
 shep init                   # write a path-agnostic example config
+shep jump-back              # focus the previous distinct workspace for this socket
 ```
+
+`shep jump-back` navigates back to the previous distinct workspace and refuses
+with a specific exit code rather than guessing. See
+[`docs/jump-back.md`](docs/jump-back.md) for the error taxonomy and limits.
 
 ### `shep open` selection cascade
 
@@ -254,23 +415,28 @@ shep init                   # write a path-agnostic example config
 3. **TUI** — the embedded Bubble Tea picker is the universal fallback. It
    groups candidates by kind (active Herdr **Workspaces**, discovered
    **Projects**, recent **Directories** from zoxide, and statically
-   **Configured** `[[workspaces]]` entries), each its own collapsible group;
+   **Configured** `[[workspaces]]` entries, opt-in **Sessions** from Herdr, and
+any declared **integration** sources included in the effective source order),
+each its own collapsible group;
    a Herdr workspace can expand into its open tabs and, per tab, its panes.
-   Typing fuzzy-filters (subsequence match over label + path): a match on a
-   tab or pane keeps its parent workspace visible and auto-expands only the
-   matching branch — sibling tabs/panes that don't match stay hidden, and a
-   descendant-only match is marked distinctly from a direct one. Keys:
+    Typing fuzzy-filters (subsequence match over label + path + aliases): a match
+    on a tab or pane keeps its parent workspace visible and auto-expands only the
+    matching branch — sibling tabs/panes that don't match stay hidden, and a
+    descendant-only match is marked distinctly from a direct one. Keys:
    arrows or `ctrl+j`/`ctrl+k` to move, `left`/`right` to collapse/expand a
    group or workspace, `enter` to open a row (or toggle a group header),
-   `tab`/`shift+tab` to switch focus between the list and the preview pane
-   (arrows/page keys then scroll the preview instead of moving the cursor;
-   typing a letter jumps back to the list and resumes the search), `esc`/
-   `q`/`ctrl+c`/`ctrl+g` to cancel, `ctrl+l` to cycle the layout
-   (auto/landscape/portrait) for the current session, and `?` for a full
-   keybinding reference. The layout adapts to the terminal size (wide:
-   side-by-side panes; medium: stacked; very narrow: list only), and the
-   color theme follows `$NO_COLOR` > `$SHEP_THEME` > `[tui].theme` > a
-   Catppuccin Mocha default (see below).
+    `tab`/`shift+tab` to switch focus between the list and the preview pane
+    (arrows/page keys then scroll the preview instead of moving the cursor;
+     typing a letter jumps back to the list and resumes the search). Printable
+     characters, including `q`, are search input. `esc` clears a non-empty
+     query and cancels when the query is empty; `ctrl+c`/`ctrl+g` cancel
+     immediately. `ctrl+l` toggles session-only auto/landscape only, and `?`
+     opens the full keybinding reference. The responsive layout uses
+     side-by-side panes when wide and list-only behavior at narrow widths; there
+      is no portrait/stacked mode. The color theme follows `$NO_COLOR` >
+      `$SHEP_THEME` > explicit `[tui].theme` (except `inherit`) > Herdr theme
+      > a Catppuccin Mocha default (see below).
+
 
 After selecting, `shep` asks Herdr to focus an existing workspace whose pane
 cwd normalises to the candidate path, or to create a new focused workspace
@@ -320,20 +486,20 @@ no command to focus one exact pane).
 [tui]
 list_width = "auto"     # "auto" or a percentage like "60%"
 preview_width = "60%"
-layout = "landscape"     # "landscape" (side-by-side), "portrait" (stacked), or omit for responsive auto
-theme = "mocha"          # "mocha", "macchiato", "frappe", "latte", or "plain" (no color); omit to defer to $SHEP_THEME
+layout = "landscape"     # "landscape" (side-by-side), or omit for responsive auto
+theme = "mocha"           # "mocha", "macchiato", "frappe", "latte", "plain", or "inherit"
 ```
 
-`list_width`/`preview_width` mean "share of the split axis" in both
-orientations: width in `landscape`, height in `portrait` (list on top,
-preview below, both full terminal width). Omitting `layout` lets the picker
-pick landscape/portrait/list-only from the reported terminal size (with a
-small hysteresis margin so a resize near a breakpoint never flickers between
-modes); press `ctrl+l` while the picker is open to cycle
-auto → landscape → portrait → auto for the current session only — it never
-writes back to `config.toml`. `theme` resolves with `$NO_COLOR` (any
-non-empty value) always winning first, then `$SHEP_THEME`, then this field,
-then Catppuccin Mocha; `plain` (or `$NO_COLOR`) drops every color escape
+`list_width`/`preview_width` mean "share of the split axis" for the
+side-by-side layout. Omitting `layout` lets the picker choose side-by-side or
+list-only from the reported terminal width (with a small hysteresis margin so
+resizes near the breakpoint do not flicker); there is no portrait/stacked mode.
+Press `ctrl+l` while the picker is open to toggle auto ↔ landscape for the
+current session only — it never writes back to `config.toml`. `theme =
+"inherit"` delegates to the Herdr theme. Theme precedence is exactly
+`NO_COLOR > SHEP_THEME > explicit config theme (except inherit) > Herdr theme
+> mocha`; `plain` (or `$NO_COLOR`) drops every color escape
+
 sequence and relies on textual/structural markers (bold, underline, a `>`/`~`
 row marker) instead, so the picker stays fully usable over a plain terminal
 or when Nerd Fonts/24-bit color aren't available.
@@ -348,8 +514,10 @@ hardcoded and always available by name — no declaration needed:
 - `git` — a fast git summary (skipped when git is missing or slow)
 - `workspace` — the active Herdr workspace's tabs/panes tree
 - `active_pane` — the active pane's captured terminal buffer
-- `agent_status` — the focused Herdr pane's agent status, a static
-  at-open-time snapshot (not live-updated)
+- `agent_status` — the focused Herdr pane's agent status, initialized from
+  the startup snapshot and updated from live Herdr events when available;
+  disconnected or unavailable event streams fall back gracefully to the
+  snapshot/static behavior
 - `dir` — a directory listing, preferring `lsd`, then `eza`, then `ls -la`
 
 ```sh
@@ -373,13 +541,42 @@ default = ["identity", "git"]
 command = "git -C {{.Path}} log -n 3"
 ```
 
-`[preview.commands.<name>]` declares a custom preview command referenced by
-name alongside the built-ins above: argv-parsed (no `sh -c`), run with a
-timeout, output capped and cached. A failing custom command is silently
-omitted from normal preview output (no error/warning shown); it never breaks
-the picker or `shep preview`. Commands use rowformat template actions such as
-`{{.Path}}` and `{{.Label}}`; keep actions containing whitespace quoted (for
-example, `"{{ .Path }}"`) because tokenization happens before rendering.
+`[preview.commands.<name>]` declares a reusable global preview command referenced by
+name alongside the built-ins above. Its existing shell-style string contract is
+preserved; it is tokenized and executed argv-first (no `sh -c`), with timeout,
+output caps, and caching. A failing command is silently omitted from normal
+preview output and never breaks the picker or `shep preview`.
+
+An integration can add private commands under its own namespace. These commands
+use argv arrays and are executable only for candidates from that integration:
+
+```toml
+[[integrations]]
+name = "kube-contexts"
+command = ["/path/kube-contexts"]
+preview = ["identity", "cluster", "health"]
+
+[integrations.preview_commands.cluster]
+command = ["/path/kube-preview", "cluster", "{{ index .Meta \"context\" }}"]
+max_lines = 12
+
+[integrations.preview_commands.health]
+command = ["/path/kube-preview", "health", "{{ index .Meta \"context\" }}"]
+timeout = "1s"
+max_lines = 10
+```
+
+`integration.preview` controls order and may name built-ins, global commands, or
+that integration's private commands. A local command from another integration
+is invalid. Local `timeout` and `max_lines` inherit `[preview].timeout` and
+`[preview].max_lines` when omitted. Local names must not collide with built-in
+sections or global command names, but may repeat across integrations.
+
+Commands use rowformat actions such as `{{.Path}}`, `{{.Label}}`, and
+`{{ index .Meta "context" }}`. Each argv token is rendered independently, so a
+metadata value containing spaces remains one argument. Integration JSON rows
+provide inert string metadata only; they cannot declare or override executable
+preview commands. No environment or secrets are exposed to templates.
 
 ## Television integration
 
@@ -438,16 +635,18 @@ make build        # ./shep
 make test         # go test -race ./...
 make vet          # go vet ./...
 make lint         # golangci-lint run (if installed)
-scripts/check-no-user-paths.sh   # CI guard against hardcoded /Users/ paths
+scripts/check-no-user-paths.sh   # CI guard against hardcoded user-home paths
 ```
 
 ## Hardcoded path guarantee
 
 shep must never ship a developer-specific path. The CI guard
-(`scripts/check-no-user-paths.sh`) greps shipped Go sources (non-test), the
-cable, the README and configs for `/Users/`, `/home/<name>`, and `~/Proyectos`
-and fails the build on any hit. The guard is intentionally run in CI; run it
-locally before pushing changes that touch defaults.
+(`scripts/check-no-user-paths.sh`) scans committed text artifacts, including
+shipped non-test Go, README.md, docs, internal/config/example.go, cables, and
+sample/config files. It rejects absolute `/Users/<name>/...`,
+`/home/<name>/...`, and developer-specific `~/Proyectos` paths while allowing
+neutral placeholders. The guard is intentionally run in CI; run it locally
+before pushing changes that touch defaults.
 
 ## Contributing
 

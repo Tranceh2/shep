@@ -2,28 +2,35 @@ package tui
 
 import (
 	"context"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tranceh2/shep/internal/config"
+	"github.com/tranceh2/shep/internal/ranking"
 	"github.com/tranceh2/shep/internal/source"
 )
 
 // applyFilter recomputes m.rows from the current query/expand state. A query
 // change starts selection at the first visible row; other rebuilds retain the
-// previously highlighted row when it remains visible.
+// previously highlighted row when the user has explicitly navigated, or pin to
+// the first visible row otherwise.
 func (m *Model) applyFilter() tea.Cmd {
 	queryChanged := m.query != m.lastAppliedQuery
 	prevID := m.currentRowID()
 	m.rows = buildRows(rowBuildInput{
-		candidates:         m.baseFlatCandidates(),
+		candidates:         ranking.SortBySourceOrder(m.baseFlatCandidates(), m.query, m.resolvedSourceOrder(), m.rankingSnapshot),
 		query:              m.query,
 		children:           m.fetchAllChildren(),
 		expandedWorkspaces: m.expandedWorkspaces,
 		sourceOrder:        m.sourceOrder,
+		rankingSnapshot:    m.rankingSnapshot,
 	})
 	m.lastAppliedQuery = m.query
 	if queryChanged {
+		m.cursor = 0
+		m.cursorTouched = false
+		return m.maybeRefreshSnapshot()
+	}
+	if !m.cursorTouched {
 		m.cursor = 0
 		return m.maybeRefreshSnapshot()
 	}
@@ -32,11 +39,12 @@ func (m *Model) applyFilter() tea.Cmd {
 }
 
 func (m *Model) maybeRefreshSnapshot() tea.Cmd {
-	if m.snapshotDriver == nil || m.snapshotRefreshing || m.lastSnapshotAt.IsZero() || time.Since(m.lastSnapshotAt) < snapshotTTL {
+	if m.snapshotDriver == nil || m.snapshotRefreshing || m.lastSnapshotAt.IsZero() || m.now().Sub(m.lastSnapshotAt) < snapshotTTL {
 		return nil
 	}
 	m.snapshotRefreshing = true
 	m.snapshotSeq++
+	m.snapshotRequestSeq = m.liveSeq
 	seq := m.snapshotSeq
 	driver := m.snapshotDriver
 	ctx := m.renderCtx

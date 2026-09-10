@@ -33,4 +33,4 @@ Search: type to filter…                                                       
 │                                                                      │ │                                             │
 │                                                                      │ │                                             │
 ╰──────────────────────────────────────────────────────────────────────╯ ╰─────────────────────────────────────────────╯
-/srv/api  enter open / tab focus preview / esc cancel / ? help
+/srv/api  enter Focus containing tab / tab focus preview / esc cancel / ? help

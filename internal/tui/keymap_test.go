@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -125,6 +126,7 @@ func TestHelpBodyText_MatchesApprovedContent(t *testing.T) {
 		"  up/down, ctrl+j/ctrl+k    move the cursor",
 		"  left/right                collapse/expand a workspace's tabs/panes",
 		"  enter                     open the highlighted row",
+		"  alt+p                     pin/unpin the highlighted top-level candidate",
 		"  tab / shift+tab           switch focus between list and preview",
 		"  ctrl+u                    clear the query",
 		"  backspace                 delete the last query character",
@@ -154,5 +156,88 @@ func TestHelpBodyText_MatchesApprovedContent(t *testing.T) {
 
 	if got := m.helpBodyText(); got != want {
 		t.Errorf("helpBodyText() changed by the KeyMap refactor:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// === SPEC-NAV-1: descriptor-driven footer/help Enter copy ===
+
+// TestFooterHints_TabRowShowsFocusTabLabel proves SPEC-NAV-1.5: when a
+// synthesized tab row is highlighted, the footer's Enter hint reads
+// "Focus tab" (matching driver.FocusTab), not the generic "open" label.
+func TestFooterHints_TabRowShowsFocusTabLabel(t *testing.T) {
+	t.Parallel()
+	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
+	m, _ = update(t, m, sizeMsg(120, 36))
+	m.rows = []Row{{Kind: RowTab, Action: RowActionFocusTab, Candidate: source.Candidate{Label: "api", Meta: map[string]string{"tab_id": "t1"}}}}
+	m.cursor = 0
+	got := m.footerHints()
+	if !strings.Contains(got, formatHint(keyChordEnter, "Focus tab")) {
+		t.Errorf("footerHints() = %q, want it to contain the tab-row Enter hint %q", got, formatHint(keyChordEnter, "Focus tab"))
+	}
+	if strings.Contains(got, formatHint(keyChordEnter, "open")) {
+		t.Errorf("footerHints() = %q, must not show the generic \"open\" label for a tab row", got)
+	}
+}
+
+// TestFooterHints_CandidateRowKeepsOpenLabel proves SPEC-NAV-1.1/1.3: a
+// top-level candidate row keeps the truthful generic "open" Enter label and
+// never promises create/focus-existing.
+func TestFooterHints_CandidateRowKeepsOpenLabel(t *testing.T) {
+	t.Parallel()
+	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
+	m, _ = update(t, m, sizeMsg(120, 36))
+	got := m.footerHints()
+	if !strings.Contains(got, formatHint(keyChordEnter, "open")) {
+		t.Errorf("footerHints() = %q, want the candidate-row \"open\" Enter hint", got)
+	}
+	if strings.Contains(strings.ToLower(got), "create") {
+		t.Errorf("footerHints() = %q, must not promise \"create\"", got)
+	}
+}
+
+// TestFooterHints_NoHighlightInertEnter proves SPEC-NAV-1.7: with no row
+// highlighted (empty rows), the footer Enter hint is inert/absent — it must
+// not describe opening/focusing anything, and no target hints appear.
+func TestFooterHints_NoHighlightInertEnter(t *testing.T) {
+	t.Parallel()
+	m := NewModel(nil, nil)
+	m, _ = update(t, m, sizeMsg(120, 36))
+	if _, ok := m.currentRow(); ok {
+		t.Fatalf("setup: expected no highlighted row with a nil candidate set")
+	}
+	got := m.footerHints()
+	// No target hints when nothing is highlighted.
+	if strings.Contains(got, keyChordCtrlT) || strings.Contains(got, keyChordCtrlP) {
+		t.Errorf("footerHints() = %q, must not show target hints with no highlight", got)
+	}
+	// The Enter hint must not promise a row-specific action ("Focus tab").
+	if strings.Contains(got, "Focus tab") {
+		t.Errorf("footerHints() = %q, must not show a row-specific Enter action with no highlight", got)
+	}
+}
+
+// TestFooterHints_TargetHintsOnlyWhenEligibleAndPane proves SPEC-NAV-1.4/4.2:
+// ctrl+t/ctrl+p target hints appear only when a current pane exists AND the
+// highlighted candidate supports a current-workspace target (eligible), and
+// are suppressed for an ineligible row (session) even with a pane present.
+func TestFooterHints_TargetHintsOnlyWhenEligibleAndPane(t *testing.T) {
+	t.Parallel()
+	pane := source.Pane{ID: "p0"}
+
+	// Eligible zoxide candidate + pane: hints present.
+	eligible := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
+	eligible, _ = update(t, eligible, sizeMsg(120, 36))
+	eligible = eligible.WithCurrentPane(&pane)
+	if got := eligible.footerHints(); !strings.Contains(got, keyChordCtrlT) || !strings.Contains(got, keyChordCtrlP) {
+		t.Errorf("eligible+pane footerHints() = %q, want ctrl+t and ctrl+p hints", got)
+	}
+
+	// Ineligible session candidate + pane: hints suppressed.
+	sess := source.Candidate{Label: "alpha", Source: config.SourceSessions, Meta: map[string]string{"session_name": "alpha"}}
+	ineligible := NewModel([]source.Candidate{sess}, nil)
+	ineligible, _ = update(t, ineligible, sizeMsg(120, 36))
+	ineligible = ineligible.WithCurrentPane(&pane)
+	if got := ineligible.footerHints(); strings.Contains(got, keyChordCtrlT) || strings.Contains(got, keyChordCtrlP) {
+		t.Errorf("ineligible session row footerHints() = %q, must not show target hints", got)
 	}
 }

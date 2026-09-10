@@ -9,10 +9,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/tranceh2/shep/internal/config"
+	"github.com/tranceh2/shep/internal/pathutil"
 	"github.com/tranceh2/shep/internal/preview"
+	"github.com/tranceh2/shep/internal/ranking"
 	"github.com/tranceh2/shep/internal/resolver"
 	"github.com/tranceh2/shep/internal/selector"
 	"github.com/tranceh2/shep/internal/source"
@@ -25,6 +28,10 @@ import (
 // attach. It receives the resolved binary, validated session name, and already
 // filtered child environment; it must block until the child exits.
 type sessionAttachFunc func(context.Context, string, string, []string) error
+
+// asyncTUIRunFunc drives the interactive input-first TUI picker. Tests substitute
+// a fake to assert async loader behavior without driving a real terminal program.
+type asyncTUIRunFunc func(ctx context.Context, producers []tui.SourceProducer, query string, layout tui.Layout) (source.Candidate, tui.RowAction, string, *source.Pane, bool, error)
 
 // openCmd builds `shep open [query]`. The command resolves the query (or the
 // --path override) to a single candidate, drilling into a nested picker when
@@ -106,15 +113,104 @@ func validateTarget(target string) error {
 // (queried once by runOpen before candidate resolution) and a.setChosenTarget
 // are threaded into the TUI selector so its footer hints/ctrl+t/ctrl+p
 // bindings can react to it and write a target override back onto a.
+func (a *App) resolveStatusDialer() tui.StatusDialer {
+	if a.statusDialer != nil {
+		return a.statusDialer
+	}
+	socketPath := os.Getenv("HERDR_SOCKET_PATH")
+	if strings.TrimSpace(socketPath) == "" {
+		return nil
+	}
+	return tui.NewUnixStatusDialer(socketPath)
+}
+
 func (a *App) selectorFactory(matches []source.Candidate) *selector.Cascade {
 	if a.selectorBuilder != nil {
 		return a.selectorBuilder()
 	}
 	cfg := a.Config()
 	if a.startupSnapshot != nil {
-		return snapshotCascadeFor(cfg.General.Selector, a.buildPreviewRendererForSnapshot(*a.startupSnapshot), a.currentPane, a.setChosenTarget, a.setChosenAction, *a.startupSnapshot, a.Driver(), a.buildPreviewRendererForSnapshot, cfg.Sources.Herdr.Icon, matches, layoutFromConfig(cfg.TUI, cfg.General.Sources, cfg.Sources))
+		layout := layoutFromConfigWithIntegrations(cfg.TUI, cfg.General.SourceOrder, cfg.Integrations, cfg.Sources)
+		layout.RankingSnapshot = a.rankingSnapshot(matches)
+		layout.StatusDialer = a.resolveStatusDialer()
+		layout.PinToggler = a.pinToggler()
+		return snapshotCascadeFor(cfg.General.Selector, a.buildPreviewRendererForSnapshot(*a.startupSnapshot), a.currentPane, a.setChosenTarget, a.setChosenAction, *a.startupSnapshot, a.Driver(), a.buildPreviewRendererForSnapshot, cfg.Sources.Herdr.Icon, matches, layout)
 	}
-	return cascadeFor(cfg.General.Selector, a.buildPreviewRenderer(), a.currentPane, a.setChosenTarget, a.setChosenAction, a.buildTreeExpander(), matches, layoutFromConfig(cfg.TUI, cfg.General.Sources, cfg.Sources))
+	layout := layoutFromConfigWithIntegrations(cfg.TUI, cfg.General.SourceOrder, cfg.Integrations, cfg.Sources)
+	layout.RankingSnapshot = a.rankingSnapshot(matches)
+	layout.StatusDialer = a.resolveStatusDialer()
+	layout.PinToggler = a.pinToggler()
+	return cascadeFor(cfg.General.Selector, a.buildPreviewRenderer(), a.currentPane, a.setChosenTarget, a.setChosenAction, a.buildTreeExpander(), matches, layout)
+}
+
+func (a *App) rankingSnapshot(_ []source.Candidate) ranking.Snapshot {
+	a.rankingMu.Lock()
+	defer a.rankingMu.Unlock()
+	return a.rankingData
+}
+
+func (a *App) pinToggler() tui.PinToggler {
+	return func(ctx context.Context, candidate source.Candidate) tui.PinToggleResultMsg {
+		key := ranking.PinKey(candidate)
+		if err := a.openRankingForPins(ctx); err != nil {
+			return tui.PinToggleResultMsg{Key: key, Err: err}
+		}
+		a.rankingMu.Lock()
+		defer a.rankingMu.Unlock()
+		if a.rankingStore == nil {
+			return tui.PinToggleResultMsg{Key: key, Err: errors.New("ranking store unavailable")}
+		}
+		pinned, err := a.rankingStore.TogglePin(ctx, key)
+		return tui.PinToggleResultMsg{Key: key, Pinned: pinned, Err: err}
+	}
+}
+
+func (a *App) openRankingForPins(ctx context.Context) error {
+	a.rankingMu.Lock()
+	defer a.rankingMu.Unlock()
+	if a.rankingStore != nil {
+		return nil
+	}
+	openRanking := a.rankingOpen
+	if openRanking == nil {
+		openRanking = func() (rankingStore, error) { return ranking.Open() }
+	}
+	store, err := openRanking()
+	if err != nil {
+		return err
+	}
+	a.rankingStore = store
+	snapshot := store.Snapshot(ctx, "")
+	if !a.Config().Ranking.Enabled {
+		snapshot = snapshot.WithAdaptiveEnabled(false)
+	}
+	a.rankingData = snapshot
+	return nil
+}
+
+// selectorFactoryForOrder mirrors selectorFactory but threads an explicit
+// source order into the picker layout (R3-1). It is used ONLY on the nested
+// group-recursion branch of resolveFromRegistry so the group's effective order
+// drives Layout.SourceOrder identically to ranking.SortBySourceOrder; the
+// top-level path keeps selectorFactory(matches) and cfg.General.SourceOrder
+// byte-identical. A non-nil selectorBuilder override still wins so nested
+// picker tests can script the cascade the same way top-level tests do.
+func (a *App) selectorFactoryForOrder(order []string, matches []source.Candidate) *selector.Cascade {
+	if a.selectorBuilder != nil {
+		return a.selectorBuilder()
+	}
+	cfg := a.Config()
+	if a.startupSnapshot != nil {
+		layout := layoutFromConfigWithIntegrations(cfg.TUI, order, cfg.Integrations, cfg.Sources)
+		layout.RankingSnapshot = a.rankingSnapshot(matches)
+		layout.StatusDialer = a.resolveStatusDialer()
+		layout.PinToggler = a.pinToggler()
+		return snapshotCascadeFor(cfg.General.Selector, a.buildPreviewRendererForSnapshot(*a.startupSnapshot), a.currentPane, a.setChosenTarget, a.setChosenAction, *a.startupSnapshot, a.Driver(), a.buildPreviewRendererForSnapshot, cfg.Sources.Herdr.Icon, matches, layout)
+	}
+	layout := layoutFromConfigWithIntegrations(cfg.TUI, order, cfg.Integrations, cfg.Sources)
+	layout.RankingSnapshot = a.rankingSnapshot(matches)
+	layout.StatusDialer = a.resolveStatusDialer()
+	return cascadeFor(cfg.General.Selector, a.buildPreviewRenderer(), a.currentPane, a.setChosenTarget, a.setChosenAction, a.buildTreeExpander(), matches, layout)
 }
 
 // buildTreeExpander returns the startup generation's pure child tree. State
@@ -159,6 +255,14 @@ func treeActiveFor(matches []source.Candidate) bool {
 // compatibility with direct callers; production passes the normalized loaded
 // config to thread resolved row format templates into the Model.
 func layoutFromConfig(t config.TUIConfig, sources []string, sourceConfigs ...config.SourcesConfig) tui.Layout {
+	return layoutFromConfigWithIntegrations(t, sources, nil, sourceConfigs...)
+}
+
+// layoutFromConfigWithIntegrations extends layoutFromConfig with the
+// declared [[integrations]] label formats, keyed by name so each
+// integration's own label_format resolves per-source at render time (see
+// tui.LabelFormats.Integrations / rowLabelFormat).
+func layoutFromConfigWithIntegrations(t config.TUIConfig, sources []string, integrations []config.IntegrationConfig, sourceConfigs ...config.SourcesConfig) tui.Layout {
 	layout := tui.Layout{
 		ListWidth:    t.ListWidth,
 		PreviewWidth: t.PreviewWidth,
@@ -167,19 +271,24 @@ func layoutFromConfig(t config.TUIConfig, sources []string, sourceConfigs ...con
 		SourceOrder:  sources,
 		Icons:        t.Icons,
 	}
+	if len(integrations) > 0 {
+		formats := make(map[string]string, len(integrations))
+		for _, integration := range integrations {
+			formats[integration.Name] = integration.LabelFormat
+		}
+		layout.LabelFormats.Integrations = formats
+	}
 	if len(sourceConfigs) == 0 {
 		return layout
 	}
 	s := sourceConfigs[0]
-	layout.LabelFormats = tui.LabelFormats{
-		Herdr:      s.Herdr.LabelFormat,
-		Sessions:   s.Sessions.LabelFormat,
-		Workspaces: s.Workspaces.LabelFormat,
-		Zoxide:     s.Zoxide.LabelFormat,
-		Projects:   s.Projects.LabelFormat,
-		Tab:        s.Herdr.TabLabelFormat,
-		Pane:       s.Herdr.PaneLabelFormat,
-	}
+	layout.LabelFormats.Herdr = s.Herdr.LabelFormat
+	layout.LabelFormats.Sessions = s.Sessions.LabelFormat
+	layout.LabelFormats.Workspaces = s.Workspaces.LabelFormat
+	layout.LabelFormats.Zoxide = s.Zoxide.LabelFormat
+	layout.LabelFormats.Projects = s.Projects.LabelFormat
+	layout.LabelFormats.Tab = s.Herdr.TabLabelFormat
+	layout.LabelFormats.Pane = s.Herdr.PaneLabelFormat
 	return layout
 }
 
@@ -438,38 +547,343 @@ func snapshotCascadeFor(sel string, renderer preview.Renderer, currentPane *sour
 	}
 }
 
+func (a *App) runAsyncTUI(ctx context.Context, producers []tui.SourceProducer, query string, layout tui.Layout) (source.Candidate, tui.RowAction, string, *source.Pane, bool, error) {
+	if a.asyncTUIRun != nil {
+		return a.asyncTUIRun(ctx, producers, query, layout)
+	}
+	return tui.RunWithProducers(ctx, producers, query, nil, layout)
+}
+
+func (a *App) buildProviderProducer(p source.Provider, icon string) tui.SourceProducer {
+	return func(ctx context.Context) tui.SourceResultMsg {
+		raw, err := p.List(ctx)
+		cands := make([]source.Candidate, 0, len(raw))
+		for _, c := range raw {
+			clone := c.Clone()
+			if icon != "" {
+				clone.Icon = icon
+			}
+			cands = append(cands, clone)
+		}
+		return tui.SourceResultMsg{
+			Source:     p.Name(),
+			Candidates: cands,
+			Err:        err,
+		}
+	}
+}
+
+func (a *App) buildHerdrProducer(icon string, sessionsIcon string) tui.SourceProducer {
+	cfg := a.Config()
+	driver := a.Driver()
+	sessionsEnabled := false
+	for _, src := range cfg.General.SourceOrder {
+		if src == config.SourceSessions {
+			sessionsEnabled = true
+			break
+		}
+	}
+	return func(ctx context.Context) tui.SourceResultMsg {
+		if driver == nil || !driver.Detect(ctx) {
+			return tui.SourceResultMsg{Source: config.SourceHerdr}
+		}
+		snapshotCtx, cancel := context.WithTimeout(ctx, source.SnapshotTimeout)
+		snapshot, err := driver.Snapshot(snapshotCtx)
+		cancel()
+		if err != nil {
+			return tui.SourceResultMsg{
+				Source: config.SourceHerdr,
+				Err:    err,
+			}
+		}
+
+		rawHerdr := source.HerdrCandidates(snapshot)
+		cands := make([]source.Candidate, 0, len(rawHerdr))
+		for _, c := range rawHerdr {
+			clone := c.Clone()
+			if icon != "" {
+				clone.Icon = icon
+			}
+			cands = append(cands, clone)
+		}
+
+		if sessionsEnabled {
+			sessCtx, sCancel := context.WithTimeout(ctx, source.SessionsListTimeout)
+			sessions, sErr := driver.ListSessions(sessCtx)
+			sCancel()
+			if sErr == nil {
+				rawSessions := source.SessionCandidates(sessions, os.Getenv)
+				for _, c := range rawSessions {
+					clone := c.Clone()
+					if sessionsIcon != "" {
+						clone.Icon = sessionsIcon
+					}
+					cands = append(cands, clone)
+				}
+			}
+		}
+
+		var currentPane *source.Pane
+		if pane, ok := source.ResolveFocusedPane(snapshot); ok {
+			copy := *pane
+			currentPane = &copy
+		}
+
+		tree := tui.NewTreeExpanderFromSnapshot(snapshot)
+		renderer := a.buildPreviewRendererForSnapshot(snapshot)
+
+		return tui.SourceResultMsg{
+			Source:              config.SourceHerdr,
+			Candidates:          cands,
+			Tree:                tree,
+			SnapshotDriver:      driver,
+			Snapshot:            &snapshot,
+			RendererForSnapshot: a.buildPreviewRendererForSnapshot,
+			HerdrIcon:           cfg.Sources.Herdr.Icon,
+			Renderer:            renderer,
+			CurrentPane:         currentPane,
+		}
+	}
+}
+
+func (a *App) buildRankingProducer() tui.SourceProducer {
+	cfg := a.Config()
+	return func(ctx context.Context) tui.SourceResultMsg {
+		if !cfg.Ranking.Enabled {
+			return tui.SourceResultMsg{Source: "ranking"}
+		}
+		a.rankingMu.Lock()
+		store := a.rankingStore
+		a.rankingMu.Unlock()
+		if store == nil {
+			if err := a.openRankingForPins(ctx); err != nil {
+				return tui.SourceResultMsg{Source: "ranking", Err: err}
+			}
+			a.rankingMu.Lock()
+			store = a.rankingStore
+			a.rankingMu.Unlock()
+		}
+		a.rankingMu.Lock()
+		snap := store.Snapshot(ctx, "")
+		a.rankingMu.Unlock()
+		return tui.SourceResultMsg{
+			Source:          "ranking",
+			RankingSnapshot: &snap,
+		}
+	}
+}
+
+func (a *App) buildStreamingProducers(cmdCtx context.Context) []tui.SourceProducer {
+	cfg := a.Config()
+	probes := a.Probes()
+	registry := source.NewRegistry(cfg, probes, a.Driver())
+
+	var producers []tui.SourceProducer
+
+	for _, p := range registry.Enabled() {
+		switch p.Name() {
+		case config.SourceHerdr:
+			producers = append(producers, a.buildHerdrProducer(registry.IconFor(config.SourceHerdr), registry.IconFor(config.SourceSessions)))
+		case config.SourceSessions:
+			hasHerdr := false
+			for _, src := range cfg.General.SourceOrder {
+				if src == config.SourceHerdr {
+					hasHerdr = true
+					break
+				}
+			}
+			if !hasHerdr {
+				producers = append(producers, a.buildProviderProducer(p, registry.IconFor(config.SourceSessions)))
+			}
+		default:
+			// workspaces, zoxide, projects, and every declared integration
+			// share the same generic producer builder (see
+			// App.buildProviderProducer): they all just call p.List(ctx) and
+			// stream the result through tui.SourceResultMsg.Err on failure.
+			producers = append(producers, a.buildProviderProducer(p, registry.IconFor(p.Name())))
+		}
+	}
+
+	if cfg.Ranking.Enabled {
+		producers = append(producers, a.buildRankingProducer())
+	}
+
+	return producers
+}
+
 // runOpen is the pipeline so tests can call it directly against a fresh App.
 // target is the resolved --target value ("workspace", "tab", or "pane"); for
 // the interactive TUI path, the model can override it via App.chosenTarget.
 func (a *App) runOpen(cmd *cobra.Command, query, pathFlag, targetFlag string) error {
 	out := cmd.OutOrStdout()
 	errOut := cmd.ErrOrStderr()
+	a.chosenTarget = ""
+	a.chosenAction = tui.RowActionOpen
+	a.rankingMu.Lock()
+	a.rankingStore = nil
+	a.rankingData = ranking.Snapshot{}
+	a.rankingMu.Unlock()
 
-	if err := a.hydrateStartupSnapshot(cmd.Context()); err != nil {
-		fmt.Fprintf(errOut, "warning: herdr snapshot unavailable: %v\n", err)
+	defer func() {
+		a.rankingMu.Lock()
+		store := a.rankingStore
+		a.rankingStore = nil
+		a.rankingMu.Unlock()
+		if store != nil {
+			_ = store.Close()
+		}
+	}()
+
+	cfg := a.Config()
+	// Use synchronous resolution when direct path, '.', test overrides cascade,
+	// when fzf is explicitly configured, or when a CLI query was supplied.
+	if cmd.Flags().Changed("path") || query == "." || a.selectorBuilder != nil || cfg.General.Selector == config.SelectorFzf || query != "" {
+		if cfg.Ranking.Enabled {
+			openRanking := a.rankingOpen
+			if openRanking == nil {
+				openRanking = func() (rankingStore, error) { return ranking.Open() }
+			}
+			if store, err := openRanking(); err == nil {
+				a.rankingMu.Lock()
+				a.rankingStore = store
+				a.rankingData = store.Snapshot(cmd.Context(), "")
+				a.rankingMu.Unlock()
+			}
+		}
+
+		if err := a.hydrateStartupSnapshot(cmd.Context()); err != nil {
+			fmt.Fprintf(errOut, "warning: herdr snapshot unavailable: %v\n", err)
+		}
+		if a.startupSnapshot != nil && a.startupSnapshot.FocusedWorkspaceID != "" {
+			a.rankingMu.Lock()
+			a.rankingData = a.rankingData.WithCurrentExact(ranking.Identity(source.Candidate{
+				Source: config.SourceHerdr,
+				Meta:   map[string]string{"workspace_id": a.startupSnapshot.FocusedWorkspaceID},
+			}))
+			a.rankingMu.Unlock()
+		}
+
+		cand, ok, err := a.resolveCandidate(cmd, query, pathFlag, out, errOut)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return errExitOne
+		}
+
+		target := targetFlag
+		if a.chosenTarget != "" {
+			target = a.chosenTarget
+		}
+
+		outcome, err := a.launch(cmd.Context(), cand, a.chosenAction, target, a.currentPane, out, errOut)
+		if err != nil {
+			return err
+		}
+		a.rankingMu.Lock()
+		rankingReady := a.rankingStore != nil
+		a.rankingMu.Unlock()
+		if outcome == launchOutcomeCompleted && rankingReady && cfg.Ranking.Enabled {
+			a.recordRankingSuccess(cand)
+		}
+		return nil
 	}
 
-	cand, ok, err := a.resolveCandidate(cmd, query, pathFlag, out, errOut)
-	if err != nil {
-		return err
+	// Interactive startup with no query: enter Bubble Tea immediately with streaming producers!
+	layout := layoutFromConfigWithIntegrations(cfg.TUI, cfg.General.SourceOrder, cfg.Integrations, cfg.Sources)
+	layout.StatusDialer = a.resolveStatusDialer()
+	layout.PinToggler = a.pinToggler()
+	if err := a.openRankingForPins(cmd.Context()); err != nil {
+		fmt.Fprintf(errOut, "warning: pin storage unavailable: %v\n", err)
+	}
+
+	producers := a.buildStreamingProducers(cmd.Context())
+	cand, action, chosenTarget, currentPane, ok, selErr := a.runAsyncTUI(cmd.Context(), producers, query, layout)
+	if selErr != nil {
+		if errors.Is(selErr, tui.ErrCancelled) {
+			return nil
+		}
+		fmt.Fprintf(errOut, "selector unavailable: %v\n", selErr)
+		return errExitOne
 	}
 	if !ok {
-		return errExitOne // no candidate: resolveCandidate already printed why
+		return errExitOne
 	}
 
-	// The TUI picker may have overridden the target (ctrl+t / ctrl+p). When it
-	// did not (Enter, or any non-TUI selector), the --target flag value wins.
+	if currentPane != nil {
+		a.currentPane = currentPane
+	}
+
+	if cand.Path != "" && cand.Source != config.SourceSessions && action != tui.RowActionFocusTab {
+		if _, err := os.Stat(cand.Path); err != nil {
+			cand.Missing = true
+		}
+	}
+
+	if chosenTarget != "" {
+		a.chosenTarget = chosenTarget
+	}
+	a.chosenAction = action
+
+	if cand.Meta["group"] == "true" {
+		groupSources := splitNonEmpty(cand.Meta["group_sources"], ",")
+		groupWorkspace, hasWorkspace := workspaceConfigByPath(cfg.Workspaces, cand.Path)
+		nestedTemplate := cand.Meta["group_template"]
+		var nested *source.Registry
+		nestedOrder := effectiveGroupSourceOrder(cfg, groupWorkspace, hasWorkspace, groupSources)
+		if hasWorkspace {
+			nested = a.withStartupSnapshot(source.NewScopedRegistryForWorkspaceWithOrder(cfg, a.Probes(), a.Driver(), groupWorkspace, nestedOrder, cand.Path))
+		} else {
+			nested = a.withStartupSnapshot(source.NewScopedRegistryWithOrder(cfg, a.Probes(), a.Driver(), groupSources, nestedOrder, cand.Path))
+		}
+		nestedCand, nestedOk, err := a.resolveFromRegistry(cmd, nested, "", nestedTemplate, nestedOrder, out, errOut)
+		if err != nil {
+			return err
+		}
+		if !nestedOk {
+			return errExitOne
+		}
+		cand = nestedCand
+	}
+
 	target := targetFlag
 	if a.chosenTarget != "" {
 		target = a.chosenTarget
 	}
 
-	return a.launch(cmd.Context(), cand, a.chosenAction, target, a.currentPane, out, errOut)
+	outcome, err := a.launch(cmd.Context(), cand, a.chosenAction, target, a.currentPane, out, errOut)
+	if err != nil {
+		return err
+	}
+	a.rankingMu.Lock()
+	rankingReady := a.rankingStore != nil
+	a.rankingMu.Unlock()
+	if outcome == launchOutcomeCompleted && rankingReady && cfg.Ranking.Enabled {
+		a.recordRankingSuccess(cand)
+	}
+	return nil
 }
 
 // hydrateStartupSnapshot captures the one full Herdr state generation used by
 // this open invocation. It intentionally replaces the fragmented current/list
 // probes: focus is resolved from focused_pane_id in the same generation.
+const rankingRecordTimeout = 1 * time.Second
+
+func (a *App) recordRankingSuccess(cand source.Candidate) {
+	a.rankingMu.Lock()
+	store := a.rankingStore
+	snapshot := a.rankingData
+	a.rankingMu.Unlock()
+	if store == nil || !a.Config().Ranking.Enabled {
+		return
+	}
+	exact, resource := ranking.CandidateKeyParts(cand)
+	keys := ranking.Keys{Exact: exact, Resource: resource, CurrentExact: snapshot.CurrentExact()}
+	ctx, cancel := context.WithTimeout(context.Background(), rankingRecordTimeout)
+	defer cancel()
+	_ = store.RecordSuccess(ctx, keys)
+}
+
 func (a *App) hydrateStartupSnapshot(ctx context.Context) error {
 	a.currentPane = nil
 	a.startupSnapshot = nil
@@ -519,7 +933,7 @@ func (a *App) resolveCandidate(cmd *cobra.Command, query, pathFlag string, out, 
 	}
 
 	registry := a.withStartupSnapshot(source.NewRegistry(a.Config(), a.Probes(), a.Driver()))
-	return a.resolveFromRegistry(cmd, registry, query, "", out, errOut)
+	return a.resolveFromRegistry(cmd, registry, query, "", nil, out, errOut)
 }
 
 func (a *App) withStartupSnapshot(registry *source.Registry) *source.Registry {
@@ -538,7 +952,17 @@ func (a *App) withStartupSnapshot(registry *source.Registry) *source.Registry {
 // threading the group's own template (if any, else the caller's
 // parentTemplate) forward as Meta["parent_template"] on the eventually
 // launched candidate (template resolution precedence tier 5).
-func (a *App) resolveFromRegistry(cmd *cobra.Command, registry *source.Registry, query, parentTemplate string, out, errOut io.Writer) (source.Candidate, bool, error) {
+//
+// order is the effective source order for THIS resolution pass: nil means
+// "use cfg.General.SourceOrder" (the top-level pass), while a non-nil slice is
+// the group's effective order computed at the group-recursion boundary (R3-1).
+// The same order drives both ranking.SortBySourceOrder and the picker layout so
+// the nested cascade's row order and block layout never diverge.
+func (a *App) resolveFromRegistry(cmd *cobra.Command, registry *source.Registry, query, parentTemplate string, order []string, out, errOut io.Writer) (source.Candidate, bool, error) {
+	effectiveOrder := order
+	if effectiveOrder == nil {
+		effectiveOrder = a.Config().General.SourceOrder
+	}
 	all, matches, err := resolver.ResolveFromSources(cmd.Context(), registry, query)
 	if err != nil {
 		// Partial collect errors are non-fatal for resolution itself; the
@@ -555,13 +979,19 @@ func (a *App) resolveFromRegistry(cmd *cobra.Command, registry *source.Registry,
 	case 1:
 		pick = matches[0]
 	default:
-		cascade := a.selectorFactory(matches)
+		var cascade *selector.Cascade
+		if order == nil {
+			cascade = a.selectorFactory(matches)
+		} else {
+			cascade = a.selectorFactoryForOrder(effectiveOrder, matches)
+		}
 		if cascade == nil {
 			printCandidates(out, all)
 			fmt.Fprintf(errOut, "ambiguous: %s (%d matches)\n", query, len(matches))
 			return source.Candidate{}, false, errExitOne
 		}
-		got, ok, selErr := cascade.Select(cmd.Context(), matches, query)
+		ranked := ranking.SortBySourceOrder(matches, query, effectiveOrder, a.rankingSnapshot(matches))
+		got, ok, selErr := cascade.Select(cmd.Context(), ranked, query)
 		if selErr != nil {
 			if errors.Is(selErr, tui.ErrCancelled) {
 				// The user cancelled interactively (esc/ctrl+c/ctrl+g). This
@@ -584,12 +1014,22 @@ func (a *App) resolveFromRegistry(cmd *cobra.Command, registry *source.Registry,
 
 	if pick.Meta["group"] == "true" {
 		groupSources := splitNonEmpty(pick.Meta["group_sources"], ",")
+		groupWorkspace, hasWorkspace := workspaceConfigByPath(a.Config().Workspaces, pick.Path)
 		nestedTemplate := pick.Meta["group_template"]
 		if nestedTemplate == "" {
 			nestedTemplate = parentTemplate
 		}
-		nested := a.withStartupSnapshot(source.NewScopedRegistry(a.Config(), a.Probes(), a.Driver(), groupSources, pick.Path))
-		return a.resolveFromRegistry(cmd, nested, "", nestedTemplate, out, errOut)
+		// R3-1: compute the single effective order ONCE at the group boundary
+		// and thread it into both the scoped registry and nested recursion so
+		// ranking, provider execution, and layout honor the same order.
+		nestedOrder := effectiveGroupSourceOrder(a.Config(), groupWorkspace, hasWorkspace, groupSources)
+		var nested *source.Registry
+		if hasWorkspace {
+			nested = a.withStartupSnapshot(source.NewScopedRegistryForWorkspaceWithOrder(a.Config(), a.Probes(), a.Driver(), groupWorkspace, nestedOrder, pick.Path))
+		} else {
+			nested = a.withStartupSnapshot(source.NewScopedRegistryWithOrder(a.Config(), a.Probes(), a.Driver(), groupSources, nestedOrder, pick.Path))
+		}
+		return a.resolveFromRegistry(cmd, nested, "", nestedTemplate, nestedOrder, out, errOut)
 	}
 
 	if parentTemplate != "" && pick.Meta["template"] == "" && pick.Meta["command"] == "" {
@@ -599,6 +1039,35 @@ func (a *App) resolveFromRegistry(cmd *cobra.Command, registry *source.Registry,
 		pick.Meta["parent_template"] = parentTemplate
 	}
 	return pick, true, nil
+}
+
+func workspaceConfigByPath(workspaces []config.WorkspaceConfig, path string) (config.WorkspaceConfig, bool) {
+	for _, workspace := range workspaces {
+		resolved := workspace.Path
+		if expanded, err := pathutil.ExpandTilde(resolved); err == nil {
+			resolved = expanded
+		}
+		if resolved == path {
+			return workspace, true
+		}
+	}
+	return config.WorkspaceConfig{}, false
+}
+
+// effectiveGroupSourceOrder returns the single source order used for both
+// candidate ranking and picker layout inside a group's nested picker (R3-1).
+// Precedence: an explicit ws.SourceOrder when hasWorkspace && non-empty; else
+// the parsed group_sources list; else cfg.General.SourceOrder. The same slice
+// is handed to ranking.SortBySourceOrder and layoutFromConfig so the nested
+// cascade's row order and block layout can never diverge.
+func effectiveGroupSourceOrder(cfg *config.Config, ws config.WorkspaceConfig, hasWorkspace bool, groupSources []string) []string {
+	if hasWorkspace && len(ws.SourceOrder) > 0 {
+		return ws.SourceOrder
+	}
+	if len(groupSources) > 0 {
+		return groupSources
+	}
+	return cfg.General.SourceOrder
 }
 
 // splitNonEmpty splits s on sep, dropping empty fields; an empty s yields nil.
@@ -616,11 +1085,34 @@ func splitNonEmpty(s, sep string) []string {
 	return out
 }
 
+// launchOutcome classifies the result of App.launch so runOpen can distinguish
+// a genuinely completed launch (open/focus/attach) from a degraded path-print
+// fallback (R3-2). It is package-private: no other package needs to know about
+// launch completion semantics.
+type launchOutcome int
+
+const (
+	// launchOutcomeNone means failure, cancellation, or an unresolved branch —
+	// runOpen records zero history entries for it.
+	launchOutcomeNone launchOutcome = iota
+	// launchOutcomeCompleted means a real open/focus/attach happened — runOpen
+	// records exactly one history entry when err is also nil.
+	launchOutcomeCompleted
+	// launchOutcomePathOnly means the resolved path was printed because Herdr
+	// was unavailable or FocusOrCreate failed — runOpen records zero entries.
+	launchOutcomePathOnly
+)
+
 // launch asks Herdr to focus/create a workspace for the candidate, applying
 // the resolved template when a new workspace was created, or prints the
 // resolved path when Herdr is unavailable. A candidate whose configured path
 // does not exist on disk (Missing) fails clearly here instead of silently
 // falling back to "/", $HOME, or cwd, and shep never creates the directory.
+//
+// The returned launchOutcome distinguishes a genuinely completed launch
+// (Completed) from the two degraded path-print fallbacks (PathOnly) so runOpen
+// records adaptive-ranking history only for real navigation (R3-2).
+// Failure/cancellation branches return (None, err).
 //
 // target selects where the candidate opens:
 //   - "workspace" (the default and historical behaviour): FocusOrCreate a
@@ -638,29 +1130,33 @@ func splitNonEmpty(s, sep string) []string {
 // multi-tab/multi-pane template inside someone else's workspace. Already-open
 // herdr workspaces, group/template entries, and plain paths surface a clear
 // error instead.
-func (a *App) launch(ctx context.Context, cand source.Candidate, action tui.RowAction, target string, currentPane *source.Pane, out, errOut io.Writer) error {
+func (a *App) launch(ctx context.Context, cand source.Candidate, action tui.RowAction, target string, currentPane *source.Pane, out, errOut io.Writer) (launchOutcome, error) {
 	if cand.Source == config.SourceSessions {
 		if target == "tab" || target == "pane" {
 			if currentPane == nil {
 				fmt.Fprintf(errOut, "--target=%s requires shep to be running inside a herdr workspace pane\n", target)
-				return errExitOne
+				return launchOutcomeNone, errExitOne
 			}
 			if reason := disallowTarget(cand, target); reason != "" {
 				fmt.Fprintln(errOut, reason)
-				return errExitOne
+				return launchOutcomeNone, errExitOne
 			}
 		}
 		return a.launchSessionAttach(ctx, cand, errOut)
 	}
 	if cand.Missing {
 		fmt.Fprintf(errOut, "path does not exist: %s\n", displayPath(cand))
-		return errExitOne
+		return launchOutcomeNone, errExitOne
+	}
+	if target == "workspace" && cand.Meta["integration"] == "true" && strings.TrimSpace(cand.Path) == "" {
+		fmt.Fprintln(errOut, "--target=workspace requires an integration row path")
+		return launchOutcomeNone, errExitOne
 	}
 
 	driver := a.Driver()
 	if driver == nil || !driver.Detect(ctx) {
 		fmt.Fprintln(out, displayPath(cand))
-		return nil
+		return launchOutcomePathOnly, nil
 	}
 
 	// A synthesized tree-expand child row (RowActionFocusTab) identifies an
@@ -694,11 +1190,13 @@ func (a *App) launch(ctx context.Context, cand source.Candidate, action tui.RowA
 // launchSessionAttach runs the session CLI after the picker has restored the
 // terminal. Session candidates are daemon identities, not paths, so this
 // dispatch intentionally precedes the generic Missing and driver fallbacks.
-func (a *App) launchSessionAttach(ctx context.Context, cand source.Candidate, errOut io.Writer) error {
+// It returns launchOutcomeCompleted on a successful attach (R3-2) so runOpen
+// records the navigation; failure/cancellation return (None, err).
+func (a *App) launchSessionAttach(ctx context.Context, cand source.Candidate, errOut io.Writer) (launchOutcome, error) {
 	name := cand.Meta["session_name"]
 	if name == "" {
 		fmt.Fprintln(errOut, "warning: herdr session attach: missing session name")
-		return errExitOne
+		return launchOutcomeNone, errExitOne
 	}
 	attach := a.sessionAttach
 	if attach == nil {
@@ -706,9 +1204,9 @@ func (a *App) launchSessionAttach(ctx context.Context, cand source.Candidate, er
 	}
 	if err := attach(ctx, a.Config().HerdrBinary(), name, stripHerdrEnv(os.Environ())); err != nil {
 		fmt.Fprintf(errOut, "warning: herdr session attach failed: %v\n", err)
-		return errExitOne
+		return launchOutcomeNone, errExitOne
 	}
-	return nil
+	return launchOutcomeCompleted, nil
 }
 
 // runSessionAttach invokes the only foreground child in the sessions flow.
@@ -743,18 +1241,19 @@ func stripHerdrEnv(env []string) []string {
 // workspace, so there is nothing to focus-or-create at the workspace level.
 // There is no rollback on failure — unlike launchInCurrentWorkspace's
 // CreateTab/SplitPane, no resource is created here, so a warning plus
-// errExitOne is the complete failure contract.
-func (a *App) launchChildTab(ctx context.Context, driver source.HerdrDriver, cand source.Candidate, errOut io.Writer) error {
+// errExitOne is the complete failure contract. Returns launchOutcomeCompleted
+// on success (R3-2) so runOpen records the focused-tab navigation.
+func (a *App) launchChildTab(ctx context.Context, driver source.HerdrDriver, cand source.Candidate, errOut io.Writer) (launchOutcome, error) {
 	tabID := cand.Meta["tab_id"]
 	if tabID == "" {
 		fmt.Fprintln(errOut, "warning: herdr tab focus: missing tab id")
-		return errExitOne
+		return launchOutcomeNone, errExitOne
 	}
 	if err := driver.FocusTab(ctx, tabID); err != nil {
 		fmt.Fprintf(errOut, "warning: herdr tab focus failed: %v\n", err)
-		return errExitOne
+		return launchOutcomeNone, errExitOne
 	}
-	return nil
+	return launchOutcomeCompleted, nil
 }
 
 func (a *App) workspaceLaunchRequest(cand source.Candidate) (source.WorkspaceLaunchRequest, error) {
@@ -762,7 +1261,7 @@ func (a *App) workspaceLaunchRequest(cand source.Candidate) (source.WorkspaceLau
 	if cand.Source == config.SourceHerdr {
 		return source.WorkspaceLaunchRequest{Candidate: cand}, nil
 	}
-	if cand.Source == config.SourceWorkspaces {
+	if cand.Source == config.SourceWorkspaces || cand.Meta["integration"] == "true" {
 		return source.WorkspaceLaunchRequest{Candidate: cand, WorkspaceName: workspacename.Name(cand.Label)}, nil
 	}
 	normalized := cand.NormalizedPath
@@ -780,12 +1279,11 @@ func (a *App) workspaceLaunchRequest(cand source.Candidate) (source.WorkspaceLau
 	if format == "" {
 		format = cfg.General.WorkspaceName
 	}
-	if format == "" {
+	context := workspacename.NewContext(cand.Path, normalized, cand.Label, cand.Source, cand.Meta)
+	if format == "" && !context.IsWorktree {
 		return source.WorkspaceLaunchRequest{Candidate: cand, WorkspaceName: workspacename.Name(normalized)}, nil
 	}
-	name, err := workspacename.Render("workspace name", format, workspacename.Context{
-		Path: cand.Path, NormalizedPath: normalized, Label: cand.Label, Source: cand.Source,
-	})
+	name, err := workspacename.Render("workspace name", format, context)
 	if err != nil {
 		return source.WorkspaceLaunchRequest{}, err
 	}
@@ -795,18 +1293,20 @@ func (a *App) workspaceLaunchRequest(cand source.Candidate) (source.WorkspaceLau
 // launchWorkspace is the historical "workspace" target: focus-or-create a
 // standalone Herdr workspace and apply the resolved template on creation. It
 // is the pre-target behaviour, factored out so the tab/pane branch reads at
-// the same level.
-func (a *App) launchWorkspace(ctx context.Context, driver source.HerdrDriver, cand source.Candidate, out, errOut io.Writer) error {
+// the same level. Returns launchOutcomeCompleted on a successful
+// focus/create (R3-2); the FocusOrCreate-error path-print fallback returns
+// (PathOnly, nil) so runOpen does not record it as a completed navigation.
+func (a *App) launchWorkspace(ctx context.Context, driver source.HerdrDriver, cand source.Candidate, out, errOut io.Writer) (launchOutcome, error) {
 	request, err := a.workspaceLaunchRequest(cand)
 	if err != nil {
 		fmt.Fprintln(errOut, err)
-		return errExitOne
+		return launchOutcomeNone, errExitOne
 	}
 	res, err := driver.FocusOrCreate(ctx, request)
 	if err != nil {
 		fmt.Fprintf(errOut, "warning: herdr unavailable: %v\n", err)
 		fmt.Fprintln(out, displayPath(cand))
-		return nil
+		return launchOutcomePathOnly, nil
 	}
 
 	if res.Action == source.HerdrActionCreated {
@@ -814,15 +1314,17 @@ func (a *App) launchWorkspace(ctx context.Context, driver source.HerdrDriver, ca
 		target := templates.Target{
 			WorkspaceID: res.WorkspaceID,
 			RootTabID:   res.RootTabID,
-			RootPaneID:  res.RootPaneID,
 			CWD:         cand.Path,
-			Binary:      a.Config().HerdrBinary(),
+			SocketPath:  currentHerdrSocketPath(),
+			Shell:       os.Getenv("SHELL"),
+			PathEnv:     os.Getenv("PATH"),
 		}
-		if applyErr := templates.Apply(ctx, driver, target, tpl); applyErr != nil {
+		if applyErr := templates.Apply(ctx, a.LayoutApplier(), target, tpl); applyErr != nil {
 			fmt.Fprintf(errOut, "warning: template failed: %v\n", applyErr)
+			return launchOutcomeNone, applyErr
 		}
 	}
-	return nil
+	return launchOutcomeCompleted, nil
 }
 
 // launchInCurrentWorkspace realises the "tab" and "pane" targets: open the
@@ -833,20 +1335,22 @@ func (a *App) launchWorkspace(ctx context.Context, driver source.HerdrDriver, ca
 // projects) reach here; already-open herdr workspaces, group/template
 // entries, and plain paths surface a clear error via disallowTarget.
 //
-// The command (if any) is run through templates.Apply with a synthetic
-// template built from Meta["command"] (+ close_on_exit), so the
-// shell-chaining wrap is the single tested code path shared with the
-// workspace target's simple-command branch. A command-less candidate
-// (zoxide/projects) applies an empty TemplateConfig — a plain shell, no
-// RunPane.
-func (a *App) launchInCurrentWorkspace(ctx context.Context, driver source.HerdrDriver, cand source.Candidate, target string, currentPane *source.Pane, errOut io.Writer) error {
+// The command (if any) is typed into the freshly created container pane via
+// templates.RunCommand, which owns the close_on_exit shell-chaining wrap.
+// This path deliberately does NOT use layout.apply: the container lives
+// inside a workspace the user is already using, and applying a layout there
+// would replace the surrounding tab rather than fill the new pane. A
+// command-less candidate (zoxide/projects) leaves a plain shell — no RunPane
+// call at all. Returns launchOutcomeCompleted on success (R3-2) so runOpen
+// records the tab/pane navigation; failures return (None, errExitOne).
+func (a *App) launchInCurrentWorkspace(ctx context.Context, driver source.HerdrDriver, cand source.Candidate, target string, currentPane *source.Pane, errOut io.Writer) (launchOutcome, error) {
 	if currentPane == nil {
 		fmt.Fprintf(errOut, "--target=%s requires shep to be running inside a herdr workspace pane\n", target)
-		return errExitOne
+		return launchOutcomeNone, errExitOne
 	}
 	if reason := disallowTarget(cand, target); reason != "" {
 		fmt.Fprintln(errOut, reason)
-		return errExitOne
+		return launchOutcomeNone, errExitOne
 	}
 
 	cmd := cand.Meta["command"]
@@ -855,46 +1359,37 @@ func (a *App) launchInCurrentWorkspace(ctx context.Context, driver source.HerdrD
 	binary := a.Config().HerdrBinary()
 	cwd := currentPane.CWD
 
-	var containerTabID, containerPaneID string
+	var containerPaneID string
 	switch target {
 	case "tab":
-		tab, pane, err := driver.CreateTab(ctx, currentPane.WorkspaceID, cwd, cand.Label, true)
+		_, pane, err := driver.CreateTab(ctx, currentPane.WorkspaceID, cwd, cand.Label, true)
 		if err != nil {
 			fmt.Fprintf(errOut, "warning: herdr tab create failed: %v\n", err)
-			return errExitOne
+			return launchOutcomeNone, errExitOne
 		}
-		containerTabID, containerPaneID = tab.ID, pane.ID
+		containerPaneID = pane.ID
 	case "pane":
 		pane, err := driver.SplitPane(ctx, currentPane.ID, "right", 0.5, cwd, true)
 		if err != nil {
 			fmt.Fprintf(errOut, "warning: herdr pane split failed: %v\n", err)
-			return errExitOne
+			return launchOutcomeNone, errExitOne
 		}
-		containerTabID, containerPaneID = currentPane.TabID, pane.ID
+		containerPaneID = pane.ID
 	default:
 		// Unreachable: launch only routes "tab"/"pane" here. Defensive guard.
 		fmt.Fprintf(errOut, "--target=%s is not supported inside the current workspace\n", target)
-		return errExitOne
+		return launchOutcomeNone, errExitOne
 	}
 
-	applyTarget := templates.Target{
-		WorkspaceID: currentPane.WorkspaceID,
-		RootTabID:   containerTabID,
-		RootPaneID:  containerPaneID,
-		CWD:         cwd,
-		Binary:      binary,
-	}
-	if applyErr := templates.Apply(ctx, driver, applyTarget, tpl); applyErr != nil {
+	if applyErr := templates.RunCommand(ctx, driver, containerPaneID, binary, tpl); applyErr != nil {
 		fmt.Fprintf(errOut, "warning: launch failed: %v\n", applyErr)
-		// Apply failed after CreateTab/SplitPane already succeeded above,
-		// leaving a ghost empty tab/pane in Herdr. Best-effort close it so
-		// the user isn't left with dangling UI state; the close error (if
-		// any) is intentionally swallowed since applyErr is already the
-		// primary, user-facing failure.
-		_ = driver.RunPane(ctx, containerPaneID, binary+" pane close "+containerPaneID)
-		return errExitOne
+		rollbackCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		_ = driver.RunPane(rollbackCtx, containerPaneID, templates.ShellCommand(binary, "pane", "close", containerPaneID))
+		cancel()
+		return launchOutcomeNone, errExitOne
 	}
-	return nil
+
+	return launchOutcomeCompleted, nil
 }
 
 // disallowTarget returns a non-empty user-facing error string when the
@@ -957,10 +1452,10 @@ func candidateFromPath(p string) (source.Candidate, error) {
 
 // resolveTemplate resolves the template applied to a freshly created
 // workspace, per the documented precedence:
-//  1. exact [[workspaces]] entry with an explicit template (Meta["template"])
-//  2. exact [[workspaces]] entry with an explicit command (Meta["command"])
+//  1. exact [[workspaces]] entry with explicit template (Meta["template"])
+//  2. exact [[workspaces]] entry with explicit command (Meta["command"])
 //  3. first matching [[wildcards]] entry's template
-//  4. template inherited from the parent group picker (Meta["parent_template"])
+//  4. template inherited from parent group picker (Meta["parent_template"])
 //  5. [defaults].template
 //
 // An unresolved name (should not happen post-validation) or no match at any

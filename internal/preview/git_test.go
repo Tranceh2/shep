@@ -85,6 +85,18 @@ func TestGitSummary_DirtyCount(t *testing.T) {
 	}
 }
 
+func TestFormatGitSummary_Worktree(t *testing.T) {
+	t.Parallel()
+	summary := GitSummary{Branch: "feat/auth", Dirty: 2}
+	meta := map[string]string{"is_worktree": "true", "branch": "feat/auth", "head": "9fce23abcdef"}
+	if got, want := formatGitSummary(summary, meta), "[worktree: feat/auth] 9fce23a feat/auth (2 changes)"; got != want {
+		t.Fatalf("summary = %q, want %q", got, want)
+	}
+	if got, want := formatGitSummary(GitSummary{Branch: "main"}, nil), "main (clean)"; got != want {
+		t.Fatalf("standard summary = %q, want %q", got, want)
+	}
+}
+
 // TestGitSummary_SlowMiss (WP-1) bypasses when execution exceeds the 50ms
 // budget by returning an error (the renderer then skips the git line).
 func TestGitSummary_SlowMiss(t *testing.T) {

@@ -31,18 +31,22 @@ func (f *fakeGit) Summary(_ context.Context, _ string) (GitSummary, error) {
 
 // fakeRunner is a scriptable CommandRunner for renderer tests.
 type fakeRunner struct {
-	out   map[string]string // argv[0] -> output
-	err   map[string]error
-	argv  []string
-	calls int
+	out      map[string]string // argv[0] -> output
+	err      map[string]error
+	argv     []string
+	calls    int
+	maxLines int
+	contexts []context.Context
 }
 
-func (f *fakeRunner) Run(_ context.Context, argv []string, _ string, _ int) (string, error) {
+func (f *fakeRunner) Run(ctx context.Context, argv []string, _ string, maxLines int) (string, error) {
 	f.calls++
 	if len(argv) == 0 {
 		return "", errors.New("empty argv")
 	}
 	f.argv = append([]string(nil), argv...)
+	f.maxLines = maxLines
+	f.contexts = append(f.contexts, ctx)
 	if err, ok := f.err[argv[0]]; ok {
 		return "", err
 	}
@@ -229,10 +233,37 @@ func TestRender_IdentityAndGit(t *testing.T) {
 	}
 }
 
+func TestRender_WorktreeGitBadge(t *testing.T) {
+	t.Parallel()
+	r := NewRenderer(cfgWithDefault(config.PreviewGit), config.Probes{Git: true},
+		&fakeGit{summary: GitSummary{Branch: "feat/auth", Dirty: 2}}, nil)
+	cand := candidate("api", "/trees/api", config.SourceProjects, "")
+	cand.Meta = map[string]string{"is_worktree": "true", "branch": "feat/auth", "head": "9fce23abcdef"}
+
+	got := mustRender(t, r, cand)
+	for _, want := range []string{"[worktree: feat/auth]", "9fce23a", "2 changes"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("worktree preview %q missing %q", got, want)
+		}
+	}
+}
+
 // TestRender_GitBypassed confirms the git section is entirely omitted when
 // probes report git missing, or when Summary errors (slow/missing/timeout),
 // and that the overall preview falls back to the identity built-in instead
 // of a blank success once the only configured section contributes nothing.
+func TestRender_WorktreeGitBadgeFallsBackToGitBranch(t *testing.T) {
+	t.Parallel()
+	r := NewRenderer(cfgWithDefault(config.PreviewGit), config.Probes{Git: true},
+		&fakeGit{summary: GitSummary{Branch: "detached", Dirty: 0}}, nil)
+	cand := candidate("api", "/trees/api", config.SourceProjects, "")
+	cand.Meta = map[string]string{"is_worktree": "true"}
+
+	if got := mustRender(t, r, cand); !strings.Contains(got, "[worktree: detached]") || !strings.Contains(got, "clean") {
+		t.Fatalf("worktree fallback preview = %q", got)
+	}
+}
+
 func TestRender_GitBypassed(t *testing.T) {
 	t.Parallel()
 
@@ -280,6 +311,61 @@ func TestRender_NoDefaultFallsBackToIdentity(t *testing.T) {
 // Render must never come back as a blank success; it must fall back to a
 // clean identity preview instead, and any command failure must stay hidden
 // (never surfaced as an error/warning).
+func TestRender_IntegrationLocalCommandsUseMetadataAndRemainScoped(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.Preview.Default = []string{config.PreviewIdentity}
+	cfg.Integrations = []config.IntegrationConfig{
+		{Name: "kube-a", Preview: []string{"cluster"}, PreviewCommands: map[string]config.IntegrationPreviewCommand{
+			"cluster": {Command: []string{"kube-preview", "{{ index .Meta \"context\" }}"}, Timeout: config.Duration(time.Second), MaxLines: 12},
+		}},
+		{Name: "kube-b", Preview: []string{"cluster"}, PreviewCommands: map[string]config.IntegrationPreviewCommand{
+			"cluster": {Command: []string{"other-preview", "{{ index .Meta \"context\" }}"}, Timeout: config.Duration(time.Second), MaxLines: 12},
+		}},
+	}
+	runner := &fakeRunner{out: map[string]string{"kube-preview": "cluster ok", "other-preview": "other ok"}}
+	r := NewRenderer(cfg, config.Probes{}, nil, runner)
+	cand := source.Candidate{Path: "/tmp", Label: "prod", Source: "kube-a", Meta: map[string]string{"context": "cluster prod west"}}
+	if got := mustRender(t, r, cand); got != "cluster ok" {
+		t.Fatalf("local preview = %q, want cluster output", got)
+	}
+	if !strings.EqualFold(strings.Join(runner.argv, "|"), "kube-preview|cluster prod west") {
+		t.Fatalf("argv = %#v, want metadata with spaces as one token", runner.argv)
+	}
+	if runner.maxLines != 12 || len(runner.contexts) != 1 {
+		t.Fatalf("local command bounds = max_lines %d contexts %d, want 12 and one context", runner.maxLines, len(runner.contexts))
+	}
+
+	runner = &fakeRunner{out: map[string]string{"kube-preview": "cluster ok", "other-preview": "other ok"}}
+	r = NewRenderer(cfg, config.Probes{}, nil, runner)
+	foreign := source.Candidate{Path: "/tmp", Label: "prod", Source: "unknown", Meta: map[string]string{"context": "cluster prod west"}}
+	got := mustRender(t, r, foreign)
+	if strings.Contains(got, "cluster ok") || runner.calls != 0 {
+		t.Fatalf("foreign candidate used integration-local command: output=%q calls=%d", got, runner.calls)
+	}
+}
+
+func TestRender_IntegrationLocalFailureDoesNotHideOtherSections(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.Integrations = []config.IntegrationConfig{{
+		Name:    "kube",
+		Preview: []string{"cluster", "health"},
+		PreviewCommands: map[string]config.IntegrationPreviewCommand{
+			"cluster": {Command: []string{"cluster"}, Timeout: config.Duration(time.Second), MaxLines: 12},
+			"health":  {Command: []string{"health"}, Timeout: config.Duration(time.Millisecond), MaxLines: 10},
+		},
+	}}
+	runner := &fakeRunner{
+		out: map[string]string{"cluster": "cluster rendered"},
+		err: map[string]error{"health": errors.New("timeout")},
+	}
+	got := mustRender(t, NewRenderer(cfg, config.Probes{}, nil, runner), source.Candidate{Path: "/tmp", Source: "kube"})
+	if !strings.Contains(got, "cluster rendered") || strings.Contains(got, "health") {
+		t.Fatalf("partial local preview = %q, want cluster only", got)
+	}
+}
+
 func TestRender_AllConfiguredSectionsFailFallsBackToIdentity(t *testing.T) {
 	t.Parallel()
 	cfg := cfgWithDefault(config.PreviewGit, "broken", config.PreviewWorkspace, config.PreviewActivePane)
@@ -352,6 +438,17 @@ func TestResolvePreviewNames_Precedence(t *testing.T) {
 		t.Parallel()
 		cfg := config.Defaults()
 		got := resolvePreviewNames(cfg, source.Candidate{Path: "/other/foo", Source: config.SourceZoxide})
+		if len(got) != 1 || got[0] != config.PreviewIdentity {
+			t.Errorf("got %v want [identity]", got)
+		}
+	})
+
+	t.Run("declared integration preview wins over default", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Defaults()
+		cfg.Preview.Default = []string{config.PreviewGit}
+		cfg.Integrations = []config.IntegrationConfig{{Name: "prs", Preview: []string{config.PreviewIdentity}}}
+		got := resolvePreviewNames(cfg, source.Candidate{Label: "PR 42", Source: "prs"})
 		if len(got) != 1 || got[0] != config.PreviewIdentity {
 			t.Errorf("got %v want [identity]", got)
 		}
@@ -637,13 +734,13 @@ func TestRender_HerdrSections_SkipOnNonHerdrCandidate(t *testing.T) {
 // TestRender_CacheKey_DoesNotAliasCandidatesSharingPath is the regression
 // test for the real-world repro: multiple [[workspaces]] entries pointing at
 // the identical path (e.g. "ECORP", "allsafe", "k8s-ecorp" all at
-// ~/Trabajo/ECORP) must render their own identity, not a stale cached
+// ~/projects) must render their own identity, not a stale cached
 // preview bled over from whichever candidate was rendered first.
 func TestRender_CacheKey_DoesNotAliasCandidatesSharingPath(t *testing.T) {
 	t.Parallel()
 
 	r := NewRenderer(cfgWithDefault(config.PreviewIdentity), config.Probes{}, nil, nil)
-	shared := "/Users/x/Trabajo/ECORP"
+	shared := "/tmp/shep-preview/shared"
 
 	gotLatam := mustRender(t, r, candidate("ECORP", shared, config.SourceWorkspaces, ""))
 	gotallsafe := mustRender(t, r, candidate("allsafe", shared, config.SourceWorkspaces, ""))

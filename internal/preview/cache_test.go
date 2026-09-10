@@ -81,7 +81,7 @@ func TestCache_Key_DistinguishesCandidatesSharingPath(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.PreviewConfig{Default: []string{"identity"}}
-	shared := "/Users/x/Trabajo/ECORP"
+	shared := "/tmp/shep-preview/shared"
 
 	ecorp := source.Candidate{Path: shared, Label: "ECORP", Source: config.SourceWorkspaces, Meta: map[string]string{"group": "true"}}
 	allsafe := source.Candidate{Path: shared, Label: "allsafe", Source: config.SourceWorkspaces, Meta: map[string]string{"command": "allsafe start"}}
@@ -120,6 +120,28 @@ func TestCache_Key_SameCandidateRepeatsHit(t *testing.T) {
 	k2 := PreviewCacheKey(c.Clone(), cfg)
 	if k1 != k2 {
 		t.Errorf("same candidate must produce the same key across calls: %q vs %q", k1, k2)
+	}
+}
+
+func TestCache_Key_DistinguishesPathBackedIntegrationRoutes(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.PreviewConfig{Default: []string{"identity"}}
+	baseMeta := map[string]string{"integration": "true"}
+	direct := source.Candidate{
+		Path:   "/repo",
+		Label:  "cluster-a",
+		Source: "kube-contexts",
+		Meta:   map[string]string{"integration": baseMeta["integration"], "integration_id": "direct:cluster-a", "command": "kubectl --context direct:cluster-a"},
+	}
+	connect := source.Candidate{
+		Path:   "/repo",
+		Label:  "cluster-a",
+		Source: "kube-contexts",
+		Meta:   map[string]string{"integration": baseMeta["integration"], "integration_id": "connect:cluster-a", "command": "kubectl --context connect:cluster-a"},
+	}
+	if PreviewCacheKey(direct, cfg) == PreviewCacheKey(connect, cfg) {
+		t.Fatal("distinct path-backed integration routes must not share a preview cache key")
 	}
 }
 

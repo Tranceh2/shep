@@ -160,6 +160,54 @@ func TestRowPrimaryText_DefaultLabelFormatsPreserveCurrentRendering(t *testing.T
 	}
 }
 
+// TestRowPrimaryText_IntegrationUsesConfiguredFormatKeyedByName proves an
+// integration row's label_format resolves by Candidate.Source (the declared
+// [[integrations]].name), mirroring the fixed built-in fields above but
+// looked up in the open-ended Integrations map instead.
+func TestRowPrimaryText_IntegrationUsesConfiguredFormatKeyedByName(t *testing.T) {
+	m := newRenderTestModel(ThemeMocha, FocusList)
+	m.layout.LabelFormats = LabelFormats{Integrations: map[string]string{"prs": "PR {{.Label}}"}}
+	row := Row{Kind: RowCandidate, Candidate: source.Candidate{
+		Source: "prs", Label: "42", Icon: "P",
+	}}
+	got, _ := m.rowPrimaryText(row)
+	if want := "P PR 42"; got != want {
+		t.Errorf("rowPrimaryText() = %q, want %q", got, want)
+	}
+}
+
+// TestRowPrimaryText_IntegrationDefaultFormatIsLabelOnly proves the
+// label_format config.Load defaults every declared integration to
+// ("{{.Label}}", see config.normalizeIntegrations) renders label-only, since
+// a command-only integration row (Meta["command"] set, no Path) would
+// otherwise render blank under the historical path-only fallback.
+func TestRowPrimaryText_IntegrationDefaultFormatIsLabelOnly(t *testing.T) {
+	m := newRenderTestModel(ThemeMocha, FocusList)
+	m.layout.LabelFormats = LabelFormats{Integrations: map[string]string{"prs": "{{.Label}}"}}
+	row := Row{Kind: RowCandidate, Candidate: source.Candidate{
+		Source: "prs", Label: "PR 42", Icon: "P", Meta: map[string]string{"command": "gh pr view 42"},
+	}}
+	got, _ := m.rowPrimaryText(row)
+	if want := "P PR 42"; got != want {
+		t.Errorf("rowPrimaryText() = %q, want %q", got, want)
+	}
+}
+
+// TestRowPrimaryText_UndeclaredSourceKeepsPathOnlyFallback proves a source
+// name absent from Layout.LabelFormats.Integrations (not a declared
+// [[integrations]] entry — e.g. a direct --path candidate) keeps the
+// historical path-only default, unaffected by the integrations feature.
+func TestRowPrimaryText_UndeclaredSourceKeepsPathOnlyFallback(t *testing.T) {
+	m := newRenderTestModel(ThemeMocha, FocusList)
+	row := Row{Kind: RowCandidate, Candidate: source.Candidate{
+		Source: "path", Label: "backend", Path: "/srv/backend", Icon: "◆",
+	}}
+	got, _ := m.rowPrimaryText(row)
+	if want := "◆ /srv/backend"; got != want {
+		t.Errorf("rowPrimaryText() = %q, want %q", got, want)
+	}
+}
+
 func TestRowPrimaryText_InvalidRuntimeFormatFallsBackToPath(t *testing.T) {
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	m.layout.LabelFormats = LabelFormats{Zoxide: "{{.Unknown}}"}

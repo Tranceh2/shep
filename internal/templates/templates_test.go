@@ -3,744 +3,418 @@ package templates
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/tranceh2/shep/internal/config"
-	"github.com/tranceh2/shep/internal/source"
+	"github.com/tranceh2/shep/internal/herdr"
 )
 
-// fakeDriver records every tab/pane mutation call so tests can assert the
-// exact sequence of Herdr operations issued by Apply, without a real daemon.
-// focus flags on CreateTab/SplitPane are captured in created entries so the
-// new focus-at-creation-time behaviour is observable.
-type fakeDriver struct {
-	tabSeq    int
-	paneSeq   int
-	created   []string // "tab:<workspace>:<cwd>:<label>:<focus>" / "split:<pane>:<dir>:<ratio>:<cwd>:<focus>"
-	renamed   []string // "rename:<tab>:<label>"
-	paneCalls []string // "rename-pane:<pane>:<label>"
-	calls     []string // mutation order across split, rename, and run
-	ran       []string // "run:<pane>:<command>"
-	focused   []string // "focus-tab:<id>"
-	splitErr  error
-	renameErr error
-	runErr    error
+// fakeApplier records every ApplyLayout dispatch so a test can assert what
+// reached the socket boundary — and, just as importantly, how many times.
+// failAt makes the Nth call (0-indexed) fail, which is how the fail-closed
+// tests prove that a later tab is never dispatched after an earlier one
+// fails.
+type fakeApplier struct {
+	sockets []string
+	calls   []herdr.LayoutApplyParams
+	failAt  int
+	err     error
 }
 
-func (f *fakeDriver) Detect(context.Context) bool { return true }
-func (f *fakeDriver) Snapshot(context.Context) (source.Snapshot, error) {
-	return source.Snapshot{}, errors.New("not implemented")
-}
-func (f *fakeDriver) ListSessions(context.Context) ([]source.Session, error) {
-	return nil, errors.New("not implemented")
-}
-func (f *fakeDriver) FocusOrCreate(context.Context, source.WorkspaceLaunchRequest) (source.FocusResult, error) {
-	return source.FocusResult{}, errors.New("not implemented")
-}
-func (f *fakeDriver) ReadPane(context.Context, string, int) (string, error) { return "", nil }
+func newFakeApplier() *fakeApplier { return &fakeApplier{failAt: -1} }
 
-func (f *fakeDriver) CreateTab(_ context.Context, workspaceID, cwd, label string, focus bool) (source.Tab, source.Pane, error) {
-	f.tabSeq++
-	f.paneSeq++
-	tabID := seqID("t", f.tabSeq)
-	paneID := seqID("p", f.paneSeq)
-	f.created = append(f.created, "tab:"+workspaceID+":"+cwd+":"+label+":"+focusStr(focus))
-	return source.Tab{ID: tabID, WorkspaceID: workspaceID}, source.Pane{ID: paneID, WorkspaceID: workspaceID, TabID: tabID}, nil
-}
-
-func (f *fakeDriver) RenameTab(_ context.Context, tabID, label string) error {
-	f.renamed = append(f.renamed, "rename:"+tabID+":"+label)
-	return nil
-}
-
-func (f *fakeDriver) RenamePane(_ context.Context, paneID string, label *string) error {
-	value := "<nil>"
-	if label != nil {
-		value = *label
+func (f *fakeApplier) ApplyLayout(_ context.Context, socketPath string, params herdr.LayoutApplyParams) (*herdr.LayoutApplyResult, error) {
+	idx := len(f.calls)
+	f.sockets = append(f.sockets, socketPath)
+	f.calls = append(f.calls, params)
+	if f.err != nil && idx == f.failAt {
+		return nil, f.err
 	}
-	f.paneCalls = append(f.paneCalls, "rename-pane:"+paneID+":"+value)
-	f.calls = append(f.calls, "rename-pane:"+paneID+":"+value)
-	if f.renameErr != nil {
-		return f.renameErr
-	}
-	return nil
+	return &herdr.LayoutApplyResult{TabID: "applied"}, nil
 }
 
-func (f *fakeDriver) SplitPane(_ context.Context, paneID, direction string, ratio float64, cwd string, focus bool) (source.Pane, error) {
-	if f.splitErr != nil {
-		return source.Pane{}, f.splitErr
-	}
-	f.paneSeq++
-	newID := seqID("p", f.paneSeq)
-	f.created = append(f.created, "split:"+paneID+":"+direction+":"+ratioStr(ratio)+":"+cwd+":"+focusStr(focus))
-	f.calls = append(f.calls, "split:"+paneID+":"+direction)
-	return source.Pane{ID: newID}, nil
+// fakeRunner records the pane commands issued by RunCommand, the one
+// remaining path that still types into an existing pane.
+type fakeRunner struct {
+	ran []string
+	err error
 }
 
-func (f *fakeDriver) RunPane(_ context.Context, paneID, command string) error {
+func (f *fakeRunner) RunPane(_ context.Context, paneID, command string) error {
 	f.ran = append(f.ran, "run:"+paneID+":"+command)
-	f.calls = append(f.calls, "run:"+paneID+":"+command)
-	return f.runErr
-}
-
-func (f *fakeDriver) FocusTab(_ context.Context, tabID string) error {
-	f.focused = append(f.focused, "focus-tab:"+tabID)
-	return nil
-}
-
-func seqID(prefix string, n int) string {
-	return prefix + "-" + string(rune('0'+n))
-}
-
-func ratioStr(r float64) string {
-	// Minimal fixed-precision formatting sufficient for test assertions.
-	switch r {
-	case 0.5:
-		return "0.5"
-	case 0.8:
-		return "0.8"
-	case 0.2:
-		return "0.2"
-	case 0.3333333333333333:
-		return "0.3333333333333333"
-	default:
-		return "?"
-	}
-}
-
-func focusStr(b bool) string {
-	if b {
-		return "focus"
-	}
-	return "nofocus"
+	return f.err
 }
 
 func stringPtr(value string) *string { return &value }
 
-func TestApply_LabelRunsAfterPaneResolutionAndBeforeCommand(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name      string
-		tpl       config.TemplateConfig
-		wantCalls []string
-	}{
-		{
-			name: "root reused leaf",
-			tpl: config.TemplateConfig{Tabs: []config.TemplateTab{{Name: "code", Root: "main", Nodes: []config.TemplateNode{
-				{ID: "main", Label: stringPtr("shell"), Command: "nvim"},
-			}}}},
-			wantCalls: []string{"rename-pane:w1:p1:shell", "run:w1:p1:nvim"},
-		},
-		{
-			name: "split-created leaf",
-			tpl: config.TemplateConfig{Tabs: []config.TemplateTab{{Name: "code", Root: "main", Nodes: []config.TemplateNode{
-				{ID: "main", Split: config.SplitRows, Children: []string{"editor", "terminal"}, Sizes: []int{80, 20}},
-				{ID: "editor", Command: "nvim"},
-				{ID: "terminal", Label: stringPtr("logs"), Command: "tail -f app.log"},
-			}}}},
-			wantCalls: []string{"split:w1:p1:down", "run:w1:p1:nvim", "rename-pane:p-1:logs", "run:p-1:tail -f app.log"},
+// countPanes counts the leaf terminals in a dispatched layout tree. It is how
+// the atomicity tests prove a whole multi-pane tab travelled in ONE call
+// instead of being dribbled out one split at a time.
+func countPanes(n *herdr.LayoutNode) int {
+	switch {
+	case n == nil:
+		return 0
+	case n.Type == herdr.NodeTypePane:
+		return 1
+	default:
+		return countPanes(n.First) + countPanes(n.Second)
+	}
+}
+
+// fourPaneTemplate is a two-tab template whose first tab holds four panes.
+// Under the old subprocess dispatcher that tab alone cost three `pane split`
+// calls plus four `pane run` calls; under layout.apply it must cost exactly
+// one round trip.
+func fourPaneTemplate() config.TemplateConfig {
+	return config.TemplateConfig{
+		Tabs: []config.TemplateTab{
+			{Name: "code", Root: "main", Nodes: []config.TemplateNode{
+				{ID: "main", Split: config.SplitCols, Children: []string{"a", "b", "c", "d"}},
+				{ID: "a", Command: "nvim"},
+				{ID: "b", Command: "lazygit"},
+				{ID: "c", Label: stringPtr("logs"), Command: "tail -f app.log"},
+				{ID: "d", Command: ""},
+			}},
+			{Name: "term", Root: "sh", Nodes: []config.TemplateNode{{ID: "sh", Command: ""}}},
 		},
 	}
+}
+
+func testTarget() Target {
+	return Target{WorkspaceID: "w1", RootTabID: "w1:t1", CWD: "/proj", SocketPath: "/tmp/herdr.sock"}
+}
+
+// TestApply_OneAtomicDispatchPerTab is the core R7.1 guarantee: a four-pane
+// tab is applied in a single socket round trip carrying the whole tree, and a
+// two-tab template costs exactly two round trips — not one per pane.
+func TestApply_OneAtomicDispatchPerTab(t *testing.T) {
+	t.Parallel()
+	a := newFakeApplier()
+	if err := Apply(context.Background(), a, testTarget(), fourPaneTemplate()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(a.calls) != 2 {
+		t.Fatalf("ApplyLayout calls = %d, want exactly one per tab (2)", len(a.calls))
+	}
+	if got := countPanes(&a.calls[0].Root); got != 4 {
+		t.Errorf("tab 0 dispatched %d panes, want all 4 in the same call", got)
+	}
+	if got := countPanes(&a.calls[1].Root); got != 1 {
+		t.Errorf("tab 1 dispatched %d panes, want 1", got)
+	}
+	if a.calls[0].Root.Type != herdr.NodeTypeSplit {
+		t.Errorf("tab 0 root type = %q, want a split tree", a.calls[0].Root.Type)
+	}
+}
+
+// TestApply_RootTabReuse is design D5, pinned in both directions plus the
+// live context the pure compiler cannot supply.
+//
+// With a root tab available, tab 0 targets it by id so `workspace create`'s
+// default tab is renamed and reused instead of being left dangling, while
+// later tabs leave tab_id empty so the daemon creates them. Setting tab_id on
+// every tab would silently collapse a multi-tab template into one repeatedly
+// overwritten tab, so the empty case is asserted too. With no root tab to
+// donate, every tab falls back to plain creation.
+//
+// Each case also checks the workspace id and socket path, which the compiler
+// leaves unset and only the dispatcher knows.
+func TestApply_RootTabReuse(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name             string
+		rootTabID        string
+		wantTabIDs       []string
+		wantWorkspaceIDs []string
+	}{
+		{
+			name:             "root tab reused by first tab only",
+			rootTabID:        "w1:t1",
+			wantTabIDs:       []string{"w1:t1", ""},
+			wantWorkspaceIDs: []string{"", "w1"},
+		},
+		{
+			name:             "no root tab available creates every tab",
+			rootTabID:        "",
+			wantTabIDs:       []string{"", ""},
+			wantWorkspaceIDs: []string{"w1", "w1"},
+		},
+	}
+	wantLabels := []string{"code", "term"}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			d := &fakeDriver{}
-			err := Apply(context.Background(), d, Target{WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj"}, tc.tpl)
-			if err != nil {
+			a := newFakeApplier()
+			target := testTarget()
+			target.RootTabID = tc.rootTabID
+			if err := Apply(context.Background(), a, target, fourPaneTemplate()); err != nil {
 				t.Fatalf("Apply: %v", err)
 			}
-			if strings.Join(d.calls, "|") != strings.Join(tc.wantCalls, "|") {
-				t.Errorf("calls = %v, want %v", d.calls, tc.wantCalls)
+			if len(a.calls) != len(tc.wantTabIDs) {
+				t.Fatalf("calls = %d, want %d", len(a.calls), len(tc.wantTabIDs))
+			}
+			for i, wantID := range tc.wantTabIDs {
+				if got := a.calls[i].TabID; got != wantID {
+					t.Errorf("tab %d tab_id = %q, want %q", i, got, wantID)
+				}
+				if got := a.calls[i].TabLabel; got != wantLabels[i] {
+					t.Errorf("tab %d tab_label = %q, want %q", i, got, wantLabels[i])
+				}
+				if got := a.calls[i].WorkspaceID; got != tc.wantWorkspaceIDs[i] {
+					t.Errorf("tab %d workspace_id = %q, want %q", i, got, tc.wantWorkspaceIDs[i])
+				}
+				if got := a.sockets[i]; got != "/tmp/herdr.sock" {
+					t.Errorf("tab %d socket = %q, want %q", i, got, "/tmp/herdr.sock")
+				}
 			}
 		})
 	}
 }
 
-func TestApply_LabelFailureStopsCommandAndSiblings(t *testing.T) {
+// TestApply_ExactlyOneTargetIdentity proves that every ApplyLayout call specifies
+// either TabID or WorkspaceID, never both and never neither. Herdr's daemon rejects
+// calls that set both with "invalid_target: use either tab_id or workspace_id, not both".
+func TestApply_ExactlyOneTargetIdentity(t *testing.T) {
 	t.Parallel()
-	d := &fakeDriver{renameErr: errors.New("rename failed")}
-	tpl := config.TemplateConfig{Tabs: []config.TemplateTab{{Name: "code", Root: "main", Nodes: []config.TemplateNode{
-		{ID: "main", Split: config.SplitRows, Children: []string{"first", "second"}},
-		{ID: "first", Label: stringPtr("first-label"), Command: "first-command"},
-		{ID: "second", Label: stringPtr("second-label"), Command: "second-command"},
-	}}}}
-	err := Apply(context.Background(), d, Target{WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj"}, tpl)
-	if err == nil || !strings.Contains(err.Error(), `node "first"`) || !strings.Contains(err.Error(), "w1:p1") || !strings.Contains(err.Error(), "rename") {
-		t.Fatalf("Apply error = %v, want contextual rename failure", err)
-	}
-	if len(d.ran) != 0 || len(d.paneCalls) != 1 {
-		t.Errorf("rename failure must not run or process siblings: paneCalls=%v ran=%v", d.paneCalls, d.ran)
-	}
-}
-
-func TestApply_CommandFailureDoesNotRevertRename(t *testing.T) {
-	t.Parallel()
-	d := &fakeDriver{runErr: errors.New("command failed")}
-	tpl := config.TemplateConfig{Tabs: []config.TemplateTab{{Name: "code", Root: "main", Nodes: []config.TemplateNode{
-		{ID: "main", Label: stringPtr("shell"), Command: "bad-command"},
-	}}}}
-	err := Apply(context.Background(), d, Target{WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj"}, tpl)
-	if err == nil || !strings.Contains(err.Error(), "command failed") {
-		t.Fatalf("Apply error = %v, want command failure", err)
-	}
-	if len(d.paneCalls) != 1 || d.paneCalls[0] != "rename-pane:w1:p1:shell" {
-		t.Errorf("rename calls = %v, want one non-reverted rename", d.paneCalls)
-	}
-}
-
-func TestApply_CommandFailureIncludesNodePaneAndOperation(t *testing.T) {
-	t.Parallel()
-	runErr := errors.New("command failed")
-	d := &fakeDriver{runErr: runErr}
-	tpl := config.TemplateConfig{Tabs: []config.TemplateTab{{Name: "code", Root: "main", Nodes: []config.TemplateNode{
-		{ID: "main", Command: "bad-command"},
-	}}}}
-
-	err := Apply(context.Background(), d, Target{WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj"}, tpl)
-	if err == nil || !strings.Contains(err.Error(), `node "main"`) || !strings.Contains(err.Error(), "w1:p1") || !strings.Contains(err.Error(), "run command") {
-		t.Fatalf("Apply error = %v, want node, pane, and run-command context", err)
-	}
-	if !errors.Is(err, runErr) {
-		t.Fatalf("Apply error = %v, want wrapped command failure", err)
-	}
-}
-
-func TestApply_OmittedLabelDoesNotReconcilePriorPaneOnSubsequentApply(t *testing.T) {
-	t.Parallel()
-	d := &fakeDriver{}
-	target := Target{WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj"}
-	initial := config.TemplateConfig{Tabs: []config.TemplateTab{{Name: "code", Root: "editor", Nodes: []config.TemplateNode{
-		{ID: "editor", Label: stringPtr("x"), Command: "first"},
-	}}}}
-	if err := Apply(context.Background(), d, target, initial); err != nil {
-		t.Fatalf("initial Apply: %v", err)
-	}
-	if got, want := strings.Join(d.paneCalls, "|"), "rename-pane:w1:p1:x"; got != want {
-		t.Fatalf("initial pane calls = %v, want %v", d.paneCalls, want)
-	}
-
-	// The edited template omits editor's label and adds an unrelated leaf.
-	edited := config.TemplateConfig{Tabs: []config.TemplateTab{{Name: "code", Root: "layout", Nodes: []config.TemplateNode{
-		{ID: "layout", Split: config.SplitRows, Children: []string{"editor", "logs"}},
-		{ID: "editor", Command: "second"},
-		{ID: "logs", Command: "new"},
-	}}}}
-	if err := Apply(context.Background(), d, target, edited); err != nil {
-		t.Fatalf("edited Apply: %v", err)
-	}
-	if got, want := strings.Join(d.paneCalls, "|"), "rename-pane:w1:p1:x"; got != want {
-		t.Fatalf("pane calls after omitted label = %v, want prior rename only %v", d.paneCalls, want)
-	}
-	if got := strings.Join(d.ran, "|"); !strings.Contains(got, "run:w1:p1:second") || !strings.Contains(got, "run:p-1:new") {
-		t.Fatalf("subsequent apply did not run existing and unrelated leaves: %v", d.ran)
-	}
-}
-
-func TestApply_EmptyLabelClearsWithoutReconciliation(t *testing.T) {
-	t.Parallel()
-	d := &fakeDriver{}
-	tpl := config.TemplateConfig{Tabs: []config.TemplateTab{{Name: "code", Root: "main", Nodes: []config.TemplateNode{
-		{ID: "main", Label: stringPtr(""), Command: "shell"},
-		{ID: "unused", Label: nil, Command: "not-run"},
-	}}}}
-	err := Apply(context.Background(), d, Target{WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj"}, tpl)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if len(d.paneCalls) != 1 || d.paneCalls[0] != "rename-pane:w1:p1:" {
-		t.Errorf("paneCalls = %v, want one clear call with an empty non-nil label", d.paneCalls)
-	}
-}
-
-func TestApply_OmittedLabelDoesNotUseNodeID(t *testing.T) {
-	t.Parallel()
-	d := &fakeDriver{}
-	tpl := config.TemplateConfig{Tabs: []config.TemplateTab{{Name: "code", Root: "editor", Nodes: []config.TemplateNode{
-		{ID: "editor", Command: "nvim"},
-	}}}}
-	if err := Apply(context.Background(), d, Target{WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj"}, tpl); err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if len(d.paneCalls) != 0 {
-		t.Errorf("omitted label emitted pane rename calls: %v", d.paneCalls)
-	}
-}
-
-// TestApply_FlatCommandRunsInRootPane confirms a Command-only template (no
-// tabs) runs directly in the root pane of the freshly created workspace and
-// issues no tab/pane mutation calls (the default tab is exactly what we
-// want — nothing to fix).
-func TestApply_FlatCommandRunsInRootPane(t *testing.T) {
-	t.Parallel()
-	d := &fakeDriver{}
-	tpl := config.TemplateConfig{Command: "k9s"}
-	err := Apply(context.Background(), d, Target{WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj"}, tpl)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if len(d.ran) != 1 || d.ran[0] != "run:w1:p1:k9s" {
-		t.Errorf("ran = %v, want single run in root pane", d.ran)
-	}
-	if len(d.renamed) != 0 || len(d.created) != 0 {
-		t.Errorf("flat command template must not create/rename tabs: renamed=%v created=%v", d.renamed, d.created)
-	}
-}
-
-// TestApply_EmptyCommandLeavesPlainShell confirms an empty command (the
-// canonical "default" template) does not call RunPane at all.
-func TestApply_EmptyCommandLeavesPlainShell(t *testing.T) {
-	t.Parallel()
-	d := &fakeDriver{}
-	err := Apply(context.Background(), d, Target{WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj"}, config.TemplateConfig{})
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if len(d.ran) != 0 {
-		t.Errorf("expected no RunPane calls for empty command, got %v", d.ran)
-	}
-}
-
-// TestApply_FirstTabReusesRootTab is the top-priority bug fix: when a
-// template declares tabs, the FIRST tab must reuse/rename the workspace's
-// existing root tab (created by `herdr workspace create`) instead of
-// leaving it as an unused default tab alongside a new one.
-func TestApply_FirstTabReusesRootTab(t *testing.T) {
-	t.Parallel()
-	d := &fakeDriver{}
-	tpl := config.TemplateConfig{
-		Tabs: []config.TemplateTab{
-			{Name: "code", Root: "main", Nodes: []config.TemplateNode{
-				{ID: "main", Command: "nvim"},
-			}},
-		},
-	}
-	err := Apply(context.Background(), d, Target{WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj"}, tpl)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if len(d.created) != 0 {
-		t.Fatalf("first tab must reuse the root tab, not create a new one; created=%v", d.created)
-	}
-	if len(d.renamed) != 1 || d.renamed[0] != "rename:w1:t1:code" {
-		t.Errorf("expected root tab renamed to 'code', got %v", d.renamed)
-	}
-	if len(d.ran) != 1 || d.ran[0] != "run:w1:p1:nvim" {
-		t.Errorf("expected nvim run in root pane, got %v", d.ran)
-	}
-}
-
-// TestApply_SecondTabCreatesNewTab confirms tabs after the first are created
-// fresh (not reusing the root tab again).
-func TestApply_SecondTabCreatesNewTab(t *testing.T) {
-	t.Parallel()
-	d := &fakeDriver{}
-	tpl := config.TemplateConfig{
-		Tabs: []config.TemplateTab{
-			{Name: "code", Root: "a", Nodes: []config.TemplateNode{{ID: "a", Command: "nvim"}}},
-			{Name: "term", Root: "b", Nodes: []config.TemplateNode{{ID: "b", Command: ""}}},
-		},
-	}
-	err := Apply(context.Background(), d, Target{WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj"}, tpl)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if len(d.created) != 1 || d.created[0] != "tab:w1:/proj:term:nofocus" {
-		t.Fatalf("expected exactly one new tab created for 'term' without focus (no Focus set, default stays on tab 0), got %v", d.created)
-	}
-}
-
-// TestApply_BranchNodeSplitsWithRatios (top-priority bug fix continued):
-// confirms a branch node with two children and sizes [80,20] issues exactly
-// one split with ratio 0.8 (the ORIGINAL/kept pane retains 80%), and each
-// leaf's command runs in the correct resulting pane.
-func TestApply_BranchNodeSplitsWithRatios(t *testing.T) {
-	t.Parallel()
-	d := &fakeDriver{}
-	tpl := config.TemplateConfig{
-		Tabs: []config.TemplateTab{
-			{Name: "code", Root: "main", Nodes: []config.TemplateNode{
-				{ID: "main", Split: config.SplitRows, Children: []string{"editor", "terminal"}, Sizes: []int{80, 20}},
-				{ID: "editor", Command: "nvim"},
-				{ID: "terminal", Command: ""},
-			}},
-		},
-	}
-	err := Apply(context.Background(), d, Target{WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj"}, tpl)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if len(d.created) != 1 || d.created[0] != "split:w1:p1:down:0.8:/proj:nofocus" {
-		t.Fatalf("expected one 80%% down split of the root pane without focus (no Focus set), got %v", d.created)
-	}
-	if len(d.ran) != 1 || d.ran[0] != "run:w1:p1:nvim" {
-		t.Errorf("expected nvim to run in the KEPT (80%%) pane, got %v", d.ran)
-	}
-}
-
-// TestApply_ThreeWayEqualSplitCascades (triangulation for N>2 children):
-// three children with no explicit sizes split evenly via cascading splits
-// (1/3 then 1/2 of the remainder).
-func TestApply_ThreeWayEqualSplitCascades(t *testing.T) {
-	t.Parallel()
-	d := &fakeDriver{}
-	tpl := config.TemplateConfig{
-		Tabs: []config.TemplateTab{
-			{Name: "code", Root: "main", Nodes: []config.TemplateNode{
-				{ID: "main", Split: config.SplitCols, Children: []string{"a", "b", "c"}},
-				{ID: "a", Command: "one"},
-				{ID: "b", Command: "two"},
-				{ID: "c", Command: "three"},
-			}},
-		},
-	}
-	err := Apply(context.Background(), d, Target{WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj"}, tpl)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if len(d.created) != 2 {
-		t.Fatalf("expected 2 cascading splits for 3 children, got %v", d.created)
-	}
-	if len(d.ran) != 3 {
-		t.Fatalf("expected all 3 leaves to run their command, got %v", d.ran)
-	}
-}
-
-// TestApply_SplitErrorPropagates confirms a driver failure surfaces instead
-// of being silently swallowed.
-func TestApply_SplitErrorPropagates(t *testing.T) {
-	t.Parallel()
-	d := &fakeDriver{splitErr: errors.New("boom")}
-	tpl := config.TemplateConfig{
-		Tabs: []config.TemplateTab{
-			{Name: "code", Root: "main", Nodes: []config.TemplateNode{
-				{ID: "main", Split: config.SplitRows, Children: []string{"a", "b"}},
-				{ID: "a", Command: ""},
-				{ID: "b", Command: ""},
-			}},
-		},
-	}
-	err := Apply(context.Background(), d, Target{WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj"}, tpl)
-	if err == nil {
-		t.Fatal("expected split error to propagate")
-	}
-}
-
-// TestApply_DefaultFocus_FirstTabStaysFocused is the core default behaviour:
-// when no top-level Focus is declared, the FIRST tab (which reuses the
-// workspace's root tab, already focused by `workspace create --focus`) stays
-// focused. Subsequent tabs are created with focus=false (--no-focus) so they
-// never steal focus from the first. No post-hoc FocusTab call is issued.
-func TestApply_DefaultFocus_FirstTabStaysFocused(t *testing.T) {
-	t.Parallel()
-	d := &fakeDriver{}
-	tpl := config.TemplateConfig{
-		Tabs: []config.TemplateTab{
-			{Name: "code", Root: "a", Nodes: []config.TemplateNode{{ID: "a", Command: ""}}},
-			{Name: "term", Root: "b", Nodes: []config.TemplateNode{{ID: "b", Command: ""}}},
-		},
-	}
-	err := Apply(context.Background(), d, Target{WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj"}, tpl)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	// Second tab created with --no-focus so the first (root) tab keeps focus.
-	if len(d.created) != 1 || d.created[0] != "tab:w1:/proj:term:nofocus" {
-		t.Errorf("expected second tab created with nofocus, got %v", d.created)
-	}
-	// No post-hoc FocusTab calls: focus is set at creation time only.
-	if len(d.focused) != 0 {
-		t.Errorf("expected no FocusTab calls for default focus, got %v", d.focused)
-	}
-}
-
-// TestApply_FocusSecondTab_CreatedWithFocus confirms focus = { tab = "term" }
-// makes the second tab the focus target: it is created with focus=true
-// (--focus) so herdr moves keyboard focus to it at creation time.
-func TestApply_FocusSecondTab_CreatedWithFocus(t *testing.T) {
-	t.Parallel()
-	d := &fakeDriver{}
-	tpl := config.TemplateConfig{
-		Focus: &config.TemplateFocus{Tab: "term"},
-		Tabs: []config.TemplateTab{
-			{Name: "code", Root: "a", Nodes: []config.TemplateNode{{ID: "a", Command: ""}}},
-			{Name: "term", Root: "b", Nodes: []config.TemplateNode{{ID: "b", Command: ""}}},
-		},
-	}
-	err := Apply(context.Background(), d, Target{WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj"}, tpl)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if len(d.created) != 1 || d.created[0] != "tab:w1:/proj:term:focus" {
-		t.Errorf("expected second tab created with focus, got %v", d.created)
-	}
-	if len(d.focused) != 0 {
-		t.Errorf("expected no post-hoc FocusTab (focus is at creation), got %v", d.focused)
-	}
-}
-
-// TestApply_FocusFirstTab_NoExtraFocusCalls confirms focus = { tab = "code" }
-// on the FIRST tab (which reuses the already-focused root tab) issues no
-// extra CreateTab or FocusTab calls — the root tab is already focused, so
-// nothing needs to happen at the tab level.
-func TestApply_FocusFirstTab_NoExtraFocusCalls(t *testing.T) {
-	t.Parallel()
-	d := &fakeDriver{}
-	tpl := config.TemplateConfig{
-		Focus: &config.TemplateFocus{Tab: "code"},
-		Tabs: []config.TemplateTab{
-			{Name: "code", Root: "main", Nodes: []config.TemplateNode{
-				{ID: "main", Command: "nvim"},
-			}},
-		},
-	}
-	err := Apply(context.Background(), d, Target{WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj"}, tpl)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if len(d.created) != 0 {
-		t.Errorf("first tab reuses root tab, expected no creates, got %v", d.created)
-	}
-	if len(d.focused) != 0 {
-		t.Errorf("root tab already focused, expected no FocusTab, got %v", d.focused)
-	}
-}
-
-// TestApply_FocusNodeKeptPane_SplitNoFocus confirms that when the focus node
-// maps to the KEPT pane after a split (the first child), the split is issued
-// with focus=false (--no-focus) so the kept pane retains keyboard focus.
-func TestApply_FocusNodeKeptPane_SplitNoFocus(t *testing.T) {
-	t.Parallel()
-	d := &fakeDriver{}
-	tpl := config.TemplateConfig{
-		Focus: &config.TemplateFocus{Tab: "code", Node: "editor"},
-		Tabs: []config.TemplateTab{
-			{Name: "code", Root: "main", Nodes: []config.TemplateNode{
-				{ID: "main", Split: config.SplitRows, Children: []string{"editor", "terminal"}, Sizes: []int{80, 20}},
-				{ID: "editor", Command: "nvim"},
-				{ID: "terminal", Command: ""},
-			}},
-		},
-	}
-	err := Apply(context.Background(), d, Target{WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj"}, tpl)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	// editor is child[0] → the KEPT pane. The split creates terminal's pane
-	// (the NEW pane), which must NOT steal focus (--no-focus) so editor keeps it.
-	if len(d.created) != 1 || d.created[0] != "split:w1:p1:down:0.8:/proj:nofocus" {
-		t.Errorf("expected split with nofocus (editor is kept pane), got %v", d.created)
-	}
-}
-
-// TestApply_FocusNodeNewPane_SplitFocus confirms that when the focus node maps
-// to the NEW pane created by a split (the last child), the split is issued
-// with focus=true (--focus) so the new pane receives keyboard focus.
-func TestApply_FocusNodeNewPane_SplitFocus(t *testing.T) {
-	t.Parallel()
-	d := &fakeDriver{}
-	tpl := config.TemplateConfig{
-		Focus: &config.TemplateFocus{Tab: "code", Node: "terminal"},
-		Tabs: []config.TemplateTab{
-			{Name: "code", Root: "main", Nodes: []config.TemplateNode{
-				{ID: "main", Split: config.SplitRows, Children: []string{"editor", "terminal"}, Sizes: []int{80, 20}},
-				{ID: "editor", Command: "nvim"},
-				{ID: "terminal", Command: ""},
-			}},
-		},
-	}
-	err := Apply(context.Background(), d, Target{WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj"}, tpl)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	// terminal is child[1] → the NEW pane from the split. The split must
-	// pass --focus so terminal's pane receives focus.
-	if len(d.created) != 1 || d.created[0] != "split:w1:p1:down:0.8:/proj:focus" {
-		t.Errorf("expected split with focus (terminal is new pane), got %v", d.created)
-	}
-}
-
-// TestApply_FocusTabOnly_AllSplitsNoFocus confirms that when Focus.Node is
-// empty (focus just the tab, no specific pane), every split within that tab
-// passes --no-focus so the tab's root pane keeps focus.
-func TestApply_FocusTabOnly_AllSplitsNoFocus(t *testing.T) {
-	t.Parallel()
-	d := &fakeDriver{}
-	tpl := config.TemplateConfig{
-		Focus: &config.TemplateFocus{Tab: "code"},
-		Tabs: []config.TemplateTab{
-			{Name: "code", Root: "main", Nodes: []config.TemplateNode{
-				{ID: "main", Split: config.SplitCols, Children: []string{"a", "b"}},
-				{ID: "a", Command: "one"},
-				{ID: "b", Command: "two"},
-			}},
-		},
-	}
-	err := Apply(context.Background(), d, Target{WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj"}, tpl)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	for _, c := range d.created {
-		if !strings.HasSuffix(c, ":nofocus") {
-			t.Errorf("focus tab only: expected all splits --no-focus, got %q", c)
+	for _, rootTabID := range []string{"w1:t1", ""} {
+		a := newFakeApplier()
+		target := testTarget()
+		target.RootTabID = rootTabID
+		if err := Apply(context.Background(), a, target, fourPaneTemplate()); err != nil {
+			t.Fatalf("Apply: %v", err)
+		}
+		for i, call := range a.calls {
+			hasTab := call.TabID != ""
+			hasWorkspace := call.WorkspaceID != ""
+			if hasTab == hasWorkspace {
+				t.Errorf("call %d: hasTab=%v hasWorkspace=%v (tab_id=%q, workspace_id=%q), want exactly one target identity",
+					i, hasTab, hasWorkspace, call.TabID, call.WorkspaceID)
+			}
 		}
 	}
 }
 
-// TestApply_CloseOnExit_WrapsCommand confirms a leaf node with CloseOnExit=true
-// and a non-empty Command has its command wrapped so the pane closes itself
-// once the command's shell returns control. The wrap appends
-// "; <binary> pane close <pane_id>" using the target's binary name.
-func TestApply_CloseOnExit_WrapsCommand(t *testing.T) {
+// TestApply_FocusTargetsDeclaredTab covers R3.1: exactly the tab named by
+// focus receives focus: true, and the others explicitly do not.
+func TestApply_FocusTargetsDeclaredTab(t *testing.T) {
 	t.Parallel()
-	d := &fakeDriver{}
-	tpl := config.TemplateConfig{
-		Tabs: []config.TemplateTab{
-			{Name: "code", Root: "main", Nodes: []config.TemplateNode{
-				{ID: "main", Command: "nvim", CloseOnExit: true},
-			}},
+	cases := []struct {
+		name      string
+		focus     *config.TemplateFocus
+		wantFocus []bool
+	}{
+		{name: "explicit focus on second tab", focus: &config.TemplateFocus{Tab: "term"}, wantFocus: []bool{false, true}},
+		{name: "no focus declared defaults to first tab", focus: nil, wantFocus: []bool{true, false}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a := newFakeApplier()
+			tpl := fourPaneTemplate()
+			tpl.Focus = tc.focus
+			if err := Apply(context.Background(), a, testTarget(), tpl); err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+			if len(a.calls) != len(tc.wantFocus) {
+				t.Fatalf("calls = %d, want %d", len(a.calls), len(tc.wantFocus))
+			}
+			for i, want := range tc.wantFocus {
+				if a.calls[i].Focus != want {
+					t.Errorf("tab %d focus = %v, want %v", i, a.calls[i].Focus, want)
+				}
+			}
+		})
+	}
+}
+
+// TestApply_ApplierErrorStopsRemainingTabs is the fail-closed dispatch rule:
+// a rejected tab aborts the loop immediately, so a half-applied template can
+// never keep piling tabs onto the workspace. The error names prior progress
+// honestly because Herdr has per-tab, not whole-template, atomicity.
+func TestApply_ApplierErrorStopsRemainingTabs(t *testing.T) {
+	t.Parallel()
+	boom := errors.New("daemon rejected layout")
+	a := newFakeApplier()
+	a.err, a.failAt = boom, 1
+
+	err := Apply(context.Background(), a, testTarget(), fourPaneTemplate())
+	if err == nil {
+		t.Fatal("Apply must fail when the applier rejects a tab")
+	}
+	if !errors.Is(err, boom) {
+		t.Errorf("Apply error = %v, want it to wrap the applier failure", err)
+	}
+	if !strings.Contains(err.Error(), "term") || !strings.Contains(err.Error(), "1 tab(s) applied") || !strings.Contains(err.Error(), "partial template") {
+		t.Errorf("Apply error = %v, want failing tab and partial-progress context", err)
+	}
+	if len(a.calls) != 2 {
+		t.Errorf("dispatched %d tabs, want exactly two attempts and no tab 3", len(a.calls))
+	}
+}
+
+// TestApply_CompileFailureWritesNothingToSocket is R8.1: an invalid layout is
+// rejected during compilation, so the applier is never invoked at all. The
+// zero-call assertion is meaningful precisely because every other test in
+// this file proves the same applier does record calls.
+func TestApply_CompileFailureWritesNothingToSocket(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		tpl  config.TemplateConfig
+	}{
+		{
+			name: "invalid split axis",
+			tpl: config.TemplateConfig{Tabs: []config.TemplateTab{{Name: "code", Root: "main", Nodes: []config.TemplateNode{
+				{ID: "main", Split: "diagonal", Children: []string{"a", "b"}},
+				{ID: "a"}, {ID: "b"},
+			}}}},
+		},
+		{
+			name: "cyclic children",
+			tpl: config.TemplateConfig{Tabs: []config.TemplateTab{{Name: "code", Root: "main", Nodes: []config.TemplateNode{
+				{ID: "main", Split: config.SplitCols, Children: []string{"a", "main"}},
+				{ID: "a"},
+			}}}},
 		},
 	}
-	err := Apply(context.Background(), d, Target{
-		WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj", Binary: "herdr",
-	}, tpl)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	want := "run:w1:p1:nvim; herdr pane close w1:p1"
-	if len(d.ran) != 1 || d.ran[0] != want {
-		t.Errorf("expected wrapped command %q, got %v", want, d.ran)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a := newFakeApplier()
+			err := Apply(context.Background(), a, testTarget(), tc.tpl)
+			if err == nil {
+				t.Fatal("Apply must fail closed on an invalid layout")
+			}
+			if len(a.calls) != 0 {
+				t.Errorf("compile failure still dispatched %d calls, want 0", len(a.calls))
+			}
+		})
 	}
 }
 
-// TestApply_CloseOnExitFalse_PlainCommand confirms CloseOnExit=false (the
-// default) sends the plain command with no close-on-exit chaining.
-func TestApply_CloseOnExitFalse_PlainCommand(t *testing.T) {
+// TestApply_CommandOnlyTemplateIsOneFocusedPane covers the common
+// "default"/"k8s" shape: no tabs, just a command. It must still travel the
+// atomic path as a single focused pane rather than a `pane run` subprocess.
+func TestApply_CommandOnlyTemplateIsOneFocusedPane(t *testing.T) {
 	t.Parallel()
-	d := &fakeDriver{}
-	tpl := config.TemplateConfig{
-		Tabs: []config.TemplateTab{
-			{Name: "code", Root: "main", Nodes: []config.TemplateNode{
-				{ID: "main", Command: "nvim"},
-			}},
+	cases := []struct {
+		name        string
+		closeOnExit bool
+		shell       string
+		wantCommand []string
+	}{
+		{
+			name:        "returns to a shell when close_on_exit is false",
+			shell:       "/bin/zsh",
+			wantCommand: []string{"/bin/zsh", "-l", "-c", "k9s; exec /bin/zsh"},
+		},
+		{
+			name:        "runs directly when close_on_exit is true",
+			shell:       "/bin/zsh",
+			closeOnExit: true,
+			wantCommand: []string{"/bin/zsh", "-l", "-c", "k9s"},
 		},
 	}
-	err := Apply(context.Background(), d, Target{
-		WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj", Binary: "herdr",
-	}, tpl)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if len(d.ran) != 1 || d.ran[0] != "run:w1:p1:nvim" {
-		t.Errorf("expected plain command, got %v", d.ran)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a := newFakeApplier()
+			target := testTarget()
+			target.Shell = tc.shell
+			if err := Apply(context.Background(), a, target, config.TemplateConfig{Command: "k9s", CloseOnExit: tc.closeOnExit}); err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+			if len(a.calls) != 1 {
+				t.Fatalf("calls = %d, want 1", len(a.calls))
+			}
+			p := a.calls[0]
+			if p.Root.Type != herdr.NodeTypePane || !p.Focus {
+				t.Fatalf("root = %+v focus = %v, want a single focused pane", p.Root, p.Focus)
+			}
+			if !slices.Equal(p.Root.Command, tc.wantCommand) {
+				t.Errorf("pane command = %v, want %v", p.Root.Command, tc.wantCommand)
+			}
+			if p.Root.Cwd != "/proj" {
+				t.Errorf("pane cwd = %q, want the target cwd %q", p.Root.Cwd, "/proj")
+			}
+		})
 	}
 }
 
-// TestApply_CloseOnExit_CustomBinary confirms the close-on-exit wrap uses the
-// configured binary name (from Target.Binary), not a hardcoded "herdr".
-func TestApply_CloseOnExit_CustomBinary(t *testing.T) {
+// TestRunCommand_WrapsCloseOnExit covers the surviving existing-pane path used
+// by the --target=tab/pane launches, which open into a container pane the
+// caller already created and therefore cannot go through layout.apply (that
+// would replace the whole surrounding tab).
+func TestRunCommand_WrapsCloseOnExit(t *testing.T) {
 	t.Parallel()
-	d := &fakeDriver{}
-	tpl := config.TemplateConfig{
-		Tabs: []config.TemplateTab{
-			{Name: "code", Root: "main", Nodes: []config.TemplateNode{
-				{ID: "main", Command: "nvim", CloseOnExit: true},
-			}},
+	cases := []struct {
+		name   string
+		tpl    config.TemplateConfig
+		binary string
+		want   []string
+	}{
+		{
+			name: "close_on_exit chains a self-close",
+			tpl:  config.TemplateConfig{Command: "k9s", CloseOnExit: true},
+			want: []string{"run:w1:p1:k9s; 'herdr' pane close 'w1:p1'"},
+		},
+		{
+			name:   "custom binary is shell quoted",
+			tpl:    config.TemplateConfig{Command: "k9s", CloseOnExit: true},
+			binary: "/path with spaces/myherdr",
+			want:   []string{"run:w1:p1:k9s; '/path with spaces/myherdr' pane close 'w1:p1'"},
+		},
+		{
+			name: "plain command is untouched",
+			tpl:  config.TemplateConfig{Command: "k9s"},
+			want: []string{"run:w1:p1:k9s"},
+		},
+		{
+			name: "empty command leaves a plain shell",
+			tpl:  config.TemplateConfig{},
+			want: nil,
 		},
 	}
-	err := Apply(context.Background(), d, Target{
-		WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj", Binary: "myherdr",
-	}, tpl)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	want := "run:w1:p1:nvim; myherdr pane close w1:p1"
-	if len(d.ran) != 1 || d.ran[0] != want {
-		t.Errorf("expected wrap with custom binary %q, got %v", want, d.ran)
-	}
-}
-
-// TestApply_CloseOnExitTopLevel_WrapsCommand confirms a top-level
-// TemplateConfig (no Tabs) with CloseOnExit=true and a non-empty Command has
-// its command wrapped so the root pane closes itself once the command
-// finishes — the workspace-command path that was previously silently ignored.
-// It reuses the same wrap as the leaf-node path (one tested code path).
-func TestApply_CloseOnExitTopLevel_WrapsCommand(t *testing.T) {
-	t.Parallel()
-	d := &fakeDriver{}
-	tpl := config.TemplateConfig{Command: "nvim", CloseOnExit: true}
-	err := Apply(context.Background(), d, Target{
-		WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj", Binary: "herdr",
-	}, tpl)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	want := "run:w1:p1:nvim; herdr pane close w1:p1"
-	if len(d.ran) != 1 || d.ran[0] != want {
-		t.Errorf("expected wrapped top-level command %q, got %v", want, d.ran)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := &fakeRunner{}
+			if err := RunCommand(context.Background(), r, "w1:p1", tc.binary, tc.tpl); err != nil {
+				t.Fatalf("RunCommand: %v", err)
+			}
+			if strings.Join(r.ran, "|") != strings.Join(tc.want, "|") {
+				t.Errorf("ran = %v, want %v", r.ran, tc.want)
+			}
+		})
 	}
 }
 
-// TestApply_CloseOnExitTopLevelFalse_PlainCommand confirms CloseOnExit=false
-// (the default) on a top-level template sends the plain command with no
-// close-on-exit chaining.
-func TestApply_CloseOnExitTopLevelFalse_PlainCommand(t *testing.T) {
+// TestRunCommand_ErrorPropagates confirms a pane failure surfaces instead of
+// being swallowed, so the caller can roll its container back.
+func TestRunCommand_ErrorPropagates(t *testing.T) {
 	t.Parallel()
-	d := &fakeDriver{}
-	tpl := config.TemplateConfig{Command: "nvim"}
-	err := Apply(context.Background(), d, Target{
-		WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj", Binary: "herdr",
-	}, tpl)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if len(d.ran) != 1 || d.ran[0] != "run:w1:p1:nvim" {
-		t.Errorf("expected plain top-level command, got %v", d.ran)
-	}
-}
-
-// TestApply_CloseOnExitTopLevel_CustomBinary confirms the top-level wrap uses
-// the configured binary name (Target.Binary), not a hardcoded "herdr", and
-// falls back to "herdr" when Binary is empty.
-func TestApply_CloseOnExitTopLevel_CustomBinary(t *testing.T) {
-	t.Parallel()
-	d := &fakeDriver{}
-	tpl := config.TemplateConfig{Command: "nvim", CloseOnExit: true}
-	err := Apply(context.Background(), d, Target{
-		WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj", Binary: "myherdr",
-	}, tpl)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	want := "run:w1:p1:nvim; myherdr pane close w1:p1"
-	if len(d.ran) != 1 || d.ran[0] != want {
-		t.Errorf("expected top-level wrap with custom binary %q, got %v", want, d.ran)
-	}
-}
-
-// TestApply_CloseOnExitTopLevel_EmptyBinary_DefaultsToHerdr confirms the
-// simple-Command path with an empty Target.Binary still produces a valid wrap
-// ("herdr" substituted by wrapCloseOnExit, the single default owner) rather
-// than a malformed "k9s;  pane close <id>" with a missing binary token.
-func TestApply_CloseOnExitTopLevel_EmptyBinary_DefaultsToHerdr(t *testing.T) {
-	t.Parallel()
-	d := &fakeDriver{}
-	tpl := config.TemplateConfig{Command: "k9s", CloseOnExit: true}
-	err := Apply(context.Background(), d, Target{
-		WorkspaceID: "w1", RootTabID: "w1:t1", RootPaneID: "w1:p1", CWD: "/proj", Binary: "",
-	}, tpl)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	want := "run:w1:p1:k9s; herdr pane close w1:p1"
-	if len(d.ran) != 1 || d.ran[0] != want {
-		t.Errorf("expected empty binary to default to herdr in the wrap %q, got %v", want, d.ran)
+	boom := errors.New("pane gone")
+	r := &fakeRunner{err: boom}
+	err := RunCommand(context.Background(), r, "w1:p1", "herdr", config.TemplateConfig{Command: "k9s"})
+	if !errors.Is(err, boom) {
+		t.Fatalf("RunCommand error = %v, want the pane failure wrapped", err)
 	}
 }
 
 // TestWrapCloseOnExit_Helper is a focused table-driven test for the shared
-// wrapCloseOnExit helper used by both the simple-Command Apply branch and the
-// leaf applyNode branch. Both code paths must share this one implementation.
+// wrapCloseOnExit helper, which the compiler and the existing-pane path both
+// depend on for identical close-on-exit semantics.
+func TestShellCommand_QuotesEveryArg(t *testing.T) {
+	t.Parallel()
+	got := ShellCommand("/path with spaces/herdr; touch /tmp/pwned", "pane", "close", "p'1; echo injected")
+	want := "'/path with spaces/herdr; touch /tmp/pwned' 'pane' 'close' 'p'\\''1; echo injected'"
+	if got != want {
+		t.Fatalf("ShellCommand = %q, want %q", got, want)
+	}
+}
+
 func TestWrapCloseOnExit_Helper(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -751,12 +425,13 @@ func TestWrapCloseOnExit_Helper(t *testing.T) {
 		on     bool
 		want   string
 	}{
-		{name: "on wraps", cmd: "nvim", paneID: "p1", binary: "herdr", on: true, want: "nvim; herdr pane close p1"},
+		{name: "on wraps", cmd: "nvim", paneID: "p1", binary: "herdr", on: true, want: "nvim; 'herdr' pane close 'p1'"},
 		{name: "off no wrap", cmd: "nvim", paneID: "p1", binary: "herdr", on: false, want: "nvim"},
-		{name: "custom binary", cmd: "nvim", paneID: "p1", binary: "myherdr", on: true, want: "nvim; myherdr pane close p1"},
-		{name: "empty binary defaults to herdr", cmd: "nvim", paneID: "p1", binary: "", on: true, want: "nvim; herdr pane close p1"},
+		{name: "custom binary", cmd: "nvim", paneID: "p1", binary: "myherdr", on: true, want: "nvim; 'myherdr' pane close 'p1'"},
+		{name: "empty binary defaults to herdr", cmd: "nvim", paneID: "p1", binary: "", on: true, want: "nvim; 'herdr' pane close 'p1'"},
 		{name: "paneID empty on=true returns cmd unchanged (defensive no-wrap)", cmd: "nvim", paneID: "", binary: "herdr", on: true, want: "nvim"},
 		{name: "off preserves empty cmd", cmd: "", paneID: "p1", binary: "herdr", on: false, want: ""},
+		{name: "hostile binary is quoted", cmd: "nvim", paneID: "p1", binary: "herdr; touch /tmp/pwned", on: true, want: "nvim; 'herdr; touch /tmp/pwned' pane close 'p1'"},
 		{name: "paneID with shell metacharacters returns cmd unchanged (defensive no-wrap)", cmd: "nvim", paneID: "p1; rm -rf ~ #", binary: "herdr", on: true, want: "nvim"},
 	}
 	for _, tc := range cases {
@@ -768,4 +443,51 @@ func TestWrapCloseOnExit_Helper(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestApply_EnvPropagation proves target.PathEnv reaches only command-backed
+// panes and never commandless panes or split nodes.
+func TestApply_EnvPropagation(t *testing.T) {
+	t.Parallel()
+	a := newFakeApplier()
+	target := testTarget()
+	target.PathEnv = "/custom/bin:/usr/bin:/bin"
+
+	if err := Apply(context.Background(), a, target, fourPaneTemplate()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(a.calls) != 2 {
+		t.Fatalf("calls = %d, want 2", len(a.calls))
+	}
+
+	// Walk panes and check Env map
+	var checkPanes func(n *herdr.LayoutNode)
+	checkPanes = func(n *herdr.LayoutNode) {
+		if n == nil {
+			return
+		}
+		if n.Type == herdr.NodeTypePane {
+			if len(n.Command) > 0 {
+				if n.Env == nil || n.Env["PATH"] != target.PathEnv {
+					t.Errorf("command pane %s (%v) env = %+v, want PATH=%q", n.PaneID, n.Command, n.Env, target.PathEnv)
+				}
+				if len(n.Env) != 1 {
+					t.Errorf("command pane %s env has extra keys: %+v", n.PaneID, n.Env)
+				}
+			} else {
+				if n.Env != nil {
+					t.Errorf("commandless pane %s env = %+v, want nil", n.PaneID, n.Env)
+				}
+			}
+			return
+		}
+		if n.Env != nil {
+			t.Errorf("split node env = %+v, want nil", n.Env)
+		}
+		checkPanes(n.First)
+		checkPanes(n.Second)
+	}
+
+	checkPanes(&a.calls[0].Root)
+	checkPanes(&a.calls[1].Root)
 }

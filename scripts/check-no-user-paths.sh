@@ -9,42 +9,63 @@
 
 set -euo pipefail
 
-# Patterns that indicate a real hardcoded user path.
-#  - /Users/...        : macOS absolute home prefix
-#  - /home/<letter>... : Linux absolute home prefix
-#  - ~/Proyectos       : developer-specific project root used during v1 dev
+# Match a complete user directory component, not a prefix such as the words
+# "home/end" in a keybinding comment. The leading boundary also prevents these
+# expressions from matching a path fragment embedded in another token.
 patterns=(
-  "/Users/"
-  "/home/[a-z]"
-  "~/Proyectos"
+  '(^|[^[:alnum:]_])/(Users|home)/[A-Za-z0-9][A-Za-z0-9._-]*(/|$)'
+  '(^|[^[:alnum:]_])~/Proyectos(/|$)'
 )
 
-# Files we scan. _test.go files are excluded because they intentionally hold
-# the detector slices; the example config comment uses placeholders only. We
-# scan only shipped RUNTIME files (Go sources + the Television cable), not docs
-# or the guard script itself: the README and this script legitimately reference
-# the patterns to document and enforce them, which would be a self-hit.
+# Scan every committed text artifact except dependency checksums, generated
+# output, vendored code, binary files, and tests whose fixtures intentionally
+# use neutral fake home paths. This includes shipped non-test Go, README/docs,
+# internal/config/example.go, cables, and config/sample files.
 scan_files() {
-  # active Go sources (non-test) and the shipped Television cable.
-  git ls-files \
-    '*.go' ':!*_test.go' \
-    'cables/*.toml'
+  git ls-files -- ':!go.sum' ':!vendor/**' ':!dist/**' ':!**/*_test.go' ':!internal/tui/testdata/**' ':!scripts/check-no-user-paths.sh'
 }
 
-violations=0
-for pat in "${patterns[@]}"; do
-  hits=$(scan_files | xargs -r grep -InE "$pat" || true)
-  if [[ -n "$hits" ]]; then
-    echo "violation: pattern '$pat' found:" >&2
-    echo "$hits" >&2
-    violations=$((violations + 1))
-  fi
-done
+check_paths() {
+  local violations=0 pat hits
+  for pat in "${patterns[@]}"; do
+    hits=$(git grep -nI -E "$pat" -- $(scan_files) || true)
+    if [[ -n "$hits" ]]; then
+      echo "violation: pattern '$pat' found:" >&2
+      echo "$hits" >&2
+      violations=$((violations + 1))
+    fi
+  done
+  return "$violations"
+}
 
-if (( violations > 0 )); then
+# A shell-level regression contract for the boundary-sensitive detector. It is
+# runnable without a test framework: scripts/check-no-user-paths.sh --self-test.
+self_test() {
+  local fixture
+  fixture=$(mktemp)
+  trap 'rm -f "$fixture"' RETURN
+  printf '%s\n' '/home/alice/project' >"$fixture"
+  if ! grep -qE "${patterns[0]}" "$fixture"; then
+    echo "self-test: /home/alice/project must be rejected" >&2
+    return 1
+  fi
+  printf '%s\n' 'home/end' 'PATH_TO_PROJECT' >"$fixture"
+  if grep -qE "${patterns[0]}" "$fixture"; then
+    echo "self-test: neutral placeholders must pass" >&2
+    return 1
+  fi
+  echo "ok: path detector boundary self-test"
+}
+
+if [[ "${1:-}" == "--self-test" ]]; then
+  self_test
+  exit $?
+fi
+
+if ! check_paths; then
   echo "FAIL: hardcoded user-path patterns detected. Remove real home paths;" >&2
   echo "example/placeholder strings in comments are fine, real paths are not." >&2
   exit 1
 fi
 
-echo "ok: no hardcoded user paths in shipped Go source or the Television cable."
+echo "ok: no hardcoded user paths in committed text artifacts."

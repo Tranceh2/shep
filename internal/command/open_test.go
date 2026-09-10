@@ -15,6 +15,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tranceh2/shep/internal/config"
+	"github.com/tranceh2/shep/internal/herdr"
 	"github.com/tranceh2/shep/internal/preview"
 	"github.com/tranceh2/shep/internal/selector"
 	"github.com/tranceh2/shep/internal/source"
@@ -51,15 +52,20 @@ type openDriver struct {
 	sessionsErr       error
 	sessionsCalls     int
 
-	renamed      []string
-	paneCalls    []string // "rename-pane:<pane>:<label>"
-	ran          []string
-	created      []string // "tab:<ws>:<cwd>:<label>:<focus>" / "split:<pane>:<dir>:<ratio>:<cwd>:<focus>"
-	focused      []string
-	focusTabErr  error
-	createTabErr error
-	splitPaneErr error
-	runErr       error
+	renamed   []string
+	paneCalls []string // "rename-pane:<pane>:<label>"
+	ran       []string
+	created   []string // "tab:<ws>:<cwd>:<label>:<focus>" / "split:<pane>:<dir>:<ratio>:<cwd>:<focus>"
+	// layouts records atomic layout.apply dispatches as
+	// "layout:<tab_id>:<tab_label>:<focus>".
+	layouts        []string
+	argv           [][]string
+	applyLayoutErr error
+	focused        []string
+	focusTabErr    error
+	createTabErr   error
+	splitPaneErr   error
+	runErr         error
 	// runErrOnFirstCall, when non-nil, is returned only for the first RunPane
 	// call (the Apply-internal run); every subsequent call succeeds
 	// regardless of runErr. Used to script an Apply failure followed by a
@@ -121,8 +127,11 @@ func (d *openDriver) SplitPane(_ context.Context, paneID, direction string, rati
 	d.created = append(d.created, "split:"+paneID+":"+direction+":"+strconv.FormatFloat(ratio, 'f', -1, 64)+":"+cwd+":"+openFocusStr(focus))
 	return source.Pane{ID: "split-p"}, nil
 }
-func (d *openDriver) RunPane(_ context.Context, paneID, command string) error {
+func (d *openDriver) RunPane(ctx context.Context, paneID, command string) error {
 	d.ran = append(d.ran, "run:"+paneID+":"+command)
+	if strings.Contains(command, "pane close") && ctx.Err() != nil {
+		return ctx.Err()
+	}
 	d.runCallCount++
 	if d.runErrOnFirstCall != nil && d.runCallCount == 1 {
 		return d.runErrOnFirstCall
@@ -132,6 +141,56 @@ func (d *openDriver) RunPane(_ context.Context, paneID, command string) error {
 func (d *openDriver) FocusTab(_ context.Context, tabID string) error {
 	d.focused = append(d.focused, "focus-tab:"+tabID)
 	return d.focusTabErr
+}
+
+// ApplyLayout makes openDriver stand in for the layout.apply socket boundary
+// as well as the CLI one, so a test that injects a driver has NO live Herdr
+// dependency left anywhere in the launch path. It records each dispatched tab
+// as "layout:<tab_id>:<tab_label>:<focus>" plus every pane command the tree
+// carries, which is what lets the existing command-level assertions keep
+// describing observable behaviour after the dispatcher moved to the socket.
+func (d *openDriver) ApplyLayout(_ context.Context, _ string, params herdr.LayoutApplyParams) (*herdr.LayoutApplyResult, error) {
+	d.layouts = append(d.layouts,
+		"layout:"+params.TabID+":"+params.TabLabel+":"+openFocusStr(params.Focus))
+	collectPaneArgv(&params.Root, &d.argv)
+	collectPaneCommands(&params.Root, &d.ran)
+	if d.applyLayoutErr != nil {
+		return nil, d.applyLayoutErr
+	}
+	return &herdr.LayoutApplyResult{WorkspaceID: params.WorkspaceID, TabID: params.TabID}, nil
+}
+
+func collectPaneArgv(n *herdr.LayoutNode, out *[][]string) {
+	if n == nil {
+		return
+	}
+	if n.Type == herdr.NodeTypePane {
+		if len(n.Command) > 0 {
+			*out = append(*out, append([]string(nil), n.Command...))
+		}
+		return
+	}
+	collectPaneArgv(n.First, out)
+	collectPaneArgv(n.Second, out)
+}
+
+// collectPaneCommands appends every non-empty pane command in a dispatched
+// layout tree, in left-to-right (declaration) order, as
+// "run:<pane_id>:<command>". The pane's own generated id is used because
+// under layout.apply a pane's command and its id are decided together in one
+// atomic request; there is no prior pane to address.
+func collectPaneCommands(n *herdr.LayoutNode, out *[]string) {
+	if n == nil {
+		return
+	}
+	if n.Type == herdr.NodeTypePane {
+		if len(n.Command) > 0 {
+			*out = append(*out, "run:"+n.PaneID+":"+n.Command[len(n.Command)-1])
+		}
+		return
+	}
+	collectPaneCommands(n.First, out)
+	collectPaneCommands(n.Second, out)
 }
 
 // openFocusStr renders a focus bool the same way the templates-package fake
@@ -166,7 +225,7 @@ func seedCfg(t *testing.T, names ...string) (*config.Config, string) {
 	t.Helper()
 	root := t.TempDir()
 	cfg := config.Defaults()
-	cfg.General.Sources = []string{config.SourceWorkspaces}
+	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
 	for _, n := range names {
 		dir := filepath.Join(root, n)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -194,6 +253,7 @@ func runOpen(t *testing.T, cfg *config.Config, driver *openDriver, cascade *sele
 	if driver != nil {
 		app.herdrDriver = driver
 		app.herdrDriverInjected = true
+		app.layoutApplier = driver
 	}
 	app.cfg = cfg
 	app.probes = config.Probes{Git: true}
@@ -278,6 +338,30 @@ func TestCascadeFor_SingleMatchIsNotTreeActive(t *testing.T) {
 // auto-opens via Direct without invoking the interactive cascade, for every
 // selector value. The sentinel cascade raises a hard error if Select is ever
 // called, so a non-nil error proves the interactive picker leaked through.
+func TestOpen_ResolvesWorktreeWorkspaceName(t *testing.T) {
+	t.Parallel()
+	cand := source.Candidate{
+		Path:           "/trees/shep-feature",
+		NormalizedPath: "/trees/shep-feature",
+		Label:          "shep (feature/x)",
+		Source:         config.SourceProjects,
+		Meta: map[string]string{
+			"is_worktree": "true",
+			"repo":        "shep",
+			"branch":      "feature/x",
+		},
+	}
+	app := New()
+	app.cfg = config.Defaults()
+	request, err := app.workspaceLaunchRequest(cand)
+	if err != nil {
+		t.Fatalf("workspaceLaunchRequest: %v", err)
+	}
+	if got := string(request.WorkspaceName); got != "shep@feature/x" {
+		t.Fatalf("workspace name = %q, want %q", got, "shep@feature/x")
+	}
+}
+
 func TestOpen_DirectMatchBypassesSelector(t *testing.T) {
 	t.Parallel()
 	for _, sel := range []string{config.SelectorBuiltin, config.SelectorFzf, config.SelectorAuto} {
@@ -319,7 +403,7 @@ func TestOpen_ExactQueryInvokesDriver(t *testing.T) {
 // config source order through collection, resolution, and foreground attach.
 func TestOpen_SessionsSourceEndToEnd(t *testing.T) {
 	cfg := config.Defaults()
-	cfg.General.Sources = []string{config.SourceSessions}
+	cfg.General.SourceOrder = []string{config.SourceSessions}
 	cfg.Sources.Sessions.Icon = "S"
 	driver := &openDriver{detect: true, sessions: []source.Session{{Name: "alpha", Running: true}}}
 	var attached string
@@ -371,7 +455,7 @@ func TestLaunch_SessionAttachDispatchesBeforePathAndDriverChecks(t *testing.T) {
 	}))
 	app.cfg = config.Defaults()
 	var out, errOut bytes.Buffer
-	err := app.launch(context.Background(), source.Candidate{
+	_, err := app.launch(context.Background(), source.Candidate{
 		Source:  config.SourceSessions,
 		Missing: true,
 		Meta:    map[string]string{"session_name": "alpha"},
@@ -407,7 +491,7 @@ func TestLaunch_SessionAttachRejectsEmptyNameAndSurfacesChildFailure(t *testing.
 			return nil
 		}))
 		var errOut bytes.Buffer
-		err := app.launch(context.Background(), source.Candidate{Source: config.SourceSessions}, tui.RowActionOpen, "workspace", nil, io.Discard, &errOut)
+		_, err := app.launch(context.Background(), source.Candidate{Source: config.SourceSessions}, tui.RowActionOpen, "workspace", nil, io.Discard, &errOut)
 		if !errors.Is(err, errExitOne) || called || !strings.Contains(errOut.String(), "missing session name") {
 			t.Errorf("empty session launch = err:%v called:%t stderr:%q", err, called, errOut.String())
 		}
@@ -417,7 +501,7 @@ func TestLaunch_SessionAttachRejectsEmptyNameAndSurfacesChildFailure(t *testing.
 			return errors.New("attach exited 7")
 		}))
 		var errOut bytes.Buffer
-		err := app.launch(context.Background(), source.Candidate{Source: config.SourceSessions, Meta: map[string]string{"session_name": "beta"}}, tui.RowActionOpen, "workspace", nil, io.Discard, &errOut)
+		_, err := app.launch(context.Background(), source.Candidate{Source: config.SourceSessions, Meta: map[string]string{"session_name": "beta"}}, tui.RowActionOpen, "workspace", nil, io.Discard, &errOut)
 		if !errors.Is(err, errExitOne) || !strings.Contains(errOut.String(), "attach exited 7") {
 			t.Errorf("failed session attach = err:%v stderr:%q", err, errOut.String())
 		}
@@ -448,7 +532,7 @@ func TestLaunch_SessionsSourceTargetGuard(t *testing.T) {
 				want = disallowTarget(cand, tt.target) + "\n"
 			}
 			var errOut bytes.Buffer
-			err := app.launch(context.Background(), cand, tui.RowActionOpen, tt.target, pane, io.Discard, &errOut)
+			_, err := app.launch(context.Background(), cand, tui.RowActionOpen, tt.target, pane, io.Discard, &errOut)
 			if !errors.Is(err, errExitOne) || calls != 0 || errOut.String() != want {
 				t.Errorf("launch = err:%v calls:%d stderr:%q, want exit 1, zero calls, %q", err, calls, errOut.String(), want)
 			}
@@ -464,7 +548,7 @@ func TestLaunch_SessionsSourceDefaultTargetAttachesUnchanged(t *testing.T) {
 		return nil
 	}))
 	var errOut bytes.Buffer
-	err := app.launch(context.Background(), source.Candidate{Source: config.SourceSessions, Meta: map[string]string{"session_name": "alpha"}}, tui.RowActionOpen, "", nil, io.Discard, &errOut)
+	_, err := app.launch(context.Background(), source.Candidate{Source: config.SourceSessions, Meta: map[string]string{"session_name": "alpha"}}, tui.RowActionOpen, "", nil, io.Discard, &errOut)
 	if err != nil || called != 1 || name != "alpha" || errOut.Len() != 0 {
 		t.Errorf("default target = err:%v calls:%d name:%q stderr:%q", err, called, name, errOut.String())
 	}
@@ -654,7 +738,7 @@ func TestOpen_PathFlagWithDot(t *testing.T) {
 // (no source needs to produce a cwd candidate).
 func TestOpen_BareDotOpensCWD(t *testing.T) {
 	cfg := config.Defaults()
-	cfg.General.Sources = nil // no sources at all would still resolve "."
+	cfg.General.SourceOrder = nil // no sources at all would still resolve "."
 	driver := &openDriver{detect: true, workspaceID: "wA"}
 	wd, err := os.Getwd()
 	if err != nil {
@@ -688,7 +772,7 @@ func TestOpen_PathFlagEmptyErrors(t *testing.T) {
 // not create the directory.
 func TestOpen_MissingWorkspaceFailsCleanly(t *testing.T) {
 	cfg := config.Defaults()
-	cfg.General.Sources = []string{config.SourceWorkspaces}
+	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
 	missing := filepath.Join(t.TempDir(), "does-not-exist-yet")
 	cfg.Workspaces = []config.WorkspaceConfig{{Name: "ghost", Path: missing}}
 	driver := &openDriver{detect: true, workspaceID: "wA"}
@@ -878,12 +962,13 @@ func TestMatchWildcardTemplate_DoubleStarMatchesDescendant(t *testing.T) {
 func runOpenTemplate(t *testing.T, cfg *config.Config) *openDriver {
 	t.Helper()
 	dir := t.TempDir()
-	cfg.General.Sources = []string{config.SourceWorkspaces}
+	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
 	driver := &openDriver{detect: true, workspaceID: "wA", rootTabID: "wA:t1", rootPaneID: "wA:p1", lastAction: source.HerdrActionCreated}
 	var out, errOut bytes.Buffer
 	app := New(WithStreams(&out, &errOut))
 	app.herdrDriver = driver
 	app.herdrDriverInjected = true
+	app.layoutApplier = driver
 	app.cfg = cfg
 	app.probes = config.Probes{Herdr: true, Git: true}
 	cmd := app.rootCmd()
@@ -895,8 +980,10 @@ func runOpenTemplate(t *testing.T, cfg *config.Config) *openDriver {
 }
 
 // TestOpen_TemplateAppliesOnCreatedWorkspace (top-priority bug fix,
-// end-to-end): a freshly created workspace applies [defaults].template,
-// reusing the root tab rather than leaving it unused alongside a new one.
+// end-to-end): a freshly created workspace applies [defaults].template in one
+// atomic layout.apply that reuses the workspace's root tab, rather than
+// leaving that tab unused alongside a new one. The rename is now carried by
+// the dispatched tab_label instead of a separate `tab rename` subprocess.
 func TestOpen_TemplateAppliesOnCreatedWorkspace(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Templates["default"] = config.TemplateConfig{
@@ -905,14 +992,15 @@ func TestOpen_TemplateAppliesOnCreatedWorkspace(t *testing.T) {
 		},
 	}
 	driver := runOpenTemplate(t, cfg)
-	if len(driver.created) != 0 {
-		t.Errorf("first tab must reuse the root tab, got created=%v", driver.created)
+	if len(driver.layouts) != 1 || driver.layouts[0] != "layout:wA:t1:code:focus" {
+		t.Errorf("expected one atomic layout reusing root tab wA:t1 as %q, got %v", "code", driver.layouts)
 	}
-	if len(driver.renamed) != 1 || driver.renamed[0] != "rename:wA:t1:code" {
-		t.Errorf("expected root tab renamed to code, got %v", driver.renamed)
+	if len(driver.created) != 0 || len(driver.renamed) != 0 {
+		t.Errorf("layout.apply must replace tab create/rename subprocesses; created=%v renamed=%v",
+			driver.created, driver.renamed)
 	}
-	if len(driver.ran) != 1 || driver.ran[0] != "run:wA:p1:nvim" {
-		t.Errorf("expected nvim run in root pane, got %v", driver.ran)
+	if !reflect.DeepEqual(driver.argv, [][]string{{os.Getenv("SHELL"), "-l", "-c", "nvim; exec " + os.Getenv("SHELL")}}) {
+		t.Errorf("pane argv = %v, want login-shell argv", driver.argv)
 	}
 }
 
@@ -929,24 +1017,24 @@ func TestOpen_SourcePaneLabelFormatNeverRenamesOmittedLeaf(t *testing.T) {
 	}
 
 	driver := runOpenTemplate(t, cfg)
-	if len(driver.ran) != 1 || driver.ran[0] != "run:wA:p1:nvim" {
-		t.Fatalf("template command = %v, want one root-pane run", driver.ran)
+	if !reflect.DeepEqual(driver.argv, [][]string{{os.Getenv("SHELL"), "-l", "-c", "nvim; exec " + os.Getenv("SHELL")}}) {
+		t.Fatalf("pane argv = %v, want login-shell argv", driver.argv)
 	}
 	if len(driver.paneCalls) != 0 {
 		t.Fatalf("source pane label format caused Herdr rename calls: %v", driver.paneCalls)
 	}
 }
 
-// TestOpen_WorkspaceCommandCloseOnExit_WrapsRootPane is the end-to-end wiring
-// test for the whole chain this feature added: a [[workspaces]] entry with a
+// TestOpen_WorkspaceCommandCloseOnExit_RunsDirectly is the end-to-end wiring
+// test for native layout.apply semantics: a [[workspaces]] entry with a
 // top-level command + close_on_exit flows config -> workspacesProvider.List
 // (which forwards Meta["close_on_exit"]="true") -> resolveTemplate (synthetic
-// template) -> templates.Apply -> driver.RunPane receiving the shell-chained
-// command. It proves no link in the chain silently drops the wrap.
-func TestOpen_WorkspaceCommandCloseOnExit_WrapsRootPane(t *testing.T) {
+// template) -> templates.Apply -> a dispatched pane whose process exits with
+// the command. No synthetic pane-close command is needed.
+func TestOpen_WorkspaceCommandCloseOnExit_RunsDirectly(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Defaults()
-	cfg.General.Sources = []string{config.SourceWorkspaces}
+	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
 	cfg.Workspaces = []config.WorkspaceConfig{{
 		Name: "ops", Path: dir, Command: "k9s", CloseOnExit: true,
 	}}
@@ -958,9 +1046,9 @@ func TestOpen_WorkspaceCommandCloseOnExit_WrapsRootPane(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	want := "run:wA:p1:k9s; herdr pane close wA:p1"
-	if len(driver.ran) != 1 || driver.ran[0] != want {
-		t.Errorf("expected root pane to receive wrapped command %q, got %v", want, driver.ran)
+	want := [][]string{{os.Getenv("SHELL"), "-l", "-c", "k9s"}}
+	if !reflect.DeepEqual(driver.argv, want) {
+		t.Errorf("pane argv = %v, want %v", driver.argv, want)
 	}
 }
 
@@ -969,12 +1057,13 @@ func TestOpen_WorkspaceCommandCloseOnExit_WrapsRootPane(t *testing.T) {
 func TestOpen_TemplateSkippedOnFocusedWorkspace(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Templates["default"] = config.TemplateConfig{Command: "k9s"}
-	cfg.General.Sources = []string{config.SourceWorkspaces}
+	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
 	driver := &openDriver{detect: true, workspaceID: "wA", lastAction: source.HerdrActionFocused}
 	var out, errOut bytes.Buffer
 	app := New(WithStreams(&out, &errOut))
 	app.herdrDriver = driver
 	app.herdrDriverInjected = true
+	app.layoutApplier = driver
 	app.cfg = cfg
 	app.probes = config.Probes{Herdr: true, Git: true}
 	cmd := app.rootCmd()
@@ -987,27 +1076,29 @@ func TestOpen_TemplateSkippedOnFocusedWorkspace(t *testing.T) {
 	}
 }
 
-// TestOpen_TemplateFailureIsWarningNotFatal: a failing template application
-// only warns, never fails the whole open call.
-func TestOpen_TemplateFailureIsWarningNotFatal(t *testing.T) {
+// TestOpen_TemplateFailureReturnsErrorAfterWarning: a failing template
+// application preserves its warning and non-transactional side effects while
+// returning a failure so the selection is not recorded as successful.
+func TestOpen_TemplateFailureReturnsErrorAfterWarning(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Templates["default"] = config.TemplateConfig{Command: "boom"}
 	dir := t.TempDir()
-	cfg.General.Sources = []string{config.SourceWorkspaces}
+	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
 	driver := &openDriver{
 		detect: true, workspaceID: "wA", rootTabID: "wA:t1", rootPaneID: "wA:p1",
-		lastAction: source.HerdrActionCreated, runErr: errors.New("boom"),
+		lastAction: source.HerdrActionCreated, applyLayoutErr: errors.New("boom"),
 	}
 	var out, errOut bytes.Buffer
 	app := New(WithStreams(&out, &errOut))
 	app.herdrDriver = driver
 	app.herdrDriverInjected = true
+	app.layoutApplier = driver
 	app.cfg = cfg
 	app.probes = config.Probes{Herdr: true, Git: true}
 	cmd := app.rootCmd()
 	cmd.SetArgs([]string{"open", "--path", dir})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("open: %v", err)
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("open should fail when template application fails")
 	}
 	if !strings.Contains(errOut.String(), "template failed") {
 		t.Errorf("stderr = %q, want 'template failed'", errOut.String())
@@ -1024,10 +1115,10 @@ func TestOpen_GroupWorkspaceDrillsIntoNestedPicker(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := config.Defaults()
-	cfg.General.Sources = []string{config.SourceWorkspaces}
+	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
 	cfg.Sources.Projects = config.ProjectsSourceConfig{Markers: []string{".git"}}
 	cfg.Workspaces = []config.WorkspaceConfig{
-		{Name: "group", Type: config.WorkspaceTypeGroup, Path: root, Sources: []string{config.SourceProjects}},
+		{Name: "group", Type: config.WorkspaceTypeGroup, Path: root, SourceOrder: []string{config.SourceProjects}},
 	}
 	driver := &openDriver{detect: true, workspaceID: "wA"}
 	_, _, err := runOpen(t, cfg, driver, nil, "group")
@@ -1040,9 +1131,41 @@ func TestOpen_GroupWorkspaceDrillsIntoNestedPicker(t *testing.T) {
 	}
 }
 
-func runOpenStartupTemplate(t *testing.T, action source.HerdrAction) []string {
+func TestOpen_GroupWorkspaceLazilyRunsIntegrationAndDirectSelectsSingleRow(t *testing.T) {
+	root := t.TempDir()
+	counter := filepath.Join(t.TempDir(), "count")
+	script := filepath.Join(t.TempDir(), "list-contexts")
+	const scriptBody = "#!/bin/sh\ncount=0\nif [ -f \"$COUNT_FILE\" ]; then count=$(cat \"$COUNT_FILE\"); fi\nprintf '%s' $((count + 1)) > \"$COUNT_FILE\"\nprintf '[{\\\"label\\\":\\\"context\\\",\\\"path\\\":\\\"%s\\\"}]' \"$GROUP_ROOT\"\n"
+	if err := os.WriteFile(script, []byte(scriptBody), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COUNT_FILE", counter)
+	t.Setenv("GROUP_ROOT", root)
+
 	cfg := config.Defaults()
-	cfg.General.Sources = []string{config.SourceWorkspaces}
+	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
+	cfg.Integrations = []config.IntegrationConfig{{
+		Name: "kube-contexts", Command: []string{script}, Timeout: config.Duration(time.Second), LabelFormat: "context={{.Label}}",
+	}}
+	cfg.Workspaces = []config.WorkspaceConfig{{
+		Name: "Kubernetes", Type: config.WorkspaceTypeGroup, Path: root, SourceOrder: []string{"kube-contexts"},
+	}}
+	driver := &openDriver{detect: true, workspaceID: "wA"}
+	_, _, err := runOpen(t, cfg, driver, nil, "Kubernetes")
+	if err != nil {
+		t.Fatalf("open Kubernetes: %v", err)
+	}
+	if driver.lastCand.Source != "kube-contexts" || driver.lastCand.Label != "context" {
+		t.Fatalf("launched candidate = %+v, want the nested integration row", driver.lastCand)
+	}
+	if data, err := os.ReadFile(counter); err != nil || string(data) != "1" {
+		t.Fatalf("integration count = %q, read error = %v, want exactly one lazy run", data, err)
+	}
+}
+
+func runOpenStartupTemplate(t *testing.T, action source.HerdrAction) *openDriver {
+	cfg := config.Defaults()
+	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
 	cfg.Templates["default"] = config.TemplateConfig{Command: "echo hi"}
 	dir := t.TempDir()
 	driver := &openDriver{detect: true, workspaceID: "wA", rootTabID: "wA:t1", rootPaneID: "wA:p1", lastAction: action}
@@ -1050,6 +1173,7 @@ func runOpenStartupTemplate(t *testing.T, action source.HerdrAction) []string {
 	app := New(WithStreams(&out, &errOut))
 	app.herdrDriver = driver
 	app.herdrDriverInjected = true
+	app.layoutApplier = driver
 	app.cfg = cfg
 	app.probes = config.Probes{Herdr: true, Git: true}
 	cmd := app.rootCmd()
@@ -1057,24 +1181,25 @@ func runOpenStartupTemplate(t *testing.T, action source.HerdrAction) []string {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	return driver.ran
+	return driver
 }
 
 // TestOpen_TemplateFiresOnCreated: a created workspace applies the resolved
-// template's command in the root pane.
+// template's command in the dispatched root pane.
 func TestOpen_TemplateFiresOnCreated(t *testing.T) {
-	ran := runOpenStartupTemplate(t, source.HerdrActionCreated)
-	if len(ran) != 1 || ran[0] != "run:wA:p1:echo hi" {
-		t.Errorf("ran = %v, want a single 'echo hi' run in the root pane", ran)
+	driver := runOpenStartupTemplate(t, source.HerdrActionCreated)
+	want := [][]string{{os.Getenv("SHELL"), "-l", "-c", "echo hi; exec " + os.Getenv("SHELL")}}
+	if !reflect.DeepEqual(driver.argv, want) {
+		t.Errorf("pane argv = %v, want %v", driver.argv, want)
 	}
 }
 
 // TestOpen_TemplateSkippedOnFocused: focusing an existing workspace does not
 // apply any template.
 func TestOpen_TemplateSkippedOnFocused(t *testing.T) {
-	ran := runOpenStartupTemplate(t, source.HerdrActionFocused)
-	if len(ran) != 0 {
-		t.Errorf("ran = %v, want none for focused workspace", ran)
+	driver := runOpenStartupTemplate(t, source.HerdrActionFocused)
+	if len(driver.argv) != 0 {
+		t.Errorf("pane argv = %v, want none for focused workspace", driver.argv)
 	}
 }
 
@@ -1124,6 +1249,28 @@ func TestLayoutFromConfig_EmptyLayoutDefaultsToZeroOrientation(t *testing.T) {
 	got := layoutFromConfig(config.TUIConfig{}, nil)
 	if got.Orientation != "" {
 		t.Errorf("layoutFromConfig empty layout: Orientation = %q, want empty", got.Orientation)
+	}
+}
+
+// TestLayoutFromConfigWithIntegrations_ThreadsPerIntegrationLabelFormat
+// proves layoutFromConfigWithIntegrations resolves each declared
+// [[integrations]] entry's label_format into Layout.LabelFormats.Integrations,
+// keyed by name, alongside the five fixed built-in fields layoutFromConfig
+// already threads.
+func TestLayoutFromConfigWithIntegrations_ThreadsPerIntegrationLabelFormat(t *testing.T) {
+	t.Parallel()
+	integrations := []config.IntegrationConfig{
+		{Name: "prs", LabelFormat: "PR {{.Label}}"},
+		{Name: "issues", LabelFormat: "#{{.Label}}"},
+	}
+	order := []string{"issues", "prs"}
+	got := layoutFromConfigWithIntegrations(config.TUIConfig{}, order, integrations)
+	want := map[string]string{"prs": "PR {{.Label}}", "issues": "#{{.Label}}"}
+	if !reflect.DeepEqual(got.LabelFormats.Integrations, want) {
+		t.Errorf("LabelFormats.Integrations = %v, want %v", got.LabelFormats.Integrations, want)
+	}
+	if !reflect.DeepEqual(got.SourceOrder, order) {
+		t.Errorf("nested integration SourceOrder = %v, want %v", got.SourceOrder, order)
 	}
 }
 
@@ -1334,7 +1481,7 @@ func TestOpenLayoutToggle_ConfigUnchangedAfterCtrlL(t *testing.T) {
 	cfg.TUI = config.TUIConfig{ListWidth: "70%", PreviewWidth: "auto", Layout: config.TUILayoutLandscape}
 	originalTUI := cfg.TUI
 
-	layout := layoutFromConfig(cfg.TUI, cfg.General.Sources)
+	layout := layoutFromConfig(cfg.TUI, cfg.General.SourceOrder)
 	cands := []source.Candidate{{Path: "/a", Label: "a"}}
 	m := tui.NewModelWithLayout(cands, nil, layout)
 
@@ -1423,7 +1570,7 @@ func commandWorkspaceCfg(t *testing.T, name, command string, closeOnExit bool) (
 		t.Fatalf("mkdir %s: %v", dir, err)
 	}
 	cfg := config.Defaults()
-	cfg.General.Sources = []string{config.SourceWorkspaces}
+	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
 	cfg.Workspaces = []config.WorkspaceConfig{{
 		Name: name, Path: dir, Command: command, CloseOnExit: closeOnExit,
 	}}
@@ -1458,7 +1605,7 @@ func TestOpen_TargetTab_OpensInCurrentWorkspace(t *testing.T) {
 	if len(driver.created) != 1 || driver.created[0] != "tab:wA:/cur:ops:focus" {
 		t.Errorf("expected one focused CreateTab in the current workspace, got %v", driver.created)
 	}
-	want := "run:new-p:k9s; herdr pane close new-p"
+	want := "run:new-p:k9s; 'herdr' pane close 'new-p'"
 	if len(driver.ran) != 1 || driver.ran[0] != want {
 		t.Errorf("expected wrapped command %q in the new pane, got %v", want, driver.ran)
 	}
@@ -1496,7 +1643,7 @@ func TestOpen_UsesOneStartupSnapshotForTargeting(t *testing.T) {
 
 func TestOpen_InitialSnapshotFailure_IsolatesHerdrSource(t *testing.T) {
 	cfg, root := seedCfg(t, "fallback")
-	cfg.General.Sources = []string{config.SourceHerdr, config.SourceWorkspaces}
+	cfg.General.SourceOrder = []string{config.SourceHerdr, config.SourceWorkspaces}
 	driver := &openDriver{
 		detect:      true,
 		snapshotErr: errors.New("snapshot unavailable"),
@@ -1557,7 +1704,7 @@ func TestOpen_TargetPane_OpensInCurrentWorkspace(t *testing.T) {
 	if len(driver.created) != 1 || driver.created[0] != "split:cur-p:right:0.5:/cur:focus" {
 		t.Errorf("expected one focused right split of the current pane, got %v", driver.created)
 	}
-	want := "run:split-p:k9s; herdr pane close split-p"
+	want := "run:split-p:k9s; 'herdr' pane close 'split-p'"
 	if len(driver.ran) != 1 || driver.ran[0] != want {
 		t.Errorf("expected wrapped command %q in the split pane, got %v", want, driver.ran)
 	}
@@ -1594,7 +1741,7 @@ func TestOpen_TargetTab_TemplateEntry_Errors(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := config.Defaults()
-	cfg.General.Sources = []string{config.SourceWorkspaces}
+	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
 	cfg.Templates["code"] = config.TemplateConfig{Command: "nvim"}
 	cfg.Workspaces = []config.WorkspaceConfig{{Name: "ops", Path: dir, Template: "code"}}
 	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", CWD: "/cur"}
@@ -1643,9 +1790,10 @@ func runLaunchDirect(t *testing.T, cand source.Candidate, action tui.RowAction, 
 	app := New(WithStreams(&out, &errOut))
 	app.herdrDriver = driver
 	app.herdrDriverInjected = true
+	app.layoutApplier = driver
 	app.cfg = config.Defaults()
 	app.probes = config.Probes{Herdr: true, Git: true}
-	err := app.launch(context.Background(), cand, action, target, currentPane, &out, &errOut)
+	_, err := app.launch(context.Background(), cand, action, target, currentPane, &out, &errOut)
 	return errOut.String(), err
 }
 
@@ -1709,7 +1857,7 @@ func TestOpen_TargetTab_ApplyFailureRollsBackAndErrors(t *testing.T) {
 	if len(driver.ran) != 2 {
 		t.Fatalf("expected 2 RunPane calls (failed run + rollback close), got %v", driver.ran)
 	}
-	wantClose := "run:new-p:herdr pane close new-p"
+	wantClose := "run:new-p:'herdr' 'pane' 'close' 'new-p'"
 	if driver.ran[1] != wantClose {
 		t.Errorf("expected rollback close %q, got %q", wantClose, driver.ran[1])
 	}
@@ -1717,6 +1865,25 @@ func TestOpen_TargetTab_ApplyFailureRollsBackAndErrors(t *testing.T) {
 
 // TestOpen_TargetPane_ApplyFailureRollsBackAndErrors mirrors the tab test for
 // --target=pane, confirming the rollback close targets the split pane.
+func TestLaunchInCurrentWorkspaceRollbackUsesIndependentContext(t *testing.T) {
+	cfg, _ := commandWorkspaceCfg(t, "ops", "k9s", false)
+	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
+	driver := insidePaneDriver(pane)
+	driver.runErrOnFirstCall = errors.New("boom")
+	app := New(WithHerdrDriver(driver))
+	app.cfg = cfg
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var errOut bytes.Buffer
+	_, err := app.launchInCurrentWorkspace(ctx, driver, source.Candidate{Source: config.SourceWorkspaces, Path: "/ops", Label: "ops", Meta: map[string]string{"command": "k9s"}}, "tab", &pane, &errOut)
+	if !errors.Is(err, errExitOne) {
+		t.Fatalf("launch error = %v, want errExitOne", err)
+	}
+	if len(driver.ran) != 2 || driver.ran[1] != "run:new-p:'herdr' 'pane' 'close' 'new-p'" {
+		t.Fatalf("rollback did not run independently: %v", driver.ran)
+	}
+}
+
 func TestOpen_TargetPane_ApplyFailureRollsBackAndErrors(t *testing.T) {
 	cfg, _ := commandWorkspaceCfg(t, "ops", "k9s", false)
 	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
@@ -1735,7 +1902,7 @@ func TestOpen_TargetPane_ApplyFailureRollsBackAndErrors(t *testing.T) {
 	if len(driver.ran) != 2 {
 		t.Fatalf("expected 2 RunPane calls (failed run + rollback close), got %v", driver.ran)
 	}
-	wantClose := "run:split-p:herdr pane close split-p"
+	wantClose := "run:split-p:'herdr' 'pane' 'close' 'split-p'"
 	if driver.ran[1] != wantClose {
 		t.Errorf("expected rollback close %q, got %q", wantClose, driver.ran[1])
 	}
@@ -1845,6 +2012,69 @@ func TestOpen_TargetPane_ProjectsCandidate_Opens(t *testing.T) {
 	}
 	if len(driver.ran) != 0 {
 		t.Errorf("a projects candidate has no command; expected no RunPane, got %v", driver.ran)
+	}
+}
+
+// TestOpen_TargetTab_IntegrationCandidate_Opens proves an integration row
+// carrying a command supports --target=tab through the exact same
+// SupportsCurrentWorkspaceTarget/launchInCurrentWorkspace path as a
+// [[workspaces]] command entry, with no parallel launch code.
+func TestOpen_TargetTab_IntegrationCandidate_Opens(t *testing.T) {
+	cand := source.Candidate{Source: "prs", Path: "/repo", Label: "PR 42", Meta: map[string]string{"command": "gh pr view 42"}}
+	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
+	driver := insidePaneDriver(pane)
+	errOut, err := runLaunchDirect(t, cand, tui.RowActionOpen, "tab", &pane, driver)
+	if err != nil {
+		t.Fatalf("launch --target=tab integration: %v (stderr=%q)", err, errOut)
+	}
+	if len(driver.created) != 1 || driver.created[0] != "tab:wA:/cur:PR 42:focus" {
+		t.Errorf("expected one focused CreateTab for the integration candidate, got %v", driver.created)
+	}
+	want := "run:new-p:gh pr view 42"
+	if len(driver.ran) != 1 || driver.ran[0] != want {
+		t.Errorf("expected command run in the new pane, got %v", driver.ran)
+	}
+}
+
+// TestOpen_TargetTab_IntegrationCandidateWithoutCommand_Errors proves an
+// integration row with no command is rejected the same way a plain path is:
+// disallowTarget's default branch, not a special integration-only message.
+func TestOpen_TargetTab_IntegrationCandidateWithoutCommand_Errors(t *testing.T) {
+	cand := source.Candidate{Source: "prs", Path: "/repo", Label: "PR 42"}
+	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
+	driver := insidePaneDriver(pane)
+	errOut, err := runLaunchDirect(t, cand, tui.RowActionOpen, "tab", &pane, driver)
+	if err == nil {
+		t.Fatal("expected an error for --target=tab on a commandless integration row")
+	}
+	if !strings.Contains(errOut, "requires an entry with a command") {
+		t.Errorf("stderr = %q, want the no-command message", errOut)
+	}
+}
+
+// TestOpen_IntegrationRowWithPathOpensAsWorkspace proves an integration row
+// carrying a path opens through the ordinary FocusOrCreate workspace path —
+// no special-cased integration launch branch exists.
+func TestOpen_IntegrationRowWithPathOpensAsWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Defaults()
+	cfg.General.SourceOrder = []string{"prs"}
+	cfg.Integrations = []config.IntegrationConfig{{Name: "prs", Command: []string{"printf", "[]"}}}
+	driver := &openDriver{detect: true, workspaceID: "w-new", lastAction: source.HerdrActionFocused}
+	app := New(WithStreams(&bytes.Buffer{}, &bytes.Buffer{}))
+	app.herdrDriver = driver
+	app.herdrDriverInjected = true
+	app.layoutApplier = driver
+	app.cfg = cfg
+	app.probes = config.Probes{Herdr: true}
+	cand := source.Candidate{Source: "prs", Path: dir, Label: "PR 42", Meta: map[string]string{"command": "gh pr view 42"}}
+	var out, errOut bytes.Buffer
+	_, err := app.launch(context.Background(), cand, tui.RowActionOpen, "workspace", nil, &out, &errOut)
+	if err != nil {
+		t.Fatalf("launch workspace target for integration row: %v (stderr=%q)", err, errOut.String())
+	}
+	if driver.lastCand.Path != dir {
+		t.Errorf("FocusOrCreate candidate path = %q, want %q", driver.lastCand.Path, dir)
 	}
 }
 
@@ -1994,4 +2224,430 @@ func TestOpen_LaunchFocusTabAction_FocusTabErrorSurfacesExitOne(t *testing.T) {
 	if !strings.Contains(errOut, "herdr tab focus") {
 		t.Errorf("stderr = %q, want it to mention the FocusTab failure", errOut)
 	}
+}
+
+// --- R3-1: nested group effective source order ---
+
+// TestEffectiveGroupSourceOrder is the pure-function table test for the single
+// helper that resolves a nested group picker's iteration order (R3-1).
+// Precedence: explicit ws.SourceOrder when hasWorkspace && non-empty; else the
+// parsed group_sources list; else cfg.General.SourceOrder.
+func TestEffectiveGroupSourceOrder(t *testing.T) {
+	t.Parallel()
+	global := []string{config.SourceHerdr, config.SourceWorkspaces}
+	groupSources := []string{config.SourceProjects, config.SourceSessions}
+
+	cases := []struct {
+		name         string
+		cfg          *config.Config
+		ws           config.WorkspaceConfig
+		hasWorkspace bool
+		groupSources []string
+		want         []string
+	}{
+		{
+			name:         "explicit workspace order wins",
+			cfg:          config.Defaults(),
+			ws:           config.WorkspaceConfig{SourceOrder: []string{config.SourceProjects, config.SourceWorkspaces}},
+			hasWorkspace: true,
+			groupSources: groupSources,
+			want:         []string{config.SourceProjects, config.SourceWorkspaces},
+		},
+		{
+			name:         "group_sources used when workspace bound but order empty",
+			cfg:          config.Defaults(),
+			ws:           config.WorkspaceConfig{SourceOrder: nil},
+			hasWorkspace: true,
+			groupSources: []string{config.SourceSessions, config.SourceHerdr},
+			want:         []string{config.SourceSessions, config.SourceHerdr},
+		},
+		{
+			name:         "group_sources used when no workspace binding",
+			cfg:          config.Defaults(),
+			ws:           config.WorkspaceConfig{},
+			hasWorkspace: false,
+			groupSources: []string{config.SourceZoxide, config.SourceProjects},
+			want:         []string{config.SourceZoxide, config.SourceProjects},
+		},
+		{
+			name:         "global fallback when both workspace order and group_sources empty",
+			cfg:          &config.Config{General: config.General{SourceOrder: append([]string(nil), global...)}},
+			ws:           config.WorkspaceConfig{SourceOrder: nil},
+			hasWorkspace: true,
+			groupSources: nil,
+			want:         global,
+		},
+		{
+			name:         "global fallback when no workspace and no group_sources",
+			cfg:          &config.Config{General: config.General{SourceOrder: append([]string(nil), global...)}},
+			ws:           config.WorkspaceConfig{},
+			hasWorkspace: false,
+			groupSources: nil,
+			want:         global,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := effectiveGroupSourceOrder(tc.cfg, tc.ws, tc.hasWorkspace, tc.groupSources)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("effectiveGroupSourceOrder = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestNestedPicker_OmittedOrderUsesGlobalEffectiveOrder (R3-1) proves the
+// nested group picker computes one effective order before registry construction:
+// when a group omits SourceOrder, the scoped registry still runs the global
+// sources and the nested cascade receives candidates in that same global order.
+// A captureSelector records the ranked candidate order so the end-to-end path
+// catches the former empty-registry bug.
+func TestNestedPicker_RankingAndLayoutShareEffectiveOrder(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	// A project marker directory so the projects provider yields a candidate
+	// distinct from the sessions candidate.
+	projDir := filepath.Join(root, "svc")
+	if err := os.MkdirAll(filepath.Join(projDir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Global order lists workspaces first (so the group [[workspaces]] entry is
+	// discoverable at the top level), then projects, then sessions. The group
+	// REVERSES projects/sessions to [sessions, projects]. The nested picker
+	// MUST rank sessions first — proving the group's effective order, not the
+	// global one, drove ranking.
+	cfg := config.Defaults()
+	cfg.General.SourceOrder = []string{config.SourceWorkspaces, config.SourceProjects, config.SourceSessions}
+	cfg.Sources.Projects = config.ProjectsSourceConfig{Markers: []string{".git"}}
+	cfg.Workspaces = []config.WorkspaceConfig{
+		{
+			Name: "group", Type: config.WorkspaceTypeGroup, Path: root,
+			SourceOrder: []string{config.SourceSessions, config.SourceProjects},
+		},
+	}
+
+	driver := &openDriver{
+		detect: true, workspaceID: "wA",
+		sessions: []source.Session{{Name: "run-svc", Running: true}},
+	}
+
+	// captureSelector records the ordered candidate Sources it received, so
+	// the test asserts the ranking order matches the group's effective order.
+	// It always picks the sessions candidate (the group-declared first source).
+	var capturedSources []string
+	sessCand := source.Candidate{Source: config.SourceSessions, Label: "run-svc", Meta: map[string]string{"session_name": "run-svc"}}
+	captureSel := captureSelector{
+		pick: sessCand,
+		ok:   true,
+		onSelect: func(cands []source.Candidate) {
+			capturedSources = make([]string, 0, len(cands))
+			for _, c := range cands {
+				capturedSources = append(capturedSources, c.Source)
+			}
+		},
+	}
+	cascade := selector.New(captureSel)
+
+	var out, errOut bytes.Buffer
+	app := New(WithStreams(&out, &errOut))
+	app.herdrDriver = driver
+	app.herdrDriverInjected = true
+	app.layoutApplier = driver
+	app.cfg = cfg
+	app.probes = config.Probes{Herdr: true, Git: true}
+	app.selectorBuilder = func() *selector.Cascade { return cascade }
+	// The session attach is a no-op so the launch completes without shelling out.
+	app.sessionAttach = func(context.Context, string, string, []string) error { return nil }
+	cmd := app.rootCmd()
+	cmd.SetArgs([]string{"open", "group"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("open group: %v (stderr=%q)", err, errOut.String())
+	}
+
+	if len(capturedSources) < 2 {
+		t.Fatalf("nested cascade received %d candidates, want at least 2 (sessions + projects); captureSelector may not have run", len(capturedSources))
+	}
+	// Group effective order is [sessions, projects]; sessions MUST rank first.
+	// Under the OLD global-order bug, projects would rank first.
+	wantFirst := config.SourceSessions
+	if capturedSources[0] != wantFirst {
+		t.Errorf("nested picker first source = %q, want %q (group effective order [sessions, projects], not global [projects, sessions])", capturedSources[0], wantFirst)
+	}
+}
+
+// captureSelector is a selector.Selector that records the candidate order it
+// received via onSelect before returning its scripted pick.
+type captureSelector struct {
+	pick     source.Candidate
+	ok       bool
+	err      error
+	onSelect func([]source.Candidate)
+}
+
+func (captureSelector) Name() string { return "capture" }
+func (s captureSelector) Select(_ context.Context, candidates []source.Candidate, _ string) (source.Candidate, bool, error) {
+	if s.onSelect != nil {
+		s.onSelect(append([]source.Candidate(nil), candidates...))
+	}
+	return s.pick, s.ok, s.err
+}
+
+// --- R3-2: truthful launch outcome recording ---
+
+// runOpenWithRecordingStore wires a fresh App with a recordingRankingStore and
+// the given driver/cfg, runs `shep open <args>`, and returns the store (whose
+// records slice is the assertion target) plus stdout/stderr/err.
+func runOpenWithRecordingStore(t *testing.T, cfg *config.Config, driver *openDriver, args ...string) (*recordingRankingStore, string, string, error) {
+	t.Helper()
+	store := &recordingRankingStore{}
+	var out, errOut bytes.Buffer
+	app := New(WithStreams(&out, &errOut))
+	if driver != nil {
+		app.herdrDriver = driver
+		app.herdrDriverInjected = true
+		app.layoutApplier = driver
+	}
+	app.cfg = cfg
+	if driver != nil {
+		app.probes = config.Probes{Herdr: true, Git: true}
+	} else {
+		app.probes = config.Probes{Git: true}
+	}
+	app.rankingOpen = func() (rankingStore, error) { return store, nil }
+	app.sessionAttach = func(context.Context, string, string, []string) error { return nil }
+	cmd := app.rootCmd()
+	cmd.SetArgs(append([]string{"open"}, args...))
+	err := cmd.Execute()
+	return store, out.String(), errOut.String(), err
+}
+
+// TestLaunchOutcome_CompletedRecordsExactlyOnce (R3-2) proves each genuinely
+// completed launch path — workspace focus, workspace create, current-workspace
+// tab, session attach, and child-tab focus — records exactly one history entry.
+// The degraded path-print fallbacks are covered separately (must record zero).
+func TestLaunchOutcome_CompletedRecordsExactlyOnce(t *testing.T) {
+	t.Parallel()
+
+	t.Run("workspace focus records once", func(t *testing.T) {
+		t.Parallel()
+		cfg, _ := seedCfg(t, "foo")
+		driver := &openDriver{detect: true, workspaceID: "wA", lastAction: source.HerdrActionFocused}
+		store, _, _, err := runOpenWithRecordingStore(t, cfg, driver, "foo")
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		if len(store.records) != 1 {
+			t.Errorf("focus records = %d, want exactly 1", len(store.records))
+		}
+	})
+
+	t.Run("workspace create records once", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Defaults()
+		cfg.General.SourceOrder = []string{config.SourceWorkspaces}
+		driver := &openDriver{detect: true, workspaceID: "wA", rootTabID: "wA:t1", rootPaneID: "wA:p1", lastAction: source.HerdrActionCreated}
+		store, _, _, err := runOpenWithRecordingStore(t, cfg, driver, "--path", t.TempDir())
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		if len(store.records) != 1 {
+			t.Errorf("create records = %d, want exactly 1", len(store.records))
+		}
+	})
+
+	t.Run("current-workspace tab records once", func(t *testing.T) {
+		t.Parallel()
+		cfg, _ := commandWorkspaceCfg(t, "ops", "k9s", false)
+		pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
+		driver := insidePaneDriver(pane)
+		store, _, _, err := runOpenWithRecordingStore(t, cfg, driver, "--target", "tab", "ops")
+		if err != nil {
+			t.Fatalf("open --target=tab: %v", err)
+		}
+		if len(store.records) != 1 {
+			t.Errorf("tab records = %d, want exactly 1", len(store.records))
+		}
+	})
+
+	t.Run("session attach records once", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Defaults()
+		cfg.General.SourceOrder = []string{config.SourceSessions}
+		cfg.Sources.Sessions.Icon = "S"
+		driver := &openDriver{detect: true, sessions: []source.Session{{Name: "alpha", Running: true}}}
+		store, _, _, err := runOpenWithRecordingStore(t, cfg, driver, "alpha")
+		if err != nil {
+			t.Fatalf("open sessions: %v", err)
+		}
+		if len(store.records) != 1 {
+			t.Errorf("session attach records = %d, want exactly 1", len(store.records))
+		}
+	})
+
+	t.Run("child tab focus records once", func(t *testing.T) {
+		t.Parallel()
+		// RowActionFocusTab is only reachable through the TUI picker, so this
+		// case drives runOpen with a fake TUI selector that returns a
+		// focus-tab pick, proving the completed child-tab launch records
+		// exactly once through the runOpen → launch → launchChildTab path.
+		root := t.TempDir()
+		svc := filepath.Join(root, "svc")
+		if err := os.MkdirAll(filepath.Join(svc, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		cfg := config.Defaults()
+		cfg.General.SourceOrder = []string{config.SourceProjects}
+		cfg.Sources.Projects = config.ProjectsSourceConfig{Markers: []string{".git"}, Roots: []string{root}}
+		driver := &openDriver{detect: true}
+		store := &recordingRankingStore{}
+		var out, errOut bytes.Buffer
+		app := New(WithStreams(&out, &errOut))
+		app.herdrDriver = driver
+		app.herdrDriverInjected = true
+		app.layoutApplier = driver
+		app.cfg = cfg
+		app.probes = config.Probes{Herdr: true, Git: true}
+		app.rankingOpen = func() (rankingStore, error) { return store, nil }
+		// Build a TUI selector whose fake run returns a focus-tab pick; wire
+		// it through selectorFactory's cascade so onAction reaches the App.
+		focusCand := source.Candidate{Label: "tab1", Path: svc, Meta: map[string]string{"tab_id": "t1"}}
+		tuiSel := newTUISelector(nil, nil, app.setChosenTarget, app.setChosenAction)
+		tuiSel.run = func(_ context.Context, _ []source.Candidate, _ string, _ preview.Renderer, _ *source.Pane, _ ...tui.Layout) (source.Candidate, tui.RowAction, string, bool, error) {
+			return focusCand, tui.RowActionFocusTab, "", true, nil
+		}
+		cascade := selector.New(selector.Direct{}, tuiSel)
+		app.selectorBuilder = func() *selector.Cascade { return cascade }
+		// Two sibling projects force the cascade (not Direct) to select.
+		if err := os.MkdirAll(filepath.Join(root, "other", ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		cmd := app.rootCmd()
+		cmd.SetArgs([]string{"open", ""})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("open child tab: %v (stderr=%q)", err, errOut.String())
+		}
+		if len(store.records) != 1 {
+			t.Errorf("child tab focus records = %d, want exactly 1", len(store.records))
+		}
+	})
+}
+
+// TestLaunchOutcome_PathOnlyRecordsZero (R3-2) proves the two degraded
+// path-print fallbacks — Herdr unavailable (driver nil / Detect false) and
+// FocusOrCreate failure — both print the resolved path to stdout AND record
+// zero history entries. These branches must return non-fatally without being
+// mistaken for a completed launch.
+func TestLaunchOutcome_PathOnlyRecordsZero(t *testing.T) {
+	t.Parallel()
+
+	t.Run("herdr unavailable prints path and records zero", func(t *testing.T) {
+		t.Parallel()
+		cfg, root := seedCfg(t, "foo")
+		foo := resolved(filepath.Join(root, "foo"))
+		// nil driver models "Herdr absent" — runOpen's hydrateStartupSnapshot
+		// leaves Driver() nil, so launch prints the path.
+		store, out, _, err := runOpenWithRecordingStore(t, cfg, nil, "foo")
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		if len(store.records) != 0 {
+			t.Errorf("herdr-unavailable records = %d, want 0", len(store.records))
+		}
+		if !strings.Contains(out, foo) {
+			t.Errorf("stdout = %q, want it to contain the printed path %q", out, foo)
+		}
+	})
+
+	t.Run("focusOrCreate failure prints path and records zero", func(t *testing.T) {
+		t.Parallel()
+		cfg, _ := seedCfg(t, "foo")
+		driver := &openDriver{detect: true, focusErr: errors.New("daemon down")}
+		store, out, _, err := runOpenWithRecordingStore(t, cfg, driver, "foo")
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		if len(store.records) != 0 {
+			t.Errorf("focusOrCreate-failure records = %d, want 0", len(store.records))
+		}
+		if strings.TrimSpace(out) == "" {
+			t.Errorf("expected path printed to stdout on focusOrCreate failure, got empty")
+		}
+	})
+}
+
+// TestLaunchOutcome_CancellationAndFailureRecordZero (R3-2) proves cancellation
+// and generic launch failures record zero history entries — they never
+// represent a completed navigation.
+func TestLaunchOutcome_CancellationAndFailureRecordZero(t *testing.T) {
+	t.Parallel()
+
+	t.Run("cancellation records zero", func(t *testing.T) {
+		t.Parallel()
+		cfg, _ := seedCfg(t, "foo", "foobar")
+		store := &recordingRankingStore{}
+		var out, errOut bytes.Buffer
+		app := New(WithStreams(&out, &errOut))
+		app.cfg = cfg
+		app.probes = config.Probes{Git: true}
+		app.rankingOpen = func() (rankingStore, error) { return store, nil }
+		app.selectorBuilder = func() *selector.Cascade { return selector.New(fakeSelector{err: tui.ErrCancelled}) }
+		cmd := app.rootCmd()
+		cmd.SetArgs([]string{"open", "foo"})
+		err := cmd.Execute()
+		if err == nil {
+			t.Fatal("expected exit 1 on cancellation")
+		}
+		if len(store.records) != 0 {
+			t.Errorf("cancellation records = %d, want 0", len(store.records))
+		}
+	})
+
+	t.Run("missing workspace failure records zero", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Defaults()
+		cfg.General.SourceOrder = []string{config.SourceWorkspaces}
+		missing := filepath.Join(t.TempDir(), "ghost")
+		cfg.Workspaces = []config.WorkspaceConfig{{Name: "ghost", Path: missing}}
+		driver := &openDriver{detect: true, workspaceID: "wA"}
+		store, _, _, err := runOpenWithRecordingStore(t, cfg, driver, "ghost")
+		if err == nil {
+			t.Fatal("expected exit 1 for a missing workspace")
+		}
+		if len(store.records) != 0 {
+			t.Errorf("missing-workspace records = %d, want 0", len(store.records))
+		}
+	})
+}
+
+func TestSelectorFactory_StatusDialerWiredWhenSocketPresent(t *testing.T) {
+	t.Run("HERDR_SOCKET_PATH set wires UnixStatusDialer", func(t *testing.T) {
+		t.Setenv("HERDR_SOCKET_PATH", "/tmp/herdr-test.sock")
+		app := New()
+		dialer := app.resolveStatusDialer()
+		if dialer == nil {
+			t.Fatal("expected non-nil StatusDialer when HERDR_SOCKET_PATH is set")
+		}
+	})
+
+	t.Run("HERDR_SOCKET_PATH unset yields nil dialer", func(t *testing.T) {
+		t.Setenv("HERDR_SOCKET_PATH", "")
+		app := New()
+		dialer := app.resolveStatusDialer()
+		if dialer != nil {
+			t.Errorf("expected nil StatusDialer when HERDR_SOCKET_PATH is unset, got %+v", dialer)
+		}
+	})
+
+	t.Run("injected StatusDialer overrides environment", func(t *testing.T) {
+		t.Setenv("HERDR_SOCKET_PATH", "/tmp/env.sock")
+		injected := tui.FuncStatusDialer(func(_ context.Context) (tui.StatusStream, error) {
+			return nil, nil
+		})
+		app := New(WithStatusDialer(injected))
+		dialer := app.resolveStatusDialer()
+		if dialer == nil {
+			t.Fatal("expected injected dialer, got nil")
+		}
+	})
 }

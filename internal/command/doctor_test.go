@@ -78,7 +78,7 @@ func TestDoctor_GroupWorkspacePathChecked(t *testing.T) {
 	cfg := config.Defaults()
 	missing := filepath.Join(t.TempDir(), "ghost-group")
 	cfg.Workspaces = []config.WorkspaceConfig{
-		{Name: "group", Type: config.WorkspaceTypeGroup, Path: missing, Sources: []string{config.SourceProjects}},
+		{Name: "group", Type: config.WorkspaceTypeGroup, Path: missing, SourceOrder: []string{config.SourceProjects}},
 	}
 	out, errOut, err := runDoctor(t, cfg)
 	if err != nil {

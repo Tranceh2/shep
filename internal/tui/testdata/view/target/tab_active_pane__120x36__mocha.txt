@@ -33,4 +33,4 @@ Search: type to filter…                                                       
 │                                                                      │ │                                             │
 │                                                                      │ │                                             │
 ╰──────────────────────────────────────────────────────────────────────╯ ╰─────────────────────────────────────────────╯
-enter open / tab focus preview / esc cancel / ? help
+enter Focus tab / tab focus preview / esc cancel / ? help

@@ -11,19 +11,28 @@ func ExampleTOML() string {
 # used on every platform, including macOS). Run "shep init --force" to
 # regenerate it.
 
-version = 1
+version = 2
 
 [general]
-# sources lists the enabled built-in sources and their merge/display order.
-# Valid names: herdr, workspaces, zoxide, projects. Unknown names fail fast.
-sources = ["herdr", "workspaces", "zoxide", "projects"]
+# source_order lists the enabled built-in sources and their merge/display order.
+# Built-ins are herdr, sessions (opt-in), workspaces, zoxide, and projects.
+# Valid names: herdr, sessions, workspaces, zoxide, projects, plus any name
+# declared in [[integrations]] below. Unknown names fail fast.
+source_order = ["herdr", "workspaces", "zoxide", "projects"]
 # selector picks the interactive picker for "shep open" after the direct
 # (exact / single-match) short-circuit. Valid values: builtin, fzf, auto.
 selector = "builtin"
 # workspace_name controls only newly created dynamic workspaces. It receives
-# Path, NormalizedPath, Label, and Source. Explicit workspace names and existing
-# Herdr workspaces bypass this policy.
+# Path, NormalizedPath, Label, Source, Branch, RepoName, IsWorktree, and
+# IsMainWorktree. Explicit workspace names and existing Herdr workspaces
+# bypass this policy.
 # workspace_name = '{{ .Path | osBase | lower }}'
+
+# [ranking] controls private local adaptive ordering. It stores only opaque
+# action/resource identities, bounded counts, and timestamps. It never stores
+# labels, queries, templates, environment data, telemetry, or network state.
+[ranking]
+enabled = true
 
 # [herdr] locates the Herdr CLI binary. Leave binary empty to use "herdr" from
 # PATH. Set it to an absolute path only if Herdr is not on PATH.
@@ -41,13 +50,12 @@ template = "default"
 # [tui] configures the picker's pane sizing, orientation, and theme.
 # list_width/preview_width are "auto" or a percentage like "60%" (share of
 # the split axis). layout is "landscape" (forces side-by-side) or omitted for
-# the responsive default (the picker picks wide/list-only from the terminal
-# width); toggle it live for the current session with ctrl+l while the picker
-# is open (does not persist to this file). theme is one of "mocha",
-# "macchiato", "frappe", "latte", or "plain" (no color, textual markers only);
-# omitted defers to the $SHEP_THEME environment variable, then "mocha".
-# $NO_COLOR (any non-empty value), when set, always forces "plain" regardless
-# of both.
+# the responsive default (the picker chooses wide or list-only from terminal
+# width); ctrl+l toggles session-only auto/landscape while the picker is open.
+# There is no portrait/stacked mode. theme accepts "mocha", "macchiato", "frappe",
+# "latte", "plain", or "inherit". "inherit" delegates explicitly to the
+# Herdr theme. Exact precedence is NO_COLOR > SHEP_THEME > explicit config theme
+# (except inherit) > Herdr theme > mocha.
 [tui]
 list_width = "auto"
 preview_width = "60%"
@@ -73,11 +81,10 @@ cache_ttl = "5s"
 max_lines = 50
 default = ["identity", "git"]
 
-# [preview.commands.<name>] declares a custom preview command referenced by
-# name from any preview = [...] list, alongside the built-ins above. {{.Path}}
-# is substituted as one argument value; no shell expansion, no sh -c. Quote an
-# action with internal whitespace (for example, "{{ .Path }}"); {{.Path}} is
-# safe unquoted because raw command tokenization happens before rendering.
+# [preview.commands.<name>] declares a reusable global preview command referenced
+# by name from any preview = [...] list, alongside the built-ins above. It keeps
+# its backwards-compatible shell-style command string, but execution is still
+# argv-based with no shell expansion or sh -c.
 [preview.commands.recent_commits]
 command = "git -C {{.Path}} log -n 3"
 
@@ -107,12 +114,54 @@ markers = [".git", ".project", "package.json", "go.mod", "Cargo.toml", "pyprojec
 ignore = ["node_modules", "vendor", ".direnv", ".devenv", "target", "dist", ".cache"]
 preview = ["identity", "git", "dir"]
 
+# [[integrations]] declares an external command that emits picker rows as a
+# JSON array on stdout. command is argv only — no shell, no "sh -c", no
+# interpolation — so it never needs quoting or escaping; write a small script
+# (a jq filter, a Python/Go helper, etc.) if you need to reshape a tool's
+# native output into the row schema below, and point command at that script.
+# Each row is a JSON object: label (required), plus optional path, command,
+# aliases, icon, template, close_on_exit, and inert string metadata. Metadata
+# cannot override launch, identity, grouping, control, or TUI fields. Reserved
+# keys are rejected with a row/key error; use typed row fields for command,
+# template, and close_on_exit, and integration is always set internally. A row with
+# path opens as an ordinary workspace through the normal open pipeline; a row
+# with command runs that command instead (in the root pane of a freshly
+# created workspace, or via --target=tab/pane inside the current one); a row
+# may set both. name must be unique and must not collide with a built-in
+# source name. Add it to general.source_order to run it globally, or exclude it
+# there and include it only in a group's source_order to load it lazily when
+# that group opens. Example: a script wrapping "gh pr list --json number,title,headRefName"
+# and reshaping each PR into {"label": "#42 fix bug", "command": "gh pr checkout 42",
+# "aliases": ["review", "bug"], "meta": {"branch": "fix-bug"}}:
+# [[integrations]]
+# name = "prs"
+# command = ["/path/to/shep/scripts/list-prs.sh"]
+# aliases = ["pull request", "review"]
+# icon = " "
+# timeout = "3s"
+# preview selects built-ins, global commands, and only this integration's
+# private preview_commands entries, in the listed order. Local names cannot
+# collide with built-in or global preview names; the same local name may be used
+# by different integrations. Local timeout/max_lines inherit [preview] values
+# when omitted. Integration JSON rows provide metadata only and cannot declare
+# executable preview commands.
+# preview = ["identity", "cluster", "health"]
+# [integrations.preview_commands.cluster]
+# command = ["kubectl", "config", "view", "--minify", "-o", "jsonpath={..context}"]
+# max_lines = 12
+# [integrations.preview_commands.health]
+# command = ["kubectl", "get", "--context", "{{ index .Meta \"context\" }}", "--raw", "/healthz"]
+# timeout = "1s"
+# max_lines = 10
+
 # [[workspaces]] lists predefined projects (or nested picker groups) shep
-# surfaces as selectable candidates. name is the candidate label; path may
-# use "~/..." which shep expands to your home directory.
+# surfaces as selectable candidates. name is the candidate label; aliases are
+# alternate search terms only and are not displayed. path may use "~/..." which
+# shep expands to your home directory.
 # [[workspaces]]
 # name = "dotfiles"
 # path = "~/dotfiles"
+# aliases = ["config", "dot files"]
 #
 # [[workspaces]]
 # name = "main-app"
@@ -135,13 +184,23 @@ preview = ["identity", "git", "dir"]
 # close_on_exit = true
 #
 # type = "group" turns an entry into a nested picker source rooted at path,
-# drawing candidates from its own sources list.
+# drawing candidates from its own source_order list. If source_order is omitted,
+# the global source order is used while the group's source membership remains
+# scoped. Declared integrations can
+# be listed here without being added to general.source_order; they run lazily
+# only after this group opens.
 # [[workspaces]]
 # name = "projects"
 # type = "group"
 # path = "~/projects"
-# sources = ["projects", "zoxide"]
+# source_order = ["projects", "zoxide"]
+# [workspaces.sources.projects]
+# max_depth = 5
 # template = "dev"
+#
+# A group may list a declared integration in source_order without adding it to
+# general.source_order. That integration command runs lazily only after the
+# group opens, and its rows use the normal picker and launch behavior.
 
 # [templates.<name>] describes what opens after Enter for a freshly created
 # workspace: a plain command in the root pane, or a structured multi-tab

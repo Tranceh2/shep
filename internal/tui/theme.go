@@ -10,9 +10,10 @@
 // forces the "plain" no-color theme, regardless of $SHEP_THEME or config;
 // then $SHEP_THEME; then the caller-supplied config name (config.TUIConfig's
 // tui.theme, threaded through Layout.Theme — see layoutFromConfig in
-// internal/command/open.go); then "mocha" as the final default. An unknown
-// theme name at any tier falls back to the next tier rather than erroring —
-// the picker must never fail to start over a typo'd theme name.
+// internal/command/open.go) when not "inherit"; then Herdr's active theme
+// when config is empty or "inherit"; then "mocha" as the final default. An
+// unknown theme name at any tier falls back to the next tier rather than
+// erroring — the picker must never fail to start over a typo'd theme name.
 package tui
 
 import (
@@ -102,6 +103,13 @@ var envLookup = os.Getenv
 // resolveThemeName applies the documented precedence and returns a theme
 // name guaranteed to exist in themes (falling back to ThemeMocha for an
 // empty or unrecognized configTheme).
+//
+// Precedence:
+//  1. $NO_COLOR (non-empty -> ThemePlain)
+//  2. $SHEP_THEME (recognized only)
+//  3. configTheme (recognized, != "inherit")
+//  4. Herdr [theme].name (consulted only when configTheme is "" or "inherit")
+//  5. ThemeMocha default
 func resolveThemeName(configTheme string) string {
 	if envLookup("NO_COLOR") != "" {
 		return ThemePlain
@@ -111,8 +119,15 @@ func resolveThemeName(configTheme string) string {
 			return name
 		}
 	}
-	if _, ok := themes[configTheme]; ok {
-		return configTheme
+	if configTheme != "" && configTheme != "inherit" {
+		if _, ok := themes[configTheme]; ok {
+			return configTheme
+		}
+	}
+	if configTheme == "" || configTheme == "inherit" {
+		if name, ok := herdrThemeName(); ok {
+			return name
+		}
 	}
 	return ThemeMocha
 }

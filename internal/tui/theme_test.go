@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"os"
 	"reflect"
 	"testing"
 
@@ -28,24 +29,41 @@ func withEnv(t *testing.T, vals map[string]string) {
 // share the same constraint.
 func TestResolveThemeName_Precedence(t *testing.T) {
 	tests := []struct {
-		name      string
-		env       map[string]string
-		cfgTheme  string
-		wantTheme string
+		name       string
+		env        map[string]string
+		cfgTheme   string
+		herdrTheme string
+		wantTheme  string
 	}{
-		{"no env, no config: mocha default", nil, "", ThemeMocha},
-		{"config only", nil, ThemeLatte, ThemeLatte},
-		{"unknown config falls back to mocha", nil, "bogus", ThemeMocha},
-		{"SHEP_THEME overrides config", map[string]string{"SHEP_THEME": ThemeFrappe}, ThemeLatte, ThemeFrappe},
-		{"unknown SHEP_THEME falls back to config", map[string]string{"SHEP_THEME": "bogus"}, ThemeLatte, ThemeLatte},
-		{"NO_COLOR wins over SHEP_THEME and config", map[string]string{"NO_COLOR": "1", "SHEP_THEME": ThemeMacchiato}, ThemeLatte, ThemePlain},
-		{"NO_COLOR wins even with empty config", map[string]string{"NO_COLOR": "true"}, "", ThemePlain},
+		{"no env, no config: mocha default", nil, "", "", ThemeMocha},
+		{"config only", nil, ThemeLatte, "", ThemeLatte},
+		{"unknown config falls back to mocha", nil, "bogus", "", ThemeMocha},
+		{"SHEP_THEME overrides config", map[string]string{"SHEP_THEME": ThemeFrappe}, ThemeLatte, "", ThemeFrappe},
+		{"unknown SHEP_THEME falls back to config", map[string]string{"SHEP_THEME": "bogus"}, ThemeLatte, "", ThemeLatte},
+		{"NO_COLOR wins over SHEP_THEME and config", map[string]string{"NO_COLOR": "1", "SHEP_THEME": ThemeMacchiato}, ThemeLatte, "", ThemePlain},
+		{"NO_COLOR wins even with empty config", map[string]string{"NO_COLOR": "true"}, "", "", ThemePlain},
+		// Herdr theme inheritance (Level 4 precedence)
+		{"empty config inherits recognized Herdr theme", nil, "", ThemeLatte, ThemeLatte},
+		{"inherit config inherits recognized Herdr theme", nil, "inherit", ThemeLatte, ThemeLatte},
+		{"NO_COLOR wins over Herdr inheritance", map[string]string{"NO_COLOR": "1"}, "", ThemeLatte, ThemePlain},
+		{"explicit config wins over Herdr inheritance", nil, ThemeFrappe, ThemeLatte, ThemeFrappe},
+		{"SHEP_THEME wins over Herdr inheritance", map[string]string{"SHEP_THEME": ThemeMacchiato}, "", ThemeLatte, ThemeMacchiato},
+		{"unrecognized SHEP_THEME and unrecognized Herdr theme falls through to mocha", map[string]string{"SHEP_THEME": "bogus"}, "", "bogus", ThemeMocha},
+		{"inherit config with flavourless Herdr catppuccin falls through to mocha per #7144", nil, "inherit", "catppuccin", ThemeMocha},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			withEnv(t, tt.env)
+			if tt.herdrTheme != "" {
+				tmp := t.TempDir()
+				cfgPath := tmp + "/config.toml"
+				_ = os.WriteFile(cfgPath, []byte("[theme]\nname = \""+tt.herdrTheme+"\"\n"), 0o600)
+				withHerdrConfigPath(t, func() (string, error) { return cfgPath, nil })
+			} else {
+				withHerdrConfigPath(t, func() (string, error) { return "", os.ErrNotExist })
+			}
 			if got := resolveThemeName(tt.cfgTheme); got != tt.wantTheme {
-				t.Errorf("resolveThemeName(%q) with env %v = %q, want %q", tt.cfgTheme, tt.env, got, tt.wantTheme)
+				t.Errorf("resolveThemeName(%q) with env %v, herdr %q = %q, want %q", tt.cfgTheme, tt.env, tt.herdrTheme, got, tt.wantTheme)
 			}
 		})
 	}

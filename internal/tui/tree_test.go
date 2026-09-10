@@ -278,3 +278,99 @@ func TestTreeExpanderFromSnapshot_UsesOnlyOneImmutableGeneration(t *testing.T) {
 		t.Fatal("Fetch(missing) reported an orphan workspace tree")
 	}
 }
+
+func TestTreeExpander_UpdatePaneAgentStatus(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil receiver is safe and returns false", func(t *testing.T) {
+		t.Parallel()
+		var tree *TreeExpander
+		if tree.UpdatePaneAgentStatus("p1", "working") {
+			t.Fatal("expected false on nil receiver")
+		}
+	})
+
+	t.Run("hit case mutates pane in place and returns true", func(t *testing.T) {
+		t.Parallel()
+		snapshot := source.Snapshot{
+			Workspaces: []source.Workspace{{ID: "w1"}},
+			Tabs:       []source.Tab{{ID: "t1", WorkspaceID: "w1"}},
+			Panes: []source.Pane{
+				{ID: "p1", WorkspaceID: "w1", TabID: "t1", AgentStatus: "idle"},
+				{ID: "p2", WorkspaceID: "w1", TabID: "t1", AgentStatus: "idle"},
+			},
+		}
+		tree := NewTreeExpanderFromSnapshot(snapshot)
+
+		ok := tree.UpdatePaneAgentStatus("p1", "working")
+		if !ok {
+			t.Fatal("UpdatePaneAgentStatus(p1) = false, want true")
+		}
+
+		w1, found := tree.Fetch(context.Background(), "w1")
+		if !found {
+			t.Fatal("Fetch(w1) returned found=false")
+		}
+		if len(w1.Panes) != 2 {
+			t.Fatalf("expected 2 panes, got %d", len(w1.Panes))
+		}
+		if w1.Panes[0].AgentStatus != "working" {
+			t.Errorf("p1 AgentStatus = %q, want \"working\"", w1.Panes[0].AgentStatus)
+		}
+		if w1.Panes[1].AgentStatus != "idle" {
+			t.Errorf("p2 AgentStatus = %q, want unchanged \"idle\"", w1.Panes[1].AgentStatus)
+		}
+	})
+
+	t.Run("miss case unknown pane id returns false without mutation", func(t *testing.T) {
+		t.Parallel()
+		snapshot := source.Snapshot{
+			Workspaces: []source.Workspace{{ID: "w1"}},
+			Tabs:       []source.Tab{{ID: "t1", WorkspaceID: "w1"}},
+			Panes: []source.Pane{
+				{ID: "p1", WorkspaceID: "w1", TabID: "t1", AgentStatus: "idle"},
+			},
+		}
+		tree := NewTreeExpanderFromSnapshot(snapshot)
+
+		ok := tree.UpdatePaneAgentStatus("unknown_pane", "working")
+		if ok {
+			t.Fatal("UpdatePaneAgentStatus(unknown_pane) = true, want false")
+		}
+
+		w1, _ := tree.Fetch(context.Background(), "w1")
+		if w1.Panes[0].AgentStatus != "idle" {
+			t.Errorf("p1 AgentStatus = %q, want unchanged \"idle\"", w1.Panes[0].AgentStatus)
+		}
+	})
+
+	t.Run("collapsed workspace mutates pane in tree map without child expansion", func(t *testing.T) {
+		t.Parallel()
+		snapshot := source.Snapshot{
+			Workspaces: []source.Workspace{{ID: "w1"}, {ID: "w2"}},
+			Tabs: []source.Tab{
+				{ID: "t1", WorkspaceID: "w1"},
+				{ID: "t2", WorkspaceID: "w2"},
+			},
+			Panes: []source.Pane{
+				{ID: "p1", WorkspaceID: "w1", TabID: "t1", AgentStatus: "idle"},
+				{ID: "p2", WorkspaceID: "w2", TabID: "t2", AgentStatus: "idle"},
+			},
+		}
+		tree := NewTreeExpanderFromSnapshot(snapshot)
+
+		// Mutate p2 in collapsed workspace w2
+		ok := tree.UpdatePaneAgentStatus("p2", "blocked")
+		if !ok {
+			t.Fatal("UpdatePaneAgentStatus(p2) = false, want true")
+		}
+
+		w2, found := tree.Fetch(context.Background(), "w2")
+		if !found {
+			t.Fatal("Fetch(w2) returned found=false")
+		}
+		if len(w2.Panes) != 1 || w2.Panes[0].AgentStatus != "blocked" {
+			t.Errorf("w2 pane AgentStatus = %q, want \"blocked\"", w2.Panes[0].AgentStatus)
+		}
+	})
+}

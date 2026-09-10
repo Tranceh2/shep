@@ -2,9 +2,11 @@ package tui
 
 import (
 	"sort"
+	"strings"
 
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/fuzzy"
+	"github.com/tranceh2/shep/internal/ranking"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -58,7 +60,9 @@ type rowBuildInput struct {
 	// source.Registry.Enabled() already collects candidates in). Empty
 	// falls back to defaultSourceOrder, mirroring config.Load()'s own
 	// empty-sources fallback.
-	sourceOrder []string
+	sourceOrder     []string
+	rankingSnapshot ranking.Snapshot
+	ranked          bool
 }
 
 // effectiveSourceOrder returns in.sourceOrder when non-empty, else
@@ -112,12 +116,80 @@ func fuzzyMatch(query, haystack string) (int, []int, bool) {
 	return score, matchedIndexes, true
 }
 
-// candidateHaystack is the searchable "label path" text for one candidate —
-// identical shape to the old flat picker's candidateSource.String, kept as a
-// free function so both the top-level and tree-expand matching paths share
-// one haystack contract.
+// candidateHaystack is the searchable "label path" text for one candidate.
+// It remains the rendered highlight domain, while matchRow evaluates the label
+// and path separately so their textual quality layers stay distinguishable.
 func candidateHaystack(c source.Candidate) string {
 	return c.Label + " " + c.Path
+}
+
+// candidateMetadataHaystack is the FALLBACK search text for one row: a guarded
+// projection over only the metadata keys Herdr already emits for that row kind
+// (see synthesizeWorkspaceChildren and SessionCandidates). It is consulted by
+// matchRow only when the original Label+Path domain does not match, so it can
+// add rows but never reorder original-domain matches. Missing/empty values
+// contribute nothing; the forbidden task/name keys are never read.
+func candidateMetadataHaystack(c source.Candidate, kind RowKind) string {
+	var fields []string
+	add := func(v string) {
+		if v != "" {
+			fields = append(fields, v)
+		}
+	}
+	switch kind {
+	case RowPane:
+		add(c.Meta["tab_label"])
+		add(c.Meta["pane_id"])
+		add(c.Meta["agent_status"])
+	case RowTab:
+		add(c.Meta["tab_label"])
+		add(c.Meta["tab_number"])
+	default: // RowCandidate
+		switch c.Source {
+		case config.SourceSessions:
+			add(c.Meta["session_name"])
+			add(c.Meta["session_dir"])
+		default:
+			// workspace-source rows add workspace_label only when it differs
+			// from the already-searched Label.
+			if wl := c.Meta["workspace_label"]; wl != "" && wl != c.Label {
+				add(wl)
+			}
+			if c.Meta["is_worktree"] == "true" {
+				add(c.Meta["branch"])
+			}
+		}
+	}
+	return strings.Join(fields, " ")
+}
+
+// matchRow scores one row against the query, preferring the original
+// Label+Path domain and falling back to the guarded metadata projection ONLY
+// when the original domain fails. It returns the fuzzy score, the label/path
+// highlight indexes (populated only for an original-domain match; a
+// metadata-only match carries none), whether the row matched at all, and
+// whether the match came from the original domain (provenance). Provenance is
+// used at score AGGREGATION time (see aggregateScore / expandedChildren) so a
+// metadata-only match never inflates an original-domain group's aggregate
+// score; it does not impose a global ordering tier.
+func matchRow(query string, c source.Candidate, kind RowKind) (score int, indexes []int, matched bool, original bool) {
+	if query == "" {
+		return 0, nil, true, true
+	}
+	if s, idx, ok := fuzzyMatch(query, candidateHaystack(c)); ok {
+		return s, idx, true, true
+	}
+	if _, s, ok := source.MatchAlias(query, c.Aliases); ok {
+		return s, nil, true, false
+	}
+	meta := candidateMetadataHaystack(c, kind)
+	if meta == "" {
+		return 0, nil, false, false
+	}
+	if s, _, ok := fuzzyMatch(query, meta); ok {
+		return s, nil, true, false
+	}
+	return 0, nil, false, false
 }
 
 // buildRows is the pure core of the redesigned picker: it flattens
@@ -127,10 +199,20 @@ func candidateHaystack(c source.Candidate) string {
 // render — a single flat list, source-differentiated by icon/color only
 // (see rowDisplayText), with no divider/header rows at all.
 //
-// An empty query preserves provider order. A non-empty query score-sorts
-// visible candidate groups, preserving their tree context, by score descending.
-// Score ties retain configured source order and original provider order.
+// An empty query uses the caller's pre-ranked candidate order. A non-empty query
+// score-sorts visible candidate groups, preserving their tree context, by score
+// descending. Score ties retain configured source order and original provider order.
 func buildRows(in rowBuildInput) []Row {
+	if in.ranked {
+		var out []Row
+		for _, candidate := range in.candidates {
+			rows, _, ok, _ := buildCandidateRow(in, candidate)
+			if ok {
+				out = append(out, rows...)
+			}
+		}
+		return out
+	}
 	var groups []scoredRowGroup
 	for _, src := range effectiveSourceOrder(in) {
 		groups = append(groups, visibleGroupRows(in, src)...)
@@ -146,50 +228,149 @@ func buildRows(in rowBuildInput) []Row {
 
 // scoredRowGroup keeps a structural row group intact while it is sorted. A
 // candidate group is a workspace parent plus its child rows; a tab group is a
-// tab plus its matching pane rows.
+// tab plus its matching pane rows. original records match provenance: true
+// when the group matches Q on the original Label+Path domain (directly or via
+// a descendant original match), false for a group matched only via the
+// metadata fallback. Provenance is consumed only by score AGGREGATION (a
+// metadata-only descendant never inflates an original-domain group's score);
+// sortScoredRowGroups itself sorts purely by score, so metadata groups
+// interleave by score while the original-match subset keeps its relative order.
 type scoredRowGroup struct {
-	rows  []Row
-	score int
+	rows       []Row
+	layer      int
+	isOpen     bool
+	score      int
+	sourceRank int
+	pinned     bool
+	usage      float64
+	original   bool
+	order      int
 }
 
-// sortScoredRowGroups applies fuzzy ranking only for non-empty queries.
+// sortScoredRowGroups applies the non-empty query contract:
+// textual layer -> open Herdr action -> fuzzy score -> configured source
+// order -> usage. Stable sorting preserves provider order for a complete tie.
 func sortScoredRowGroups(groups []scoredRowGroup, query string) {
 	if query == "" {
 		return
 	}
 	sort.SliceStable(groups, func(i, j int) bool {
-		return groups[i].score > groups[j].score
+		left, right := groups[i], groups[j]
+		if left.layer != right.layer {
+			return left.layer > right.layer
+		}
+		if left.isOpen != right.isOpen {
+			return left.isOpen
+		}
+		if left.pinned != right.pinned {
+			return left.pinned
+		}
+		if left.score != right.score {
+			return left.score > right.score
+		}
+		if left.sourceRank != right.sourceRank {
+			return left.sourceRank < right.sourceRank
+		}
+		if left.usage != right.usage {
+			return left.usage > right.usage
+		}
+		return left.order < right.order
 	})
+}
+
+func sourceRank(order []string, sourceName string) int {
+	for i, name := range order {
+		if name == sourceName {
+			return i
+		}
+	}
+	return len(order)
+}
+
+func candidateLayer(query string, c source.Candidate, kind RowKind) int {
+	if query == "" {
+		return 0
+	}
+	label := strings.TrimSpace(c.Label)
+	if strings.EqualFold(query, label) {
+		return ranking.LayerExact
+	}
+	if label != "" && ranking.ContainsWordOrPrefix(query, label) {
+		return ranking.LayerPrefix
+	}
+	if fuzzy.Match(query, label) {
+		return ranking.LayerFuzzyLabel
+	}
+	if _, _, ok := source.MatchAlias(query, c.Aliases); ok {
+		return ranking.LayerAlias
+	}
+	path := c.Path
+	if c.NormalizedPath != "" {
+		path = c.NormalizedPath
+	}
+	if fuzzy.Match(query, path) || fuzzy.Match(query, candidateMetadataHaystack(c, kind)) {
+		return ranking.LayerPathOrMeta
+	}
+	return 0
+}
+
+func groupLayer(query string, rows []Row) int {
+	layer := 0
+	for _, row := range rows {
+		if row.Match == MatchNone {
+			continue
+		}
+		rowLayer := candidateLayer(query, row.Candidate, row.Kind)
+		if rowLayer > layer {
+			layer = rowLayer
+		}
+	}
+	return layer
 }
 
 // visibleGroupRows returns visible candidate row groups for one source in
 // original provider order.
 func visibleGroupRows(in rowBuildInput, groupSource string) []scoredRowGroup {
 	var out []scoredRowGroup
-	for _, c := range in.candidates {
+	for order, c := range in.candidates {
 		if c.Source != groupSource {
 			continue
 		}
-		rows, score, ok := buildCandidateRow(in, c)
+		rows, score, ok, original := buildCandidateRow(in, c)
 		if !ok {
 			continue
 		}
-		out = append(out, scoredRowGroup{rows: rows, score: score})
+		layer := groupLayer(in.query, rows)
+		if layer == 0 && original {
+			layer = ranking.LayerPathOrMeta
+		}
+		out = append(out, scoredRowGroup{
+			rows: rows, layer: layer, isOpen: c.Source == config.SourceHerdr,
+			score: score, sourceRank: sourceRank(effectiveSourceOrder(in), c.Source),
+			pinned: in.rankingSnapshot.IsPinned(c),
+			usage:  in.rankingSnapshot.UsageFor(c), original: original, order: order,
+		})
 	}
 	return out
 }
 
 // buildCandidateRow builds the RowCandidate row for c (plus any expanded
 // RowTab/RowPane children) and reports ok=false when c is not visible at
-// all for the current query (matches neither itself nor any descendant).
-func buildCandidateRow(in rowBuildInput, c source.Candidate) ([]Row, int, bool) {
-	selfScore, selfMatchedIndexes, selfMatch := fuzzyMatch(in.query, candidateHaystack(c))
-	children, descMatch, descScore := expandedChildren(in, c)
+// all for the current query (matches neither itself nor any descendant). The
+// returned original flag records whether the group matched Q on the original
+// Label+Path domain (self or any original-domain descendant); a group visible
+// only via the metadata fallback returns original=false so it can be shown
+// but never reorders an original-domain group.
+func buildCandidateRow(in rowBuildInput, c source.Candidate) ([]Row, int, bool, bool) {
+	selfScore, selfMatchedIndexes, selfMatch, selfOriginal := matchRow(in.query, c, RowCandidate)
+	children, descMatch, descScore, descOriginal := expandedChildren(in, c)
 
 	if in.query != "" && !selfMatch && !descMatch {
-		return nil, 0, false
+		return nil, 0, false, false
 	}
 
+	// A metadata-only self match carries no highlight indexes and must not
+	// mark the row MatchDirect with label/path highlights it does not have.
 	match := MatchNone
 	if in.query != "" {
 		if selfMatch {
@@ -208,10 +389,36 @@ func buildCandidateRow(in rowBuildInput, c source.Candidate) ([]Row, int, bool) 
 		Expandable:     c.Source == config.SourceHerdr,
 		Expanded:       len(children) > 0,
 	}
-	if descScore > selfScore {
-		selfScore = descScore
+	// Provenance: the group is original-domain if self or any descendant
+	// matched the original domain. Score aggregation only counts a source of
+	// the SAME provenance the group ultimately carries, so a high-scoring
+	// metadata-only descendant never inflates an original-domain group's rank.
+	groupOriginal := (selfMatch && selfOriginal) || descOriginal
+	score := aggregateScore(groupOriginal, selfScore, selfMatch, selfOriginal, descScore, descMatch, descOriginal)
+	return append([]Row{row}, children...), score, true, groupOriginal
+}
+
+// aggregateScore folds a self score and a best-descendant score into one group
+// score, honoring provenance: when the group is original-domain, only
+// original-domain contributions count; when it is metadata-only, the
+// metadata contributions count. This is what lets metadata rows be inserted
+// under stable score sorting without ever reordering original-domain matches.
+func aggregateScore(groupOriginal bool, selfScore int, selfMatch, selfOriginal bool, descScore int, descMatch, descOriginal bool) int {
+	best := 0
+	consider := func(match, original bool, score int) {
+		if !match {
+			return
+		}
+		if original != groupOriginal {
+			return
+		}
+		if score > best {
+			best = score
+		}
 	}
-	return append([]Row{row}, children...), selfScore, true
+	consider(selfMatch, selfOriginal, selfScore)
+	consider(descMatch, descOriginal, descScore)
+	return best
 }
 
 // expandedChildren returns the RowTab/RowPane rows to nest under a
@@ -225,29 +432,31 @@ func buildCandidateRow(in rowBuildInput, c source.Candidate) ([]Row, int, bool) 
 // (matching descendants must always be reachable) OR the user has manually
 // expanded it via toggleExpand at an empty query (progressive disclosure:
 // an empty query never dumps every workspace's tabs/panes by default).
-func expandedChildren(in rowBuildInput, c source.Candidate) ([]Row, bool, int) {
+func expandedChildren(in rowBuildInput, c source.Candidate) ([]Row, bool, int, bool) {
 	if c.Source != config.SourceHerdr {
-		return nil, false, 0
+		return nil, false, 0, false
 	}
 	wsID := c.Meta["workspace_id"]
 	wc, ok := in.children[wsID]
 	if !ok {
-		return nil, false, 0
+		return nil, false, 0, false
 	}
 	expand := in.query != "" || in.expandedWorkspaces[wsID]
 	if !expand {
-		return nil, false, 0
+		return nil, false, 0, false
 	}
 
 	var tabGroups []scoredRowGroup
 	descMatch := false
 	descScore := 0
+	descOriginal := false
 	for _, tc := range wc.Tabs {
-		tabScore, tabMatchedIndexes, tabSelf := fuzzyMatch(in.query, candidateHaystack(tc.Tab))
+		tabScore, tabMatchedIndexes, tabSelf, tabOriginal := matchRow(in.query, tc.Tab, RowTab)
 		var paneGroups []scoredRowGroup
 		tabDescMatch := false
+		tabDescOriginal := false
 		for _, p := range tc.Panes {
-			paneScore, paneMatchedIndexes, paneSelf := fuzzyMatch(in.query, candidateHaystack(p))
+			paneScore, paneMatchedIndexes, paneSelf, paneOriginal := matchRow(in.query, p, RowPane)
 			if in.query != "" && !paneSelf {
 				continue // only matching descendants are shown (non-negotiable)
 			}
@@ -255,14 +464,19 @@ func expandedChildren(in rowBuildInput, c source.Candidate) ([]Row, bool, int) {
 			if in.query != "" {
 				paneMatch = MatchDirect
 				tabDescMatch = true
+				if paneOriginal {
+					tabDescOriginal = true
+				}
 			}
+			paneRows := []Row{{
+				Kind: RowPane, Candidate: p, Depth: 2,
+				Match: paneMatch, MatchedIndexes: paneMatchedIndexes,
+				ID: rowIdentity(p), Action: RowActionFocusTab,
+			}}
 			paneGroups = append(paneGroups, scoredRowGroup{
-				rows: []Row{{
-					Kind: RowPane, Candidate: p, Depth: 2,
-					Match: paneMatch, MatchedIndexes: paneMatchedIndexes,
-					ID: rowIdentity(p), Action: RowActionFocusTab,
-				}},
-				score: paneScore,
+				rows: paneRows, layer: groupLayer(in.query, paneRows), isOpen: true,
+				score: paneScore, sourceRank: 0, usage: in.rankingSnapshot.UsageFor(p),
+				original: in.query == "" || paneOriginal,
 			})
 		}
 		if in.query != "" && !tabSelf && !tabDescMatch {
@@ -286,18 +500,39 @@ func expandedChildren(in rowBuildInput, c source.Candidate) ([]Row, bool, int) {
 			Match: tabMatch, MatchedIndexes: tabMatchedIndexes,
 			ID: rowIdentity(tc.Tab), Action: RowActionFocusTab,
 		})
+		// The tab group's provenance is original if the tab itself matched the
+		// original domain OR any of its panes did; its aggregate score counts
+		// only same-provenance contributions so a metadata-only pane never
+		// inflates an original-domain tab's rank.
+		tabGroupOriginal := (tabSelf && tabOriginal) || tabDescOriginal
+		aggScore := 0
+		if tabSelf && tabOriginal == tabGroupOriginal && tabScore > aggScore {
+			aggScore = tabScore
+		}
 		for _, paneGroup := range paneGroups {
 			rows = append(rows, paneGroup.rows...)
-			if paneGroup.score > tabScore {
-				tabScore = paneGroup.score
+			if paneGroup.original == tabGroupOriginal && paneGroup.score > aggScore {
+				aggScore = paneGroup.score
 			}
 		}
-		tabGroups = append(tabGroups, scoredRowGroup{rows: rows, score: tabScore})
+		tabGroups = append(tabGroups, scoredRowGroup{
+			rows: rows, layer: groupLayer(in.query, rows), isOpen: true,
+			score: aggScore, sourceRank: 0, usage: in.rankingSnapshot.UsageFor(tc.Tab),
+			original: tabGroupOriginal,
+		})
 		if tabSelf || tabDescMatch {
 			descMatch = true
-			if tabScore > descScore {
-				descScore = tabScore
+			if tabGroupOriginal {
+				descOriginal = true
 			}
+		}
+	}
+	// Propagate the best same-provenance tab score up as the workspace's
+	// descendant score, after provenance is known.
+	wsOriginal := descOriginal
+	for i := range tabGroups {
+		if tabGroups[i].original == wsOriginal && tabGroups[i].score > descScore {
+			descScore = tabGroups[i].score
 		}
 	}
 	sortScoredRowGroups(tabGroups, in.query)
@@ -311,5 +546,5 @@ func expandedChildren(in rowBuildInput, c source.Candidate) ([]Row, bool, int) {
 		}
 		out = append(out, tabGroup.rows...)
 	}
-	return out, descMatch, descScore
+	return out, descMatch, descScore, descOriginal
 }

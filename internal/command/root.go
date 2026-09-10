@@ -7,15 +7,19 @@
 package command
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	"github.com/spf13/cobra"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/herdr"
+	"github.com/tranceh2/shep/internal/ranking"
 	"github.com/tranceh2/shep/internal/selector"
 	"github.com/tranceh2/shep/internal/source"
+	"github.com/tranceh2/shep/internal/templates"
 	"github.com/tranceh2/shep/internal/tui"
 )
 
@@ -23,6 +27,14 @@ import (
 // subcommands (config, probes, output streams) and per-invocation open-run
 // state (currentPane, chosenTarget). Construct one with New per process or
 // test invocation.
+type rankingStore interface {
+	Snapshot(context.Context, string) ranking.Snapshot
+	RecordSuccess(context.Context, ranking.Keys) error
+	TogglePin(context.Context, string) (bool, error)
+	Clear(context.Context) error
+	Close() error
+}
+
 type App struct {
 	// versionInfo holds build metadata shown by `shep --version`.
 	versionInfo versionInfo
@@ -52,6 +64,8 @@ type App struct {
 	// separate from HerdrDriver because attach must inherit terminal stdio rather
 	// than use the driver's captured-output CommandRunner.
 	sessionAttach sessionAttachFunc
+	// asyncTUIRun overrides the interactive input-first TUI runner for tests.
+	asyncTUIRun asyncTUIRunFunc
 	// chosenTarget records a target override chosen by the interactive TUI
 	// picker (ctrl+t => "tab", ctrl+p => "pane"). Empty means "no override":
 	// runOpen then uses the --target flag value (default "workspace"). It is
@@ -75,6 +89,15 @@ type App struct {
 	// provider-level state call during candidate resolution.
 	startupSnapshot          *source.Snapshot
 	startupSnapshotAttempted bool
+	statusDialer             tui.StatusDialer
+	rankingStore             rankingStore
+	rankingData              ranking.Snapshot
+	rankingOpen              func() (rankingStore, error)
+	rankingMu                sync.Mutex
+	// layoutApplier dispatches compiled layouts over the Herdr socket. It is
+	// separate from herdrDriver because layout.apply is a socket transport,
+	// not a CLI subprocess; nil means "build the default client on demand".
+	layoutApplier templates.LayoutApplier
 }
 
 // Config returns the loaded configuration, defaulting to path-agnostic
@@ -123,9 +146,25 @@ func WithHerdrDriver(d source.HerdrDriver) Option {
 	}
 }
 
+// WithLayoutApplier injects the layout.apply socket boundary (intended for
+// tests, which capture dispatched layouts instead of reaching a daemon).
+func WithLayoutApplier(applier templates.LayoutApplier) Option {
+	return func(a *App) { a.layoutApplier = applier }
+}
+
 // WithSessionAttach injects the blocking session-attach boundary for tests.
 func WithSessionAttach(attach sessionAttachFunc) Option {
 	return func(a *App) { a.sessionAttach = attach }
+}
+
+// WithStatusDialer overrides the live status dialer for tests.
+func WithStatusDialer(dialer tui.StatusDialer) Option {
+	return func(a *App) { a.statusDialer = dialer }
+}
+
+// WithAsyncTUIRunner overrides the interactive input-first TUI runner for tests.
+func WithAsyncTUIRunner(runner asyncTUIRunFunc) Option {
+	return func(a *App) { a.asyncTUIRun = runner }
 }
 
 // setChosenTarget records a target override chosen by the interactive TUI
@@ -157,6 +196,17 @@ func (a *App) Driver() source.HerdrDriver {
 	}
 	a.herdrDriver = herdr.New(cfg.HerdrBinary())
 	return a.herdrDriver
+}
+
+// LayoutApplier returns the layout.apply socket client, building the default
+// one on first use. Unlike Driver it never returns nil: an unreachable daemon
+// is reported by the client as a fail-closed error at dispatch time, which is
+// where the caller already prints its degradation warning.
+func (a *App) LayoutApplier() templates.LayoutApplier {
+	if a.layoutApplier == nil {
+		a.layoutApplier = herdr.NewLayoutClient()
+	}
+	return a.layoutApplier
 }
 
 // New constructs a fresh App with sensible defaults. Apply options to inject
@@ -237,6 +287,9 @@ func (a *App) rootCmd() *cobra.Command {
 	root.AddCommand(a.openCmd())
 	root.AddCommand(a.previewCmd())
 	root.AddCommand(a.doctorCmd())
+	root.AddCommand(a.rankingCmd())
+	root.AddCommand(a.jumpBackCmd())
+	root.AddCommand(a.watchHistoryCmd())
 
 	return root
 }

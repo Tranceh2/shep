@@ -3,6 +3,7 @@ package tui
 import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/tranceh2/shep/internal/ranking"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -69,9 +70,9 @@ func (m *Model) cycleFocusBackward() {
 func scrollViewport(vp *viewport.Model, key string) bool {
 	switch key {
 	case "up", "ctrl+k":
-		vp.LineUp(1)
+		vp.ScrollUp(1)
 	case "down", "ctrl+j":
-		vp.LineDown(1)
+		vp.ScrollDown(1)
 	case "pgup":
 		vp.PageUp()
 	case "pgdown":
@@ -138,6 +139,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.focus == FocusPreview {
 		return m.handlePreviewFocusedKey(msg)
 	}
+	if msg.String() == "alt+p" && m.layout.PinToggler != nil {
+		return m.togglePin()
+	}
 	return m.handleListFocusedKey(msg)
 }
 
@@ -170,6 +174,40 @@ func (m Model) handleHelpFocusedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // non-negotiable "printable rune returns to list and searches" contract.
 // enter/ctrl+l/left/right are List-only actions (selection, layout cycle,
 // expand/collapse) and are explicit no-ops here.
+func (m Model) togglePin() (tea.Model, tea.Cmd) {
+	row, ok := m.currentRow()
+	if !ok {
+		return m, nil
+	}
+	if row.Kind != RowCandidate {
+		m.pinStatus = "child rows cannot be pinned"
+		return m, nil
+	}
+	if m.layout.PinToggler == nil {
+		m.pinStatus = "pinning unavailable"
+		return m, nil
+	}
+	key := ranking.PinKey(row.Candidate)
+	if key == "" {
+		m.pinStatus = "row has no stable pin identity"
+		return m, nil
+	}
+	if m.pinPending {
+		return m, nil
+	}
+	m.pinPending = true
+	m.pinKey = key
+	candidate := row.Candidate
+	ctx := m.renderCtx
+	toggler := m.layout.PinToggler
+	return m, func() tea.Msg {
+		msg := toggler(ctx, candidate)
+		msg.Key = key
+		msg.Candidate = candidate
+		return msg
+	}
+}
+
 func (m Model) handlePreviewFocusedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "down", "ctrl+j", "ctrl+k", "pgup", "pgdown", "home", "end":
@@ -213,18 +251,22 @@ func (m Model) handleListFocusedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cycleOrientationOverride()
 		return m, nil
 	case "down", "ctrl+j":
+		m.cursorTouched = true
 		if len(m.rows) > 0 && m.cursor < len(m.rows)-1 {
 			m.cursor++
 		}
 		return m, m.syncPreviewAfterSelectionChange()
 	case "up", "ctrl+k":
+		m.cursorTouched = true
 		if m.cursor > 0 {
 			m.cursor--
 		}
 		return m, m.syncPreviewAfterSelectionChange()
 	case "right":
+		m.cursorTouched = true
 		return m, tea.Batch(m.expandCurrent(), m.syncPreviewAfterSelectionChange())
 	case "left":
+		m.cursorTouched = true
 		return m, tea.Batch(m.collapseCurrent(), m.syncPreviewAfterSelectionChange())
 	case "ctrl+u":
 		m.query = ""
@@ -245,7 +287,10 @@ func (m Model) handleListFocusedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // handleEnter selects the highlighted candidate/tab/pane row and quits. A
-// row with nothing highlighted (empty rows) is a no-op.
+// row with nothing highlighted (empty rows) is a no-op. The dispatched
+// selectedAction is sourced from the shared rowActionDescriptor — the same
+// single source of truth the footer and help overlay read (SPEC-NAV-1.8
+// parity) — so Enter behavior can never drift from the displayed copy.
 func (m Model) handleEnter() (tea.Model, tea.Cmd) {
 	row, ok := m.currentRow()
 	if !ok {
@@ -253,7 +298,7 @@ func (m Model) handleEnter() (tea.Model, tea.Cmd) {
 	}
 	m.selected = row.Candidate
 	m.hasSelected = true
-	m.selectedAction = row.Action
+	m.selectedAction = rowActionDescriptor(row).Action
 	return m, tea.Quit
 }
 
@@ -263,12 +308,18 @@ func (m Model) handleEnter() (tea.Model, tea.Cmd) {
 // silent no-op — mirrors the previous picker's behavior, now expressed over
 // Row instead of a raw candidate index.
 func (m Model) selectWithTarget(target string) (tea.Model, tea.Cmd) {
-	if m.currentPane == nil {
-		m.previewErr = "no focused Herdr pane"
-		return m, nil
-	}
+	// Eligibility is checked BEFORE the missing-pane diagnostic (SPEC-NAV-4.1):
+	// an invalid/ineligible row can never target the current workspace, so it
+	// is a fully silent no-op even when there is no focused pane — it must not
+	// raise the "no focused Herdr pane" error it could never act on.
 	cand, ok := m.currentCandidate()
 	if !ok || !source.SupportsCurrentWorkspaceTarget(cand) {
+		return m, nil
+	}
+	// The row IS eligible but there is no focused pane to target: preserve the
+	// existing diagnostic so an otherwise-actionable row still gives feedback.
+	if m.currentPane == nil {
+		m.previewErr = "no focused Herdr pane"
 		return m, nil
 	}
 	m.selected = cand

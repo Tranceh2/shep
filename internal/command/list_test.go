@@ -36,7 +36,7 @@ func workspacesCfg(t *testing.T, names ...string) (*config.Config, string) {
 	t.Helper()
 	root := t.TempDir()
 	cfg := config.Defaults()
-	cfg.General.Sources = []string{config.SourceWorkspaces}
+	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
 	for _, n := range names {
 		dir := filepath.Join(root, n)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -114,6 +114,42 @@ func TestList_JSONFormat(t *testing.T) {
 	}
 }
 
+func TestRender_WorktreeMetadata(t *testing.T) {
+	t.Parallel()
+	candidate := source.Candidate{
+		Path: "/trees/api", NormalizedPath: "/trees/api", Label: "api",
+		Source: config.SourceProjects, Icon: "repo",
+		Meta: map[string]string{"is_worktree": "true", "branch": "feat/x\tline\nnext"},
+	}
+
+	t.Run("json projects typed metadata", func(t *testing.T) {
+		var out bytes.Buffer
+		if err := renderJSON(&out, []source.Candidate{candidate}); err != nil {
+			t.Fatal(err)
+		}
+		var got []listCandidate
+		if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+			t.Fatalf("invalid json: %v", err)
+		}
+		if len(got) != 1 || !got[0].IsWorktree || got[0].Branch != "feat/x\tline\nnext" {
+			t.Fatalf("worktree metadata = %+v, want typed flag and exact branch", got)
+		}
+	})
+
+	t.Run("tsv appends sanitized branch badge without adding columns", func(t *testing.T) {
+		var out bytes.Buffer
+		if err := renderTSV(&out, []source.Candidate{candidate}); err != nil {
+			t.Fatal(err)
+		}
+		if got, want := out.String(), "/trees/api\tapi [worktree: feat/x line next]\trepo\n"; got != want {
+			t.Fatalf("tsv = %q, want %q", got, want)
+		}
+		if got := strings.Count(strings.TrimSuffix(out.String(), "\n"), "\t"); got != 2 {
+			t.Fatalf("tsv tabs = %d, want 2", got)
+		}
+	})
+}
+
 // TestRender_JSONIncludesIconField proves the JSON projection carries the
 // candidate's Icon as a top-level "icon" field, for API/tooling parity with
 // the TSV icon column. The field is always present (empty string when the
@@ -176,7 +212,7 @@ func TestList_JSONEmptyIsArray(t *testing.T) {
 func TestList_MissingWorkspaceMarked(t *testing.T) {
 	t.Parallel()
 	cfg := config.Defaults()
-	cfg.General.Sources = []string{config.SourceWorkspaces}
+	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
 	cfg.Workspaces = []config.WorkspaceConfig{{Name: "ghost", Path: filepath.Join(t.TempDir(), "nope")}}
 
 	humanOut, _, err := runListFor(t, cfg, "human")
@@ -218,7 +254,7 @@ func TestList_InvalidFormatReturnsError(t *testing.T) {
 func TestList_PartialSourceErrorWarnsButSucceeds(t *testing.T) {
 	t.Parallel()
 	cfg, _ := workspacesCfg(t, "proj")
-	cfg.General.Sources = []string{config.SourceHerdr, config.SourceWorkspaces}
+	cfg.General.SourceOrder = []string{config.SourceHerdr, config.SourceWorkspaces}
 	out, _, err := runListFor(t, cfg, "human")
 	if err != nil {
 		t.Fatalf("list should succeed on partial: %v", err)
@@ -385,5 +421,21 @@ func TestParseFormat(t *testing.T) {
 	}
 	if _, err := parseFormat("nope"); err == nil {
 		t.Error("expected error for invalid format")
+	}
+}
+
+// TestList_SuccessfulListWorks verifies that a successful runList
+// prints the filtered candidates.
+func TestList_SuccessfulListWorks(t *testing.T) {
+	cfg, _ := workspacesCfg(t, "proj-a", "proj-b")
+	out, errOut, err := runListFor(t, cfg, "human")
+	if err != nil {
+		t.Fatalf("runListFor failed: %v", err)
+	}
+	if errOut != "" {
+		t.Errorf("expected empty stderr, got: %q", errOut)
+	}
+	if !strings.Contains(out, "proj-a") || !strings.Contains(out, "proj-b") {
+		t.Fatalf("expected stdout to contain proj-a and proj-b, got: %q", out)
 	}
 }

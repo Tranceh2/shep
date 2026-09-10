@@ -6,10 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/tranceh2/shep/internal/config"
+	"github.com/tranceh2/shep/internal/pathutil"
 	"github.com/tranceh2/shep/internal/workspacename"
 )
 
@@ -97,11 +99,15 @@ func (fakeDriver) FocusTab(context.Context, string) error {
 // provider's internal map through a returned candidate.
 func TestCandidate_Clone(t *testing.T) {
 	t.Parallel()
-	c := Candidate{Path: "/x", Meta: map[string]string{"a": "1"}}
+	c := Candidate{Path: "/x", Aliases: []string{"k8s"}, Meta: map[string]string{"a": "1"}}
 	clone := c.Clone()
 	clone.Meta["a"] = "mutated"
+	clone.Aliases[0] = "mutated"
 	if c.Meta["a"] == "mutated" {
 		t.Error("Clone shared Meta map with original")
+	}
+	if c.Aliases[0] == "mutated" {
+		t.Error("Clone shared Aliases slice with original")
 	}
 }
 
@@ -130,6 +136,10 @@ func TestSupportsCurrentWorkspaceTarget(t *testing.T) {
 		{name: "command plus group edge excluded", cand: Candidate{Source: config.SourceWorkspaces, Meta: map[string]string{"command": "nvim", "group": "true"}}, want: false},
 		{name: "command plus template edge excluded", cand: Candidate{Source: config.SourceWorkspaces, Meta: map[string]string{"command": "nvim", "template": "k8s"}}, want: false},
 		{name: "unknown source excluded", cand: Candidate{Source: "path"}, want: false},
+		{name: "integration command-only", cand: Candidate{Source: "prs", Meta: map[string]string{"command": "gh pr view"}}, want: true},
+		{name: "integration without command excluded", cand: Candidate{Source: "prs"}, want: false},
+		{name: "integration group excluded", cand: Candidate{Source: "prs", Meta: map[string]string{"command": "gh pr view", "group": "true"}}, want: false},
+		{name: "integration template excluded", cand: Candidate{Source: "prs", Meta: map[string]string{"command": "gh pr view", "template": "dev"}}, want: false},
 		{name: "synthesized tree child excluded", cand: Candidate{Meta: map[string]string{"workspace_id": "wA", "tab_id": "t1"}}, want: false},
 		{name: "nil meta command-only workspace", cand: Candidate{Source: config.SourceWorkspaces, Meta: map[string]string{"command": "yazi", "close_on_exit": "true"}}, want: true},
 	}
@@ -322,7 +332,7 @@ func TestSessionsProvider_ExcludesOnlyProvenSelfAttach(t *testing.T) {
 func TestRegistry_SessionsFailureIsIsolated(t *testing.T) {
 	t.Parallel()
 	cfg := config.Defaults()
-	cfg.General.Sources = []string{config.SourceSessions, config.SourceWorkspaces}
+	cfg.General.SourceOrder = []string{config.SourceSessions, config.SourceWorkspaces}
 	cfg.Workspaces = []config.WorkspaceConfig{{Name: "still-here", Path: t.TempDir()}}
 	driver := &sessionDriver{fakeDriver: fakeDriver{detect: true}, sessionsErr: context.DeadlineExceeded}
 
@@ -442,10 +452,241 @@ func TestNewScopedRegistry_ThreadsRootIntoZoxideProvider(t *testing.T) {
 
 // TestRegistry_EnabledHonoursGeneralSources confirms only the sources listed
 // in general.sources run, in that declared order.
+func TestListProjectsRoots_DeduplicatesNormalizedRootsAndProjects(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	project := filepath.Join(root, "service")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte("module service\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.ProjectsSourceConfig{Markers: []string{"go.mod"}}
+	roots := []string{root, filepath.Join(root, "nested", "..")}
+	got, err := ListProjectsRoots(context.Background(), cfg, roots)
+	if err != nil {
+		t.Fatalf("list roots: %v", err)
+	}
+	normalizedProject, err := pathutil.Normalize(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Path != normalizedProject {
+		t.Fatalf("projects = %+v, want one normalized project %q", got, normalizedProject)
+	}
+}
+
+func TestNewRegistry_ProjectsUseConfiguredGlobalRootsOnly(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.Sources.Projects.Roots = []string{t.TempDir()}
+	r := NewRegistry(cfg, config.Probes{}, nil)
+	p, ok := r.providers[config.SourceProjects].(*projectsProvider)
+	if !ok {
+		t.Fatalf("projects provider type = %T", r.providers[config.SourceProjects])
+	}
+	if !reflect.DeepEqual(p.roots, cfg.Sources.Projects.Roots) {
+		t.Fatalf("provider roots = %v, want %v", p.roots, cfg.Sources.Projects.Roots)
+	}
+}
+
+func TestNewScopedRegistryForWorkspaceWithOrderUsesGlobalFallback(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.General.SourceOrder = []string{config.SourceSessions, config.SourceProjects}
+	workspace := config.WorkspaceConfig{SourceOrder: nil}
+	r := NewScopedRegistryForWorkspaceWithOrder(cfg, config.Probes{}, nil, workspace, cfg.General.SourceOrder, t.TempDir())
+	providers := r.Providers()
+	if len(providers) < 2 || providers[0].Name() != config.SourceSessions || providers[1].Name() != config.SourceProjects {
+		t.Fatalf("scoped providers = %v, want global fallback order", providerNames(providers))
+	}
+}
+
+func providerNames(providers []Provider) []string {
+	names := make([]string, len(providers))
+	for i, provider := range providers {
+		names[i] = provider.Name()
+	}
+	return names
+}
+
+func TestNewScopedRegistryForWorkspaceUsesLocalProjectOverride(t *testing.T) {
+	t.Parallel()
+	recursive := false
+	maxDepth := 0
+	workspace := config.WorkspaceConfig{
+		Name:        "group",
+		Type:        config.WorkspaceTypeGroup,
+		SourceOrder: []string{config.SourceProjects},
+		Sources: config.WorkspaceSourcesConfig{Projects: &config.ProjectsSourceOverride{
+			Recursive: &recursive,
+			MaxDepth:  &maxDepth,
+		}},
+	}
+	r := NewScopedRegistryForWorkspace(config.Defaults(), config.Probes{}, nil, workspace, t.TempDir())
+	p, ok := r.providers[config.SourceProjects].(*projectsProvider)
+	if !ok {
+		t.Fatalf("projects provider type = %T", r.providers[config.SourceProjects])
+	}
+	if p.cfg.Sources.Projects.Recursive || p.cfg.Sources.Projects.MaxDepth != 0 {
+		t.Fatalf("local override was not merged: %+v", p.cfg.Sources.Projects)
+	}
+}
+
+// TestScopedProjectsUseEffectiveGroupMaxDepth proves the merged group setting
+// controls the actual filesystem scan and that the group root replaces global
+// project roots rather than combining with them.
+func TestScopedProjectsUseEffectiveGroupMaxDepth(t *testing.T) {
+	t.Parallel()
+	groupRoot := t.TempDir()
+	globalRoot := t.TempDir()
+	mkDirs(t, groupRoot, "level-one", "level-two", "level-three")
+	deepProject := filepath.Join(groupRoot, "level-one", "level-two", "level-three")
+	if err := os.WriteFile(filepath.Join(deepProject, "go.mod"), []byte("module deep\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	globalProject := mkMarkerDir(t, globalRoot, "global", "go.mod")
+
+	global := config.Defaults()
+	global.General.SourceOrder = []string{config.SourceProjects}
+	global.Sources.Projects = config.ProjectsSourceConfig{
+		Roots:     []string{globalRoot},
+		Recursive: true,
+		MaxDepth:  1,
+		Markers:   []string{"go.mod"},
+	}
+	maxDepth := 3
+	workspace := config.WorkspaceConfig{
+		Name:        "group",
+		Type:        config.WorkspaceTypeGroup,
+		SourceOrder: []string{config.SourceProjects},
+		Sources:     config.WorkspaceSourcesConfig{Projects: &config.ProjectsSourceOverride{MaxDepth: &maxDepth}},
+	}
+
+	r := NewScopedRegistryForWorkspace(global, config.Probes{}, nil, workspace, groupRoot)
+	got, err := r.Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Path != deepProject {
+		t.Fatalf("scoped projects = %+v, want only deep group project %q", got, deepProject)
+	}
+	if got[0].Path == globalProject {
+		t.Fatal("scoped project scan used global roots")
+	}
+}
+
+func TestIntegrationProvider_ParseJSONRows(t *testing.T) {
+	t.Parallel()
+	const payload = `[{"label":"PR 42","path":"/repo","command":"gh pr view 42","icon":"","template":"dev","close_on_exit":true,"aliases":[" review ","PR"],"meta":{"number":"42","context":"feature"}}]`
+	got, err := ParseIntegrationJSON("prs", []byte(payload))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("candidates = %d, want 1", len(got))
+	}
+	want := Candidate{Path: "/repo", Label: "PR 42", Icon: "", Source: "prs", Aliases: []string{"review", "PR"}, Meta: map[string]string{
+		"command": "gh pr view 42", "template": "dev", "close_on_exit": "true", "number": "42", "context": "feature", "integration": "true",
+	}}
+	if !reflect.DeepEqual(got[0], want) {
+		t.Fatalf("candidate = %+v, want %+v", got[0], want)
+	}
+}
+
+func TestIntegrationProvider_ParseJSONRowsRejectsMalformedPartialAndEmpty(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		json string
+	}{
+		{name: "malformed", json: `[{"label":"broken"}`},
+		{name: "missing label", json: `[{"path":"/repo"}]`},
+		{name: "empty output", json: ``},
+		{name: "null output", json: `null`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := ParseIntegrationJSON("prs", []byte(tt.json)); err == nil {
+				t.Fatal("expected parse error")
+			}
+		})
+	}
+	if got, err := ParseIntegrationJSON("prs", []byte(`[]`)); err != nil || len(got) != 0 {
+		t.Fatalf("empty array = (%v, %v), want empty candidates and nil error", got, err)
+	}
+}
+
+func TestIntegrationProvider_ListFailureAndTimeoutAreVisible(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		command []string
+		timeout time.Duration
+	}{
+		{name: "command failure", command: []string{"false"}, timeout: time.Second},
+		{name: "timeout", command: []string{"sleep", "1"}, timeout: 10 * time.Millisecond},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &integrationProvider{cfg: config.IntegrationConfig{Name: "prs", Command: tt.command, Timeout: config.Duration(tt.timeout)}}
+			_, err := p.List(context.Background())
+			if err == nil {
+				t.Fatal("expected integration error")
+			}
+		})
+	}
+}
+
+func TestRegistry_IntegrationProviderRegistrationAndOrder(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.Integrations = []config.IntegrationConfig{{Name: "prs", Command: []string{"printf", "[]"}}}
+	cfg.General.SourceOrder = []string{"prs"}
+	r := NewRegistry(cfg, config.Probes{}, nil)
+	got := r.Enabled()
+	if len(got) != 1 || got[0].Name() != "prs" {
+		t.Fatalf("enabled providers = %v, want integration prs", got)
+	}
+}
+
+func TestScopedRegistry_LazyIntegrationOnlyRunsWhenListed(t *testing.T) {
+	counter := filepath.Join(t.TempDir(), "count")
+	command := []string{"sh", "-c", "n=$((${COUNT:-0}+1)); printf '%s' \"$n\" > \"$COUNT_FILE\"; printf '[{\\\"label\\\":\\\"context\\\"}]'"}
+	cfg := config.Defaults()
+	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
+	cfg.Integrations = []config.IntegrationConfig{{Name: "kube-contexts", Command: command, Timeout: config.Duration(time.Second)}}
+	t.Setenv("COUNT_FILE", counter)
+
+	top, err := NewRegistry(cfg, config.Probes{}, nil).Collect(context.Background())
+	if err != nil {
+		t.Fatalf("top-level collect: %v", err)
+	}
+	if len(top) != 0 {
+		t.Fatalf("top-level candidates = %v, want no integration candidates", top)
+	}
+	if _, err := os.Stat(counter); !os.IsNotExist(err) {
+		t.Fatalf("integration ran at top level, count file stat = %v", err)
+	}
+
+	group := config.WorkspaceConfig{Type: config.WorkspaceTypeGroup, SourceOrder: []string{"kube-contexts"}}
+	got, err := NewScopedRegistryForWorkspace(cfg, config.Probes{}, nil, group, t.TempDir()).Collect(context.Background())
+	if err != nil {
+		t.Fatalf("group collect: %v", err)
+	}
+	if len(got) != 1 || got[0].Label != "context" {
+		t.Fatalf("group candidates = %v, want integration candidate", got)
+	}
+	if data, err := os.ReadFile(counter); err != nil || string(data) != "1" {
+		t.Fatalf("integration count = %q, read error = %v, want exactly one run", data, err)
+	}
+}
+
 func TestRegistry_EnabledHonoursGeneralSources(t *testing.T) {
 	t.Parallel()
 	cfg := config.Defaults()
-	cfg.General.Sources = []string{config.SourceZoxide, config.SourceHerdr}
+	cfg.General.SourceOrder = []string{config.SourceZoxide, config.SourceHerdr}
 	r := NewRegistry(cfg, config.Probes{Zoxide: true, Herdr: true}, fakeDriver{detect: true})
 	got := r.Enabled()
 	if len(got) != 2 {
@@ -461,7 +702,7 @@ func TestRegistry_EnabledHonoursGeneralSources(t *testing.T) {
 func TestRegistry_EnabledExcludesUnlistedSources(t *testing.T) {
 	t.Parallel()
 	cfg := config.Defaults()
-	cfg.General.Sources = []string{config.SourceHerdr}
+	cfg.General.SourceOrder = []string{config.SourceHerdr}
 	r := NewRegistry(cfg, config.Probes{Zoxide: true, Herdr: true}, fakeDriver{detect: true})
 	for _, p := range r.Enabled() {
 		if p.Name() == config.SourceZoxide {
@@ -552,6 +793,52 @@ func TestRelativeLabel_HomeUnresolvable(t *testing.T) {
 // candidates labelled by Name, with tilde-expanded paths, under Source
 // "workspaces". Cannot run t.Parallel because it mutates HOME for tilde
 // expansion.
+func TestWorkspacesProvider_IdentityIsOpaqueAndVersioned(t *testing.T) {
+	t.Parallel()
+	path := t.TempDir()
+	first := config.WorkspaceConfig{Name: "one", Path: path, Command: "nvim", Template: "dev"}
+	identity := workspaceEntryIdentity(path, first)
+	if strings.Contains(identity, path) || strings.Contains(identity, "nvim") || strings.Contains(identity, "dev") {
+		t.Fatalf("workspace identity leaks configured values: %q", identity)
+	}
+	if !strings.HasPrefix(identity, "v1:") {
+		t.Fatalf("workspace identity is not versioned: %q", identity)
+	}
+	if len(identity) < 19 {
+		t.Fatalf("workspace identity is not opaque enough: %q", identity)
+	}
+}
+
+func TestWorkspacesProvider_IdentityIgnoresPresentationAndOrder(t *testing.T) {
+	t.Parallel()
+	path := t.TempDir()
+	first := config.WorkspaceConfig{Name: "one", Path: path, Command: "nvim"}
+	second := config.WorkspaceConfig{Name: "renamed", Path: path, Command: "nvim"}
+	if got, want := workspaceEntryIdentity(path, first), workspaceEntryIdentity(path, second); got != want {
+		t.Fatalf("presentation-only change altered identity: %q != %q", got, want)
+	}
+	changed := config.WorkspaceConfig{Name: "one", Path: path, Command: "bash"}
+	if workspaceEntryIdentity(path, first) == workspaceEntryIdentity(path, changed) {
+		t.Fatal("different actions share configured workspace identity")
+	}
+}
+
+func TestWorkspacesProvider_AliasesReachGroupCandidate(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.Workspaces = []config.WorkspaceConfig{{Name: "Kubernetes", Type: config.WorkspaceTypeGroup, Path: t.TempDir(), Aliases: []string{"k8s"}}}
+	candidates, err := (&workspacesProvider{cfg: cfg}).List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || len(candidates[0].Aliases) != 1 || candidates[0].Aliases[0] != "k8s" {
+		t.Fatalf("group aliases = %+v, want [k8s]", candidates)
+	}
+	if got := candidates[0].Meta["entry_id"]; got == "" {
+		t.Fatal("group candidate lost its stable entry identity")
+	}
+}
+
 func TestWorkspacesProvider_List(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -625,12 +912,38 @@ func TestWorkspacesProvider_StalePathMarkedMissing(t *testing.T) {
 // TestWorkspacesProvider_GroupEntry confirms a type=group workspace yields
 // one candidate marked as a group with its sources list encoded in Meta,
 // instead of being treated as a normal launchable candidate.
+func TestWorkspacesProvider_IdentityCanonicalizesUnorderedGroupSources(t *testing.T) {
+	t.Parallel()
+	path := t.TempDir()
+	base := config.WorkspaceConfig{
+		Name:        "group",
+		Path:        path,
+		Type:        config.WorkspaceTypeGroup,
+		SourceOrder: []string{config.SourceProjects, config.SourceZoxide},
+	}
+	reordered := base
+	reordered.SourceOrder = []string{config.SourceZoxide, config.SourceProjects}
+	if got, want := workspaceEntryIdentity(path, base), workspaceEntryIdentity(path, reordered); got != want {
+		t.Fatalf("reordering group sources changed identity: %q != %q", got, want)
+	}
+	changedMembership := base
+	changedMembership.SourceOrder = []string{config.SourceProjects, config.SourceHerdr}
+	if workspaceEntryIdentity(path, base) == workspaceEntryIdentity(path, changedMembership) {
+		t.Fatal("different group source membership shares identity")
+	}
+	changedAction := base
+	changedAction.Template = "alternate"
+	if workspaceEntryIdentity(path, base) == workspaceEntryIdentity(path, changedAction) {
+		t.Fatal("different workspace action shares identity")
+	}
+}
+
 func TestWorkspacesProvider_GroupEntry(t *testing.T) {
 	t.Parallel()
 	cfg := config.Defaults()
 	root := t.TempDir()
 	cfg.Workspaces = []config.WorkspaceConfig{
-		{Name: "projects", Type: config.WorkspaceTypeGroup, Path: root, Sources: []string{config.SourceProjects, config.SourceZoxide}},
+		{Name: "projects", Type: config.WorkspaceTypeGroup, Path: root, SourceOrder: []string{config.SourceProjects, config.SourceZoxide}},
 	}
 	p := &workspacesProvider{cfg: cfg}
 	cands, err := p.List(context.Background())
@@ -786,6 +1099,84 @@ func TestListProjects_MissingRootReturnsEmpty(t *testing.T) {
 	}
 	if len(cands) != 0 {
 		t.Errorf("expected 0 candidates for missing root, got %d", len(cands))
+	}
+}
+
+func TestWorktreeCandidate_EnrichesAndDeduplicatesProjects(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	root := filepath.Join(base, "projects")
+	repo := filepath.Join(root, "shep")
+	linked := filepath.Join(base, "trees", "feature-x")
+	missing := filepath.Join(base, "trees", "missing")
+	for _, dir := range []string{filepath.Join(repo, ".git", "worktrees"), linked} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	discover := func(ctx context.Context, repoPath string) ([]WorktreeInfo, error) {
+		return DiscoverWorktreesWithRunner(ctx, repoPath, func(context.Context, string, ...string) ([]byte, error) {
+			return []byte(strings.Join([]string{
+				"worktree " + repo, "HEAD 0123456789abcdef", "branch refs/heads/main", "",
+				"worktree " + linked, "HEAD abcdef0123456789", "branch refs/heads/feature/x", "",
+				"worktree " + missing, "HEAD deadbeef", "branch refs/heads/stale", "",
+			}, "\n")), nil
+		})
+	}
+	got, err := listProjectsWithDiscovery(context.Background(), config.ProjectsSourceConfig{Markers: []string{".git"}}, root, discover)
+	if err != nil {
+		t.Fatalf("list projects: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("candidates = %+v, want main plus one linked worktree", got)
+	}
+	byPath := map[string]Candidate{got[0].Path: got[0], got[1].Path: got[1]}
+	if main := byPath[repo]; main.Meta["main_worktree"] != "true" || main.Meta["branch"] != "main" {
+		t.Fatalf("main metadata = %#v", main.Meta)
+	}
+	worktree := byPath[linked]
+	wantMeta := map[string]string{"is_worktree": "true", "branch": "feature/x", "repo": "shep", "worktree_path": linked, "head": "abcdef0123456789", "main_worktree": "false"}
+	if worktree.Label != "shep (feature/x)" || worktree.Source != config.SourceProjects || !reflect.DeepEqual(worktree.Meta, wantMeta) {
+		t.Fatalf("linked candidate = %+v, want label and metadata %#v", worktree, wantMeta)
+	}
+	if _, exists := byPath[missing]; exists {
+		t.Fatal("non-existent worktree was emitted")
+	}
+}
+
+func TestWorktreeCandidate_BareRepoAndDetachedHeadTriangulation(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	root := filepath.Join(base, "projects")
+	repo := filepath.Join(root, "bare-repo")
+	linked := filepath.Join(base, "trees", "detached-tree")
+	for _, dir := range []string{filepath.Join(repo, "worktrees"), linked} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	discover := func(ctx context.Context, repoPath string) ([]WorktreeInfo, error) {
+		return DiscoverWorktreesWithRunner(ctx, repoPath, func(context.Context, string, ...string) ([]byte, error) {
+			return []byte(strings.Join([]string{
+				"worktree " + repo, "bare", "",
+				"worktree " + linked, "HEAD abcdef0123456789", "detached", "",
+			}, "\n")), nil
+		})
+	}
+	got, err := listProjectsWithDiscovery(context.Background(), config.ProjectsSourceConfig{Markers: []string{"worktrees"}}, root, discover)
+	if err != nil {
+		t.Fatalf("list projects: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("candidates = %+v, want bare main plus one detached linked worktree", got)
+	}
+	byPath := map[string]Candidate{got[0].Path: got[0], got[1].Path: got[1]}
+	worktree := byPath[linked]
+	wantMeta := map[string]string{"is_worktree": "true", "branch": "", "repo": "bare-repo", "worktree_path": linked, "head": "abcdef0123456789", "main_worktree": "false"}
+	if worktree.Source != config.SourceProjects || !reflect.DeepEqual(worktree.Meta, wantMeta) {
+		t.Fatalf("detached candidate = %+v, want metadata %#v", worktree, wantMeta)
 	}
 }
 

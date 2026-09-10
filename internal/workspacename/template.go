@@ -3,6 +3,7 @@ package workspacename
 import (
 	"bytes"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"text/template"
@@ -17,6 +18,32 @@ type Context struct {
 	NormalizedPath string
 	Label          string
 	Source         string
+	Branch         string
+	RepoName       string
+	IsWorktree     bool
+	IsMainWorktree bool
+}
+
+func NewContext(path, normalizedPath, label, source string, meta map[string]string) Context {
+	branch := meta["branch"]
+	if branch == "" && meta["is_worktree"] == "true" {
+		branch = shortHead(meta["head"])
+	}
+	return Context{
+		Path: path, NormalizedPath: normalizedPath, Label: label, Source: source,
+		Branch: branch, RepoName: meta["repo"], IsWorktree: meta["is_worktree"] == "true",
+		IsMainWorktree: meta["main_worktree"] == "true",
+	}
+}
+
+func shortHead(head string) string {
+	if len(head) > 7 {
+		return head[:7]
+	}
+	if head != "" {
+		return head
+	}
+	return "detached"
 }
 
 // Name is a validated launch-only Herdr workspace label.
@@ -63,13 +90,39 @@ func FuncMap() (template.FuncMap, error) {
 
 // Validate parses and executes format with a representative context.
 func Validate(field, format string) error {
-	_, err := Render(field, format, Context{Path: "/srv/services/platform-api", NormalizedPath: "/srv/services/platform-api", Label: "platform-api", Source: "projects"})
+	_, err := Render(field, format, DefaultContext())
 	return err
+}
+
+// DefaultContext returns a representative, field-complete naming context for
+// validation and testing.
+func DefaultContext() Context {
+	return Context{
+		Path:           "/srv/services/platform-api",
+		NormalizedPath: "/srv/services/platform-api",
+		Label:          "platform-api",
+		Source:         "projects",
+		Branch:         "main",
+		RepoName:       "platform-api",
+		IsWorktree:     true,
+		IsMainWorktree: false,
+	}
 }
 
 // Render parses and executes a naming template, then validates the resulting
 // label before returning it as the typed launch-only Name value.
 func Render(field, format string, data Context) (Name, error) {
+	if format == "" {
+		if data.IsWorktree {
+			format = `{{.RepoName}}@{{.Branch}}`
+		} else {
+			path := data.NormalizedPath
+			if path == "" {
+				path = data.Path
+			}
+			return Name(filepath.Base(path)), nil
+		}
+	}
 	funcs, err := FuncMap()
 	if err != nil {
 		return "", scopedError(field, "function map", err)

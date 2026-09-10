@@ -43,6 +43,8 @@ type listCandidate struct {
 	Icon           string `json:"icon"`
 	Source         string `json:"source"`
 	Missing        bool   `json:"missing"`
+	IsWorktree     bool   `json:"is_worktree,omitempty"`
+	Branch         string `json:"branch,omitempty"`
 }
 
 // listCmd builds `shep list` which enumerates candidates from all enabled
@@ -99,6 +101,7 @@ func (a *App) runList(cmd *cobra.Command, f format) error {
 		// still print whatever the other providers produced (HI-6 philosophy).
 		fmt.Fprintf(errOut, "warning: a source failed: %v\n", collectErr)
 	}
+
 	return render(out, deduped, f)
 }
 
@@ -155,9 +158,13 @@ func renderTSV(out io.Writer, cands []source.Candidate) error {
 		// {split:\t:N} included — this is the column order both this
 		// renderer and cables/shep.toml's {split:\t:0/1/2} templates rely on
 		// (see TestCable_MatchesRenderTSVColumnOrder in cable_test.go).
+		label := c.Label
+		if c.Meta["is_worktree"] == "true" && c.Meta["branch"] != "" {
+			label += " [worktree: " + sanitizeTSVField(c.Meta["branch"]) + "]"
+		}
 		fmt.Fprintf(out, "%s\t%s\t%s\n",
 			sanitizeTSVField(c.NormalizedPath),
-			sanitizeTSVField(c.Label),
+			sanitizeTSVField(label),
 			sanitizeTSVField(c.Icon))
 	}
 	return nil
@@ -183,6 +190,8 @@ func renderJSON(out io.Writer, cands []source.Candidate) error {
 			Icon:           c.Icon,
 			Source:         c.Source,
 			Missing:        c.Missing,
+			IsWorktree:     c.Meta["is_worktree"] == "true",
+			Branch:         c.Meta["branch"],
 		})
 	}
 	if out2 == nil {

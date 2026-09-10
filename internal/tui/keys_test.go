@@ -469,6 +469,81 @@ func TestSelectWithTarget_NoOpInFocusHelp(t *testing.T) {
 	}
 }
 
+// === SPEC-NAV-4.1/4.2: target guard order (eligibility before missing-pane) ===
+
+// TestSelectWithTarget_IneligibleNilPaneIsSilentNoOp proves SPEC-NAV-4.1: an
+// ineligible row (a session candidate, which SupportsCurrentWorkspaceTarget
+// rejects) with NO current pane is a fully silent no-op — nothing is selected
+// AND no "no focused Herdr pane" error is set. The eligibility guard must run
+// before the missing-pane error, so an ineligible row never triggers the
+// pane-focus diagnostic it can never act on.
+func TestSelectWithTarget_IneligibleNilPaneIsSilentNoOp(t *testing.T) {
+	t.Parallel()
+	sess := source.Candidate{Label: "alpha", Source: config.SourceSessions, Meta: map[string]string{"session_name": "alpha"}}
+	m := NewModel([]source.Candidate{sess}, nil)
+	m.cursor = 0
+	if m.currentPane != nil {
+		t.Fatal("setup: expected nil current pane")
+	}
+	m, cmd := update(t, m, key("ctrl+t"))
+	if cmd != nil {
+		t.Error("ctrl+t on an ineligible row with no pane must be a no-op")
+	}
+	if _, ok := m.Selected(); ok {
+		t.Error("expected no selection on an ineligible row with no pane")
+	}
+	if m.previewErr != "" {
+		t.Errorf("previewErr = %q, want empty (ineligible row must not trigger the missing-pane diagnostic)", m.previewErr)
+	}
+}
+
+// TestSelectWithTarget_EligibleNilPanePreservesFocusError proves SPEC-NAV-4.1:
+// an ELIGIBLE row (zoxide) with no current pane preserves the existing
+// "no focused Herdr pane" diagnostic — the reorder must not weaken feedback
+// for a row that would otherwise be actionable once a pane exists.
+func TestSelectWithTarget_EligibleNilPanePreservesFocusError(t *testing.T) {
+	t.Parallel()
+	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
+	m.cursor = 0
+	if m.currentPane != nil {
+		t.Fatal("setup: expected nil current pane")
+	}
+	m, cmd := update(t, m, key("ctrl+t"))
+	if cmd != nil {
+		t.Error("ctrl+t on an eligible row with no pane must not select or quit")
+	}
+	if _, ok := m.Selected(); ok {
+		t.Error("expected no selection when the eligible row has no pane")
+	}
+	if m.previewErr != "no focused Herdr pane" {
+		t.Errorf("previewErr = %q, want \"no focused Herdr pane\" (eligible row keeps existing feedback)", m.previewErr)
+	}
+}
+
+// TestSelectWithTarget_EligiblePaneDispatchUnchanged proves SPEC-NAV-4.2: an
+// eligible row WITH a current pane keeps the unchanged select+quit dispatch
+// and target selection — the guard reorder must not disturb the working path.
+func TestSelectWithTarget_EligiblePaneDispatchUnchanged(t *testing.T) {
+	t.Parallel()
+	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
+	pane := source.Pane{ID: "p0"}
+	m = m.WithCurrentPane(&pane)
+	m.cursor = 0
+	m, cmd := update(t, m, key("ctrl+p"))
+	if cmd == nil {
+		t.Fatal("ctrl+p on an eligible row with a pane should select+quit")
+	}
+	if _, ok := m.Selected(); !ok {
+		t.Error("expected a selection on an eligible row with a pane")
+	}
+	if m.ChosenTarget() != "pane" {
+		t.Errorf("ChosenTarget() = %q, want \"pane\"", m.ChosenTarget())
+	}
+	if m.SelectedAction() != RowActionOpen {
+		t.Errorf("SelectedAction() = %v, want RowActionOpen", m.SelectedAction())
+	}
+}
+
 // --- ctrl+l layout cycling ---
 
 // TestCtrlL_TogglesAutoLandscapeAuto proves the two-state toggle (the

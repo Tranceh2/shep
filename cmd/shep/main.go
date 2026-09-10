@@ -18,6 +18,10 @@ var (
 func main() {
 	app := command.New(command.WithVersion(version, commit))
 	if err := app.Execute(); err != nil {
-		os.Exit(1)
+		os.Exit(handleAppError(err))
 	}
+}
+
+func handleAppError(err error) int {
+	return command.ExitCode(err)
 }

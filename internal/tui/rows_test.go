@@ -22,6 +22,51 @@ func TestNoFuzzyScoreReference(t *testing.T) {
 	}
 }
 
+func TestBuildRows_AliasMakesCandidateVisibleWithoutRenderingAlias(t *testing.T) {
+	t.Parallel()
+	cand := source.Candidate{Path: "/srv/kubernetes", Label: "Kubernetes", Aliases: []string{"k8s", "kube"}, Source: config.SourceWorkspaces, Meta: map[string]string{"group": "true"}}
+	rows := buildRows(rowBuildInput{candidates: []source.Candidate{cand}, query: "k8s"})
+	if len(rows) != 1 || rows[0].Candidate.Label != "Kubernetes" {
+		t.Fatalf("alias rows = %+v, want Kubernetes candidate", rows)
+	}
+	m := newRenderTestModel(ThemePlain, FocusList)
+	primary, _ := m.rowDisplayText(rows[0])
+	if strings.Contains(primary, "k8s") || strings.Contains(primary, "kube") {
+		t.Fatalf("primary row rendered aliases: %q", primary)
+	}
+}
+
+func TestWorktreeRowPresentationAndSearch(t *testing.T) {
+	t.Parallel()
+	cand := source.Candidate{
+		Path: "/trees/api", Label: "api", Source: config.SourceProjects,
+		Meta: map[string]string{"is_worktree": "true", "branch": "feat/super-long-branch"},
+	}
+	rows := buildRows(rowBuildInput{candidates: []source.Candidate{cand}, query: "super-long"})
+	if len(rows) != 1 {
+		t.Fatalf("worktree branch search rows = %d, want 1", len(rows))
+	}
+	m := newRenderTestModel(ThemePlain, FocusList)
+	primary, _ := m.rowDisplayText(rows[0])
+	if !strings.Contains(primary, "") || !strings.Contains(primary, "feat/super-long-branch") {
+		t.Fatalf("worktree row = %q, want branch icon and name", primary)
+	}
+	line := stripANSI(m.renderRowLine(rows[0], false, 20))
+	if lipglossWidth(line) > 20 || !strings.Contains(line, "") {
+		t.Fatalf("truncated row = %q (width %d), want icon within width 20", line, lipglossWidth(line))
+	}
+}
+
+func TestWorktreeRowUsesCandidateIconForOtherSources(t *testing.T) {
+	t.Parallel()
+	cand := source.Candidate{Path: "/srv/api", Label: "api", Source: config.SourceProjects, Icon: "P"}
+	m := newRenderTestModel(ThemePlain, FocusList)
+	primary, _ := m.rowDisplayText(Row{Kind: RowCandidate, Candidate: cand})
+	if !strings.Contains(primary, "P") || strings.Contains(primary, "") {
+		t.Fatalf("standard project row = %q, want configured icon only", primary)
+	}
+}
+
 func TestWorkspaceNameRemainsOutsideTUISearchAndPresentation(t *testing.T) {
 	t.Parallel()
 	cand := source.Candidate{
@@ -46,8 +91,8 @@ func TestWorkspaceNameRemainsOutsideTUISearchAndPresentation(t *testing.T) {
 
 // TestBuildRows_StableGroupAndParentOrder proves the DEFAULT source order
 // (Herdr, Workspaces, Zoxide, Projects — mirroring config.defaultSourceOrder)
-// applies when rowBuildInput.sourceOrder is empty. An empty query preserves
-// each provider's original emitted order.
+// applies when rowBuildInput.sourceOrder is empty. Without an active history
+// snapshot, an empty query preserves each provider's original emitted order.
 func TestBuildRows_StableGroupAndParentOrder(t *testing.T) {
 	t.Parallel()
 	cands := []source.Candidate{
@@ -174,6 +219,33 @@ func TestBuildRows_FuzzyScoreRanksCandidates(t *testing.T) {
 	})
 }
 
+func TestBuildRows_OpenHerdrWinsWithinExactPrefixAndFuzzyLayers(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		query string
+		open  string
+		other string
+	}{
+		{name: "exact", query: "shep", open: "shep", other: "shep"},
+		{name: "prefix", query: "lat", open: "ECORP/devportal", other: "ecorp-repo"},
+		{name: "fuzzy label", query: "dpy", open: "deploy-open", other: "directory-py"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			open := herdrCandidate(tc.open, "/open", "open")
+			other := projectCandidate(tc.other, "/other")
+			rows := buildRows(rowBuildInput{
+				query: tc.query, sourceOrder: []string{config.SourceProjects, config.SourceHerdr},
+				candidates: []source.Candidate{other, open},
+			})
+			if len(rows) != 2 || rows[0].Candidate.Source != config.SourceHerdr {
+				t.Fatalf("rows = %+v, want open Herdr workspace first", rows)
+			}
+		})
+	}
+}
+
 // TestBuildRows_FuzzyScoreTieAcrossSourcesKeepsSourceOrder verifies that a
 // score tie is resolved by configured source order before provider-local index.
 func TestBuildRows_FuzzyScoreTieAcrossSourcesKeepsSourceOrder(t *testing.T) {
@@ -219,7 +291,7 @@ func TestBuildRows_FuzzyScoreRanksAcrossProviders(t *testing.T) {
 
 // TestBuildRows_CustomSourceOrderOverridesDefault proves a non-default,
 // explicitly-configured source order (rowBuildInput.sourceOrder — sourced
-// from cfg.General.Sources at the Model layer) is honored verbatim instead
+// from cfg.General.SourceOrder at the Model layer) is honored verbatim instead
 // of the hardcoded default, and that a source with zero visible members
 // simply contributes no rows (there is no header to omit anymore).
 func TestBuildRows_CustomSourceOrderOverridesDefault(t *testing.T) {
@@ -602,6 +674,369 @@ func TestSessionRows_AreFlatAndUseSessionNameIdentity(t *testing.T) {
 	})
 	if len(rows) != 2 || rows[0].Kind != RowCandidate || rows[1].Kind != RowCandidate {
 		t.Fatalf("session rows = %+v, want two flat candidate rows", rows)
+	}
+}
+
+// === SPEC-NAV-2: metadata-aware search over existing keys ===
+
+// paneChild builds a synthesized pane candidate with the given whitelisted
+// metadata keys, mirroring synthesizeWorkspaceChildren's output shape.
+func paneChild(label, path, tabID, paneID string, meta map[string]string) source.Candidate {
+	m := map[string]string{"workspace_id": "w1", "tab_id": tabID, "pane_id": paneID}
+	for k, v := range meta {
+		m[k] = v
+	}
+	return source.Candidate{Label: label, Path: path, Meta: m}
+}
+
+// TestMatchRow_MetadataFallbackPerRowKind proves SPEC-NAV-2.1-2.6: matchRow
+// first scores the original Label+Path domain and, ONLY when that fails,
+// falls back to a guarded per-row-kind metadata projection over existing
+// keys. Missing/empty metadata never matches; task/name are never read.
+func TestMatchRow_MetadataFallbackPerRowKind(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name        string
+		query       string
+		cand        source.Candidate
+		kind        RowKind
+		wantMatch   bool
+		wantOrig    bool // true when matched via original Label+Path domain
+		wantNoIndex bool // metadata-only matches carry no label/path indexes
+	}{
+		{
+			name:  "SPEC-NAV-2.1 pane matches agent_status",
+			query: "working",
+			cand:  paneChild("p1", "/svc/api", "t1", "p1", map[string]string{"agent_status": "working"}),
+			kind:  RowPane, wantMatch: true, wantOrig: false, wantNoIndex: true,
+		},
+		{
+			name:  "SPEC-NAV-2.2 pane matches tab_label",
+			query: "build",
+			cand:  paneChild("p1", "/svc/api", "t1", "p1", map[string]string{"tab_label": "build"}),
+			kind:  RowPane, wantMatch: true, wantOrig: false, wantNoIndex: true,
+		},
+		{
+			name:  "SPEC-NAV-2.3 pane matches pane_id fragment",
+			query: "abcd",
+			cand:  paneChild("shell", "/svc/api", "t1", "p_abcd1234", nil),
+			kind:  RowPane, wantMatch: true, wantOrig: false, wantNoIndex: true,
+		},
+		{
+			name:  "SPEC-NAV-2.4 session matches session_name (original-domain parity via Label)",
+			query: "alpha",
+			cand:  source.Candidate{Source: config.SourceSessions, Label: "alpha", Meta: map[string]string{"session_name": "alpha"}},
+			kind:  RowCandidate, wantMatch: true, wantOrig: true, wantNoIndex: false,
+		},
+		{
+			name:  "SPEC-NAV-2.5 missing agent_status never matches",
+			query: "working",
+			cand:  paneChild("shell", "/svc/api", "t1", "p1", nil),
+			kind:  RowPane, wantMatch: false,
+		},
+		{
+			name:  "original domain wins: pane label match keeps indexes",
+			query: "shell",
+			cand:  paneChild("shell", "/svc/api", "t1", "p1", map[string]string{"agent_status": "working"}),
+			kind:  RowPane, wantMatch: true, wantOrig: true, wantNoIndex: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			score, idx, matched, original := matchRow(tc.query, tc.cand, tc.kind)
+			if matched != tc.wantMatch {
+				t.Fatalf("matched = %v, want %v (score=%d)", matched, tc.wantMatch, score)
+			}
+			if !tc.wantMatch {
+				return
+			}
+			if original != tc.wantOrig {
+				t.Errorf("original = %v, want %v", original, tc.wantOrig)
+			}
+			if tc.wantNoIndex && len(idx) != 0 {
+				t.Errorf("metadata-only match must carry no label/path indexes, got %v", idx)
+			}
+			if !tc.wantNoIndex && tc.wantOrig && len(idx) == 0 {
+				t.Errorf("original-domain match must carry label/path indexes, got none")
+			}
+		})
+	}
+}
+
+// TestMatchRow_SessionSecondaryMetadata proves SPEC-NAV-2.4/session_dir:
+// a session candidate whose Label/Path do not match still matches on
+// session_dir via metadata fallback.
+func TestMatchRow_SessionSecondaryMetadata(t *testing.T) {
+	t.Parallel()
+	cand := source.Candidate{Source: config.SourceSessions, Label: "alpha", Path: "", Meta: map[string]string{"session_name": "alpha", "session_dir": "/work/deploy"}}
+	score, _, matched, original := matchRow("deploy", cand, RowCandidate)
+	if !matched {
+		t.Fatalf("expected session_dir metadata match, got no match (score=%d)", score)
+	}
+	if original {
+		t.Errorf("session_dir match must be metadata-fallback (original=false), got original=true")
+	}
+}
+
+// TestMatchRow_NeverReadsForbiddenKeys proves SPEC-NAV-2.6: task/name are
+// never consulted, even if present. A candidate whose ONLY field carrying the
+// query is Meta["task"]/Meta["name"] must NOT match.
+func TestMatchRow_NeverReadsForbiddenKeys(t *testing.T) {
+	t.Parallel()
+	forbidden := paneChild("shell", "/svc/api", "t1", "p1", map[string]string{"task": "deployment", "name": "deployment"})
+	if _, _, matched, _ := matchRow("deployment", forbidden, RowPane); matched {
+		t.Errorf("matchRow must never read task/name metadata keys, but matched %q", "deployment")
+	}
+}
+
+// TestBuildRows_PaneMatchesViaMetadataOnly proves SPEC-NAV-3.2/3.4: a pane
+// matching Q ONLY via metadata (agent_status) is included, and its parent
+// workspace + tab context is preserved as MatchDescendant.
+func TestBuildRows_PaneMatchesViaMetadataOnly(t *testing.T) {
+	t.Parallel()
+	ws := herdrCandidate("backend", "/svc", "w1")
+	children := map[string]workspaceChildren{
+		"w1": {Tabs: []tabChildren{{
+			Tab: source.Candidate{Label: "api", Path: "/svc/api", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1"}},
+			Panes: []source.Candidate{
+				paneChild("shell", "/svc/api", "t1", "p1", map[string]string{"agent_status": "working"}),
+			},
+		}}},
+	}
+	rows := buildRows(rowBuildInput{candidates: []source.Candidate{ws}, query: "working", children: children})
+	if len(rows) != 3 {
+		t.Fatalf("expected workspace, tab, metadata-matched pane; got %d rows: %+v", len(rows), rows)
+	}
+	if rows[0].Match != MatchDescendant || rows[0].Candidate.Label != "backend" {
+		t.Errorf("row 0 = %+v, want backend MatchDescendant", rows[0])
+	}
+	if rows[1].Kind != RowTab || rows[1].Match != MatchDescendant {
+		t.Errorf("row 1 = %+v, want tab MatchDescendant context", rows[1])
+	}
+	if rows[2].Kind != RowPane || rows[2].Candidate.Meta["pane_id"] != "p1" {
+		t.Errorf("row 2 = %+v, want the metadata-matched pane p1", rows[2])
+	}
+	// Metadata-only match must not carry label/path highlight indexes.
+	if len(rows[2].MatchedIndexes) != 0 {
+		t.Errorf("metadata-only pane must have no MatchedIndexes, got %v", rows[2].MatchedIndexes)
+	}
+}
+
+// TestBuildRows_MissingMetadataPaneExcluded proves SPEC-NAV-2.5 end-to-end:
+// a pane whose agent_status is absent is NOT pulled in by a query that would
+// only match that field.
+func TestBuildRows_MissingMetadataPaneExcluded(t *testing.T) {
+	t.Parallel()
+	ws := herdrCandidate("backend", "/svc", "w1")
+	children := map[string]workspaceChildren{
+		"w1": {Tabs: []tabChildren{{
+			Tab:   source.Candidate{Label: "api", Path: "/svc/api", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1"}},
+			Panes: []source.Candidate{paneChild("shell", "/svc/api", "t1", "p1", nil)},
+		}}},
+	}
+	rows := buildRows(rowBuildInput{candidates: []source.Candidate{ws}, query: "working", children: children})
+	if len(rows) != 0 {
+		t.Fatalf("expected no rows (nothing matches \"working\"), got %d: %+v", len(rows), rows)
+	}
+}
+
+// === SPEC-NAV-3: ranking preservation over the original domain ===
+
+// TestBuildRows_MetadataGroupUsesLowestTextualLayer proves metadata-only
+// groups remain below label fuzzy matches even when their metadata token has a
+// stronger raw fuzzy score. Textual quality is intentionally ranked before the
+// score within a layer.
+func TestBuildRows_MetadataGroupUsesLowestTextualLayer(t *testing.T) {
+	t.Parallel()
+	// Two original-domain groups whose OWN labels contain the query with
+	// different strength, plus one metadata-only group whose fuzzy score on
+	// its metadata token lands between them. Under pure score-descending
+	// stable order the metadata group must interleave between the two
+	// original groups, not be forced after both.
+	//
+	// Query "omp": a workspace label matches directly on the original domain
+	// with a score that depends on label composition. We construct:
+	//   strongOrig: label "omp" (tight, high original score)
+	//   weakOrig:   label "a-o-m-p-x scattered" (loose, low original score)
+	//   metaOnly:   label/path lack "omp"; agent_status pane carries "omp"
+	// and assert the metadata group is NOT last purely because of provenance.
+	strongOrig := herdrCandidate("omp", "/strong", "w1")
+	metaOnly := herdrCandidate("beta-ws", "/b", "w2")
+	// weakOrig matches "omp" on its own label but loosely (o..m..p scattered
+	// across the label with gaps), yielding a low original-domain score.
+	weakOrig := herdrCandidate("o zz m zz p scattered ws", "/weak", "w3")
+	children := map[string]workspaceChildren{
+		"w2": {Tabs: []tabChildren{{
+			Tab:   source.Candidate{Label: "t", Path: "/b", Meta: map[string]string{"workspace_id": "w2", "tab_id": "t2"}},
+			Panes: []source.Candidate{paneChild("shell", "/b", "t2", "p2", map[string]string{"agent_status": "omp"})},
+		}}},
+	}
+	rows := buildRows(rowBuildInput{candidates: []source.Candidate{strongOrig, metaOnly, weakOrig}, query: "omp", children: children})
+	var wsOrder []string
+	for _, r := range rows {
+		if r.Kind == RowCandidate {
+			wsOrder = append(wsOrder, r.Candidate.Label)
+		}
+	}
+	if len(wsOrder) != 3 {
+		t.Fatalf("expected all three workspaces visible, got %v", wsOrder)
+	}
+	// The metadata-only group is LayerPathOrMeta, so it follows both label
+	// fuzzy groups regardless of the raw metadata fuzzy score.
+	posMeta, posWeak := indexOf(wsOrder, "beta-ws"), indexOf(wsOrder, "o zz m zz p scattered ws")
+	if posMeta < posWeak {
+		t.Errorf("workspace order = %v: metadata-only group must remain in the lowest textual layer", wsOrder)
+	}
+	posStrong := indexOf(wsOrder, "omp")
+	if posStrong > posWeak {
+		t.Errorf("workspace order = %v: stronger label fuzzy match must precede weaker label fuzzy match", wsOrder)
+	}
+}
+
+// TestBuildRows_OriginalSubsetRelativeOrderPreserved proves SPEC-NAV-3.1
+// narrowly: for two original-domain groups A and B, adding a metadata-only
+// group into the mix never changes A's position relative to B. Only the
+// original-match subset's mutual order is contractually preserved.
+func TestBuildRows_OriginalSubsetRelativeOrderPreserved(t *testing.T) {
+	t.Parallel()
+	// A and B both match "omp" on their own labels; A scores higher than B.
+	a := herdrCandidate("omp", "/a", "w1")
+	b := herdrCandidate("omp scattered elsewhere", "/b", "w2")
+	// Baseline: no metadata group present.
+	baseline := buildRows(rowBuildInput{candidates: []source.Candidate{a, b}, query: "omp"})
+	var baseOrder []string
+	for _, r := range baseline {
+		if r.Kind == RowCandidate {
+			baseOrder = append(baseOrder, r.Candidate.Label)
+		}
+	}
+	// With a metadata-only group interleaved, A and B keep their mutual order.
+	meta := herdrCandidate("beta-ws", "/m", "w3")
+	children := map[string]workspaceChildren{
+		"w3": {Tabs: []tabChildren{{
+			Tab:   source.Candidate{Label: "t", Path: "/m", Meta: map[string]string{"workspace_id": "w3", "tab_id": "t3"}},
+			Panes: []source.Candidate{paneChild("shell", "/m", "t3", "p3", map[string]string{"agent_status": "omp"})},
+		}}},
+	}
+	withMeta := buildRows(rowBuildInput{candidates: []source.Candidate{a, b, meta}, query: "omp", children: children})
+	var aPos, bPos int
+	var order []string
+	for _, r := range withMeta {
+		if r.Kind == RowCandidate {
+			order = append(order, r.Candidate.Label)
+		}
+	}
+	aPos, bPos = indexOf(order, "omp"), indexOf(order, "omp scattered elsewhere")
+	if aPos == -1 || bPos == -1 {
+		t.Fatalf("both original groups must remain visible: order=%v", order)
+	}
+	if (aPos < bPos) != (indexOf(baseOrder, "omp") < indexOf(baseOrder, "omp scattered elsewhere")) {
+		t.Errorf("original subset relative order changed: baseline=%v withMeta=%v", baseOrder, order)
+	}
+}
+
+// TestBuildRows_MetadataDescendantDoesNotInflateOriginalGroupScore proves the
+// aggregate-score guard (retained, subtree-local, NOT a global comparator): a
+// metadata-only descendant pane must NOT raise its parent workspace group's
+// aggregate score above a competing original-domain group. The original group
+// ranks by its own original-domain score; a metadata descendant can add rows
+// but cannot inflate the group's rank.
+func TestBuildRows_MetadataDescendantDoesNotInflateOriginalGroupScore(t *testing.T) {
+	t.Parallel()
+	// Group X: matches "omp" ONLY via a strong original-domain pane label.
+	strongOrig := herdrCandidate("x-ws", "/x", "w1")
+	// Group Y: matches "omp" via a WEAK original pane label AND additionally
+	// has a metadata pane whose agent_status token would score very high if it
+	// leaked into the group aggregate. It must not.
+	mixedOrig := herdrCandidate("y-ws", "/y", "w2")
+	children := map[string]workspaceChildren{
+		"w1": {Tabs: []tabChildren{{
+			Tab:   source.Candidate{Label: "t", Path: "/x", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1"}},
+			Panes: []source.Candidate{paneChild("omp", "/x", "t1", "p1", nil)},
+		}}},
+		"w2": {Tabs: []tabChildren{{
+			Tab: source.Candidate{Label: "t", Path: "/y", Meta: map[string]string{"workspace_id": "w2", "tab_id": "t2"}},
+			Panes: []source.Candidate{
+				paneChild("a x m o p weak", "/y", "t2", "p2", nil),                             // weak original match
+				paneChild("shell", "/y", "t2", "p3", map[string]string{"agent_status": "omp"}), // metadata-only, high token score
+			},
+		}}},
+	}
+	rows := buildRows(rowBuildInput{candidates: []source.Candidate{strongOrig, mixedOrig}, query: "omp", children: children})
+	var wsOrder []string
+	for _, r := range rows {
+		if r.Kind == RowCandidate {
+			wsOrder = append(wsOrder, r.Candidate.Label)
+		}
+	}
+	// x-ws (strong original) must precede y-ws: y's metadata descendant must
+	// not inflate y's aggregate score above x's original-domain score.
+	if indexOf(wsOrder, "x-ws") > indexOf(wsOrder, "y-ws") {
+		t.Errorf("workspace order = %v: metadata descendant must not inflate y-ws's aggregate score above x-ws's original-domain score", wsOrder)
+	}
+}
+
+// indexOf returns the position of s in xs, or -1.
+func indexOf(xs []string, s string) int {
+	for i, x := range xs {
+		if x == s {
+			return i
+		}
+	}
+	return -1
+}
+
+// TestBuildRows_LabelPathOnlyOrderUnchangedWithMetadataAvailable proves
+// SPEC-NAV-3.1: for a query where every match is on the original Label+Path
+// domain, adding the metadata fallback capability does NOT change the
+// relative order of those matches (metadata is only consulted on original
+// failure, so it is a no-op here).
+func TestBuildRows_LabelPathOnlyOrderUnchangedWithMetadataAvailable(t *testing.T) {
+	t.Parallel()
+	ws := herdrCandidate("backend", "/svc", "w1")
+	children := map[string]workspaceChildren{
+		"w1": {Tabs: []tabChildren{{
+			Tab: source.Candidate{Label: "services", Path: "/svc", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1"}},
+			Panes: []source.Candidate{
+				// Both carry agent_status metadata, but both ALSO match on label.
+				paneChild("scattered", "/var/cache/xxomp", "t1", "p1", map[string]string{"agent_status": "omp"}),
+				paneChild("omp config", "~/.config/omp", "t1", "p2", map[string]string{"agent_status": "idle"}),
+			},
+		}}},
+	}
+	rows := buildRows(rowBuildInput{candidates: []source.Candidate{ws}, query: "omp", children: children})
+	if len(rows) != 4 {
+		t.Fatalf("visible rows = %d, want workspace, tab, two panes: %+v", len(rows), rows)
+	}
+	// Same order as the pre-metadata TestBuildRows_FuzzyScoreRanksMatchingPanesWithinTab.
+	if got, want := rows[2].Candidate.Path, "~/.config/omp"; got != want {
+		t.Errorf("first pane path = %q, want %q (label/path order must be unchanged)", got, want)
+	}
+	if got, want := rows[3].Candidate.Path, "/var/cache/xxomp"; got != want {
+		t.Errorf("second pane path = %q, want %q", got, want)
+	}
+}
+
+// TestBuildRows_RankedEmptyQueryUntouchedByMetadata proves SPEC-NAV-3.3: the
+// ranked empty-query branch is not affected by the metadata matcher — order
+// equals the caller's pre-ranked candidate order and no children are pulled.
+func TestBuildRows_RankedEmptyQueryUntouchedByMetadata(t *testing.T) {
+	t.Parallel()
+	a := herdrCandidate("first", "/a", "w1")
+	b := herdrCandidate("second", "/b", "w2")
+	children := map[string]workspaceChildren{
+		"w1": {Tabs: []tabChildren{{
+			Tab:   source.Candidate{Label: "t", Path: "/a", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1"}},
+			Panes: []source.Candidate{paneChild("shell", "/a", "t1", "p1", map[string]string{"agent_status": "working"})},
+		}}},
+	}
+	rows := buildRows(rowBuildInput{candidates: []source.Candidate{a, b}, query: "", ranked: true, children: children})
+	var order []string
+	for _, r := range rows {
+		order = append(order, r.Candidate.Label)
+	}
+	if !equalStrings(order, []string{"first", "second"}) {
+		t.Errorf("ranked empty-query order = %v, want [first second] (pre-ranked order, no children)", order)
 	}
 }
 

@@ -70,6 +70,25 @@ func (e *TreeExpander) Fetch(_ context.Context, workspaceID string) (workspaceTr
 	return tree, ok
 }
 
+// UpdatePaneAgentStatus updates a pane's AgentStatus in-place across all
+// tracked workspaces in this generation without re-sorting or rebuilding rows.
+// Returns true if the pane was found and updated, false otherwise.
+func (e *TreeExpander) UpdatePaneAgentStatus(paneID, status string) bool {
+	if e == nil || paneID == "" {
+		return false
+	}
+	for wsID, tree := range e.trees {
+		for i, p := range tree.Panes {
+			if p.ID == paneID {
+				tree.Panes[i].AgentStatus = status
+				e.trees[wsID] = tree
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // ResolveActivePaneID returns the focused pane in tabID from the cached
 // workspace tree, falling back to that tab's first pane in Herdr list order.
 // A missing tree or matching pane is unavailable rather than selecting a pane

@@ -165,7 +165,6 @@ func traceback(mFromD, dFromD [][]bool, needleLength, haystackLength int) []int 
 				haystackIndex--
 				continue
 			}
-			inMatchMatrix = false
 		}
 
 		matchedIndexes[needleIndex] = haystackIndex

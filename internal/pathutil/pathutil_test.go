@@ -91,3 +91,21 @@ func TestExpandTilde_NoUserHomeDirLeak(t *testing.T) {
 		t.Errorf("expansion = %q relative to home, want %q", rel, want)
 	}
 }
+
+func TestStatePath(t *testing.T) {
+	home := t.TempDir()
+	xdg := filepath.Join(t.TempDir(), "state")
+	for _, tc := range []struct{ name, xdg, home, want string }{
+		{"xdg", xdg, "", xdg},
+		{"fallback", "", home, filepath.Join(home, ".local", "state")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("XDG_STATE_HOME", tc.xdg)
+			t.Setenv("HOME", tc.home)
+			got, err := StatePath("shep", "ranking.sqlite3")
+			if err != nil || got != filepath.Join(tc.want, "shep", "ranking.sqlite3") {
+				t.Fatalf("StatePath = %q, err=%v, want under %q", got, err, tc.want)
+			}
+		})
+	}
+}

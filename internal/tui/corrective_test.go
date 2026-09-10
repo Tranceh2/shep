@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -8,6 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
 	"github.com/tranceh2/shep/internal/config"
+	"github.com/tranceh2/shep/internal/ranking"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -92,6 +95,43 @@ func TestBuildRows_NonDefaultConfiguredOrder(t *testing.T) {
 	}
 	if m.rows[1].Candidate.Label != "backend" {
 		t.Errorf("row 1 = %q, want \"backend\"", m.rows[1].Candidate.Label)
+	}
+}
+
+// TestEmptyQueryKeepsSourceBlocksContiguousWithActiveRanking proves the
+// production wiring fix: with an ACTIVE ranking snapshot and an empty query,
+// applyFilter composes strict contiguous source blocks (via
+// ranking.SortBySourceOrder) so a zoxide candidate never interleaves between
+// Herdr candidates. This is the end-to-end regression for the observed bug
+// where zoxide directories appeared among Herdr workspaces.
+func TestEmptyQueryKeepsSourceBlocksContiguousWithActiveRanking(t *testing.T) {
+	store, err := ranking.OpenPath(filepath.Join(t.TempDir(), "ranking.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	snapshot := store.Snapshot(context.Background(), "")
+	if !snapshot.Active() {
+		t.Fatal("expected an active ranking snapshot")
+	}
+	// Interleaved input order across sources; empty query must regroup them.
+	cands := []source.Candidate{
+		herdrCandidate("alpha", "/srv/alpha", "w1"),
+		zoxideCandidate("mid", "/tmp/mid"),
+		herdrCandidate("beta", "/srv/beta", "w2"),
+	}
+	order := []string{config.SourceHerdr, config.SourceZoxide}
+	m := NewModelWithLayout(cands, nil, Layout{Theme: ThemeMocha, SourceOrder: order, RankingSnapshot: snapshot})
+	m, _ = update(t, m, sizeMsg(120, 36))
+	var got []string
+	for _, r := range m.rows {
+		if r.Kind == RowCandidate {
+			got = append(got, r.Candidate.Source)
+		}
+	}
+	want := []string{config.SourceHerdr, config.SourceHerdr, config.SourceZoxide}
+	if !equalStrings(got, want) {
+		t.Errorf("empty-query source blocks = %v, want %v (zoxide must not interleave Herdr)", got, want)
 	}
 }
 
