@@ -26,10 +26,10 @@ func TestFooterHints_MatchSharedKeyBindingValues(t *testing.T) {
 	got := m.footerHints()
 
 	want := strings.Join([]string{
-		formatHint(keyBindingEnter.footerChord, keyBindingEnter.footerLabel),
-		formatHint(keyBindingTab.footerChord, keyBindingTab.footerLabel),
-		formatHint(keyBindingEsc.footerChord, keyBindingEsc.footerLabel),
-		formatHint(keyBindingHelp.footerChord, keyBindingHelp.footerLabel),
+		renderKeycap(m.styles, keyBindingEnter.footerChord, keyBindingEnter.footerLabel),
+		renderKeycap(m.styles, keyBindingTab.footerChord, keyBindingTab.footerLabel),
+		renderKeycap(m.styles, keyBindingHelp.footerChord, keyBindingHelp.footerLabel),
+		renderKeycap(m.styles, keyBindingEsc.footerChord, keyBindingEsc.footerLabel),
 	}, footerSeparator)
 
 	if got != want {
@@ -49,8 +49,8 @@ func TestFooterHints_HerdrSegmentsMatchSharedKeyBindingValues(t *testing.T) {
 	m = m.WithCurrentPane(&pane)
 
 	got := m.footerHints()
-	wantCtrlT := formatHint(keyBindingCtrlT.footerChord, keyBindingCtrlT.footerLabel)
-	wantCtrlP := formatHint(keyBindingCtrlP.footerChord, keyBindingCtrlP.footerLabel)
+	wantCtrlT := renderKeycap(m.styles, keyBindingCtrlT.footerChord, keyBindingCtrlT.footerLabel)
+	wantCtrlP := renderKeycap(m.styles, keyBindingCtrlP.footerChord, keyBindingCtrlP.footerLabel)
 	if !strings.Contains(got, wantCtrlT) {
 		t.Errorf("footerHints() = %q, missing shared ctrl+t hint %q", got, wantCtrlT)
 	}
@@ -171,10 +171,10 @@ func TestFooterHints_TabRowShowsFocusTabLabel(t *testing.T) {
 	m.rows = []Row{{Kind: RowTab, Action: RowActionFocusTab, Candidate: source.Candidate{Label: "api", Meta: map[string]string{"tab_id": "t1"}}}}
 	m.cursor = 0
 	got := m.footerHints()
-	if !strings.Contains(got, formatHint(keyChordEnter, "Focus tab")) {
-		t.Errorf("footerHints() = %q, want it to contain the tab-row Enter hint %q", got, formatHint(keyChordEnter, "Focus tab"))
+	if !strings.Contains(got, "[enter] Focus tab") {
+		t.Errorf("footerHints() = %q, want it to contain the tab-row Enter keycap \"[enter] Focus tab\"", got)
 	}
-	if strings.Contains(got, formatHint(keyChordEnter, "open")) {
+	if strings.Contains(got, "[enter] open") {
 		t.Errorf("footerHints() = %q, must not show the generic \"open\" label for a tab row", got)
 	}
 }
@@ -187,8 +187,8 @@ func TestFooterHints_CandidateRowKeepsOpenLabel(t *testing.T) {
 	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
 	m, _ = update(t, m, sizeMsg(120, 36))
 	got := m.footerHints()
-	if !strings.Contains(got, formatHint(keyChordEnter, "open")) {
-		t.Errorf("footerHints() = %q, want the candidate-row \"open\" Enter hint", got)
+	if !strings.Contains(got, "[enter] open") {
+		t.Errorf("footerHints() = %q, want the candidate-row \"open\" Enter keycap", got)
 	}
 	if strings.Contains(strings.ToLower(got), "create") {
 		t.Errorf("footerHints() = %q, must not promise \"create\"", got)

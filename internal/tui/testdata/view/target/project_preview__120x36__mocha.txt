@@ -1,36 +1,37 @@
-Search: type to filter…                                                                                     1 candidates
-╭──────────────────────────────────────────────────────────────────────╮ ╭/home/dev/shep───────────────────────────────╮
-│ ❯ /home/dev/shep                                                     │ │ label  shep                                 │
-│                                                                      │ │ path   /home/dev/shep                       │
-│                                                                      │ │ source projects                             │
-│                                                                      │ │                                             │
-│                                                                      │ │ git: main (2 changes)                       │
-│                                                                      │ │                                             │
-│                                                                      │ │ Directory                                   │
-│                                                                      │ │ -rw-r--r-- 1 user staff 1024 Jul 10 README. │
-│                                                                      │ │ -rw-r--r-- 1 user staff  512 Jul 10 main.go │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-╰──────────────────────────────────────────────────────────────────────╯ ╰─────────────────────────────────────────────╯
-/home/dev/shep  enter open / tab focus preview / esc cancel / ? help
+SHEP  Switch workspace                                                                                      1 candidates
+[/] type to filter…
+╭────────────────────────────────────────────────────────────────╮ ╭ PREVIEW · shep ───────────────────────────────────╮
+│ ❯ /home/dev/shep                                      PROJECTS │ │ label  shep                                       │
+│                                                                │ │ path   /home/dev/shep                             │
+│                                                                │ │ source projects                                   │
+│                                                                │ │                                                   │
+│                                                                │ │ git                                               │
+│                                                                │ │ ───                                               │
+│                                                                │ │ main (2 changes)                                  │
+│                                                                │ │                                                   │
+│                                                                │ │ Directory                                         │
+│                                                                │ │ ─────────                                         │
+│                                                                │ │ -rw-r--r-- 1 user staff 1024 Jul 10 README.md     │
+│                                                                │ │ -rw-r--r-- 1 user staff  512 Jul 10 main.go       │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+╰────────────────────────────────────────────────────────────────╯ │                                                   │
+                                                                   ╰───────────────────────────────────────────────────╯
+/home/dev/shep  [enter] open  [tab] preview  [?] help  [esc] quit

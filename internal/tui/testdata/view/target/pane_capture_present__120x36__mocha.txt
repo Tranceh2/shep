@@ -1,36 +1,37 @@
-Search: type to filter…                                                                                     1 candidates
-╭──────────────────────────────────────────────────────────────────────╮ ╭/srv/api─────────────────────────────────────╮
-│   backend · /srv/backend                                             │ │ path   /srv/api                             │
-│       └─ ◫ api · /srv/api                                            │ │ kind   herdr pane                           │
-│ ❯       └─ /srv/api                                                  │ │ tab    api                                  │
-│                                                                      │ │                                             │
-│                                                                      │ │ Captured pane                               │
-│                                                                      │ │ ┌────────┐                                  │
-│                                                                      │ │ │ pane 1 │                                  │
-│                                                                      │ │ └────────┘                                  │
-│                                                                      │ │ [31mred error line[0m                              │
-│                                                                      │ │ this is a very long line that is far wider  │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-│                                                                      │ │                                             │
-╰──────────────────────────────────────────────────────────────────────╯ ╰─────────────────────────────────────────────╯
-/srv/api  enter Focus containing tab / tab focus preview / esc cancel / ? help
+SHEP  Switch workspace                                                                                      1 candidates
+[/] type to filter…
+╭────────────────────────────────────────────────────────────────╮ ╭ PREVIEW · /srv/api ───────────────────────────────╮
+│   backend · /srv/backend                                 HERDR │ │ path   /srv/api                                   │
+│       └─ ◫ api · /srv/api                                  TAB │ │ kind   herdr pane                                 │
+│ ❯       └─ /srv/api                                       PANE │ │ tab    api                                        │
+│                                                                │ │                                                   │
+│                                                                │ │ Captured pane                                     │
+│                                                                │ │ ─────────────                                     │
+│                                                                │ │ ┌────────┐                                        │
+│                                                                │ │ │ pane 1 │                                        │
+│                                                                │ │ └────────┘                                        │
+│                                                                │ │ [31mred error line[0m                                    │
+│                                                                │ │ this is a very long line that is far wider than t │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+│                                                                │ │                                                   │
+╰────────────────────────────────────────────────────────────────╯ │                                                   │
+                                                                   ╰───────────────────────────────────────────────────╯
+/srv/api  [enter] Focus containing tab  [tab] preview  [?] help  [esc] quit

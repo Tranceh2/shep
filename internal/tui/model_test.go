@@ -134,7 +134,7 @@ func TestTUI_EmptyState_NoCandidatesAtAll(t *testing.T) {
 	m := tui.NewModel(nil, nil)
 	m, _ = sendSize(t, m, 100, 30)
 	view := m.View()
-	if !strings.Contains(view, "no candidates available") {
+	if !strings.Contains(view, "No candidates available") {
 		t.Errorf("expected the empty-candidates state message, got view:\n%s", view)
 	}
 }
@@ -151,7 +151,7 @@ func TestTUI_NoResultState_QueryMatchesNothing(t *testing.T) {
 		_ = cmd
 	}
 	view := m.View()
-	if !strings.Contains(view, "no matches for") {
+	if !strings.Contains(view, "No matches for") {
 		t.Errorf("expected the no-matches state message, got view:\n%s", view)
 	}
 }

@@ -1,10 +1,10 @@
-Search: type to filter…                                                                 7 candidates
-╭──────────────────────────────────────────────────────────╮ ╭/srv/backend─────────────────────────╮
-│ ❯ backend · /srv/backend                                 │ │ label  backend                      │
-│   frontend · /srv/frontend                               │ │ path   /srv/backend                 │
-│   notes                                                  │ │                                     │
-│   /tmp                                                   │ │                                     │
-│   /home/dev/Downloads                                    │ │                                     │
-│                                                          │ │                                     │
-╰──────────────────────────────────────────────────────────╯ ╰─────────────────────────────────────╯
-/srv/backend  enter open / tab focus preview / esc cancel / ? help
+SHEP  Switch workspace                                                                  7 candidates
+[/] type to filter…
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ❯ backend · /srv/backend                                                                   HERDR │
+│   frontend · /srv/frontend                                                                 HERDR │
+│   notes                                                                                   CONFIG │
+│   /tmp                                                                                    ZOXIDE │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+/srv/backend  [enter] open  [tab] preview  [?] help  [esc] quit

@@ -64,7 +64,7 @@ var (
 	}
 	keyBindingTab = keyBinding{
 		chord: keyChordTab + " / " + keyChordShiftTab, help: "switch focus between list and preview",
-		footerChord: keyChordTab, footerLabel: "focus preview",
+		footerChord: keyChordTab, footerLabel: "preview",
 	}
 	keyBindingCtrlT = keyBinding{
 		chord: keyChordCtrlT, help: "open in a new tab of the current workspace (list or preview focus)",
@@ -76,7 +76,7 @@ var (
 	}
 	keyBindingPin = keyBinding{
 		chord: keyChordPin, help: "pin/unpin the highlighted top-level candidate",
-		footerChord: keyChordPin, footerLabel: "pin/unpin",
+		footerChord: keyChordPin, footerLabel: "pin",
 	}
 	keyBindingHelp = keyBinding{
 		chord: keyChordQuestion + ", " + keyChordEsc, help: "close help and return to what you were doing",
@@ -84,7 +84,7 @@ var (
 	}
 	keyBindingEsc = keyBinding{
 		chord: keyChordEsc + ", " + keyChordCtrlC + ", " + keyChordCtrlG, help: "cancel the picker",
-		footerChord: keyChordEsc, footerLabel: "cancel",
+		footerChord: keyChordEsc, footerLabel: "quit",
 	}
 )
 

@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/preview"
@@ -72,10 +73,10 @@ func (m Model) herdrWorkspacePreview(cand source.Candidate) string {
 		return identity
 	}
 	if m.previewLoading {
-		return identity + "\n\n" + m.spinner.View() + " loading…"
+		return identity + "\n\n" + m.spinner.View() + " loading preview…"
 	}
 	if m.previewErr != "" {
-		return identity + "\n\n" + m.previewErr
+		return identity + "\n\n" + m.previewErrorIndicator()
 	}
 	if len(m.previewSections) == 0 {
 		return identity
@@ -95,12 +96,12 @@ func (m Model) herdrWorkspacePreview(cand source.Candidate) string {
 
 	// Workspace summary (tabs/panes) with styled heading.
 	if wb := findSection(sections, config.PreviewWorkspace); wb != nil {
-		parts = append(parts, m.styles.previewHeadingStyle.Render("workspace")+"\n"+sectionBodyAfterHeading(wb.Text))
+		parts = append(parts, m.previewHeading("workspace")+"\n"+sectionBodyAfterHeading(wb.Text))
 	}
 
 	// Git summary (if present).
 	if gb := findSection(sections, config.PreviewGit); gb != nil {
-		parts = append(parts, m.styles.previewHeadingStyle.Render("git: ")+strings.TrimPrefix(gb.Text, "git: "))
+		parts = append(parts, m.previewHeading("git")+"\n"+strings.TrimPrefix(gb.Text, "git: "))
 	}
 
 	// Unknown/custom blocks preserved in their original relative order.
@@ -115,7 +116,7 @@ func (m Model) herdrWorkspacePreview(cand source.Candidate) string {
 	if pb := findSection(sections, config.PreviewActivePane); pb != nil {
 		body := sectionBodyAfterHeading(pb.Text)
 		if strings.TrimSpace(body) != "" {
-			parts = append(parts, m.styles.previewHeadingStyle.Render("Active pane")+"\n"+body)
+			parts = append(parts, m.previewHeading("Active pane")+"\n"+body)
 		}
 	}
 
@@ -132,10 +133,10 @@ func (m Model) standardCandidatePreview(cand source.Candidate) string {
 		return identity
 	}
 	if m.previewLoading {
-		return identity + "\n\n" + m.spinner.View() + " loading…"
+		return identity + "\n\n" + m.spinner.View() + " loading preview…"
 	}
 	if m.previewErr != "" {
-		return identity + "\n\n" + m.previewErr
+		return identity + "\n\n" + m.previewErrorIndicator()
 	}
 	if len(m.previewSections) == 0 {
 		return identity
@@ -151,7 +152,7 @@ func (m Model) standardCandidatePreview(cand source.Candidate) string {
 
 	// Git summary next.
 	if gb := findSection(sections, config.PreviewGit); gb != nil {
-		parts = append(parts, m.styles.previewHeadingStyle.Render("git: ")+strings.TrimPrefix(gb.Text, "git: "))
+		parts = append(parts, m.previewHeading("git")+"\n"+strings.TrimPrefix(gb.Text, "git: "))
 	}
 
 	// Long output (dir/custom) under a "Directory" heading last.
@@ -163,7 +164,7 @@ func (m Model) standardCandidatePreview(cand source.Candidate) string {
 		longOutput = append(longOutput, s.Text)
 	}
 	if len(longOutput) > 0 {
-		parts = append(parts, m.styles.previewHeadingStyle.Render("Directory")+"\n"+strings.Join(longOutput, "\n"))
+		parts = append(parts, m.previewHeading("Directory")+"\n"+strings.Join(longOutput, "\n"))
 	}
 
 	return strings.Join(parts, "\n\n")
@@ -190,7 +191,7 @@ func (m Model) tabPreviewBody(cand source.Candidate) string {
 	if capture == "" {
 		return identity
 	}
-	return identity + "\n\n" + m.styles.previewHeadingStyle.Render("Active pane") + "\n" + capture
+	return identity + "\n\n" + m.previewHeading("Active pane") + "\n" + capture
 }
 
 // panePreviewBody renders the RowPane preview: the optional real pane label,
@@ -216,7 +217,7 @@ func (m Model) panePreviewBody(cand source.Candidate) string {
 	if capture == "" {
 		return identity
 	}
-	return identity + "\n\n" + m.styles.previewHeadingStyle.Render("Captured pane") + "\n" + capture
+	return identity + "\n\n" + m.previewHeading("Captured pane") + "\n" + capture
 }
 
 // panePreviewCaptureBody returns the pane buffer capture's current display
@@ -322,3 +323,43 @@ func extractAgentStatus(body string) string {
 // statusLinePrefix is the literal prefix renderAgentStatusSection
 // (internal/preview/renderer.go) writes before the raw status word.
 const statusLinePrefix = "  status: "
+
+// previewHeadingUnicode and previewHeadingASCII are the preview section
+// headings' thin rule line glyph — a dim underline rule (never a heavy card
+// border) with an ASCII fallback so the rule survives [tui].icons = "ascii"
+// and the plain theme.
+const (
+	previewRuleUnicode = "─"
+	previewRuleASCII   = "-"
+)
+
+// previewRuleChar resolves the preview section rule's glyph: "-" for the
+// ASCII icon tier and the no-color theme, "─" otherwise.
+func (m Model) previewRuleChar() string {
+	if m.icons().Name == IconsASCII || m.theme.NoColor {
+		return previewRuleASCII
+	}
+	return previewRuleUnicode
+}
+
+// previewHeading renders a preview section heading: the accent heading text
+// with a dim, thin rule line directly beneath it (heading-width). Section
+// ordering/sanitization are unchanged — this is only the heading/rule
+// composition helper.
+func (m Model) previewHeading(text string) string {
+	rule := strings.Repeat(m.previewRuleChar(), func() int {
+		w := lipgloss.Width(text)
+		if w < 1 {
+			return 1
+		}
+		return w
+	}())
+	return m.styles.previewHeadingStyle.Render(text) + "\n" + m.styles.previewRuleStyle.Render(rule)
+}
+
+// previewErrorIndicator renders the preview error state: a truthful "!" error
+// marker (a shape-only signal that survives the plain theme) followed by the
+// error text itself, styled with previewErrStyle.
+func (m Model) previewErrorIndicator() string {
+	return m.styles.previewErrStyle.Render("!") + " " + m.styles.previewErrStyle.Render(m.previewErr)
+}

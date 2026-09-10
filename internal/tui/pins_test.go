@@ -101,7 +101,7 @@ func TestPinTopLevelRowUpdatesStateMarkerAndFooter(t *testing.T) {
 	if !strings.Contains(primary, "•") {
 		t.Fatal("pinned row did not render the pin marker")
 	}
-	if !strings.Contains(m.footerHints(), "alt+p unpin") {
+	if !strings.Contains(m.footerHints(), "[alt+p] unpin") {
 		t.Fatalf("footer = %q, want contextual unpin hint", m.footerHints())
 	}
 }
@@ -122,7 +122,7 @@ func TestPinChildRowIsTruthfulNoOp(t *testing.T) {
 	if cmd != nil || called {
 		t.Fatal("child pin unexpectedly invoked persistence")
 	}
-	if !strings.Contains(m.footerHints(), "pin unavailable") || !strings.Contains(m.pinStatus, "child rows") {
+	if !strings.Contains(m.pinStatus, "child rows") || !strings.Contains(m.footerHints(), "[alt+p] unavailable") {
 		t.Fatalf("child feedback was not truthful: footer=%q status=%q", m.footerHints(), m.pinStatus)
 	}
 }

@@ -25,11 +25,14 @@ import (
 // status word) that shares the model's single spinner tick loop, and (5) the
 // full path restored in the footer.
 
-// === 1. Header has no brand text ===
+// === 1. Header carries the redesign's orientation line, never lowercase brand text ===
 
-// TestRenderHeader_NoBrandText proves the header never renders the "shep"
-// brand mark — it is a single "Search: <query>" line plus the right-aligned
-// count, nothing else.
+// TestRenderHeader_NoBrandText proves the header never renders the lowercase
+// "shep" brand mark — the redesign reinstates a small uppercase "SHEP
+//
+//	Switch workspace" orientation line (a text label, not a logo) plus the
+//
+// "[/]" search line and the right-aligned count.
 func TestRenderHeader_NoBrandText(t *testing.T) {
 	t.Parallel()
 	m := NewModelWithLayout(
@@ -39,19 +42,22 @@ func TestRenderHeader_NoBrandText(t *testing.T) {
 	m, _ = update(t, m, sizeMsg(120, 36))
 	plain := stripNonSGRANSI(m.renderHeader(120))
 	if strings.Contains(plain, "shep") {
-		t.Errorf("header must not contain the removed brand mark \"shep\": %q", plain)
+		t.Errorf("header must not contain the lowercase brand mark \"shep\": %q", plain)
 	}
-	if !strings.Contains(plain, "Search:") {
-		t.Errorf("header missing \"Search:\" role: %q", plain)
+	if !strings.Contains(plain, "SHEP") || !strings.Contains(plain, "Switch workspace") {
+		t.Errorf("header missing the wide orientation line \"SHEP  Switch workspace\": %q", plain)
+	}
+	if !strings.Contains(plain, "[/]") {
+		t.Errorf("header missing the \"[/]\" search token: %q", plain)
 	}
 	if !strings.Contains(plain, "2 candidates") {
 		t.Errorf("header missing count \"2 candidates\": %q", plain)
 	}
 }
 
-// TestView_HeaderLineHasNoBrand proves the full View() output's header line
-// (everything before the first pane border) never contains the brand mark
-// either — an end-to-end check, not just the isolated renderHeader unit.
+// TestView_HeaderLineHasNoBrand proves the full View() output's header lines
+// (everything before the first pane border) never contain the lowercase brand
+// mark either — an end-to-end check, not just the isolated renderHeader unit.
 func TestView_HeaderLineHasNoBrand(t *testing.T) {
 	t.Parallel()
 	m := NewModelWithLayout([]source.Candidate{zoxideCandidate("alpha", "/a")}, nil, Layout{Theme: ThemeMocha})
@@ -63,10 +69,10 @@ func TestView_HeaderLineHasNoBrand(t *testing.T) {
 	}
 	header := view[:firstBorder]
 	if strings.Contains(header, "shep") {
-		t.Errorf("header line must not contain \"shep\": %q", header)
+		t.Errorf("header lines must not contain \"shep\": %q", header)
 	}
-	if !strings.Contains(header, "Search:") {
-		t.Errorf("header line missing \"Search:\": %q", header)
+	if !strings.Contains(header, "SHEP") || !strings.Contains(header, "Switch workspace") {
+		t.Errorf("header lines missing the wide orientation line: %q", header)
 	}
 }
 
@@ -330,11 +336,12 @@ func TestRowDisplayText_ZoxideAndProjectsShowFullPathNoSecondary(t *testing.T) {
 	}
 }
 
-// === 7. Footer full-path restoration ===
+// === 7. Footer keycaps + optional full-path ===
 
-// TestRenderFooter_ShowsFullPathAndPreservesHints proves the footer shows
-// the full path of the currently highlighted row alongside the (unchanged)
-// keybinding hints, at a width comfortably large enough to fit both.
+// TestRenderFooter_ShowsFullPathAndPreservesHints proves the footer shows the
+// full path of the currently highlighted row only alongside ample keycap room
+// (the redesign: the keycap footer is the default; the preview's identity
+// section owns the path), with the keycaps still present.
 func TestRenderFooter_ShowsFullPathAndPreservesHints(t *testing.T) {
 	t.Parallel()
 	m := NewModelWithLayout([]source.Candidate{zoxideCandidate("alpha", "/home/dev/alpha")}, nil, Layout{Theme: ThemeMocha})
@@ -343,39 +350,32 @@ func TestRenderFooter_ShowsFullPathAndPreservesHints(t *testing.T) {
 	if !strings.Contains(footer, "/home/dev/alpha") {
 		t.Errorf("footer missing full path: %q", footer)
 	}
-	if !strings.Contains(footer, "enter open") || !strings.Contains(footer, "esc cancel") {
-		t.Errorf("footer missing keybinding hints: %q", footer)
+	if !strings.Contains(footer, "[enter] open") || !strings.Contains(footer, "[esc] quit") {
+		t.Errorf("footer missing keycaps: %q", footer)
 	}
 }
 
-// TestRenderFooter_TruncatesPathFromLeftBeforeDroppingHints proves that at a
-// narrow width, the path segment truncates from the LEFT (keeping the
-// identifying tail) before the hints ever lose a single character, and
-// degrades to hints-only once there is no meaningful room left for a path at
-// all.
-func TestRenderFooter_TruncatesPathFromLeftBeforeDroppingHints(t *testing.T) {
+// TestRenderFooter_DropsPathNarrowBeforeHints proves that at a narrow width
+// the footer drops the optional path segment entirely first (the keycaps are
+// never truncated for a path's sake) and keeps rendering the keycaps alone.
+func TestRenderFooter_DropsPathNarrowBeforeHints(t *testing.T) {
 	t.Parallel()
 	longPath := "/home/dev/a/very/deeply/nested/project/directory/name"
 	m := NewModelWithLayout([]source.Candidate{zoxideCandidate("name", longPath)}, nil, Layout{Theme: ThemeMocha})
 	m, _ = update(t, m, sizeMsg(60, 20))
 	footer := stripNonSGRANSI(m.renderFooter())
-	if !strings.Contains(footer, "…") {
-		t.Errorf("expected the long path to truncate with a leading ellipsis: %q", footer)
+	if strings.Contains(footer, "/home/dev") {
+		t.Errorf("narrow footer must drop the optional path segment: %q", footer)
 	}
-	if !strings.Contains(footer, "enter open") {
-		t.Errorf("hints must survive even when the path truncates: %q", footer)
-	}
-	// The tail (most identifying part) of the path must survive, not its root.
-	if !strings.Contains(footer, "name") {
-		t.Errorf("expected the path's identifying tail to survive left-truncation: %q", footer)
+	if !strings.Contains(footer, "[enter]") || !strings.Contains(footer, "[esc] quit") {
+		t.Errorf("narrow footer must keep the essential keycaps: %q", footer)
 	}
 
-	// At an extremely narrow width, the footer must degrade to hints-only
-	// (no unreadable one-character path sliver) while still fitting.
+	// At an extremely narrow width, the footer still fits its keycaps.
 	m2, _ := update(t, m, sizeMsg(15, 20))
 	narrowFooter := stripNonSGRANSI(m2.renderFooter())
-	if strings.Contains(narrowFooter, "…") && !strings.Contains(narrowFooter, "enter") {
-		t.Errorf("expected a hints-only degrade at extremely narrow width: %q", narrowFooter)
+	if strings.Contains(narrowFooter, "…") && !strings.Contains(narrowFooter, "[enter]") {
+		t.Errorf("expected a keycaps-only degrade at extremely narrow width: %q", narrowFooter)
 	}
 }
 

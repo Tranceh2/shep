@@ -154,8 +154,10 @@ func TestHerdrWorkspacePreview_CaptureWithBlankLinesPreserved(t *testing.T) {
 	if activePaneIdx < 0 {
 		t.Fatalf("missing Active pane heading: %q", body)
 	}
-	// The capture content starts on the line after the heading.
-	captureStart := activePaneIdx + 1
+	// The capture content starts two lines after the heading: the redesign
+	// puts a thin rule line directly beneath the heading (a shape-only
+	// section marker that survives the plain theme).
+	captureStart := activePaneIdx + 2
 	// Find "line1" — it must be the first capture line.
 	if captureStart >= len(lines) || !strings.Contains(lines[captureStart], "line1") {
 		t.Errorf("capture should start with line1 right after heading: %q", body)
@@ -707,7 +709,7 @@ func TestProjectPreview_IdentityGitDirectory(t *testing.T) {
 	if !strings.Contains(body, "shep") {
 		t.Errorf("project preview missing identity label: %q", body)
 	}
-	gitIdx := indexOfLineContaining(lines, "git:")
+	gitIdx := indexOfLineContaining(lines, "git")
 	if gitIdx < 0 {
 		t.Errorf("project preview missing git summary: %q", body)
 	}

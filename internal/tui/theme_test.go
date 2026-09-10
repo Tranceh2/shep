@@ -385,3 +385,151 @@ func TestStatusStyle_Colors(t *testing.T) {
 		}
 	}
 }
+
+// --- Visual redesign role tests (every rendered surface's role binding) ---
+
+// TestStyleRoles_RedesignRoleBindings proves the redesigned roles bind
+// exactly per the approved direction, in every color flavor:
+//
+//	queryStyle        = accent + bold  (query text, active focus)
+//	keycapStyle       = text + bold    (footer keycap chord token)
+//	keycapLabelStyle  = secondary      (footer keycap action labels)
+//	rowStyle          = text           (labels/main content — muted is never
+//	                                   the primary-label role)
+//	labelStyle        = muted          (paths/metadata inside previews)
+//	previewRuleStyle  = rule           (the thin heading rule line)
+//	pinStyle          = warn           (the pinned marker)
+//
+// Plain keeps the same structure with structural attributes only.
+func TestStyleRoles_RedesignRoleBindings(t *testing.T) {
+	t.Parallel()
+	for _, th := range allColorThemes() {
+		s := newPalette(th)
+		if fg := s.queryStyle.GetForeground(); fg != lipgloss.Color(th.Accent) {
+			t.Errorf("%s: queryStyle fg = %#v, want accent %q", th.Name, fg, th.Accent)
+		}
+		if fg := s.keycapStyle.GetForeground(); fg != lipgloss.Color(th.Text) {
+			t.Errorf("%s: keycapStyle fg = %#v, want text %q", th.Name, fg, th.Text)
+		}
+		if !s.keycapStyle.GetBold() {
+			t.Errorf("%s: keycapStyle not bold (keycap token)", th.Name)
+		}
+		if fg := s.keycapLabelStyle.GetForeground(); fg != lipgloss.Color(th.Secondary) {
+			t.Errorf("%s: keycapLabelStyle fg = %#v, want secondary %q", th.Name, fg, th.Secondary)
+		}
+		if fg := s.rowStyle.GetForeground(); fg != lipgloss.Color(th.Text) {
+			t.Errorf("%s: rowStyle fg = %#v, want text (muted is never the primary-label role)", th.Name, fg)
+		}
+		if fg := s.labelStyle.GetForeground(); fg != lipgloss.Color(th.Muted) {
+			t.Errorf("%s: labelStyle fg = %#v, want muted (paths/metadata)", th.Name, fg)
+		}
+		if fg := s.previewRuleStyle.GetForeground(); fg != lipgloss.Color(th.Rule) {
+			t.Errorf("%s: previewRuleStyle fg = %#v, want rule %q", th.Name, fg, th.Rule)
+		}
+		if fg := s.pinStyle.GetForeground(); fg != lipgloss.Color(th.Warn) {
+			t.Errorf("%s: pinStyle fg = %#v, want warn %q", th.Name, fg, th.Warn)
+		}
+	}
+	// Plain: same structure, no color attribute anywhere.
+	s := newPalette(themes[ThemePlain])
+	if !s.keycapStyle.GetBold() {
+		t.Error("plain keycapStyle not bold, want a bold keycap token")
+	}
+	if fg := s.keycapStyle.GetForeground(); fg != (lipgloss.NoColor{}) {
+		t.Errorf("plain keycapStyle fg = %#v, want no color", fg)
+	}
+	if !s.secondaryStyle.GetFaint() {
+		t.Error("plain secondaryStyle not faint (structural secondary fallback)")
+	}
+	if s.keycapLabelStyle.GetBold() {
+		t.Error("plain keycapLabelStyle must stay plain (contrasts with the bold token)")
+	}
+	if s.pinStyle.GetBold() || s.pinStyle.GetItalic() {
+		t.Error("plain pinStyle must stay visually plain")
+	}
+	if fg := s.previewRuleStyle.GetForeground(); fg != (lipgloss.NoColor{}) {
+		t.Errorf("plain previewRuleStyle fg = %#v, want no color (faint is the structural rule)", fg)
+	}
+}
+
+// TestStyleRoles_SourceBadgeRoles proves every color flavor binds one
+// dedicated source-badge color role per source (herdr/projects/zoxide/
+// workspaces/sessions), all five roles are mutually distinct, integration
+// badges lean on the accent, and the plain theme keeps bold text with no
+// color escape at all.
+func TestStyleRoles_SourceBadgeRoles(t *testing.T) {
+	t.Parallel()
+	for _, th := range allColorThemes() {
+		s := newPalette(th)
+		if fg := s.sourceHerdrStyle.GetForeground(); fg != lipgloss.Color(th.SourceHerdr) {
+			t.Errorf("%s: sourceHerdrStyle fg = %#v, want %q", th.Name, fg, th.SourceHerdr)
+		}
+		if fg := s.sourceProjectsStyle.GetForeground(); fg != lipgloss.Color(th.SourceProjects) {
+			t.Errorf("%s: sourceProjectsStyle fg = %#v, want %q", th.Name, fg, th.SourceProjects)
+		}
+		if fg := s.sourceZoxideStyle.GetForeground(); fg != lipgloss.Color(th.SourceZoxide) {
+			t.Errorf("%s: sourceZoxideStyle fg = %#v, want %q", th.Name, fg, th.SourceZoxide)
+		}
+		if fg := s.sourceWorkspacesStyle.GetForeground(); fg != lipgloss.Color(th.SourceWorkspaces) {
+			t.Errorf("%s: sourceWorkspacesStyle fg = %#v, want %q", th.Name, fg, th.SourceWorkspaces)
+		}
+		if fg := s.sourceSessionsStyle.GetForeground(); fg != lipgloss.Color(th.SourceSessions) {
+			t.Errorf("%s: sourceSessionsStyle fg = %#v, want %q", th.Name, fg, th.SourceSessions)
+		}
+		if fg := s.sourceBadgeStyle.GetForeground(); fg != lipgloss.Color(th.Accent) {
+			t.Errorf("%s: sourceBadgeStyle (integrations) fg = %#v, want accent %q", th.Name, fg, th.Accent)
+		}
+		if s.sourceHerdrStyle.GetForeground() == s.sourceZoxideStyle.GetForeground() {
+			t.Errorf("%s: herdr and zoxide badge colors must differ", th.Name)
+		}
+	}
+	// Plain: the badges keep their structural emphasis (bold), zero color.
+	plain := newPalette(themes[ThemePlain])
+	for _, st := range []lipgloss.Style{
+		plain.sourceHerdrStyle, plain.sourceProjectsStyle, plain.sourceZoxideStyle,
+		plain.sourceWorkspacesStyle, plain.sourceSessionsStyle, plain.sourceBadgeStyle,
+	} {
+		if !st.GetBold() {
+			t.Error("plain source badge must be bold (structural emphasis)")
+		}
+		if fg := st.GetForeground(); fg != (lipgloss.NoColor{}) {
+			t.Errorf("plain source badge fg = %#v, want no color", fg)
+		}
+	}
+}
+
+// TestStyleRoles_FlavorMirrorsSpecHexes proves the mocha flavor carries the
+// approved design's exact hex values (the binding palette anchor) and that
+// secondary differs from both text and muted in every flavor.
+func TestStyleRoles_FlavorMirrorsSpecHexes(t *testing.T) {
+	t.Parallel()
+	mocha := themes[ThemeMocha]
+	if mocha.Accent != "#cba6f7" || mocha.Text != "#cdd6f4" || mocha.Secondary != "#a6adc8" ||
+		mocha.Muted != "#6c7086" || mocha.SelectedSurface != "#313244" ||
+		mocha.UnfocusedSurface != "#1e1e2e" || mocha.Rule != "#585b70" ||
+		mocha.SourceHerdr != "#89b4fa" || mocha.SourceProjects != "#a6e3a1" ||
+		mocha.SourceZoxide != "#94e2d5" || mocha.SourceWorkspaces != "#f9e2af" ||
+		mocha.SourceSessions != "#fab387" {
+		t.Errorf("mocha theme hexes drifted from the approved design: %+v", mocha)
+	}
+	for _, th := range allColorThemes() {
+		if th.Secondary == th.Text || th.Secondary == th.Muted {
+			t.Errorf("%s: secondary %q must differ from both text and muted", th.Name, th.Secondary)
+		}
+	}
+}
+
+// TestStyleRoles_PlainNeverColorsPrimaryLabels cross-checks the plain theme's
+// rowStyle (primary labels) and queryStyle carry no color — muted/faint may
+// dim UI but never recolor the primary content.
+func TestStyleRoles_PlainNeverColorsPrimaryLabels(t *testing.T) {
+	t.Parallel()
+	s := newPalette(themes[ThemePlain])
+	noColor := lipgloss.NoColor{}
+	if fg := s.rowStyle.GetForeground(); fg != noColor {
+		t.Errorf("plain rowStyle fg = %#v, want no color (primary labels stay uncolored)", fg)
+	}
+	if fg := s.queryStyle.GetForeground(); fg != noColor {
+		t.Errorf("plain queryStyle fg = %#v, want no color", fg)
+	}
+}

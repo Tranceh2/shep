@@ -7,4 +7,4 @@
 │ Session                                                                                          │
 │   esc, ctrl+c, ctrl+g       cancel the picker                                                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-/srv/backend  enter open / tab focus preview / esc cancel / ? help
+/srv/backend  [enter] open  [tab] preview  [?] help  [esc] quit

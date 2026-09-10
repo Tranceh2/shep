@@ -206,3 +206,55 @@ func TestSurfaceDimensions_NeverNegativeAcrossBoundaries(t *testing.T) {
 		}
 	}
 }
+
+// TestNextResponsiveMode_PreviewNamedWindow proves the redesign's named
+// preview window: the preview pane requires width >= minPreviewWidth (88)
+// AND height >= minPreviewHeight (12) — specifically 100x10 is forced
+// list-only (the old 100x10 wide-render finding), while 100x12 and all wide
+// fixtures keep wide, and 64-width terminals stay list-only. Hysteresis
+// behavior is unchanged (it only surrounds wideBreakpoint on the width axis).
+func TestNextResponsiveMode_PreviewNamedWindow(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		width, height int
+		want          string
+	}{
+		// The named boundary matrix (turned UP to the named thresholds).
+		{"100x10 is short -> list-only", 100, 10, modeListOnly},
+		{"100x12 hits minPreviewHeight -> wide", 100, 12, modeWide},
+		{"88x30 hits minPreviewWidth -> wide", 88, 30, modeWide},
+		{"64x24 below minPreviewWidth -> list-only", 64, 24, modeListOnly},
+		{"120x36 -> wide", 120, 36, modeWide},
+		{"88x11 -> list-only (height one under the floor)", 88, 11, modeListOnly},
+		{"87x30 -> list-only (width one under the floor)", 87, 30, modeListOnly},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: ThemeMocha})
+			m, _ = update(t, m, sizeMsg(tt.width, tt.height))
+			if m.mode != tt.want {
+				t.Errorf("size %dx%d: mode = %q, want %q", tt.width, tt.height, m.mode, tt.want)
+			}
+		})
+	}
+}
+
+// TestNextResponsiveMode_ShortListOnlyKeepsHysteresis proves the height floor
+// composes with the width hysteresis: a wide terminal resized SHORT drops to
+// list-only immediately on both the auto and forced-landscape paths, and a
+// short terminal regains wide exactly at minPreviewHeight.
+func TestNextResponsiveMode_ShortListOnlyKeepsHysteresis(t *testing.T) {
+	t.Parallel()
+	// From modeWide to a too-short height: immediate drop, no hysteresis on
+	// the height axis.
+	m := Model{width: 120, height: 8}
+	if got := nextResponsiveMode(m, modeWide); got != modeListOnly {
+		t.Errorf("120x11 from wide = %q, want list-only", got)
+	}
+	// Back at exactly minPreviewHeight: wide again.
+	m.height = minPreviewHeight
+	if got := nextResponsiveMode(m, modeListOnly); got != modeWide {
+		t.Errorf("120x12 from list-only = %q, want wide", got)
+	}
+}

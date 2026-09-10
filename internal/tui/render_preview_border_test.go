@@ -87,16 +87,21 @@ func TestView_PreviewTopBorderUsesCurrentCandidatePathOrLabel(t *testing.T) {
 		name       string
 		candidates []source.Candidate
 		want       string
+		notWant    string
 	}{
 		{
-			name:       "path",
+			// The redesign: the preview title is the LABEL (" PREVIEW · api
+			// " to the left inside the border), not the path — the path reads
+			// inside the body's identity section.
+			name:       "label title",
 			candidates: []source.Candidate{herdrCandidate("api", "/srv/api", "w1")},
-			want:       "/srv/api",
+			want:       "api",
+			notWant:    "/srv/api",
 		},
 		{
-			name:       "label fallback",
-			candidates: []source.Candidate{herdrCandidate("scratch-buffer", "", "w1")},
-			want:       "scratch-buffer",
+			name:       "no-label falls back to path",
+			candidates: []source.Candidate{herdrCandidate("", "/srv/api", "w1")},
+			want:       "/srv/api",
 		},
 		{
 			name: "no selection stays empty",
@@ -115,6 +120,9 @@ func TestView_PreviewTopBorderUsesCurrentCandidatePathOrLabel(t *testing.T) {
 			top := lines[1]
 			if tt.want != "" && !strings.Contains(top, tt.want) {
 				t.Errorf("preview top edge = %q, want current selection %q", top, tt.want)
+			}
+			if tt.notWant != "" && strings.Contains(top, tt.notWant) {
+				t.Errorf("preview top edge = %q, must not carry %q", top, tt.notWant)
 			}
 			if tt.want == "" && strings.Contains(top, "·") {
 				t.Errorf("preview top edge = %q, must not show an empty-selection placeholder", top)

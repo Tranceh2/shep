@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/x/ansi"
+	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -491,5 +492,101 @@ func TestRenderRowLine_NonCursorKeepsBlankGutterOutsideFocusList(t *testing.T) {
 		if got != want {
 			t.Errorf("focus=%v: non-cursor row = %q, want unchanged %q (no reserved gutter outside FocusList)", focus, got, want)
 		}
+	}
+}
+
+// --- Visual redesign badge-slot additions ---
+
+// newRenderTestModelWidth clones the render-test model with a width override
+// so badge-slot geometry tests can drive the reservation math directly.
+func newRenderTestModelWidth(themeName string, width int) Model {
+	m := newRenderTestModel(themeName, FocusList)
+	m.width = width
+	return m
+}
+
+// TestRenderRowLine_BadgeSurvivesTruncation proves the right-side badge slot
+// is fixed: at widths far too narrow for the full label/path, truncation eats
+// the label/path only — the badge text still lands on every line, never the
+// selection marker.
+func TestRenderRowLine_BadgeSurvivesTruncation(t *testing.T) {
+	t.Parallel()
+	m := newRenderTestModelWidth(ThemeMocha, 120)
+	longPath := "/workspace/services/catalog/filename.go"
+	row := Row{Kind: RowCandidate, Candidate: source.Candidate{Path: longPath, Source: config.SourceHerdr}}
+
+	for _, width := range []int{40, 36, 32} {
+		got := stripNonSGRANSI(m.renderRowLine(row, false, width))
+		if !strings.HasSuffix(strings.TrimRight(got, " "), "HERDR") {
+			t.Errorf("width %d: row = %q, want the HERDR badge kept at the right edge", width, got)
+		}
+		if !strings.Contains(got, "…") {
+			t.Errorf("width %d: row = %q, want the label/path truncated first", width, got)
+		}
+	}
+}
+
+// TestRenderRowLine_BadgeSlotFixed proves the badge sits in a reserved
+// right-side slot: the plain badge text ends the row at the same column for
+// both a short and a long label row.
+func TestRenderRowLine_BadgeSlotFixed(t *testing.T) {
+	t.Parallel()
+	m := newRenderTestModelWidth(ThemeMocha, 120)
+	short := Row{Kind: RowCandidate, Candidate: source.Candidate{Path: "/a", Source: config.SourceHerdr}}
+	long := Row{Kind: RowCandidate, Candidate: source.Candidate{Path: "/a/very/deeply/nested/dir/path/segment", Source: config.SourceHerdr}}
+
+	for _, row := range []Row{short, long} {
+		got := m.renderRowLine(row, false, 120)
+		plain := stripNonSGRANSI(got)
+		badgeStart := strings.Index(plain, "HERDR")
+		if badgeStart != len(plain)-len("HERDR") {
+			t.Errorf("row badge not at the right edge (%q)", plain)
+		}
+		if w := ansi.StringWidth(got); w != 120 {
+			t.Errorf("row width = %d, want exactly 120 with the reserved slot", w)
+		}
+	}
+}
+
+// TestRenderRowLine_SelectionVisibleInPlainWithBadges proves the plain theme
+// keeps the visible selection marker (the ❯ gutter or the ASCII variant)
+// even when a badge slot is reserved.
+func TestRenderRowLine_SelectionVisibleInPlainWithBadges(t *testing.T) {
+	t.Parallel()
+	row := Row{Kind: RowCandidate, Candidate: source.Candidate{Path: "/a", Source: config.SourceHerdr}}
+
+	m := newRenderTestModelWidth(ThemePlain, 120)
+	got := stripNonSGRANSI(m.renderRowLine(row, true, 120))
+	if !strings.HasPrefix(got, "❯ ") {
+		t.Errorf("plain selected row = %q, want the ❯ gutter with the badge slot", got)
+	}
+	if !strings.Contains(got, "HERDR") {
+		t.Errorf("plain selected row = %q, want the text badge", got)
+	}
+
+	m.layout.Icons = IconsASCII
+	gotASCII := stripNonSGRANSI(m.renderRowLine(row, true, 120))
+	if !strings.HasPrefix(gotASCII, "> ") {
+		t.Errorf("ASCII selected row = %q, want the > gutter", gotASCII)
+	}
+}
+
+// TestRenderRowLine_ASCIIEmitsNoUnicodeOnlyGlyphs proves the ASCII icon tier
+// never renders a Unicode-only glyph in redesigned affordances (the pin
+// marker degrades to "*", badges stay text).
+func TestRenderRowLine_ASCIIEmitsNoUnicodeOnlyGlyphs(t *testing.T) {
+	t.Parallel()
+	m := newRenderTestModelWidth(ThemeMocha, 120)
+	m.layout.Icons = IconsASCII
+	row := Row{Kind: RowCandidate, Candidate: source.Candidate{Path: "/a", Source: config.SourceProjects}}
+	got := stripNonSGRANSI(m.renderRowLine(row, false, 120))
+	if strings.Contains(got, "•") {
+		t.Errorf("ASCII pinned-marker check: row = %q, • must not leak (the pinned glyph is * under ASCII)", got)
+	}
+	if glyph := pinBadge(true); glyph != "*" {
+		t.Errorf("pinBadge(ASCII) = %q, want \"*\"", glyph)
+	}
+	if glyph := pinBadge(false); glyph != "•" {
+		t.Errorf("pinBadge(unicode) = %q, want \"•\"", glyph)
 	}
 }

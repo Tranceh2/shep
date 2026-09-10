@@ -7,11 +7,10 @@ import (
 	"github.com/tranceh2/shep/internal/source"
 )
 
-// TestRenderHeader_MultiSourceMatches_ShowsPerSourceCounts proves a non-empty
-// query with matches from more than one source shows a per-source match
-// count breakdown in the header, so a query spanning multiple providers
-// explains WHERE its matches came from at a glance, instead of the plain
-// "M of N" total which does not say which sources contributed.
+// TestRenderHeader_MultiSourceMatches_KeepsCandidateCount proves a non-empty
+// query with matches from more than one source keeps the palette's compact
+// total count. Source badges on the rows explain WHERE matches came from;
+// the header reports only the result total.
 func TestRenderHeader_MultiSourceMatches_ShowsPerSourceCounts(t *testing.T) {
 	t.Parallel()
 	cands := []source.Candidate{
@@ -25,14 +24,11 @@ func TestRenderHeader_MultiSourceMatches_ShowsPerSourceCounts(t *testing.T) {
 		m, _ = update(t, m, key(string(r)))
 	}
 	plain := stripNonSGRANSI(m.renderHeader(120))
-	if !strings.Contains(plain, "herdr 1") {
-		t.Errorf("header = %q, want a per-source count for herdr (1 match)", plain)
+	if !strings.Contains(plain, "2 of 3") {
+		t.Errorf("header = %q, want the compact candidate count", plain)
 	}
-	if !strings.Contains(plain, "zoxide 1") {
-		t.Errorf("header = %q, want a per-source count for zoxide (1 match)", plain)
-	}
-	if strings.Contains(plain, "projects") {
-		t.Errorf("header = %q, must not mention projects (0 matches)", plain)
+	if strings.Contains(plain, "herdr 1") || strings.Contains(plain, "zoxide 1") {
+		t.Errorf("header = %q, source breakdown belongs in row badges, not the header", plain)
 	}
 }
 
