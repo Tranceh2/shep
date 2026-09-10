@@ -7,4 +7,4 @@ SHEP  Switch workspace                                                          
 │   /tmp                                                                                    ZOXIDE │
 │                                                                                                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-/srv/backend  [enter] open  [tab] preview  [?] help  [esc] quit
+/srv/backend  [enter] open  [?] help  [esc] quit

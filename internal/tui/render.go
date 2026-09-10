@@ -1395,7 +1395,10 @@ func (m Model) footerHints() string {
 	if row, ok := m.currentRow(); ok {
 		caps = append(caps, keycap{keyBindingEnter.footerChord, rowActionDescriptor(row).FooterLabel})
 	}
-	if !narrow {
+	// The [tab] preview keycap is only advertised when a preview pane is
+	// actually on screen: in modeListOnly there is nothing for Tab to focus,
+	// so advertising it would promise an action the layout cannot deliver.
+	if !narrow && m.mode != modeListOnly {
 		caps = append(caps, keycap{keyBindingTab.footerChord, keyBindingTab.footerLabel})
 	}
 	if row, ok := m.currentRow(); ok && m.layout.PinToggler != nil {
