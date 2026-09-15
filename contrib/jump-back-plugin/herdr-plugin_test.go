@@ -37,10 +37,11 @@ type startup struct {
 }
 
 type action struct {
-	ID       string   `toml:"id"`
-	Title    string   `toml:"title"`
-	Contexts []string `toml:"contexts"`
-	Command  []string `toml:"command"`
+	ID          string   `toml:"id"`
+	Title       string   `toml:"title"`
+	Description string   `toml:"description"`
+	Contexts    []string `toml:"contexts"`
+	Command     []string `toml:"command"`
 }
 
 type event struct {
@@ -112,22 +113,27 @@ func TestManifest_ExactlyOneStartupHookRunningTheCollector(t *testing.T) {
 // TestManifest_ExactlyOneExplicitStartRecoverAction pins R9.S1's second half:
 // one explicit action, running the same argv as the startup hook so an
 // operator recovery and an autostart are the same operation.
-func TestManifest_ExactlyOneExplicitStartRecoverAction(t *testing.T) {
+func TestManifest_DeclaresStartAndTrueJumpBackActions(t *testing.T) {
 	m := loadManifest(t)
 
-	if len(m.Actions) != 1 {
-		t.Fatalf("actions = %d, want exactly 1 explicit start/recover action", len(m.Actions))
+	if len(m.Actions) != 2 {
+		t.Fatalf("actions = %d, want start and jump-back", len(m.Actions))
 	}
-	a := m.Actions[0]
-	if a.ID == "" || a.Title == "" {
-		t.Fatalf("action needs a non-empty id and title, got id=%q title=%q", a.ID, a.Title)
+	if m.Actions[0].ID != "start" || !equalArgv(m.Actions[0].Command, []string{"./bin/shep", "watch-history"}) {
+		t.Fatalf("start action = %+v", m.Actions[0])
 	}
-	if len(a.Contexts) == 0 {
-		t.Fatal("action must declare contexts so Herdr can offer it")
+	jump := m.Actions[1]
+	if jump.ID != "jump-back" {
+		t.Fatalf("jump-back action id = %q", jump.ID)
 	}
-	want := []string{"./bin/shep", "watch-history"}
-	if !equalArgv(a.Command, want) {
-		t.Fatalf("action command = %v, want %v (same argv as the startup hook)", a.Command, want)
+	if jump.Title != "Jump to previous workspace" || jump.Description != "Toggle between the two most recently focused workspaces" {
+		t.Fatalf("jump-back action metadata = %+v", jump)
+	}
+	if !equalArgv(jump.Command, []string{"./bin/shep", "jump-back"}) {
+		t.Fatalf("jump-back command = %v", jump.Command)
+	}
+	if !equalArgv(jump.Contexts, []string{"workspace"}) {
+		t.Fatalf("jump-back contexts = %v", jump.Contexts)
 	}
 }
 
@@ -162,8 +168,8 @@ func TestManifest_NeverLaunchesAnUnverifiedBinaryFromPath(t *testing.T) {
 	for _, a := range m.Actions {
 		commands = append(commands, a.Command)
 	}
-	if len(commands) != 2 {
-		t.Fatalf("expected exactly 2 declared commands (1 startup + 1 action), got %d", len(commands))
+	if len(commands) != 3 {
+		t.Fatalf("expected exactly 3 declared commands (1 startup + 2 actions), got %d", len(commands))
 	}
 
 	for _, cmd := range commands {

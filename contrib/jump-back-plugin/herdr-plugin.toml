@@ -1,7 +1,7 @@
 # Herdr plugin that runs the shep workspace focus-history collector.
 #
 # This plugin is deliberately minimal. It declares exactly one startup hook and
-# exactly one explicit start/recover action, and NOTHING else:
+# exactly one explicit start/recover action and one true jump-back action:
 #
 #   * No [[events]] hooks. A focus/close event hook would spawn one process per
 #     focus change, which is precisely what the long-lived collector exists to
@@ -19,7 +19,8 @@
 #
 # Installation, recovery, disable and uninstall are documented in
 # docs/jump-back.md in this repository. bin/shep is an installation artifact
-# and is never committed.
+# and is never committed. Plugin actions receive HERDR_SOCKET_PATH and
+# HERDR_BIN_PATH from Herdr; both are consumed via argv-only command paths.
 
 id = "tranceh2.shep-jump-back"
 name = "shep jump-back history"
@@ -46,3 +47,14 @@ id = "start"
 title = "Start jump-back history collector"
 contexts = ["workspace"]
 command = ["./bin/shep", "watch-history"]
+
+# Herdr's native previous_workspace action walks sidebar/order. This action uses
+# Shep's observed focus history to toggle between the two most recently focused
+# workspaces (A↔B), and receives HERDR_SOCKET_PATH and HERDR_BIN_PATH from the
+# plugin runtime without shell evaluation.
+[[actions]]
+id = "jump-back"
+title = "Jump to previous workspace"
+description = "Toggle between the two most recently focused workspaces"
+contexts = ["workspace"]
+command = ["./bin/shep", "jump-back"]

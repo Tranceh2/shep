@@ -1,12 +1,33 @@
 # Jump back to the previous workspace
 
-`shep jump-back` focuses the previous distinct workspace for the Herdr socket
-you are currently attached to. It is the navigation half of the feature: it
-reads focus history that the `watch-history` collector maintains, revalidates
-the target against live Herdr state, and focuses it — or refuses with a
-specific reason. The same focus history also drives the open workspace MRU
-order in the Shep picker when opening with an empty query (gracefully falling
-back to launch ranking when the collector is not running).
+`shep jump-back` toggles between the two most recently focused workspaces (A↔B)
+for the Herdr socket you are currently attached to. It is the navigation half of
+the feature: it reads focus history that the `watch-history` collector maintains,
+revalidates the target against live Herdr state, and focuses it — or refuses with
+a specific reason. The same focus history also drives the open workspace MRU order
+in the Shep picker when opening with an empty query (gracefully falling back to
+launch ranking when the collector is not running).
+
+This is intentionally different from Herdr's native `previous_workspace`: the
+native action walks sidebar/order, while Shep `jump-back` uses the observed focus
+MRU and toggles A↔B. The bundled plugin action is
+`tranceh2.shep-jump-back.jump-back`.
+
+For a Herdr keybinding, use the plugin action rather than native
+`previous_workspace`:
+
+```toml
+[[keys.command]]
+key = "prefix+tab"
+type = "plugin_action"
+command = "tranceh2.shep-jump-back.jump-back"
+description = "jump to previous workspace"
+```
+
+The plugin-local action command is argv-only (`["./bin/shep", "jump-back"]`).
+Herdr injects `HERDR_SOCKET_PATH` for the current session and
+`HERDR_BIN_PATH` for the authoritative Herdr executable; Shep consumes both
+without shell evaluation.
 
 History is collected by `shep watch-history`, a hidden long-lived command that
 the bundled Herdr plugin starts. Until that collector runs, `jump-back`
@@ -115,6 +136,7 @@ collector.
 
 ```sh
 herdr plugin action invoke tranceh2.shep-jump-back.start
+herdr plugin action invoke tranceh2.shep-jump-back.jump-back
 herdr plugin log list --plugin tranceh2.shep-jump-back   # inspect the run
 ```
 
@@ -127,10 +149,13 @@ per enabled plugin, after the session is restored and the API socket is ready.
 shep jump-back    # exit 3 until two distinct workspaces have been focused
 # focus workspace A, then workspace B, then:
 shep jump-back    # focuses A, exit 0
+shep jump-back    # focuses B, exit 0: the next invocation toggles back
 ```
 
-Readiness requires two trustworthy focus observations in the current epoch, so
-the first `jump-back` after a fresh start legitimately reports `not ready`.
+Readiness requires two trustworthy focus observations in the current epoch, so the
+first `jump-back` after a fresh start legitimately reports `not ready`. Bootstrap
+membership validates live ids but is not chronology; the focus event caused by a
+successful jump-back is then observed and makes the next invocation toggle back.
 
 ## Recovery, refusal, and shutdown
 
