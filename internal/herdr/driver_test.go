@@ -158,6 +158,48 @@ func TestDriverSnapshot_BinaryEnvironmentFallbacks(t *testing.T) {
 	}
 }
 
+func TestDriverSnapshot_BinaryEnvironmentRejectsNonRegularFile(t *testing.T) {
+	dir := t.TempDir()
+	nonRegular := filepath.Join(dir, "herdr-dir")
+	if err := os.Mkdir(nonRegular, 0o700); err != nil {
+		t.Fatalf("mkdir non-regular candidate: %v", err)
+	}
+
+	runner := &fakeRunner{script: []fakeCall{{match: "configured-herdr api snapshot", out: []byte(`{"result":{"snapshot":{"workspaces":[],"tabs":[],"panes":[]}}}`)}}}
+	driver := New("configured-herdr", WithRunner(runner), WithBinaryEnv(func(string) (string, bool) {
+		return nonRegular, true
+	}))
+	if _, err := driver.Snapshot(context.Background()); err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if runner.calls[0] != "configured-herdr api snapshot" {
+		t.Fatalf("runner received %q, want configured fallback for non-regular path", runner.calls[0])
+	}
+}
+
+func TestDriverSnapshot_BinaryEnvironmentAcceptsSymlinkToRegularExecutable(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "herdr-real")
+	link := filepath.Join(dir, "herdr-link")
+	if err := os.WriteFile(target, []byte("fake"), 0o700); err != nil {
+		t.Fatalf("write executable target: %v", err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink executable target: %v", err)
+	}
+
+	runner := &fakeRunner{script: []fakeCall{{match: link + " api snapshot", out: []byte(`{"result":{"snapshot":{"workspaces":[],"tabs":[],"panes":[]}}}`)}}}
+	driver := New("configured-herdr", WithRunner(runner), WithBinaryEnv(func(string) (string, bool) {
+		return link, true
+	}))
+	if _, err := driver.Snapshot(context.Background()); err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if runner.calls[0] != link+" api snapshot" {
+		t.Fatalf("runner received %q, want symlink path %q", runner.calls[0], link)
+	}
+}
+
 func TestDriverSnapshot_UsesConfiguredFallbackForValidRelativeBinary(t *testing.T) {
 	runner := &fakeRunner{script: []fakeCall{{match: "configured-herdr api snapshot", out: []byte(`{"result":{"snapshot":{"workspaces":[],"tabs":[],"panes":[]}}}`)}}}
 	driver := New("configured-herdr", WithRunner(runner), WithBinaryEnv(func(string) (string, bool) {

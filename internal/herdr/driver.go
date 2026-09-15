@@ -84,7 +84,7 @@ func validBinaryPath(path string) bool {
 		return false
 	}
 	info, err := os.Stat(path)
-	return err == nil && !info.IsDir() && info.Mode()&0o111 != 0
+	return err == nil && info.Mode().IsRegular() && info.Mode()&0o111 != 0
 }
 
 // Driver is the real source.HerdrDriver backed by the herdr CLI. It is safe

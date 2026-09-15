@@ -57,6 +57,70 @@ func (s failingSnapshotter) Snapshot(context.Context) (herdrwatch.Membership, er
 	return herdrwatch.Membership{}, s.err
 }
 
+type dialStep struct {
+	conn net.Conn
+	err  error
+}
+
+type episodeDialer struct {
+	mu    sync.Mutex
+	steps []dialStep
+	calls int
+}
+
+func (d *episodeDialer) Dial(ctx context.Context) (net.Conn, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	i := d.calls
+	d.calls++
+	if i >= len(d.steps) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	step := d.steps[i]
+	if step.err != nil {
+		return nil, step.err
+	}
+	return step.conn, nil
+}
+
+func (d *episodeDialer) callCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.calls
+}
+
+func closingEstablishedConn(ctx context.Context) net.Conn {
+	server, client := net.Pipe()
+	go func() {
+		defer server.Close()
+		reader := bufio.NewReader(server)
+		if _, err := reader.ReadString('\n'); err != nil {
+			return
+		}
+		_, _ = io.WriteString(server, `{"id":"shep-watch-history","result":{"type":"subscription_started"}}`+"\n")
+		select {
+		case <-ctx.Done():
+		case <-time.After(time.Millisecond):
+		}
+	}()
+	return client
+}
+
+func heldEstablishedConn(ctx context.Context) net.Conn {
+	server, client := net.Pipe()
+	go func() {
+		defer server.Close()
+		reader := bufio.NewReader(server)
+		if _, err := reader.ReadString('\n'); err != nil {
+			return
+		}
+		_, _ = io.WriteString(server, `{"id":"shep-watch-history","result":{"type":"subscription_started"}}`+"\n")
+		<-ctx.Done()
+	}()
+	return client
+}
+
 func (d *scriptedDialer) Dial(ctx context.Context) (net.Conn, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -183,6 +247,90 @@ func TestRun_CancellationDuringBootstrapReconnectExitsCleanly(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("collector did not exit after cancellation")
+	}
+}
+
+func TestRun_EstablishedDisconnectStartsFreshReconnectEpisode(t *testing.T) {
+	dir := shortTempDir(t)
+	store := newTestStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	waiter := &fakeWaiter{}
+	dialer := &episodeDialer{}
+	// Two established streams disconnect. The third connection stays healthy;
+	// cancellation proves the loop did not exhaust a lifetime budget.
+	dialer.steps = []dialStep{
+		{conn: closingEstablishedConn(ctx)},
+		{conn: closingEstablishedConn(ctx)},
+		{conn: heldEstablishedConn(ctx)},
+	}
+	cfg := herdrwatch.Config{
+		SessionKey:  "established-episodes",
+		LockPath:    filepath.Join(dir, "own.lock"),
+		ControlPath: filepath.Join(dir, "c.sock"),
+		Store:       store,
+		Snapshotter: &fakeSnapshotter{members: map[string]bool{"ws-a": true}, current: "ws-a"},
+		Dialer:      dialer,
+		Waiter:      waiter,
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- herdrwatch.Run(ctx, cfg) }()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && dialer.callCount() < 3 {
+		time.Sleep(time.Millisecond)
+	}
+	if dialer.callCount() < 3 {
+		t.Fatalf("established reconnects = %d, want at least 3", dialer.callCount())
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("canceled established stream error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("collector did not exit after cancellation")
+	}
+
+	waiter.mu.Lock()
+	waits := append([]time.Duration(nil), waiter.waits...)
+	waiter.mu.Unlock()
+	if len(waits) < 2 {
+		t.Fatalf("waits = %v, want a wait after each disconnect", waits)
+	}
+	for i, wait := range waits[:2] {
+		if wait < 100*time.Millisecond {
+			t.Errorf("wait[%d] = %v, want at least initial backoff", i, wait)
+		}
+	}
+}
+
+func TestRun_HealthyStreamIsNotLifetimeCapped(t *testing.T) {
+	dir := shortTempDir(t)
+	store := newTestStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cfg := herdrwatch.Config{
+		SessionKey:  "healthy-lifetime",
+		LockPath:    filepath.Join(dir, "own.lock"),
+		ControlPath: filepath.Join(dir, "c.sock"),
+		Store:       store,
+		Snapshotter: &fakeSnapshotter{members: map[string]bool{"ws-a": true}, current: "ws-a"},
+		Dialer:      &episodeDialer{steps: []dialStep{{conn: heldEstablishedConn(ctx)}}},
+		Waiter:      &fakeWaiter{},
+	}
+	done := make(chan error, 1)
+	go func() { done <- herdrwatch.Run(ctx, cfg) }()
+	cancelAfter := time.AfterFunc(150*time.Millisecond, cancel)
+	defer cancelAfter.Stop()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("healthy stream error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("healthy stream did not exit after cancellation")
 	}
 }
 

@@ -37,6 +37,10 @@ const (
 
 // StreamDialer opens a dedicated raw connection to the Herdr events socket. A
 // seam so tests drive reconnect deterministically without a live daemon.
+//
+// A stream is established after Subscribe acknowledges and Owner.Bootstrap
+// succeeds. That provider-owned boundary, rather than Dial success, controls
+// reconnect episode accounting.
 type StreamDialer interface {
 	Dial(ctx context.Context) (net.Conn, error)
 }
@@ -156,52 +160,60 @@ func Run(ctx context.Context, cfg Config) error {
 	return nil
 }
 
+// streamResult carries provider-owned establishment evidence separately from
+// the failure. Subscribe acknowledgement plus successful bootstrap establishes
+// a stream epoch; a later read or event-handling failure is therefore still a
+// failure, but it belongs to a healthy reconnect episode.
+type streamResult struct {
+	established bool
+	err         error
+}
+
 // runStreamLoop dials, subscribes, bootstraps, and reads events, reconnecting
 // with bounded backoff on stream loss. It fails closed on reconnect exhaustion.
 func runStreamLoop(ctx context.Context, cfg Config, owner *Owner, waiter Waiter) error {
 	backoff := reconnectInitialBackoff
 	var spent time.Duration
-	var lastErr error
-	var lastStreamErr bool
+	var episodeCause error
 
 	for {
 		if ctx.Err() != nil {
 			return nil
 		}
 
-		conn, err := cfg.Dialer.Dial(ctx)
-		if err == nil {
-			// A raw dial is not a healthy stream. Only a stream that completed
-			// subscribe, bootstrap, and handled at least one event may reset the
-			// reconnect budget; bootstrap failures therefore remain bounded.
-			streamErr := serveStream(ctx, conn, owner, cfg.Snapshotter)
+		conn, dialErr := cfg.Dialer.Dial(ctx)
+		if dialErr != nil {
+			// A failed dial does not replace the cause that started an existing
+			// reconnect episode (for example, a stream read failure).
+			if episodeCause == nil {
+				episodeCause = dialErr
+			}
+			owner.InvalidateReadiness()
+		} else {
+			// A raw dial is not a healthy stream. Establishment is provider-owned
+			// and is reported by serveStream only after subscribe + bootstrap.
+			result := serveStream(ctx, conn, owner, cfg.Snapshotter)
 			_ = conn.Close()
 			if ctx.Err() != nil {
 				return nil
 			}
 			owner.InvalidateReadiness()
-			if streamErr == nil {
-				backoff = reconnectInitialBackoff
+			if result.established {
+				// This disconnect starts a fresh reconnect episode. The first
+				// retry still waits at least the initial backoff below; only the
+				// spent budget and exponential delay are reset.
 				spent = 0
-				lastStreamErr = false
-			} else {
-				err = streamErr
-				lastStreamErr = true
+				backoff = reconnectInitialBackoff
 			}
-		}
-		if err != nil {
-			// Stream unavailable: readiness invalid, dial/handshake/read again
-			// after bounded backoff. Preserve the classified cause on exhaustion.
-			lastErr = err
-			owner.InvalidateReadiness()
+			// A subscribe/bootstrap failure must consume the current episode.
+			// An established stream's classified read/handling error becomes the
+			// cause for the fresh episode and is retained if dials then fail.
+			episodeCause = result.err
 		}
 
 		// Bounded backoff before the next dial; exhaustion fails closed.
 		if spent >= reconnectTotalCap {
-			if lastStreamErr {
-				return fmt.Errorf("%w: %w", ErrReconnectExhausted, lastErr)
-			}
-			return ErrReconnectExhausted
+			return exhaustedReconnectError(episodeCause)
 		}
 		wait := backoff
 		if spent+wait > reconnectTotalCap {
@@ -215,19 +227,33 @@ func runStreamLoop(ctx context.Context, cfg Config, owner *Owner, waiter Waiter)
 	}
 }
 
+func exhaustedReconnectError(cause error) error {
+	if cause == nil || (!errors.Is(cause, ErrSubscribeUnavailable) &&
+		!errors.Is(cause, ErrBootstrapUnavailable) &&
+		!errors.Is(cause, ErrStreamRead) &&
+		!errors.Is(cause, ErrStreamHandling)) {
+		return ErrReconnectExhausted
+	}
+	return fmt.Errorf("%w: %w", ErrReconnectExhausted, cause)
+}
+
 // serveStream subscribes on conn, bootstraps membership once via the
 // Snapshotter, then reads events into the owner until the stream drops or ctx
 // is cancelled. Close conn to unblock a blocked ReadEvent on cancellation.
-func serveStream(ctx context.Context, conn net.Conn, owner *Owner, snap Snapshotter) error {
+func serveStream(ctx context.Context, conn net.Conn, owner *Owner, snap Snapshotter) streamResult {
 	stream, err := Subscribe(ctx, conn, subscribedTypes)
 	if err != nil {
-		return fmt.Errorf("%w: %w", ErrSubscribeUnavailable, err)
+		return streamResult{err: fmt.Errorf("%w: %w", ErrSubscribeUnavailable, err)}
 	}
 
 	buffered := stream.ReadBuffered()
 	if err := owner.Bootstrap(ctx, buffered...); err != nil {
-		return fmt.Errorf("%w: %w", ErrBootstrapUnavailable, err)
+		return streamResult{err: fmt.Errorf("%w: %w", ErrBootstrapUnavailable, err)}
 	}
+
+	// Subscribe and bootstrap succeeded: the provider has established a valid
+	// stream epoch even if the first subsequent event read or handling fails.
+	result := streamResult{established: true}
 
 	// Close the stream promptly when ctx is cancelled so a blocked ReadEvent
 	// returns instead of leaking.
@@ -236,20 +262,23 @@ func serveStream(ctx context.Context, conn net.Conn, owner *Owner, snap Snapshot
 
 	for _, raw := range buffered {
 		if herr := owner.HandleEventFrame(ctx, raw); herr != nil {
-			return fmt.Errorf("%w: %w", ErrStreamHandling, herr)
+			result.err = fmt.Errorf("%w: %w", ErrStreamHandling, herr)
+			return result
 		}
 	}
 
 	for {
 		raw, err := stream.ReadEvent()
 		if err != nil {
-			return fmt.Errorf("%w: %w", ErrStreamRead, err)
+			result.err = fmt.Errorf("%w: %w", ErrStreamRead, err)
+			return result
 		}
 		if herr := owner.HandleEventFrame(ctx, raw); herr != nil {
 			// Malformed frame or store write error: readiness already
 			// invalidated by the owner; drop this stream and reconnect rather
 			// than retrying the same write forever.
-			return fmt.Errorf("%w: %w", ErrStreamHandling, herr)
+			result.err = fmt.Errorf("%w: %w", ErrStreamHandling, herr)
+			return result
 		}
 	}
 }
