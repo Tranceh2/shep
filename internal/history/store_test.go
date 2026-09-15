@@ -416,3 +416,276 @@ func TestReadWorkspaceMRUFromPath(t *testing.T) {
 		t.Fatalf("ReadWorkspaceMRUFromPath = %v, want [ws-2 ws-1]", mru)
 	}
 }
+
+func TestReadWorkspaceMRUFromPath_MissingDBDoesNotCreateArtifacts(t *testing.T) {
+	tempDir := t.TempDir()
+	nestedDir := filepath.Join(tempDir, "nested", "nonexistent")
+	missingDB := filepath.Join(nestedDir, "jump_history.sqlite3")
+	sockPath := filepath.Join(tempDir, "herdr.sock")
+	if err := os.WriteFile(sockPath, []byte("sock"), 0o600); err != nil {
+		t.Fatalf("failed to write sock file: %v", err)
+	}
+
+	mru, err := history.ReadWorkspaceMRUFromPath(context.Background(), sockPath, missingDB)
+	if err != nil {
+		t.Fatalf("ReadWorkspaceMRUFromPath error = %v, want nil", err)
+	}
+	if len(mru) != 0 {
+		t.Fatalf("expected empty MRU, got %v", mru)
+	}
+
+	if _, err := os.Stat(nestedDir); !os.IsNotExist(err) {
+		t.Fatalf("expected nested directory not to exist, got stat err=%v", err)
+	}
+	if _, err := os.Stat(missingDB); !os.IsNotExist(err) {
+		t.Fatalf("expected missing DB not to exist, got stat err=%v", err)
+	}
+	if _, err := os.Stat(missingDB + "-wal"); !os.IsNotExist(err) {
+		t.Fatalf("expected WAL file not to exist, got stat err=%v", err)
+	}
+	if _, err := os.Stat(missingDB + "-shm"); !os.IsNotExist(err) {
+		t.Fatalf("expected SHM file not to exist, got stat err=%v", err)
+	}
+}
+
+func TestReadWorkspaceMRUFromPath_DoesNotAlterDBOrSchema(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "empty_uninitialized.sqlite3")
+	sockPath := filepath.Join(tempDir, "herdr.sock")
+	if err := os.WriteFile(sockPath, []byte("sock"), 0o600); err != nil {
+		t.Fatalf("failed to write sock file: %v", err)
+	}
+
+	// Create a bare SQLite database without creating any tables
+	rawDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open failed: %v", err)
+	}
+	if err := rawDB.Ping(); err != nil {
+		t.Fatalf("rawDB.Ping failed: %v", err)
+	}
+	_ = rawDB.Close()
+
+	initialStat, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatalf("Stat failed: %v", err)
+	}
+
+	// Call ReadWorkspaceMRUFromPath on the uninitialized DB
+	_, readErr := history.ReadWorkspaceMRUFromPath(context.Background(), sockPath, dbPath)
+	// It should fail or degrade because tables do not exist
+	if readErr == nil {
+		t.Logf("ReadWorkspaceMRUFromPath returned nil error on uninitialized schema")
+	}
+
+	// Verify that NO tables were created (no schema_version, no mru_history)
+	verifyDB, err := sql.Open("sqlite", fmt.Sprintf("%s?mode=ro", dbPath))
+	if err != nil {
+		t.Fatalf("reopening DB for verification failed: %v", err)
+	}
+	defer verifyDB.Close()
+
+	var tableCount int
+	if err := verifyDB.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('schema_version', 'mru_history')").Scan(&tableCount); err != nil {
+		t.Fatalf("QueryRow for tables failed: %v", err)
+	}
+	if tableCount != 0 {
+		t.Fatalf("reader created tables: count = %d, want 0", tableCount)
+	}
+
+	afterStat, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatalf("Stat after failed: %v", err)
+	}
+	if initialStat.Mode() != afterStat.Mode() {
+		t.Errorf("file mode changed from %v to %v", initialStat.Mode(), afterStat.Mode())
+	}
+}
+
+func TestReadWorkspaceMRUFromPath_ObservesCommittedWAL(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "jump_history.sqlite3")
+	sockPath := filepath.Join(tempDir, "herdr.sock")
+	if err := os.WriteFile(sockPath, []byte("sock"), 0o600); err != nil {
+		t.Fatalf("failed to write sock file: %v", err)
+	}
+
+	writerStore, err := history.OpenPath(dbPath)
+	if err != nil {
+		t.Fatalf("OpenPath failed: %v", err)
+	}
+	defer writerStore.Close()
+
+	ctx := context.Background()
+	key, err := history.CanonicalSessionKey(sockPath)
+	if err != nil {
+		t.Fatalf("CanonicalSessionKey failed: %v", err)
+	}
+
+	// Write ws-1, ws-2, ws-3
+	for _, ws := range []string{"ws-1", "ws-2", "ws-3"} {
+		if _, err := writerStore.Record(ctx, key, ws); err != nil {
+			t.Fatalf("Record %s failed: %v", ws, err)
+		}
+	}
+
+	// Reader must observe committed WAL data while writer is open
+	mru, err := history.ReadWorkspaceMRUFromPath(ctx, sockPath, dbPath)
+	if err != nil {
+		t.Fatalf("ReadWorkspaceMRUFromPath failed: %v", err)
+	}
+	want := []string{"ws-3", "ws-2", "ws-1"}
+	if len(mru) != len(want) {
+		t.Fatalf("mru len = %d, want %d: %v", len(mru), len(want), mru)
+	}
+	for i, id := range want {
+		if mru[i] != id {
+			t.Errorf("mru[%d] = %q, want %q", i, mru[i], id)
+		}
+	}
+
+	// Write ws-4
+	if _, err := writerStore.Record(ctx, key, "ws-4"); err != nil {
+		t.Fatalf("Record ws-4 failed: %v", err)
+	}
+
+	mru, err = history.ReadWorkspaceMRUFromPath(ctx, sockPath, dbPath)
+	if err != nil {
+		t.Fatalf("ReadWorkspaceMRUFromPath after ws-4 failed: %v", err)
+	}
+	want4 := []string{"ws-4", "ws-3", "ws-2", "ws-1"}
+	if len(mru) != len(want4) {
+		t.Fatalf("mru len = %d, want %d: %v", len(mru), len(want4), mru)
+	}
+	for i, id := range want4 {
+		if mru[i] != id {
+			t.Errorf("mru[%d] = %q, want %q", i, mru[i], id)
+		}
+	}
+}
+
+func TestReadWorkspaceMRUFromPath_HonorsContextCancellation(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "jump_history.sqlite3")
+	sockPath := filepath.Join(tempDir, "herdr.sock")
+	if err := os.WriteFile(sockPath, []byte("sock"), 0o600); err != nil {
+		t.Fatalf("failed to write sock file: %v", err)
+	}
+
+	writerStore, err := history.OpenPath(dbPath)
+	if err != nil {
+		t.Fatalf("OpenPath failed: %v", err)
+	}
+	defer writerStore.Close()
+
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = history.ReadWorkspaceMRUFromPath(cancelledCtx, sockPath, dbPath)
+	if err == nil {
+		t.Fatal("expected error with cancelled context, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Logf("got error with cancelled context: %v", err)
+	}
+}
+
+func TestReadWorkspaceMRUFromPath_CorruptOrUnsupportedSchemaFailsWithoutRepairs(t *testing.T) {
+	tempDir := t.TempDir()
+	sockPath := filepath.Join(tempDir, "herdr.sock")
+	if err := os.WriteFile(sockPath, []byte("sock"), 0o600); err != nil {
+		t.Fatalf("failed to write sock file: %v", err)
+	}
+
+	// 1. Unsupported future version in schema_version
+	futureDBPath := filepath.Join(tempDir, "future.sqlite3")
+	store, err := history.OpenPath(futureDBPath)
+	if err != nil {
+		t.Fatalf("OpenPath failed: %v", err)
+	}
+	// Manually set version to 999
+	rawDB, err := sql.Open("sqlite", futureDBPath)
+	if err != nil {
+		t.Fatalf("sql.Open failed: %v", err)
+	}
+	if _, err := rawDB.Exec("UPDATE schema_version SET version = 999;"); err != nil {
+		t.Fatalf("update schema_version failed: %v", err)
+	}
+	_ = rawDB.Close()
+	_ = store.Close()
+
+	_, err = history.ReadWorkspaceMRUFromPath(context.Background(), sockPath, futureDBPath)
+	if err == nil {
+		t.Fatal("expected error for unsupported future version, got nil")
+	}
+	if !errors.Is(err, history.ErrUnsupportedVersion) {
+		t.Fatalf("expected ErrUnsupportedVersion, got %v", err)
+	}
+
+	// Verify schema_version was NOT overwritten
+	verifyDB, err := sql.Open("sqlite", fmt.Sprintf("%s?mode=ro", futureDBPath))
+	if err != nil {
+		t.Fatalf("sql.Open failed: %v", err)
+	}
+	var ver int
+	if err := verifyDB.QueryRow("SELECT version FROM schema_version").Scan(&ver); err != nil {
+		t.Fatalf("Scan version failed: %v", err)
+	}
+	verifyDB.Close()
+	if ver != 999 {
+		t.Fatalf("version changed from 999 to %d", ver)
+	}
+
+	// 2. Corrupt file content
+	corruptDBPath := filepath.Join(tempDir, "corrupt.sqlite3")
+	if err := os.WriteFile(corruptDBPath, []byte("this is definitely not a sqlite database header"), 0o600); err != nil {
+		t.Fatalf("write corrupt DB failed: %v", err)
+	}
+
+	_, err = history.ReadWorkspaceMRUFromPath(context.Background(), sockPath, corruptDBPath)
+	if err == nil {
+		t.Fatal("expected error for corrupt DB, got nil")
+	}
+}
+
+func TestReadWorkspaceMRU_DefaultPath(t *testing.T) {
+	tempState := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tempState)
+
+	sockPath := filepath.Join(t.TempDir(), "herdr.sock")
+	if err := os.WriteFile(sockPath, []byte("sock"), 0o600); err != nil {
+		t.Fatalf("write sock file: %v", err)
+	}
+
+	// When default DB does not exist, returns empty slice, nil error
+	mru, err := history.ReadWorkspaceMRU(context.Background(), sockPath)
+	if err != nil {
+		t.Fatalf("ReadWorkspaceMRU error = %v, want nil", err)
+	}
+	if len(mru) != 0 {
+		t.Fatalf("expected empty MRU, got %v", mru)
+	}
+
+	// Write via OpenDefault
+	store, err := history.OpenDefault()
+	if err != nil {
+		t.Fatalf("OpenDefault failed: %v", err)
+	}
+	key, err := history.CanonicalSessionKey(sockPath)
+	if err != nil {
+		t.Fatalf("CanonicalSessionKey failed: %v", err)
+	}
+	if _, err := store.Record(context.Background(), key, "ws-alpha"); err != nil {
+		t.Fatalf("Record ws-alpha failed: %v", err)
+	}
+	_ = store.Close()
+
+	// Read via ReadWorkspaceMRU
+	mru, err = history.ReadWorkspaceMRU(context.Background(), sockPath)
+	if err != nil {
+		t.Fatalf("ReadWorkspaceMRU failed: %v", err)
+	}
+	if len(mru) != 1 || mru[0] != "ws-alpha" {
+		t.Fatalf("ReadWorkspaceMRU = %v, want [ws-alpha]", mru)
+	}
+}

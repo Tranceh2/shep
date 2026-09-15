@@ -72,10 +72,18 @@ func ReadWorkspaceMRU(ctx context.Context, socketPath string) ([]string, error) 
 }
 
 // ReadWorkspaceMRUFromPath reads the workspace MRU for socketPath from the SQLite store at dbPath.
+// It opens the database strictly read-only, does not create or migrate tables, does not touch permissions,
+// and respects caller context and bounded timeouts.
 // If socketPath is empty or the database file does not exist, it returns an empty slice and nil error.
 func ReadWorkspaceMRUFromPath(ctx context.Context, socketPath, dbPath string) ([]string, error) {
 	if socketPath == "" || dbPath == "" {
 		return []string{}, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
 	}
 	if _, err := os.Stat(dbPath); err != nil {
 		return []string{}, nil
@@ -84,13 +92,54 @@ func ReadWorkspaceMRUFromPath(ctx context.Context, socketPath, dbPath string) ([
 	if err != nil {
 		return nil, fmt.Errorf("derive session key: %w", err)
 	}
-	store, err := OpenPath(dbPath)
-	if err != nil {
-		return nil, fmt.Errorf("open history store: %w", err)
-	}
-	defer func() { _ = store.Close() }()
 
-	return store.List(ctx, sessionKey)
+	absPath, err := filepath.Abs(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve database path: %w", err)
+	}
+
+	dsn := fmt.Sprintf("file:%s?mode=ro&_pragma=busy_timeout(100)", filepath.ToSlash(absPath))
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open read-only history database: %w", err)
+	}
+	defer func() { _ = db.Close() }()
+	db.SetMaxOpenConns(1)
+
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("begin read transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var version int
+	err = tx.QueryRowContext(ctx, "SELECT version FROM schema_version LIMIT 1").Scan(&version)
+	if err != nil {
+		return nil, fmt.Errorf("%w: query schema version: %v", ErrCorrupt, err)
+	}
+	if version > SchemaVersion {
+		return nil, ErrUnsupportedVersion
+	}
+
+	rows, err := tx.QueryContext(ctx, "SELECT workspace_id FROM mru_history WHERE session_key = ? ORDER BY seq DESC LIMIT 50", sessionKey)
+	if err != nil {
+		return nil, fmt.Errorf("%w: query mru history: %v", ErrCorrupt, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	mru := make([]string, 0, 50)
+	for rows.Next() {
+		var wsID string
+		if err := rows.Scan(&wsID); err != nil {
+			return nil, fmt.Errorf("scan mru row: %w", err)
+		}
+		mru = append(mru, wsID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate mru rows: %w", err)
+	}
+
+	return mru, nil
 }
 
 // CanonicalSessionKey computes SHA-256(canonical socket path) as a hex string.
