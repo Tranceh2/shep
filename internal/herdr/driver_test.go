@@ -3,6 +3,8 @@ package herdr
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -112,6 +114,62 @@ func TestDriverRenamePane_WrapsFailureWithPaneAndLabel(t *testing.T) {
 }
 
 func stringPtr(value string) *string { return &value }
+
+func TestDriverSnapshot_UsesInjectedAuthoritativeBinary(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "herdr")
+	if err := os.WriteFile(binary, []byte("fake"), 0o700); err != nil {
+		t.Fatalf("write fake binary: %v", err)
+	}
+
+	runner := &fakeRunner{script: []fakeCall{{match: binary + " api snapshot", out: []byte(`{"result":{"snapshot":{"workspaces":[],"tabs":[],"panes":[]}}}`)}}}
+	driver := New("herdr", WithRunner(runner), WithBinaryEnv(func(string) (string, bool) {
+		return binary, true
+	}))
+	if _, err := driver.Snapshot(context.Background()); err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if got := runner.calls[0]; got != binary+" api snapshot" {
+		t.Fatalf("runner received %q, want authoritative binary %q", got, binary)
+	}
+}
+
+func TestDriverSnapshot_BinaryEnvironmentFallbacks(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		env  string
+		want string
+	}{
+		{name: "unset", want: "herdr"},
+		{name: "blank", env: "   ", want: "herdr"},
+		{name: "invalid path", env: filepath.Join(t.TempDir(), "missing-herdr"), want: "herdr"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			binaryEnv := func(string) (string, bool) { return tt.env, tt.env != "" }
+			runner := &fakeRunner{script: []fakeCall{{match: tt.want + " api snapshot", out: []byte(`{"result":{"snapshot":{"workspaces":[],"tabs":[],"panes":[]}}}`)}}}
+			driver := New("herdr", WithRunner(runner), WithBinaryEnv(binaryEnv))
+			if _, err := driver.Snapshot(context.Background()); err != nil {
+				t.Fatalf("Snapshot: %v", err)
+			}
+			if runner.calls[0] != tt.want+" api snapshot" {
+				t.Fatalf("runner received %q, want %q", runner.calls[0], tt.want)
+			}
+		})
+	}
+}
+
+func TestDriverSnapshot_UsesConfiguredFallbackForValidRelativeBinary(t *testing.T) {
+	runner := &fakeRunner{script: []fakeCall{{match: "configured-herdr api snapshot", out: []byte(`{"result":{"snapshot":{"workspaces":[],"tabs":[],"panes":[]}}}`)}}}
+	driver := New("configured-herdr", WithRunner(runner), WithBinaryEnv(func(string) (string, bool) {
+		return "", false
+	}))
+	if _, err := driver.Snapshot(context.Background()); err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if runner.calls[0] != "configured-herdr api snapshot" {
+		t.Fatalf("runner received %q, want configured fallback", runner.calls[0])
+	}
+}
 
 func TestDriverSnapshot_ParsesOnlyFullGeneration(t *testing.T) {
 	runner := &fakeRunner{script: []fakeCall{{match: "herdr api snapshot", out: []byte(`{

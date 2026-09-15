@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"os/signal"
 	"syscall"
 
@@ -84,7 +85,7 @@ func (a *App) watchHistoryCmd() *cobra.Command {
 			// membership comes from the same authoritative `herdr api snapshot`
 			// path the rest of shep uses. It is called once per bootstrap and
 			// never per focus event.
-			driver := herdr.New(a.Config().HerdrBinary())
+			driver := herdr.New(a.Config().HerdrBinary(), herdr.WithBinaryEnv(os.LookupEnv))
 
 			// Ctrl-C / SIGTERM cancel the run context; Run then closes owned
 			// I/O, joins its workers, releases the flock, and removes only its
@@ -155,6 +156,14 @@ func reportCollectorExit(err error, errOut io.Writer) error {
 //   - ErrReconnectExhausted stays a classified non-zero failure. Spending the
 //     bounded reconnect budget does NOT prove the Herdr host died, so it is
 //     never reported as a clean exit and never labelled host death.
+type sanitizedCollectorError struct {
+	message string
+	cause   error
+}
+
+func (e *sanitizedCollectorError) Error() string { return e.message }
+func (e *sanitizedCollectorError) Unwrap() error { return e.cause }
+
 func watchHistoryExitError(err error) error {
 	switch {
 	case err == nil:
@@ -164,9 +173,20 @@ func watchHistoryExitError(err error) error {
 	case errors.Is(err, context.Canceled):
 		return nil
 	case errors.Is(err, herdrwatch.ErrReconnectExhausted):
+		message := "watch-history: reconnect budget exhausted; collector stopped without a verified stream"
+		switch {
+		case errors.Is(err, herdrwatch.ErrBootstrapUnavailable):
+			message = "watch-history: reconnect budget exhausted; bootstrap snapshot unavailable"
+		case errors.Is(err, herdrwatch.ErrSubscribeUnavailable):
+			message = "watch-history: reconnect budget exhausted; subscription unavailable"
+		case errors.Is(err, herdrwatch.ErrStreamRead):
+			message = "watch-history: reconnect budget exhausted; stream read failed"
+		case errors.Is(err, herdrwatch.ErrStreamHandling):
+			message = "watch-history: reconnect budget exhausted; stream event handling failed"
+		}
 		return &ExitCodeError{
 			Code: exitNotReady,
-			Err:  errors.New("watch-history: reconnect budget exhausted; collector stopped without a verified stream"),
+			Err:  &sanitizedCollectorError{message: message, cause: err},
 		}
 	default:
 		return err

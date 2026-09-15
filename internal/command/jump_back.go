@@ -122,8 +122,9 @@ func (a *App) jumpBackCmd() *cobra.Command {
 			"is not ready or the live state changed.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			driver, ok := a.Driver().(jumpBackDriver)
-			if !ok || a.Driver() == nil {
+			driver := a.pluginDriver()
+			jumpDriver, ok := driver.(jumpBackDriver)
+			if !ok || driver == nil {
 				fmt.Fprintln(cmd.ErrOrStderr(), "jump-back: herdr is unavailable")
 				return &ExitCodeError{Code: exitNotReady, Err: errors.New("herdr unavailable")}
 			}
@@ -137,7 +138,7 @@ func (a *App) jumpBackCmd() *cobra.Command {
 				fmt.Fprintln(cmd.ErrOrStderr(), "jump-back: history not ready")
 				return &ExitCodeError{Code: exitNotReady, Err: err}
 			}
-			return runJumpBack(cmd.Context(), driver, unixControlDialer{path: paths.ControlPath},
+			return runJumpBack(cmd.Context(), jumpDriver, unixControlDialer{path: paths.ControlPath},
 				paths.SessionKey, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}

@@ -17,6 +17,12 @@ var (
 	// without re-establishing the stream. It is a classified non-zero failure,
 	// NOT proof of host death, and must never be reported as a clean exit.
 	ErrReconnectExhausted = errors.New("watch-history: stream reconnect budget exhausted")
+	// These classifications are safe to use for terminal diagnostics without
+	// exposing socket paths, workspace ids, command output, or environment.
+	ErrSubscribeUnavailable = errors.New("watch-history: subscription unavailable")
+	ErrBootstrapUnavailable = errors.New("watch-history: bootstrap snapshot unavailable")
+	ErrStreamRead           = errors.New("watch-history: stream read failed")
+	ErrStreamHandling       = errors.New("watch-history: stream event handling failed")
 )
 
 // Subscribed workspace lifecycle events (DOTTED request spelling).
@@ -155,6 +161,8 @@ func Run(ctx context.Context, cfg Config) error {
 func runStreamLoop(ctx context.Context, cfg Config, owner *Owner, waiter Waiter) error {
 	backoff := reconnectInitialBackoff
 	var spent time.Duration
+	var lastErr error
+	var lastStreamErr bool
 
 	for {
 		if ctx.Err() != nil {
@@ -163,24 +171,36 @@ func runStreamLoop(ctx context.Context, cfg Config, owner *Owner, waiter Waiter)
 
 		conn, err := cfg.Dialer.Dial(ctx)
 		if err == nil {
-			// Connected: serve this stream until it drops. A stream that
-			// connected proves the host is reachable, so reset the reconnect
-			// budget for the next drop.
-			_ = serveStream(ctx, conn, owner, cfg.Snapshotter)
+			// A raw dial is not a healthy stream. Only a stream that completed
+			// subscribe, bootstrap, and handled at least one event may reset the
+			// reconnect budget; bootstrap failures therefore remain bounded.
+			streamErr := serveStream(ctx, conn, owner, cfg.Snapshotter)
 			_ = conn.Close()
 			if ctx.Err() != nil {
 				return nil
 			}
 			owner.InvalidateReadiness()
-			backoff = reconnectInitialBackoff
-			spent = 0
-		} else {
-			// Stream unavailable: readiness invalid, dial again after backoff.
+			if streamErr == nil {
+				backoff = reconnectInitialBackoff
+				spent = 0
+				lastStreamErr = false
+			} else {
+				err = streamErr
+				lastStreamErr = true
+			}
+		}
+		if err != nil {
+			// Stream unavailable: readiness invalid, dial/handshake/read again
+			// after bounded backoff. Preserve the classified cause on exhaustion.
+			lastErr = err
 			owner.InvalidateReadiness()
 		}
 
 		// Bounded backoff before the next dial; exhaustion fails closed.
 		if spent >= reconnectTotalCap {
+			if lastStreamErr {
+				return fmt.Errorf("%w: %w", ErrReconnectExhausted, lastErr)
+			}
 			return ErrReconnectExhausted
 		}
 		wait := backoff
@@ -201,12 +221,12 @@ func runStreamLoop(ctx context.Context, cfg Config, owner *Owner, waiter Waiter)
 func serveStream(ctx context.Context, conn net.Conn, owner *Owner, snap Snapshotter) error {
 	stream, err := Subscribe(ctx, conn, subscribedTypes)
 	if err != nil {
-		return fmt.Errorf("subscribe: %w", err)
+		return fmt.Errorf("%w: %w", ErrSubscribeUnavailable, err)
 	}
 
 	buffered := stream.ReadBuffered()
 	if err := owner.Bootstrap(ctx, buffered...); err != nil {
-		return fmt.Errorf("bootstrap: %w", err)
+		return fmt.Errorf("%w: %w", ErrBootstrapUnavailable, err)
 	}
 
 	// Close the stream promptly when ctx is cancelled so a blocked ReadEvent
@@ -216,20 +236,20 @@ func serveStream(ctx context.Context, conn net.Conn, owner *Owner, snap Snapshot
 
 	for _, raw := range buffered {
 		if herr := owner.HandleEventFrame(ctx, raw); herr != nil {
-			return fmt.Errorf("handle buffered event: %w", herr)
+			return fmt.Errorf("%w: %w", ErrStreamHandling, herr)
 		}
 	}
 
 	for {
 		raw, err := stream.ReadEvent()
 		if err != nil {
-			return fmt.Errorf("read event: %w", err)
+			return fmt.Errorf("%w: %w", ErrStreamRead, err)
 		}
 		if herr := owner.HandleEventFrame(ctx, raw); herr != nil {
 			// Malformed frame or store write error: readiness already
 			// invalidated by the owner; drop this stream and reconnect rather
 			// than retrying the same write forever.
-			return fmt.Errorf("handle event: %w", herr)
+			return fmt.Errorf("%w: %w", ErrStreamHandling, herr)
 		}
 	}
 }

@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -63,6 +64,28 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte,
 // lookPathFn is the signature of exec.LookPath so tests can substitute a
 // fake without polluting PATH.
 type lookPathFn func(string) (string, error)
+
+// WithBinaryEnv injects the plugin runtime environment lookup. The default
+// reads HERDR_BIN_PATH only when the driver is constructed, keeping command
+// resolution deterministic for long-lived drivers and tests.
+func WithBinaryEnv(lookup func(string) (string, bool)) Option {
+	return func(d *Driver) {
+		if lookup == nil {
+			return
+		}
+		if candidate, ok := lookup("HERDR_BIN_PATH"); ok && validBinaryPath(candidate) {
+			d.binary = candidate
+		}
+	}
+}
+
+func validBinaryPath(path string) bool {
+	if strings.TrimSpace(path) == "" || !filepath.IsAbs(path) {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir() && info.Mode()&0o111 != 0
+}
 
 // Driver is the real source.HerdrDriver backed by the herdr CLI. It is safe
 // to construct one per command invocation; all state lives in the JSON

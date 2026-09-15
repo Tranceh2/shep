@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -221,6 +222,21 @@ func TestWatchHistoryCmd_ReportsStartupFailureToStderr(t *testing.T) {
 // nothing. R2.S1 requires the second collector to exit WITHOUT disturbing the
 // incumbent and to log the rejection, and R6 requires repeated starts against
 // a live owner to be no-ops.
+func TestReportCollectorExit_ClassifiesBootstrapFailureWithoutLeakingCause(t *testing.T) {
+	var errOut bytes.Buffer
+	internal := errors.New("snapshot command exposed socket=/private/session secret=token")
+	err := reportCollectorExit(fmt.Errorf("%w: %w", herdrwatch.ErrReconnectExhausted, fmt.Errorf("%w: %w", herdrwatch.ErrBootstrapUnavailable, internal)), &errOut)
+	if err == nil || ExitCode(err) == 0 {
+		t.Fatalf("bootstrap exhaustion must be non-zero, got %v", err)
+	}
+	if !strings.Contains(errOut.String(), "reconnect budget exhausted") {
+		t.Fatalf("stderr = %q, want bounded reconnect classification", errOut.String())
+	}
+	if strings.Contains(errOut.String(), "socket=") || strings.Contains(errOut.String(), "token") {
+		t.Fatalf("stderr leaked internal bootstrap details: %q", errOut.String())
+	}
+}
+
 func TestReportCollectorExit_DuplicateStartLogsRejectionAndExitsZero(t *testing.T) {
 	var errOut bytes.Buffer
 

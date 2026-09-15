@@ -1,11 +1,13 @@
 package herdrwatch_test
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
 	"net"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -20,6 +22,39 @@ type scriptedDialer struct {
 	conns []net.Conn
 	errs  []error
 	calls int
+}
+
+type bootstrapFailureDialer struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (d *bootstrapFailureDialer) Dial(ctx context.Context) (net.Conn, error) {
+	d.mu.Lock()
+	d.calls++
+	d.mu.Unlock()
+	server, client := net.Pipe()
+	go func() {
+		defer server.Close()
+		if _, err := bufio.NewReader(server).ReadString('\n'); err != nil {
+			return
+		}
+		_, _ = io.WriteString(server, `{"id":"sub","result":{"type":"subscription_started"}}`+"\n")
+		<-ctx.Done()
+	}()
+	return client, nil
+}
+
+func (d *bootstrapFailureDialer) callCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.calls
+}
+
+type failingSnapshotter struct{ err error }
+
+func (s failingSnapshotter) Snapshot(context.Context) (herdrwatch.Membership, error) {
+	return herdrwatch.Membership{}, s.err
 }
 
 func (d *scriptedDialer) Dial(ctx context.Context) (net.Conn, error) {
@@ -44,6 +79,13 @@ func (d *scriptedDialer) callCount() int {
 
 // fakeWaiter records reconnect backoff durations and returns immediately so no
 // real 30s wait happens in tests. It honors ctx cancellation.
+type holdingWaiter struct{}
+
+func (holdingWaiter) Wait(ctx context.Context, _ time.Duration) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 type fakeWaiter struct {
 	mu    sync.Mutex
 	waits []time.Duration
@@ -83,6 +125,64 @@ func testRunConfig(t *testing.T, dialer herdrwatch.StreamDialer) herdrwatch.Conf
 		Store:       store,
 		Snapshotter: snap,
 		Dialer:      dialer,
+	}
+}
+
+func TestRun_PersistentBootstrapFailureIsBoundedAndClassified(t *testing.T) {
+	dir := shortTempDir(t)
+	store := newTestStore(t)
+	dialer := &bootstrapFailureDialer{}
+	waiter := &fakeWaiter{}
+	cfg := herdrwatch.Config{
+		SessionKey:  "bootstrap-failure-session",
+		LockPath:    filepath.Join(dir, "own.lock"),
+		ControlPath: filepath.Join(dir, "c.sock"),
+		Store:       store,
+		Snapshotter: failingSnapshotter{err: errors.New("snapshot unavailable")},
+		Dialer:      dialer,
+		Waiter:      waiter,
+	}
+
+	err := herdrwatch.Run(context.Background(), cfg)
+	if !errors.Is(err, herdrwatch.ErrReconnectExhausted) {
+		t.Fatalf("error = %v, want ErrReconnectExhausted", err)
+	}
+	if !strings.Contains(err.Error(), "bootstrap") {
+		t.Fatalf("error = %v, want bootstrap classification", err)
+	}
+	if dialer.callCount() > 20 {
+		t.Fatalf("bootstrap failure loop made %d dials, want bounded attempts", dialer.callCount())
+	}
+	if waiter.total() > 30*time.Second {
+		t.Fatalf("total backoff %v exceeds reconnect cap", waiter.total())
+	}
+}
+
+func TestRun_CancellationDuringBootstrapReconnectExitsCleanly(t *testing.T) {
+	dir := shortTempDir(t)
+	store := newTestStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cfg := herdrwatch.Config{
+		SessionKey:  "bootstrap-cancel-session",
+		LockPath:    filepath.Join(dir, "own.lock"),
+		ControlPath: filepath.Join(dir, "c.sock"),
+		Store:       store,
+		Snapshotter: failingSnapshotter{err: errors.New("snapshot unavailable")},
+		Dialer:      &bootstrapFailureDialer{},
+		Waiter:      holdingWaiter{},
+	}
+	done := make(chan error, 1)
+	go func() { done <- herdrwatch.Run(ctx, cfg) }()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("canceled collector error = %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("collector did not exit after cancellation")
 	}
 }
 
