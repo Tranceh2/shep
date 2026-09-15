@@ -298,3 +298,149 @@ func TestBuildStreamingProducers_IntegrationFailureSurfacesVisibleError(t *testi
 		t.Fatal("expected the integration producer to run and report an error")
 	}
 }
+
+func TestBuildRankingProducer_LoadsWorkspaceMRU(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.Ranking.Enabled = true
+	app := New(
+		WithHistoryMRUReader(func(context.Context) ([]string, error) {
+			return []string{"ws-c", "ws-b", "ws-a"}, nil
+		}),
+	)
+	app.cfg = cfg
+	app.rankingOpen = tempRankingOpen(t)
+
+	producer := app.buildRankingProducer()
+	msg := producer(context.Background())
+	if msg.Err != nil {
+		t.Fatalf("ranking producer Err = %v, want nil", msg.Err)
+	}
+	if msg.RankingSnapshot == nil {
+		t.Fatal("expected non-nil RankingSnapshot")
+	}
+	mru := msg.RankingSnapshot.WorkspaceMRU()
+	if len(mru) != 3 || mru[0] != "ws-c" || mru[1] != "ws-b" || mru[2] != "ws-a" {
+		t.Fatalf("msg.RankingSnapshot.WorkspaceMRU = %v, want [ws-c ws-b ws-a]", mru)
+	}
+}
+
+func TestOpen_AsyncLoader_FocusMRU_EndToEndOrdering(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.Ranking.Enabled = true
+
+	snap := source.Snapshot{
+		FocusedWorkspaceID: "ws-c",
+		Workspaces: []source.Workspace{
+			{ID: "ws-a", Label: "ws-a"},
+			{ID: "ws-b", Label: "ws-b"},
+			{ID: "ws-c", Label: "ws-c"},
+		},
+	}
+
+	driver := &openDriver{
+		detect:   true,
+		snapshot: snap,
+	}
+
+	var capturedRanking ranking.Snapshot
+	var capturedCandidates []source.Candidate
+	var capturedOrder []string
+
+	app := New(
+		WithHerdrDriver(driver),
+		WithLayoutApplier(driver),
+		WithHistoryMRUReader(func(context.Context) ([]string, error) {
+			return []string{"ws-c", "ws-b", "ws-a"}, nil
+		}),
+		WithAsyncTUIRunner(func(ctx context.Context, producers []tui.SourceProducer, query string, layout tui.Layout) (source.Candidate, tui.RowAction, string, *source.Pane, bool, error) {
+			capturedOrder = layout.SourceOrder
+			for _, p := range producers {
+				msg := p(ctx)
+				if msg.RankingSnapshot != nil {
+					capturedRanking = *msg.RankingSnapshot
+				}
+				if len(msg.Candidates) > 0 {
+					capturedCandidates = append(capturedCandidates, msg.Candidates...)
+				}
+			}
+			return source.Candidate{Label: "ws-b", Source: config.SourceHerdr, Meta: map[string]string{"workspace_id": "ws-b"}}, tui.RowActionOpen, "", nil, true, nil
+		}),
+	)
+	app.cfg = cfg
+	app.probes = config.Probes{Herdr: true}
+	app.rankingOpen = tempRankingOpen(t)
+
+	var stdout, stderr bytes.Buffer
+	app.out = &stdout
+	app.err = &stderr
+
+	cmd := app.openCmd()
+	cmd.SetContext(context.Background())
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("openCmd Execute err = %v", err)
+	}
+
+	capturedRanking = capturedRanking.WithCurrentExact(ranking.Identity(source.Candidate{
+		Source: config.SourceHerdr,
+		Meta:   map[string]string{"workspace_id": "ws-c"},
+	}))
+	sorted := ranking.SortBySourceOrder(capturedCandidates, "", capturedOrder, capturedRanking)
+	want := []string{"ws-b", "ws-a", "ws-c"}
+	if len(sorted) != len(want) {
+		t.Fatalf("got %d sorted candidates, want %d", len(sorted), len(want))
+	}
+	for i, label := range want {
+		if sorted[i].Label != label {
+			t.Errorf("sorted[%d] = %q, want %q", i, sorted[i].Label, label)
+		}
+	}
+}
+
+func TestOpen_FocusMRU_StaleClosedIDsFilteredInSynchronousPath(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.Ranking.Enabled = true
+
+	snap := source.Snapshot{
+		FocusedWorkspaceID: "ws-c",
+		Workspaces: []source.Workspace{
+			{ID: "ws-a", Label: "ws-a"},
+			{ID: "ws-b", Label: "ws-b"},
+			{ID: "ws-c", Label: "ws-c"},
+		},
+	}
+
+	driver := &openDriver{
+		detect:   true,
+		snapshot: snap,
+	}
+
+	app := New(
+		WithHerdrDriver(driver),
+		WithLayoutApplier(driver),
+		WithHistoryMRUReader(func(context.Context) ([]string, error) {
+			return []string{"ws-c", "ws-closed-x", "ws-b", "ws-closed-y", "ws-a"}, nil
+		}),
+	)
+	app.cfg = cfg
+	app.probes = config.Probes{Herdr: true}
+	app.rankingOpen = tempRankingOpen(t)
+
+	var stdout, stderr bytes.Buffer
+	app.out = &stdout
+	app.err = &stderr
+
+	cmd := app.openCmd()
+	cmd.SetContext(context.Background())
+	cmd.SetArgs([]string{"--path", "/tmp"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("openCmd Execute err = %v", err)
+	}
+
+	mru := app.rankingData.WorkspaceMRU()
+	if len(mru) != 3 || mru[0] != "ws-c" || mru[1] != "ws-b" || mru[2] != "ws-a" {
+		t.Fatalf("filtered MRU = %v, want [ws-c ws-b ws-a]", mru)
+	}
+}

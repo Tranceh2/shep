@@ -361,3 +361,58 @@ func TestStore_Permissions(t *testing.T) {
 		t.Errorf("expected file perms 0600, got %o", infoFile.Mode().Perm())
 	}
 }
+
+func TestReadWorkspaceMRUFromPath(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "jump_history.sqlite3")
+	sockPath := filepath.Join(tempDir, "herdr.sock")
+	if err := os.WriteFile(sockPath, []byte("sock"), 0o600); err != nil {
+		t.Fatalf("failed to write sock file: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// 1. Non-existent DB file returns empty slice, nil error
+	mru, err := history.ReadWorkspaceMRUFromPath(ctx, sockPath, filepath.Join(tempDir, "missing.sqlite3"))
+	if err != nil {
+		t.Fatalf("ReadWorkspaceMRUFromPath on missing file returned error: %v", err)
+	}
+	if len(mru) != 0 {
+		t.Fatalf("expected empty MRU for missing file, got %v", mru)
+	}
+
+	// 2. Empty socket path returns empty slice, nil error
+	mru, err = history.ReadWorkspaceMRUFromPath(ctx, "", dbPath)
+	if err != nil {
+		t.Fatalf("ReadWorkspaceMRUFromPath with empty socket returned error: %v", err)
+	}
+	if len(mru) != 0 {
+		t.Fatalf("expected empty MRU for empty socket, got %v", mru)
+	}
+
+	// 3. Write data to store
+	store, err := history.OpenPath(dbPath)
+	if err != nil {
+		t.Fatalf("OpenPath failed: %v", err)
+	}
+	key, err := history.CanonicalSessionKey(sockPath)
+	if err != nil {
+		t.Fatalf("CanonicalSessionKey failed: %v", err)
+	}
+	if _, err := store.Record(ctx, key, "ws-1"); err != nil {
+		t.Fatalf("Record ws-1 failed: %v", err)
+	}
+	if _, err := store.Record(ctx, key, "ws-2"); err != nil {
+		t.Fatalf("Record ws-2 failed: %v", err)
+	}
+	store.Close()
+
+	// 4. Read back MRU
+	mru, err = history.ReadWorkspaceMRUFromPath(ctx, sockPath, dbPath)
+	if err != nil {
+		t.Fatalf("ReadWorkspaceMRUFromPath failed: %v", err)
+	}
+	if len(mru) != 2 || mru[0] != "ws-2" || mru[1] != "ws-1" {
+		t.Fatalf("ReadWorkspaceMRUFromPath = %v, want [ws-2 ws-1]", mru)
+	}
+}

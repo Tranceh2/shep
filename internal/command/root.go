@@ -90,6 +90,7 @@ type App struct {
 	startupSnapshot          *source.Snapshot
 	startupSnapshotAttempted bool
 	statusDialer             tui.StatusDialer
+	historyMRUReader         func(context.Context) ([]string, error)
 	rankingStore             rankingStore
 	rankingData              ranking.Snapshot
 	rankingOpen              func() (rankingStore, error)
@@ -160,6 +161,11 @@ func WithSessionAttach(attach sessionAttachFunc) Option {
 // WithStatusDialer overrides the live status dialer for tests.
 func WithStatusDialer(dialer tui.StatusDialer) Option {
 	return func(a *App) { a.statusDialer = dialer }
+}
+
+// WithHistoryMRUReader overrides the workspace focus MRU reader for tests.
+func WithHistoryMRUReader(reader func(context.Context) ([]string, error)) Option {
+	return func(a *App) { a.historyMRUReader = reader }
 }
 
 // WithAsyncTUIRunner overrides the interactive input-first TUI runner for tests.

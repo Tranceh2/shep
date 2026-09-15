@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/tranceh2/shep/internal/pathutil"
 	_ "modernc.org/sqlite"
 )
 
@@ -41,6 +42,55 @@ func nextUniqueSeq() int64 {
 type Store struct {
 	db *sql.DB
 	mu sync.Mutex
+}
+
+// DefaultDBPath returns the canonical path to jump_history.sqlite3 in shep's state directory.
+func DefaultDBPath() (string, error) {
+	return pathutil.StatePath("shep", "jump_history.sqlite3")
+}
+
+// OpenDefault opens the history store at the default state location.
+func OpenDefault() (*Store, error) {
+	path, err := DefaultDBPath()
+	if err != nil {
+		return nil, err
+	}
+	return OpenPath(path)
+}
+
+// ReadWorkspaceMRU reads the workspace MRU for socketPath from the default history store.
+// If socketPath is empty or the database file cannot be read, it returns an empty slice and nil error.
+func ReadWorkspaceMRU(ctx context.Context, socketPath string) ([]string, error) {
+	if socketPath == "" {
+		return []string{}, nil
+	}
+	dbPath, err := DefaultDBPath()
+	if err != nil {
+		return []string{}, nil
+	}
+	return ReadWorkspaceMRUFromPath(ctx, socketPath, dbPath)
+}
+
+// ReadWorkspaceMRUFromPath reads the workspace MRU for socketPath from the SQLite store at dbPath.
+// If socketPath is empty or the database file does not exist, it returns an empty slice and nil error.
+func ReadWorkspaceMRUFromPath(ctx context.Context, socketPath, dbPath string) ([]string, error) {
+	if socketPath == "" || dbPath == "" {
+		return []string{}, nil
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		return []string{}, nil
+	}
+	sessionKey, err := CanonicalSessionKey(socketPath)
+	if err != nil {
+		return nil, fmt.Errorf("derive session key: %w", err)
+	}
+	store, err := OpenPath(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("open history store: %w", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	return store.List(ctx, sessionKey)
 }
 
 // CanonicalSessionKey computes SHA-256(canonical socket path) as a hex string.

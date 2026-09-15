@@ -624,11 +624,14 @@ func (m Model) handleSourceResult(msg SourceResultMsg) (Model, tea.Cmd) {
 
 	if msg.RankingSnapshot != nil {
 		m.rankingSnapshot = *msg.RankingSnapshot
-		if m.startupSnapshot != nil && m.startupSnapshot.FocusedWorkspaceID != "" {
-			m.rankingSnapshot = m.rankingSnapshot.WithCurrentExact(ranking.Identity(source.Candidate{
-				Source: config.SourceHerdr,
-				Meta:   map[string]string{"workspace_id": m.startupSnapshot.FocusedWorkspaceID},
-			}))
+		if m.startupSnapshot != nil {
+			m.rankingSnapshot = m.rankingSnapshot.WithFilteredWorkspaceMRU(m.startupSnapshot.Workspaces)
+			if m.startupSnapshot.FocusedWorkspaceID != "" {
+				m.rankingSnapshot = m.rankingSnapshot.WithCurrentExact(ranking.Identity(source.Candidate{
+					Source: config.SourceHerdr,
+					Meta:   map[string]string{"workspace_id": m.startupSnapshot.FocusedWorkspaceID},
+				}))
+			}
 		}
 	}
 
@@ -653,6 +656,7 @@ func (m Model) handleSourceResult(msg SourceResultMsg) (Model, tea.Cmd) {
 	if msg.Snapshot != nil {
 		m.startupSnapshot = msg.Snapshot
 		m.lastSnapshotAt = m.now()
+		m.rankingSnapshot = m.rankingSnapshot.WithFilteredWorkspaceMRU(msg.Snapshot.Workspaces)
 		if m.rankingSnapshot.Active() && msg.Snapshot.FocusedWorkspaceID != "" {
 			m.rankingSnapshot = m.rankingSnapshot.WithCurrentExact(ranking.Identity(source.Candidate{
 				Source: config.SourceHerdr,
@@ -895,6 +899,15 @@ func (m Model) handleSnapshotResponse(msg snapshotResponseMsg) (Model, tea.Cmd) 
 	}
 	if m.rendererForSnapshot != nil {
 		m.renderer = m.rendererForSnapshot(msg.snapshot)
+	}
+	if m.rankingSnapshot.Active() {
+		m.rankingSnapshot = m.rankingSnapshot.WithFilteredWorkspaceMRU(msg.snapshot.Workspaces)
+		if msg.snapshot.FocusedWorkspaceID != "" {
+			m.rankingSnapshot = m.rankingSnapshot.WithCurrentExact(ranking.Identity(source.Candidate{
+				Source: config.SourceHerdr,
+				Meta:   map[string]string{"workspace_id": msg.snapshot.FocusedWorkspaceID},
+			}))
+		}
 	}
 	m.lastSnapshotAt = m.now()
 	m.previewSeq++

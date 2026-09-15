@@ -4,7 +4,9 @@
 you are currently attached to. It is the navigation half of the feature: it
 reads focus history that the `watch-history` collector maintains, revalidates
 the target against live Herdr state, and focuses it — or refuses with a
-specific reason.
+specific reason. The same focus history also drives the open workspace MRU
+order in the Shep picker when opening with an empty query (gracefully falling
+back to launch ranking when the collector is not running).
 
 History is collected by `shep watch-history`, a hidden long-lived command that
 the bundled Herdr plugin starts. Until that collector runs, `jump-back`

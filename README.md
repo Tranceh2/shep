@@ -86,8 +86,10 @@ workspace_name = '{{ .Path | osBase | lower }}'
   "Command/JSON integrations" below).
 
 For an empty query, source blocks remain contiguous in `source_order`. Each
-source keeps its local policy: Herdr puts previous/recent entries first and the
-currently focused workspace last; `workspaces` preserves configured order;
+source keeps its local policy: Herdr orders open workspaces by live focus MRU
+(using the `watch-history` collector when active, gracefully falling back to
+launch history), putting previously focused workspaces first and the currently
+focused workspace last; `workspaces` preserves configured order;
 zoxide preserves provider order; and projects apply adaptive ordering only
 within the projects block. A group's explicit `source_order` replaces the global order for that nested
 picker. When it is omitted, the nested registry uses the global order while

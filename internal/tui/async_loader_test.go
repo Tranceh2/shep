@@ -733,3 +733,85 @@ func TestModel_AsyncLoader_QueryEditAfterExplicitNavigationResetsCursorAndPinsFi
 		t.Fatalf("current row = %+v, want alpha-ws-1", cur)
 	}
 }
+
+func TestModel_AsyncLoader_FocusMRU_OrderingAndArrivalOrderInvariance(t *testing.T) {
+	t.Parallel()
+
+	candA := source.Candidate{Source: config.SourceHerdr, Label: "ws-a", Meta: map[string]string{"workspace_id": "ws-a"}}
+	candB := source.Candidate{Source: config.SourceHerdr, Label: "ws-b", Meta: map[string]string{"workspace_id": "ws-b"}}
+	candC := source.Candidate{Source: config.SourceHerdr, Label: "ws-c", Meta: map[string]string{"workspace_id": "ws-c"}}
+
+	snap := source.Snapshot{
+		FocusedWorkspaceID: "ws-c",
+		Workspaces: []source.Workspace{
+			{ID: "ws-a", Label: "ws-a"},
+			{ID: "ws-b", Label: "ws-b"},
+			{ID: "ws-c", Label: "ws-c"},
+		},
+	}
+
+	msgHerdr := SourceResultMsg{
+		Source:     config.SourceHerdr,
+		Candidates: []source.Candidate{candA, candB, candC},
+		Snapshot:   &snap,
+	}
+
+	rankingSnap := ranking.Snapshot{}.
+		WithAdaptiveEnabled(true).
+		WithWorkspaceMRU([]string{"ws-c", "ws-b", "ws-a"})
+
+	msgRanking := SourceResultMsg{
+		Source:          "ranking",
+		RankingSnapshot: &rankingSnap,
+	}
+
+	layout := Layout{SourceOrder: []string{config.SourceHerdr}}
+
+	// Case 1: Herdr arrives first, then Ranking
+	{
+		m := NewModelWithProducers([]SourceProducer{nil, nil}, "", nil, context.Background(), layout)
+		msgH := msgHerdr
+		msgH.producerID = 0
+		next, _ := m.Update(msgH)
+		m = next.(Model)
+
+		msgR := msgRanking
+		msgR.producerID = 1
+		next, _ = m.Update(msgR)
+		m = next.(Model)
+
+		if len(m.rows) != 3 {
+			t.Fatalf("case 1: got %d rows, want 3", len(m.rows))
+		}
+		want := []string{"ws-b", "ws-a", "ws-c"}
+		for i, label := range want {
+			if m.rows[i].Candidate.Label != label {
+				t.Errorf("case 1: row[%d] = %q, want %q", i, m.rows[i].Candidate.Label, label)
+			}
+		}
+	}
+
+	// Case 2: Ranking arrives first, then Herdr
+	{
+		m := NewModelWithProducers([]SourceProducer{nil, nil}, "", nil, context.Background(), layout)
+		msgR := msgRanking
+		msgR.producerID = 1
+		next, _ := m.Update(msgR)
+		m = next.(Model)
+
+		msgH := msgHerdr
+		msgH.producerID = 0
+		next, _ = m.Update(msgH)
+		m = next.(Model)
+
+		if len(m.rows) != 3 {
+			t.Fatalf("case 2: got %d rows, want 3", len(m.rows))
+		}
+		want := []string{"ws-b", "ws-a", "ws-c"}
+		for i, label := range want {
+			if m.rows[i].Candidate.Label != label {
+				t.Errorf("case 2: row[%d] = %q, want %q", i, m.rows[i].Candidate.Label, label)
+			}
+		}
+	}
+}

@@ -27,6 +27,7 @@ type Snapshot struct {
 	exact            map[string]usage
 	resource         map[string]usage
 	recent           []string
+	workspaceMRU     []string
 	pins             map[string]struct{}
 	currentExact     string
 	capturedAt       time.Time
@@ -38,6 +39,46 @@ func (s Snapshot) WithCurrentExact(identity string) Snapshot {
 	return s
 }
 
+// WithWorkspaceMRU returns a copy of the snapshot with the ordered focus MRU workspace IDs attached.
+func (s Snapshot) WithWorkspaceMRU(mru []string) Snapshot {
+	out := s
+	out.workspaceMRU = make([]string, len(mru))
+	copy(out.workspaceMRU, mru)
+	return out
+}
+
+// WorkspaceMRU returns a defensive copy of the workspace focus MRU IDs.
+func (s Snapshot) WorkspaceMRU() []string {
+	if len(s.workspaceMRU) == 0 {
+		return nil
+	}
+	out := make([]string, len(s.workspaceMRU))
+	copy(out, s.workspaceMRU)
+	return out
+}
+
+// WithFilteredWorkspaceMRU filters the workspace focus MRU against live workspace membership.
+func (s Snapshot) WithFilteredWorkspaceMRU(workspaces []source.Workspace) Snapshot {
+	if len(s.workspaceMRU) == 0 || len(workspaces) == 0 {
+		return s
+	}
+	live := make(map[string]struct{}, len(workspaces))
+	for _, ws := range workspaces {
+		if ws.ID != "" {
+			live[ws.ID] = struct{}{}
+		}
+	}
+	filtered := make([]string, 0, len(s.workspaceMRU))
+	for _, id := range s.workspaceMRU {
+		if _, ok := live[id]; ok {
+			filtered = append(filtered, id)
+		}
+	}
+	out := s
+	out.workspaceMRU = filtered
+	return out
+}
+
 func (s Snapshot) Active() bool { return s.enabled && !s.adaptiveDisabled }
 
 // CurrentExact returns the exact identity excluded from previous-target
@@ -46,7 +87,7 @@ func (s Snapshot) CurrentExact() string { return s.currentExact }
 
 // HasHistory reports whether the immutable snapshot contains learned state.
 func (s Snapshot) HasHistory() bool {
-	return len(s.exact) > 0 || len(s.resource) > 0 || len(s.recent) > 0
+	return len(s.exact) > 0 || len(s.resource) > 0 || len(s.recent) > 0 || len(s.workspaceMRU) > 0
 }
 
 // IsPinned reports whether candidate's stable resource or identity key is pinned.
@@ -62,6 +103,7 @@ func (s Snapshot) IsPinned(candidate source.Candidate) bool {
 // WithAdaptiveEnabled returns a copy whose adaptive ranking state is enabled or
 // disabled without changing the independently persisted pin set.
 func (s Snapshot) WithAdaptiveEnabled(enabled bool) Snapshot {
+	s.enabled = enabled
 	s.adaptiveDisabled = !enabled
 	return s
 }
@@ -336,6 +378,11 @@ func sortCandidates(candidates []source.Candidate, query string, snapshot Snapsh
 				return !leftCurrent
 			}
 			if !leftCurrent && !rightCurrent {
+				leftMRU := snapshot.workspaceMRURank(left.candidate)
+				rightMRU := snapshot.workspaceMRURank(right.candidate)
+				if leftMRU != rightMRU {
+					return leftMRU < rightMRU
+				}
 				leftRecent := snapshot.recentRank(Identity(left.candidate))
 				rightRecent := snapshot.recentRank(Identity(right.candidate))
 				if leftRecent != rightRecent {
@@ -460,6 +507,22 @@ func ContainsWordOrPrefix(query, label string) bool {
 
 func isOpenAction(candidate source.Candidate) bool {
 	return candidate.Source == config.SourceHerdr || candidate.Meta["tab_id"] != "" || candidate.Meta["pane_id"] != ""
+}
+
+func (s Snapshot) workspaceMRURank(candidate source.Candidate) int {
+	if candidate.Source != config.SourceHerdr || candidate.Meta == nil || len(s.workspaceMRU) == 0 {
+		return len(s.workspaceMRU) + 1
+	}
+	wsID := candidate.Meta["workspace_id"]
+	if wsID == "" {
+		return len(s.workspaceMRU) + 1
+	}
+	for index, id := range s.workspaceMRU {
+		if id == wsID {
+			return index
+		}
+	}
+	return len(s.workspaceMRU) + 1
 }
 
 func (s Snapshot) recentRank(identity string) int {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/tranceh2/shep/internal/config"
+	"github.com/tranceh2/shep/internal/history"
 	"github.com/tranceh2/shep/internal/pathutil"
 	"github.com/tranceh2/shep/internal/preview"
 	"github.com/tranceh2/shep/internal/ranking"
@@ -165,6 +166,19 @@ func (a *App) pinToggler() tui.PinToggler {
 	}
 }
 
+func (a *App) loadWorkspaceMRU(ctx context.Context) ([]string, error) {
+	if a.historyMRUReader != nil {
+		return a.historyMRUReader(ctx)
+	}
+	socketPath := currentHerdrSocketPath()
+	if socketPath == "" {
+		return nil, nil
+	}
+	readCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	return history.ReadWorkspaceMRU(readCtx, socketPath)
+}
+
 func (a *App) openRankingForPins(ctx context.Context) error {
 	a.rankingMu.Lock()
 	defer a.rankingMu.Unlock()
@@ -181,6 +195,9 @@ func (a *App) openRankingForPins(ctx context.Context) error {
 	}
 	a.rankingStore = store
 	snapshot := store.Snapshot(ctx, "")
+	if mru, err := a.loadWorkspaceMRU(ctx); err == nil && len(mru) > 0 {
+		snapshot = snapshot.WithWorkspaceMRU(mru)
+	}
 	if !a.Config().Ranking.Enabled {
 		snapshot = snapshot.WithAdaptiveEnabled(false)
 	}
@@ -666,6 +683,9 @@ func (a *App) buildRankingProducer() tui.SourceProducer {
 		a.rankingMu.Lock()
 		snap := store.Snapshot(ctx, "")
 		a.rankingMu.Unlock()
+		if mru, err := a.loadWorkspaceMRU(ctx); err == nil && len(mru) > 0 {
+			snap = snap.WithWorkspaceMRU(mru)
+		}
 		return tui.SourceResultMsg{
 			Source:          "ranking",
 			RankingSnapshot: &snap,
@@ -746,7 +766,11 @@ func (a *App) runOpen(cmd *cobra.Command, query, pathFlag, targetFlag string) er
 			if store, err := openRanking(); err == nil {
 				a.rankingMu.Lock()
 				a.rankingStore = store
-				a.rankingData = store.Snapshot(cmd.Context(), "")
+				snap := store.Snapshot(cmd.Context(), "")
+				if mru, err := a.loadWorkspaceMRU(cmd.Context()); err == nil && len(mru) > 0 {
+					snap = snap.WithWorkspaceMRU(mru)
+				}
+				a.rankingData = snap
 				a.rankingMu.Unlock()
 			}
 		}
@@ -754,12 +778,17 @@ func (a *App) runOpen(cmd *cobra.Command, query, pathFlag, targetFlag string) er
 		if err := a.hydrateStartupSnapshot(cmd.Context()); err != nil {
 			fmt.Fprintf(errOut, "warning: herdr snapshot unavailable: %v\n", err)
 		}
-		if a.startupSnapshot != nil && a.startupSnapshot.FocusedWorkspaceID != "" {
+		if a.startupSnapshot != nil {
 			a.rankingMu.Lock()
-			a.rankingData = a.rankingData.WithCurrentExact(ranking.Identity(source.Candidate{
-				Source: config.SourceHerdr,
-				Meta:   map[string]string{"workspace_id": a.startupSnapshot.FocusedWorkspaceID},
-			}))
+			if len(a.startupSnapshot.Workspaces) > 0 {
+				a.rankingData = a.rankingData.WithFilteredWorkspaceMRU(a.startupSnapshot.Workspaces)
+			}
+			if a.startupSnapshot.FocusedWorkspaceID != "" {
+				a.rankingData = a.rankingData.WithCurrentExact(ranking.Identity(source.Candidate{
+					Source: config.SourceHerdr,
+					Meta:   map[string]string{"workspace_id": a.startupSnapshot.FocusedWorkspaceID},
+				}))
+			}
 			a.rankingMu.Unlock()
 		}
 

@@ -389,3 +389,177 @@ func TestSortOpenHerdrWinsWithinEveryTextualLayer(t *testing.T) {
 		})
 	}
 }
+
+func TestSort_FocusMRU_OrdersOpenWorkspacesByFocusHistory(t *testing.T) {
+	wsA := source.Candidate{Source: config.SourceHerdr, Label: "ws-a", Meta: map[string]string{"workspace_id": "ws-a"}}
+	wsB := source.Candidate{Source: config.SourceHerdr, Label: "ws-b", Meta: map[string]string{"workspace_id": "ws-b"}}
+	wsC := source.Candidate{Source: config.SourceHerdr, Label: "ws-c", Meta: map[string]string{"workspace_id": "ws-c"}}
+
+	// launch history in ranking.sqlite3 had A first, then B
+	snapshot := Snapshot{
+		enabled:      true,
+		currentExact: Identity(wsC),
+		recent:       []string{exactStorageKey(Identity(wsA)), exactStorageKey(Identity(wsB))},
+		workspaceMRU: []string{"ws-c", "ws-b", "ws-a"},
+	}
+
+	// Current=C and focus MRU=[C, B, A] must yield B, A, C (C demoted, B before A from focus MRU)
+	got := SortBySourceOrder([]source.Candidate{wsC, wsA, wsB}, "", []string{config.SourceHerdr}, snapshot)
+	want := []string{"ws-b", "ws-a", "ws-c"}
+	if len(got) != len(want) {
+		t.Fatalf("got %d candidates, want %d: %+v", len(got), len(want), got)
+	}
+	for i, label := range want {
+		if got[i].Label != label {
+			t.Errorf("candidate[%d] = %q, want %q", i, got[i].Label, label)
+		}
+	}
+}
+
+func TestSort_FocusMRU_TransitionsWithoutDuplicates(t *testing.T) {
+	wsA := source.Candidate{Source: config.SourceHerdr, Label: "ws-a", Meta: map[string]string{"workspace_id": "ws-a"}}
+	wsB := source.Candidate{Source: config.SourceHerdr, Label: "ws-b", Meta: map[string]string{"workspace_id": "ws-b"}}
+	wsC := source.Candidate{Source: config.SourceHerdr, Label: "ws-c", Meta: map[string]string{"workspace_id": "ws-c"}}
+
+	// Transition 1: A -> B -> C (focused C)
+	snapshotC := Snapshot{
+		enabled:      true,
+		currentExact: Identity(wsC),
+		workspaceMRU: []string{"ws-c", "ws-b", "ws-a"},
+	}
+	gotC := SortBySourceOrder([]source.Candidate{wsA, wsB, wsC}, "", []string{config.SourceHerdr}, snapshotC)
+	wantC := []string{"ws-b", "ws-a", "ws-c"}
+	for i, label := range wantC {
+		if gotC[i].Label != label {
+			t.Errorf("at C: candidate[%d] = %q, want %q", i, gotC[i].Label, label)
+		}
+	}
+
+	// Transition 2: Focus A (now chain is A -> C -> B, focused A)
+	snapshotA := Snapshot{
+		enabled:      true,
+		currentExact: Identity(wsA),
+		workspaceMRU: []string{"ws-a", "ws-c", "ws-b"},
+	}
+	gotA := SortBySourceOrder([]source.Candidate{wsA, wsB, wsC}, "", []string{config.SourceHerdr}, snapshotA)
+	wantA := []string{"ws-c", "ws-b", "ws-a"}
+	for i, label := range wantA {
+		if gotA[i].Label != label {
+			t.Errorf("at A: candidate[%d] = %q, want %q", i, gotA[i].Label, label)
+		}
+	}
+}
+
+func TestSort_FocusMRU_StaleClosedIDsIgnored(t *testing.T) {
+	wsA := source.Candidate{Source: config.SourceHerdr, Label: "ws-a", Meta: map[string]string{"workspace_id": "ws-a"}}
+	wsB := source.Candidate{Source: config.SourceHerdr, Label: "ws-b", Meta: map[string]string{"workspace_id": "ws-b"}}
+	wsC := source.Candidate{Source: config.SourceHerdr, Label: "ws-c", Meta: map[string]string{"workspace_id": "ws-c"}}
+
+	snapshot := Snapshot{
+		enabled:      true,
+		currentExact: Identity(wsC),
+		workspaceMRU: []string{"ws-c", "ws-closed-1", "ws-b", "ws-closed-2", "ws-a"},
+	}
+	got := SortBySourceOrder([]source.Candidate{wsC, wsA, wsB}, "", []string{config.SourceHerdr}, snapshot)
+	want := []string{"ws-b", "ws-a", "ws-c"}
+	for i, label := range want {
+		if got[i].Label != label {
+			t.Errorf("candidate[%d] = %q, want %q", i, got[i].Label, label)
+		}
+	}
+}
+
+func TestSort_FocusMRU_FallbackWhenHistoryUnavailable(t *testing.T) {
+	wsA := source.Candidate{Source: config.SourceHerdr, Label: "ws-a", Meta: map[string]string{"workspace_id": "ws-a"}}
+	wsB := source.Candidate{Source: config.SourceHerdr, Label: "ws-b", Meta: map[string]string{"workspace_id": "ws-b"}}
+	wsC := source.Candidate{Source: config.SourceHerdr, Label: "ws-c", Meta: map[string]string{"workspace_id": "ws-c"}}
+
+	// No workspaceMRU; recent launch history has A then B
+	snapshot := Snapshot{
+		enabled:      true,
+		currentExact: Identity(wsC),
+		recent:       []string{exactStorageKey(Identity(wsA)), exactStorageKey(Identity(wsB))},
+	}
+	got := SortBySourceOrder([]source.Candidate{wsC, wsB, wsA}, "", []string{config.SourceHerdr}, snapshot)
+	want := []string{"ws-a", "ws-b", "ws-c"}
+	for i, label := range want {
+		if got[i].Label != label {
+			t.Errorf("candidate[%d] = %q, want %q", i, got[i].Label, label)
+		}
+	}
+}
+
+func TestSort_FocusMRU_PinnedPriorityPreserved(t *testing.T) {
+	wsA := source.Candidate{Source: config.SourceHerdr, Label: "ws-a", Meta: map[string]string{"workspace_id": "ws-a"}}
+	wsB := source.Candidate{Source: config.SourceHerdr, Label: "ws-b", Meta: map[string]string{"workspace_id": "ws-b"}}
+	wsC := source.Candidate{Source: config.SourceHerdr, Label: "ws-c", Meta: map[string]string{"workspace_id": "ws-c"}}
+
+	// A is pinned, C is current, MRU is [C, B, A]
+	snapshot := Snapshot{
+		enabled:      true,
+		pins:         map[string]struct{}{PinKey(wsA): {}},
+		currentExact: Identity(wsC),
+		workspaceMRU: []string{"ws-c", "ws-b", "ws-a"},
+	}
+	got := SortBySourceOrder([]source.Candidate{wsC, wsB, wsA}, "", []string{config.SourceHerdr}, snapshot)
+	want := []string{"ws-a", "ws-b", "ws-c"}
+	for i, label := range want {
+		if got[i].Label != label {
+			t.Errorf("candidate[%d] = %q, want %q", i, got[i].Label, label)
+		}
+	}
+
+	// C is pinned AND current -> pinned takes priority over demotion
+	snapshotC := Snapshot{
+		enabled:      true,
+		pins:         map[string]struct{}{PinKey(wsC): {}},
+		currentExact: Identity(wsC),
+		workspaceMRU: []string{"ws-c", "ws-b", "ws-a"},
+	}
+	gotC := SortBySourceOrder([]source.Candidate{wsA, wsB, wsC}, "", []string{config.SourceHerdr}, snapshotC)
+	wantC := []string{"ws-c", "ws-b", "ws-a"}
+	for i, label := range wantC {
+		if gotC[i].Label != label {
+			t.Errorf("pinned current candidate[%d] = %q, want %q", i, gotC[i].Label, label)
+		}
+	}
+}
+
+func TestSort_FocusMRU_SourceBlocksRemainContiguous(t *testing.T) {
+	wsA := source.Candidate{Source: config.SourceHerdr, Label: "ws-a", Meta: map[string]string{"workspace_id": "ws-a"}}
+	wsB := source.Candidate{Source: config.SourceHerdr, Label: "ws-b", Meta: map[string]string{"workspace_id": "ws-b"}}
+	wsC := source.Candidate{Source: config.SourceHerdr, Label: "ws-c", Meta: map[string]string{"workspace_id": "ws-c"}}
+	proj := source.Candidate{Source: config.SourceProjects, Label: "proj-1"}
+	zox := source.Candidate{Source: config.SourceZoxide, Label: "zox-1"}
+
+	snapshot := Snapshot{
+		enabled:      true,
+		currentExact: Identity(wsC),
+		workspaceMRU: []string{"ws-c", "ws-b", "ws-a"},
+	}
+	input := []source.Candidate{proj, wsC, zox, wsA, wsB}
+	got := SortBySourceOrder(input, "", []string{config.SourceHerdr, config.SourceProjects, config.SourceZoxide}, snapshot)
+	want := []string{"ws-b", "ws-a", "ws-c", "proj-1", "zox-1"}
+	for i, label := range want {
+		if got[i].Label != label {
+			t.Errorf("candidate[%d] = %q, want %q", i, got[i].Label, label)
+		}
+	}
+}
+
+func TestSort_FocusMRU_NonEmptyQueryUnchanged(t *testing.T) {
+	wsA := source.Candidate{Source: config.SourceHerdr, Label: "project-alpha", Meta: map[string]string{"workspace_id": "ws-a"}}
+	wsB := source.Candidate{Source: config.SourceHerdr, Label: "project-beta", Meta: map[string]string{"workspace_id": "ws-b"}}
+	wsC := source.Candidate{Source: config.SourceHerdr, Label: "project-gamma", Meta: map[string]string{"workspace_id": "ws-c"}}
+
+	// With query "beta", wsB matches exact prefix
+	snapshot := Snapshot{
+		enabled:      true,
+		currentExact: Identity(wsC),
+		workspaceMRU: []string{"ws-c", "ws-a", "ws-b"}, // MRU has ws-a before ws-b
+	}
+	got := SortBySourceOrder([]source.Candidate{wsA, wsC, wsB}, "beta", []string{config.SourceHerdr}, snapshot)
+	if got[0].Label != "project-beta" {
+		t.Fatalf("query did not rank beta first: got %q", got[0].Label)
+	}
+}
