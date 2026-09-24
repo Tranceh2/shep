@@ -224,6 +224,9 @@ func resolvePreviewNames(cfg *config.Config, cand source.Candidate) []string {
 			if wsPath == "" || len(ws.Preview) == 0 {
 				continue
 			}
+			if cand.Source == config.SourceWorkspaces && ws.Name != cand.Label && ws.Name != cand.Meta["workspace_name"] {
+				continue
+			}
 			// pathutil.SameDir already resolves symlinks and case-fold
 			// equivalence via os.Stat + os.SameFile (device+inode identity), so
 			// no separate Normalize pass is needed on either side here: a

@@ -644,7 +644,8 @@ func (p *workspacesProvider) List(ctx context.Context) ([]Candidate, error) {
 			Source:  config.SourceWorkspaces,
 			Aliases: append([]string(nil), ws.Aliases...),
 			Meta: map[string]string{
-				"entry_id": workspaceEntryIdentity(path, ws),
+				"entry_id":       WorkspaceEntryIdentity(path, ws),
+				"workspace_name": ws.Name,
 			},
 		}
 		if _, err := os.Stat(path); err != nil {
@@ -653,27 +654,34 @@ func (p *workspacesProvider) List(ctx context.Context) ([]Candidate, error) {
 		switch {
 		case ws.Type == config.WorkspaceTypeGroup:
 			cand.Meta = map[string]string{
-				"group":         "true",
-				"group_sources": strings.Join(ws.SourceOrder, ","),
+				"group":          "true",
+				"group_sources":  strings.Join(ws.SourceOrder, ","),
+				"workspace_name": ws.Name,
 			}
 			if ws.Template != "" {
 				cand.Meta["group_template"] = ws.Template
 			}
 		case ws.Template != "":
-			cand.Meta = map[string]string{"template": ws.Template}
+			cand.Meta = map[string]string{
+				"template":       ws.Template,
+				"workspace_name": ws.Name,
+			}
 		case ws.Command != "":
-			cand.Meta = map[string]string{"command": ws.Command}
+			cand.Meta = map[string]string{
+				"command":        ws.Command,
+				"workspace_name": ws.Name,
+			}
 			if ws.CloseOnExit {
 				cand.Meta["close_on_exit"] = "true"
 			}
 		}
-		cand.Meta["entry_id"] = workspaceEntryIdentity(path, ws)
+		cand.Meta["entry_id"] = WorkspaceEntryIdentity(path, ws)
 		out = append(out, cand)
 	}
 	return out, nil
 }
 
-func workspaceEntryIdentity(path string, ws config.WorkspaceConfig) string {
+func WorkspaceEntryIdentity(path string, ws config.WorkspaceConfig) string {
 	normalized := path
 	if canonical, err := pathutil.Normalize(path); err == nil {
 		normalized = canonical

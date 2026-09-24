@@ -797,7 +797,7 @@ func TestWorkspacesProvider_IdentityIsOpaqueAndVersioned(t *testing.T) {
 	t.Parallel()
 	path := t.TempDir()
 	first := config.WorkspaceConfig{Name: "one", Path: path, Command: "nvim", Template: "dev"}
-	identity := workspaceEntryIdentity(path, first)
+	identity := WorkspaceEntryIdentity(path, first)
 	if strings.Contains(identity, path) || strings.Contains(identity, "nvim") || strings.Contains(identity, "dev") {
 		t.Fatalf("workspace identity leaks configured values: %q", identity)
 	}
@@ -814,11 +814,11 @@ func TestWorkspacesProvider_IdentityIgnoresPresentationAndOrder(t *testing.T) {
 	path := t.TempDir()
 	first := config.WorkspaceConfig{Name: "one", Path: path, Command: "nvim"}
 	second := config.WorkspaceConfig{Name: "renamed", Path: path, Command: "nvim"}
-	if got, want := workspaceEntryIdentity(path, first), workspaceEntryIdentity(path, second); got != want {
+	if got, want := WorkspaceEntryIdentity(path, first), WorkspaceEntryIdentity(path, second); got != want {
 		t.Fatalf("presentation-only change altered identity: %q != %q", got, want)
 	}
 	changed := config.WorkspaceConfig{Name: "one", Path: path, Command: "bash"}
-	if workspaceEntryIdentity(path, first) == workspaceEntryIdentity(path, changed) {
+	if WorkspaceEntryIdentity(path, first) == WorkspaceEntryIdentity(path, changed) {
 		t.Fatal("different actions share configured workspace identity")
 	}
 }
@@ -923,17 +923,17 @@ func TestWorkspacesProvider_IdentityCanonicalizesUnorderedGroupSources(t *testin
 	}
 	reordered := base
 	reordered.SourceOrder = []string{config.SourceZoxide, config.SourceProjects}
-	if got, want := workspaceEntryIdentity(path, base), workspaceEntryIdentity(path, reordered); got != want {
+	if got, want := WorkspaceEntryIdentity(path, base), WorkspaceEntryIdentity(path, reordered); got != want {
 		t.Fatalf("reordering group sources changed identity: %q != %q", got, want)
 	}
 	changedMembership := base
 	changedMembership.SourceOrder = []string{config.SourceProjects, config.SourceHerdr}
-	if workspaceEntryIdentity(path, base) == workspaceEntryIdentity(path, changedMembership) {
+	if WorkspaceEntryIdentity(path, base) == WorkspaceEntryIdentity(path, changedMembership) {
 		t.Fatal("different group source membership shares identity")
 	}
 	changedAction := base
 	changedAction.Template = "alternate"
-	if workspaceEntryIdentity(path, base) == workspaceEntryIdentity(path, changedAction) {
+	if WorkspaceEntryIdentity(path, base) == WorkspaceEntryIdentity(path, changedAction) {
 		t.Fatal("different workspace action shares identity")
 	}
 }

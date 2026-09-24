@@ -5,6 +5,7 @@ package jumpbackplugin
 
 import (
 	"os"
+	"os/exec"
 	"testing"
 
 	"github.com/pelletier/go-toml/v2"
@@ -186,6 +187,13 @@ func TestManifest_NeverLaunchesAnUnverifiedBinaryFromPath(t *testing.T) {
 // committed executable; bin/shep is an installation artifact the operator
 // copies in after verifying it.
 func TestManifest_DoesNotCommitAPluginBinary(t *testing.T) {
+	if _, err := exec.LookPath("git"); err == nil {
+		out, err := exec.Command("git", "ls-files", "--error-unmatch", "bin/shep").CombinedOutput()
+		if err == nil {
+			t.Fatalf("bin/shep must not be committed to git: %s", out)
+		}
+		return
+	}
 	if _, err := os.Stat("bin/shep"); err == nil {
 		t.Fatal("bin/shep must not be committed; it is an install-time artifact")
 	} else if !os.IsNotExist(err) {

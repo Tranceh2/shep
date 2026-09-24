@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -541,6 +542,24 @@ func TestResolvePreviewNames_CaseFoldMatches(t *testing.T) {
 	got := resolvePreviewNames(cfg, source.Candidate{Path: lower, Source: config.SourceZoxide})
 	if len(got) != 1 || got[0] != "custom" {
 		t.Errorf("got %v, want [custom] (case-insensitive filesystem match)", got)
+	}
+}
+
+func TestResolvePreviewNames_SamePathWorkspaces_DistinctPreviews(t *testing.T) {
+	t.Parallel()
+	shared := t.TempDir()
+	cfg := config.Defaults()
+	cfg.Workspaces = []config.WorkspaceConfig{
+		{Name: "Kubernetes", Path: shared, Preview: []string{"cluster", "health"}},
+		{Name: "ECORP", Path: shared, Preview: []string{"git", "dir"}},
+	}
+	gotKube := resolvePreviewNames(cfg, source.Candidate{Path: shared, Label: "Kubernetes", Source: config.SourceWorkspaces})
+	if !reflect.DeepEqual(gotKube, []string{"cluster", "health"}) {
+		t.Errorf("got %v, want [cluster health]", gotKube)
+	}
+	gotLatam := resolvePreviewNames(cfg, source.Candidate{Path: shared, Label: "ECORP", Source: config.SourceWorkspaces})
+	if !reflect.DeepEqual(gotLatam, []string{"git", "dir"}) {
+		t.Errorf("got %v, want [git dir]", gotLatam)
 	}
 }
 

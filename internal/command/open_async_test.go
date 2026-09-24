@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/ranking"
@@ -227,6 +228,83 @@ func TestOpen_AsyncLoader_GroupWorkspaceRecursion(t *testing.T) {
 	svcResolved := resolved(svc)
 	if driver.lastCand.NormalizedPath != svcResolved {
 		t.Errorf("driver got %q, want the drilled-down project %q", driver.lastCand.NormalizedPath, svcResolved)
+	}
+}
+
+// TestOpen_AsyncLoader_SamePathGroupWorkspaceRecursion proves that selecting a specific
+// group among multiple groups sharing the same path drills into that exact group's scoped registry.
+func TestOpen_AsyncLoader_SamePathGroupWorkspaceRecursion(t *testing.T) {
+	root := t.TempDir()
+	projDir := filepath.Join(root, "repo-ecorp")
+	if err := os.MkdirAll(filepath.Join(projDir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	counter := filepath.Join(t.TempDir(), "count")
+	script := filepath.Join(t.TempDir(), "list-contexts")
+	const scriptBody = "#!/bin/sh\ncount=0\nif [ -f \"$COUNT_FILE\" ]; then count=$(cat \"$COUNT_FILE\"); fi\nprintf '%s' $((count + 1)) > \"$COUNT_FILE\"\nprintf '[{\"label\":\"k8s-cluster\",\"path\":\"%s\"}]' \"$GROUP_ROOT\"\n"
+	if err := os.WriteFile(script, []byte(scriptBody), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COUNT_FILE", counter)
+	t.Setenv("GROUP_ROOT", root)
+
+	cfg := config.Defaults()
+	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
+	cfg.Sources.Projects = config.ProjectsSourceConfig{Markers: []string{".git"}}
+	cfg.Integrations = []config.IntegrationConfig{{
+		Name: "kube-contexts", Command: []string{script}, Timeout: config.Duration(time.Second), LabelFormat: "context={{.Label}}",
+	}}
+	cfg.Workspaces = []config.WorkspaceConfig{
+		{Name: "Kubernetes", Type: config.WorkspaceTypeGroup, Path: root, SourceOrder: []string{"kube-contexts"}},
+		{Name: "ECORP", Type: config.WorkspaceTypeGroup, Path: root, SourceOrder: []string{config.SourceProjects}},
+	}
+
+	driver := &openDriver{
+		detect:      true,
+		workspaceID: "wA",
+		lastAction:  source.HerdrActionFocused,
+	}
+
+	// Select the "ECORP" group specifically from the candidates in the async TUI runner.
+	app := New(
+		WithHerdrDriver(driver),
+		WithLayoutApplier(driver),
+		WithAsyncTUIRunner(func(ctx context.Context, producers []tui.SourceProducer, query string, layout tui.Layout) (source.Candidate, tui.RowAction, string, *source.Pane, bool, error) {
+			for _, p := range producers {
+				msg := p(ctx)
+				if msg.Err != nil {
+					return source.Candidate{}, tui.RowActionOpen, "", nil, false, msg.Err
+				}
+				for _, c := range msg.Candidates {
+					if c.Meta["group"] == "true" && c.Label == "ECORP" {
+						return c, tui.RowActionOpen, "", nil, true, nil
+					}
+				}
+			}
+			return source.Candidate{}, tui.RowActionOpen, "", nil, false, errors.New("ECORP group candidate not found")
+		}),
+	)
+
+	var out, errOut bytes.Buffer
+	app.out = &out
+	app.err = &errOut
+	app.cfg = cfg
+	app.probes = config.Probes{Herdr: true, Git: true}
+	app.rankingOpen = tempRankingOpen(t)
+
+	cmd := app.openCmd()
+	cmd.SetContext(context.Background())
+	err := app.runOpen(cmd, "", "", "workspace")
+	if err != nil {
+		t.Fatalf("runOpen: %v\nstderr: %s", err, errOut.String())
+	}
+
+	if driver.lastCand.Source != config.SourceProjects || driver.lastCand.Path != projDir {
+		t.Fatalf("driver got candidate %+v, want projects source in %s", driver.lastCand, projDir)
+	}
+	if _, err := os.Stat(counter); !os.IsNotExist(err) {
+		t.Fatalf("kube-contexts integration was executed when ECORP group was selected")
 	}
 }
 

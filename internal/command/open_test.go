@@ -1163,6 +1163,65 @@ func TestOpen_GroupWorkspaceLazilyRunsIntegrationAndDirectSelectsSingleRow(t *te
 	}
 }
 
+func TestOpen_SamePathGroups_ResolveDistinctGroupConfigs(t *testing.T) {
+	root := t.TempDir()
+	projDir := filepath.Join(root, "repo-ecorp")
+	if err := os.MkdirAll(filepath.Join(projDir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	counter := filepath.Join(t.TempDir(), "count")
+	script := filepath.Join(t.TempDir(), "list-contexts")
+	const scriptBody = "#!/bin/sh\ncount=0\nif [ -f \"$COUNT_FILE\" ]; then count=$(cat \"$COUNT_FILE\"); fi\nprintf '%s' $((count + 1)) > \"$COUNT_FILE\"\nprintf '[{\"label\":\"k8s-cluster\",\"path\":\"%s\"}]' \"$GROUP_ROOT\"\n"
+	if err := os.WriteFile(script, []byte(scriptBody), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COUNT_FILE", counter)
+	t.Setenv("GROUP_ROOT", root)
+
+	cfg := config.Defaults()
+	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
+	cfg.Sources.Projects = config.ProjectsSourceConfig{Markers: []string{".git"}}
+	cfg.Integrations = []config.IntegrationConfig{{
+		Name: "kube-contexts", Command: []string{script}, Timeout: config.Duration(time.Second), LabelFormat: "context={{.Label}}",
+	}}
+	// Two groups sharing the exact same Path, but different names and source orders.
+	cfg.Workspaces = []config.WorkspaceConfig{
+		{
+			Name: "Kubernetes", Type: config.WorkspaceTypeGroup, Path: root, SourceOrder: []string{"kube-contexts"},
+		},
+		{
+			Name: "ECORP", Type: config.WorkspaceTypeGroup, Path: root, SourceOrder: []string{"projects"},
+		},
+	}
+
+	// 1. Opening "ECORP" must resolve the ECORP group (projects source), NOT the Kubernetes group.
+	driverLatam := &openDriver{detect: true, workspaceID: "wA"}
+	out, errOut, err := runOpen(t, cfg, driverLatam, nil, "ECORP")
+	if err != nil {
+		t.Fatalf("open ECORP: %v\nstdout:\n%s\nstderr:\n%s", err, out, errOut)
+	}
+	if driverLatam.lastCand.Source != config.SourceProjects || driverLatam.lastCand.Path != projDir {
+		t.Fatalf("launched candidate for ECORP = %+v, want project candidate in %s", driverLatam.lastCand, projDir)
+	}
+	if _, err := os.Stat(counter); !os.IsNotExist(err) {
+		t.Fatalf("kube-contexts integration ran when opening ECORP, want 0 runs")
+	}
+
+	// 2. Opening "Kubernetes" must resolve the Kubernetes group (kube-contexts source).
+	driverKube := &openDriver{detect: true, workspaceID: "wB"}
+	_, _, err = runOpen(t, cfg, driverKube, nil, "Kubernetes")
+	if err != nil {
+		t.Fatalf("open Kubernetes: %v", err)
+	}
+	if driverKube.lastCand.Source != "kube-contexts" || driverKube.lastCand.Label != "k8s-cluster" {
+		t.Fatalf("launched candidate for Kubernetes = %+v, want kube-contexts candidate", driverKube.lastCand)
+	}
+	if data, err := os.ReadFile(counter); err != nil || string(data) != "1" {
+		t.Fatalf("kube-contexts count = %q, want exactly 1 run", data)
+	}
+}
+
 func runOpenStartupTemplate(t *testing.T, action source.HerdrAction) *openDriver {
 	cfg := config.Defaults()
 	cfg.General.SourceOrder = []string{config.SourceWorkspaces}

@@ -856,7 +856,7 @@ func (a *App) runOpen(cmd *cobra.Command, query, pathFlag, targetFlag string) er
 
 	if cand.Meta["group"] == "true" {
 		groupSources := splitNonEmpty(cand.Meta["group_sources"], ",")
-		groupWorkspace, hasWorkspace := workspaceConfigByPath(cfg.Workspaces, cand.Path)
+		groupWorkspace, hasWorkspace := workspaceConfigForCandidate(cfg.Workspaces, cand)
 		nestedTemplate := cand.Meta["group_template"]
 		var nested *source.Registry
 		nestedOrder := effectiveGroupSourceOrder(cfg, groupWorkspace, hasWorkspace, groupSources)
@@ -1043,7 +1043,7 @@ func (a *App) resolveFromRegistry(cmd *cobra.Command, registry *source.Registry,
 
 	if pick.Meta["group"] == "true" {
 		groupSources := splitNonEmpty(pick.Meta["group_sources"], ",")
-		groupWorkspace, hasWorkspace := workspaceConfigByPath(a.Config().Workspaces, pick.Path)
+		groupWorkspace, hasWorkspace := workspaceConfigForCandidate(a.Config().Workspaces, pick)
 		nestedTemplate := pick.Meta["group_template"]
 		if nestedTemplate == "" {
 			nestedTemplate = parentTemplate
@@ -1070,17 +1070,81 @@ func (a *App) resolveFromRegistry(cmd *cobra.Command, registry *source.Registry,
 	return pick, true, nil
 }
 
-func workspaceConfigByPath(workspaces []config.WorkspaceConfig, path string) (config.WorkspaceConfig, bool) {
-	for _, workspace := range workspaces {
-		resolved := workspace.Path
-		if expanded, err := pathutil.ExpandTilde(resolved); err == nil {
-			resolved = expanded
+func workspaceConfigForCandidate(workspaces []config.WorkspaceConfig, cand source.Candidate) (config.WorkspaceConfig, bool) {
+	candPath := cand.Path
+	if cand.NormalizedPath != "" {
+		candPath = cand.NormalizedPath
+	}
+	isGroup := cand.Meta != nil && cand.Meta["group"] == "true"
+	candName := cand.Label
+	if cand.Meta != nil && cand.Meta["workspace_name"] != "" {
+		candName = cand.Meta["workspace_name"]
+	}
+	candEntryID := ""
+	if cand.Meta != nil {
+		candEntryID = cand.Meta["entry_id"]
+	}
+
+	// Tier 1: Path matches + Type matches (if group) + (Name matches OR EntryID matches)
+	for _, ws := range workspaces {
+		if !workspacePathMatches(ws.Path, candPath) {
+			continue
 		}
-		if resolved == path {
-			return workspace, true
+		if isGroup && ws.Type != config.WorkspaceTypeGroup {
+			continue
+		}
+		if (candName != "" && ws.Name == candName) || (candEntryID != "" && source.WorkspaceEntryIdentity(ws.Path, ws) == candEntryID) {
+			return ws, true
 		}
 	}
+
+	// Tier 2: Path matches + Type matches (if group)
+	if isGroup {
+		for _, ws := range workspaces {
+			if ws.Type == config.WorkspaceTypeGroup && workspacePathMatches(ws.Path, candPath) {
+				return ws, true
+			}
+		}
+	}
+
+	// Tier 3: Path matches + (Name matches OR EntryID matches)
+	for _, ws := range workspaces {
+		if !workspacePathMatches(ws.Path, candPath) {
+			continue
+		}
+		if (candName != "" && ws.Name == candName) || (candEntryID != "" && source.WorkspaceEntryIdentity(ws.Path, ws) == candEntryID) {
+			return ws, true
+		}
+	}
+
+	// Tier 4: Fallback to first path match
+	for _, ws := range workspaces {
+		if workspacePathMatches(ws.Path, candPath) {
+			return ws, true
+		}
+	}
+
 	return config.WorkspaceConfig{}, false
+}
+
+func workspacePathMatches(wsPath, candPath string) bool {
+	resolved := wsPath
+	if expanded, err := pathutil.ExpandTilde(resolved); err == nil {
+		resolved = expanded
+	}
+	if resolved == candPath {
+		return true
+	}
+	if canonical, err := pathutil.Normalize(resolved); err == nil && canonical != "" {
+		candNorm := candPath
+		if cn, err := pathutil.Normalize(candPath); err == nil && cn != "" {
+			candNorm = cn
+		}
+		if canonical == candNorm {
+			return true
+		}
+	}
+	return false
 }
 
 // effectiveGroupSourceOrder returns the single source order used for both
