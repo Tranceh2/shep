@@ -276,9 +276,9 @@ func TestRowDisplayText_TreePrefixDistinguishesLastTab(t *testing.T) {
 		row  Row
 		want string
 	}{
-		{name: "non-last", row: Row{Kind: RowTab, Candidate: source.Candidate{Label: "deploy", Path: "/svc"}}, want: blankSlot + "├─ " + set.TabIcon + " deploy · /svc"},
-		{name: "last tab with number", row: Row{Kind: RowTab, IsLast: true, Candidate: source.Candidate{Label: "deploy", Path: "/svc", Meta: map[string]string{"tab_number": "3"}}}, want: blankSlot + "└─ " + set.TabIcon + " 3 deploy · /svc"},
-		{name: "last tab without number", row: Row{Kind: RowTab, IsLast: true, Candidate: source.Candidate{Label: "deploy", Path: "/svc"}}, want: blankSlot + "└─ " + set.TabIcon + " deploy · /svc"},
+		{name: "non-last", row: Row{Kind: RowTab, Depth: 1, Candidate: source.Candidate{Label: "deploy", Path: "/svc"}}, want: "  " + blankSlot + "├─ " + set.TabIcon + " deploy · /svc"},
+		{name: "last tab with number", row: Row{Kind: RowTab, Depth: 1, IsLast: true, Candidate: source.Candidate{Label: "deploy", Path: "/svc", Meta: map[string]string{"tab_number": "3"}}}, want: "  " + blankSlot + "└─ " + set.TabIcon + " 3 deploy · /svc"},
+		{name: "last tab without number", row: Row{Kind: RowTab, Depth: 1, IsLast: true, Candidate: source.Candidate{Label: "deploy", Path: "/svc"}}, want: "  " + blankSlot + "└─ " + set.TabIcon + " deploy · /svc"},
 		{name: "candidate without tree", row: Row{Kind: RowCandidate, IsLast: true, AncestorIsLast: true, Candidate: source.Candidate{Label: "workspace", Path: "/ws"}}, want: "/ws"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

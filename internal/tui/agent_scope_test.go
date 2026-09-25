@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -320,5 +321,145 @@ func TestAgentScope_EnterDispatchesFocus(t *testing.T) {
 	}
 	if mm.SelectedAction() != RowActionFocusTab {
 		t.Errorf("SelectedAction = %v, want RowActionFocusTab", mm.SelectedAction())
+	}
+}
+
+func TestCollectAgentCandidates_SessionNameLabelAndFallbacks(t *testing.T) {
+	t.Parallel()
+
+	snapshot := &source.Snapshot{
+		Workspaces: []source.Workspace{
+			{ID: "w1", Label: "ws1", CWD: "/srv/ws1"},
+		},
+		Tabs: []source.Tab{
+			{ID: "t1", WorkspaceID: "w1", Label: "tab1"},
+		},
+		Panes: []source.Pane{
+			{
+				ID:            "p_title",
+				WorkspaceID:   "w1",
+				TabID:         "t1",
+				Agent:         "pi",
+				AgentStatus:   "working",
+				Label:         "fallback-label",
+				TerminalTitle: "security scan",
+			},
+			{
+				ID:          "p_label",
+				WorkspaceID: "w1",
+				TabID:       "t1",
+				Agent:       "claude",
+				AgentStatus: "idle",
+				Label:       "codegen-task",
+			},
+			{
+				ID:          "p_fallback",
+				WorkspaceID: "w1",
+				TabID:       "t1",
+				Agent:       "opencode",
+				AgentStatus: "blocked",
+			},
+		},
+	}
+
+	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(*snapshot), Layout{})
+	m.startupSnapshot = snapshot
+
+	cands := m.collectAgentCandidates()
+	if len(cands) != 3 {
+		t.Fatalf("expected 3 candidates, got %d", len(cands))
+	}
+
+	candMap := make(map[string]source.Candidate)
+	for _, c := range cands {
+		candMap[c.Meta["pane_id"]] = c
+	}
+
+	// 1. TerminalTitle takes precedence even when Agent is set and not in title
+	if got := candMap["p_title"].Label; got != "security scan" {
+		t.Errorf("p_title label = %q, want \"security scan\"", got)
+	}
+	// Meta keys preserved
+	if got := candMap["p_title"].Meta["agent"]; got != "pi" {
+		t.Errorf("p_title meta[agent] = %q, want \"pi\"", got)
+	}
+	if got := candMap["p_title"].Meta["terminal_title"]; got != "security scan" {
+		t.Errorf("p_title meta[terminal_title] = %q, want \"security scan\"", got)
+	}
+	if got := candMap["p_title"].Meta["kind"]; got != "agent" {
+		t.Errorf("p_title meta[kind] = %q, want \"agent\"", got)
+	}
+
+	// 2. Fallback to p.Label when TerminalTitle is empty
+	if got := candMap["p_label"].Label; got != "codegen-task" {
+		t.Errorf("p_label label = %q, want \"codegen-task\"", got)
+	}
+
+	// 3. Fallback to "agent " + ID when both are empty
+	if got := candMap["p_fallback"].Label; got != "agent p_fallback" {
+		t.Errorf("p_fallback label = %q, want \"agent p_fallback\"", got)
+	}
+}
+
+func TestAgentScope_RowPrimaryText_SessionNameAndStatusIconOnly(t *testing.T) {
+	t.Parallel()
+
+	m := newRenderTestModel(ThemeMocha, FocusList)
+	set := m.icons()
+
+	agentRow := Row{
+		Kind:   RowPane,
+		Depth:  0,
+		Action: RowActionFocusTab,
+		Candidate: source.Candidate{
+			Label: "security scan",
+			Path:  "/srv/ws1/src",
+			Meta: map[string]string{
+				"agent":          "pi",
+				"agent_status":   "blocked",
+				"terminal_title": "security scan",
+				"kind":           "agent",
+			},
+		},
+	}
+
+	primary, prefixRunes := m.rowPrimaryText(agentRow)
+	icon := m.agentStatusIcon("blocked")
+	want := icon + " security scan"
+	if primary != want {
+		t.Errorf("agent row primary = %q, want %q", primary, want)
+	}
+	if strings.Contains(primary, "·") {
+		t.Errorf("agent row primary %q must not contain \"·\"", primary)
+	}
+	if strings.Contains(primary, "/srv/ws1") {
+		t.Errorf("agent row primary %q must not contain path", primary)
+	}
+	if strings.Contains(primary, set.TreeMid) || strings.Contains(primary, set.TreeLast) || strings.Contains(primary, set.TreeVertical) {
+		t.Errorf("agent row primary %q must not contain tree glyphs", primary)
+	}
+	if wantPrefix := len([]rune(icon + " ")); prefixRunes != wantPrefix {
+		t.Errorf("prefixRunes = %d, want %d", prefixRunes, wantPrefix)
+	}
+
+	// Nested tree pane row (Depth: 2) continues to use formats.Pane
+	nestedTreeRow := Row{
+		Kind:   RowPane,
+		Depth:  2,
+		IsLast: true,
+		Candidate: source.Candidate{
+			Label: "p1",
+			Path:  "/srv/ws1/src",
+			Meta: map[string]string{
+				"agent_status": "idle",
+			},
+		},
+	}
+	nestedPrimary, _ := m.rowPrimaryText(nestedTreeRow)
+	if !strings.Contains(nestedPrimary, "/srv/ws1/src") {
+		t.Errorf("nested tree pane primary %q should contain path", nestedPrimary)
+	}
+	if !strings.Contains(nestedPrimary, "·") {
+		t.Errorf("nested tree pane primary %q should contain separator \"·\"", nestedPrimary)
 	}
 }

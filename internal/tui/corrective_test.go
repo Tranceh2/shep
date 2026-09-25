@@ -190,7 +190,8 @@ func TestRowDisplayText_PaneRow_PathPrimarySecondaryPaneID(t *testing.T) {
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	for _, status := range []string{"working", "idle", "done", "blocked", "", "totally-bogus"} {
 		row := Row{
-			Kind: RowPane,
+			Kind:  RowPane,
+			Depth: 2,
 			Candidate: source.Candidate{
 				Label: "p1", Path: "/srv/api", Meta: map[string]string{"agent_status": status},
 			},

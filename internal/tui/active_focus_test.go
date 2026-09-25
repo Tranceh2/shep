@@ -17,7 +17,7 @@ func TestKindPrefix_ActiveFocusRow_MarksMatchingPane(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	m.currentPane = &source.Pane{ID: "p1", TabID: "t1"}
-	row := Row{Kind: RowPane, Candidate: source.Candidate{Meta: map[string]string{"pane_id": "p1", "tab_id": "t1"}}}
+	row := Row{Kind: RowPane, Depth: 2, Candidate: source.Candidate{Meta: map[string]string{"pane_id": "p1", "tab_id": "t1"}}}
 	set := m.icons()
 	got := m.kindPrefix(row)
 	if !strings.Contains(got, set.ActiveMarker) {
@@ -32,7 +32,7 @@ func TestKindPrefix_ActiveFocusRow_MarksContainingTab(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	m.currentPane = &source.Pane{ID: "p1", TabID: "t1"}
-	row := Row{Kind: RowTab, Candidate: source.Candidate{Meta: map[string]string{"tab_id": "t1"}}}
+	row := Row{Kind: RowTab, Depth: 1, Candidate: source.Candidate{Meta: map[string]string{"tab_id": "t1"}}}
 	set := m.icons()
 	got := m.kindPrefix(row)
 	if !strings.Contains(got, set.ActiveMarker) {
@@ -48,12 +48,12 @@ func TestKindPrefix_ActiveFocusRow_NoMarkerWhenNotMatching(t *testing.T) {
 	m.currentPane = &source.Pane{ID: "p1", TabID: "t1"}
 	set := m.icons()
 
-	otherPane := Row{Kind: RowPane, Candidate: source.Candidate{Meta: map[string]string{"pane_id": "p2", "tab_id": "t2"}}}
+	otherPane := Row{Kind: RowPane, Depth: 2, Candidate: source.Candidate{Meta: map[string]string{"pane_id": "p2", "tab_id": "t2"}}}
 	if got := m.kindPrefix(otherPane); strings.Contains(got, set.ActiveMarker) {
 		t.Errorf("kindPrefix(non-matching pane) = %q, must not contain the active marker", got)
 	}
 
-	otherTab := Row{Kind: RowTab, Candidate: source.Candidate{Meta: map[string]string{"tab_id": "t2"}}}
+	otherTab := Row{Kind: RowTab, Depth: 1, Candidate: source.Candidate{Meta: map[string]string{"tab_id": "t2"}}}
 	if got := m.kindPrefix(otherTab); strings.Contains(got, set.ActiveMarker) {
 		t.Errorf("kindPrefix(non-matching tab) = %q, must not contain the active marker", got)
 	}
@@ -66,7 +66,7 @@ func TestKindPrefix_ActiveFocusRow_NoCurrentPaneNeverMarks(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	set := m.icons()
-	row := Row{Kind: RowPane, Candidate: source.Candidate{Meta: map[string]string{"pane_id": "p1"}}}
+	row := Row{Kind: RowPane, Depth: 2, Candidate: source.Candidate{Meta: map[string]string{"pane_id": "p1"}}}
 	if got := m.kindPrefix(row); strings.Contains(got, set.ActiveMarker) {
 		t.Errorf("kindPrefix with nil currentPane = %q, must not contain the active marker", got)
 	}
@@ -103,8 +103,8 @@ func TestKindPrefix_TreeGlyphColumnAlignsRegardlessOfActiveMarker(t *testing.T) 
 	m.currentPane = &source.Pane{ID: "p1", TabID: "t1"}
 	set := m.icons()
 
-	active := Row{Kind: RowTab, Candidate: source.Candidate{Meta: map[string]string{"tab_id": "t1"}}}
-	sibling := Row{Kind: RowTab, Candidate: source.Candidate{Meta: map[string]string{"tab_id": "t2"}}, IsLast: true}
+	active := Row{Kind: RowTab, Depth: 1, Candidate: source.Candidate{Meta: map[string]string{"tab_id": "t1"}}}
+	sibling := Row{Kind: RowTab, Depth: 1, Candidate: source.Candidate{Meta: map[string]string{"tab_id": "t2"}}, IsLast: true}
 
 	activePrefix := m.kindPrefix(active)
 	siblingPrefix := m.kindPrefix(sibling)
@@ -123,9 +123,9 @@ func TestKindPrefix_TreeGlyphColumnAlignsRegardlessOfActiveMarker(t *testing.T) 
 	// The tree glyph itself (everything after the fixed active-marker slot)
 	// must be identical between the two rows: the active row differs ONLY
 	// in its leading slot content, never in the tree glyph placement.
-	activeTreeGlyph := strings.TrimPrefix(activePrefix, set.ActiveMarker+" ")
+	activeTreeGlyph := strings.TrimPrefix(activePrefix, "  "+set.ActiveMarker+" ")
 	siblingBlankSlot := strings.Repeat(" ", lipgloss.Width(set.ActiveMarker+" "))
-	siblingTreeGlyph := strings.TrimPrefix(siblingPrefix, siblingBlankSlot)
+	siblingTreeGlyph := strings.TrimPrefix(siblingPrefix, "  "+siblingBlankSlot)
 	if activeTreeGlyph != set.TreeMid+" " {
 		t.Errorf("active row tree glyph = %q, want %q", activeTreeGlyph, set.TreeMid+" ")
 	}

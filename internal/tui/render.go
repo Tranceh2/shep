@@ -34,10 +34,9 @@ const headerWideBreakpoint = 100
 
 // chromeRows is the fixed vertical overhead of the list pane deducted from
 // the reported terminal height before capping visible rows: the border's
-// top+bottom edges (2). The old query line that used to live inside the list
-// pane was removed in Phase 3 (moved to the full-width header above the
-// body), so the count dropped from 4 to 3.
-const chromeRows = 3
+// top+bottom edges (2). Must stay equal to previewChromeRows so both panes
+// expose identical content row budgets.
+const chromeRows = 2
 
 // previewChromeRows is the fixed vertical overhead of the preview pane: 2
 // (border top+bottom). The preview pane has no header/help line of its own.
@@ -677,10 +676,17 @@ func applySurface(ownStyle, surface lipgloss.Style) lipgloss.Style {
 // running. Filling that slot with the marker only on the active row (with
 // no reserved space on the others) would shift just that one row's tree
 // glyph (├─/└─) rightward relative to its siblings, breaking the vertical
-// rule the tree glyphs are supposed to draw. lipgloss.Width (not len/rune
-// count) measures the slot so a multi-byte marker glyph still reserves the
-// correct terminal cell width.
+// kindPrefix returns the depth indent + kind marker prefix for a row, drawn
+// before its icon/label. Flat scope views (like the Agents scope) synthesize
+// depth-zero pane rows (Depth == 0); depth-zero rows skip the entire tree-decoration
+// branch and return an empty prefix, matching top-level candidate rows. Tree rows
+// (Depth >= 1) render their active marker gutter, ancestor column, and branch glyph.
+// lipgloss.Width (not len/rune count) measures the slot so a multi-byte marker glyph
+// still reserves the correct terminal cell width.
 func (m Model) kindPrefix(row Row) string {
+	if row.Depth == 0 {
+		return ""
+	}
 	set := m.icons()
 	prefix := ""
 	indentDepth := row.Depth
@@ -776,6 +782,13 @@ func (m Model) rowLabelFormat(row Row) string {
 	case RowTab:
 		return formats.Tab
 	case RowPane:
+		// Flat agent scope rows (Depth == 0, or tagged with Meta["kind"] == "agent")
+		// render label-only so they do not inherit the default pane format which
+		// appends " · <path>". Nested tree pane rows (Depth >= 1) continue to use
+		// formats.Pane unchanged.
+		if row.Depth == 0 || row.Candidate.Meta["kind"] == "agent" {
+			return defaultLabelOnlyFormat
+		}
 		return formats.Pane
 	}
 

@@ -133,16 +133,9 @@ func (m Model) collectAgentCandidates() []source.Candidate {
 
 		tabLabel := tabLabels[p.TabID]
 
-		title := p.TerminalTitle
-		if title == "" {
-			title = p.Label
-		}
-		label := title
-		agentName := p.Agent
-		if agentName != "" && title != "" && !strings.Contains(strings.ToLower(title), strings.ToLower(agentName)) {
-			label = agentName + " · " + title
-		} else if label == "" {
-			label = agentName
+		label := p.TerminalTitle
+		if label == "" {
+			label = p.Label
 		}
 		if label == "" {
 			label = "agent " + p.ID

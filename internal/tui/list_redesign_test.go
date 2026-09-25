@@ -72,8 +72,8 @@ func TestKindPrefix_RowPane_AncestorLastSiblingBlank(t *testing.T) {
 func TestKindPrefix_RowPane_AncestorColumnWidthStable(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
-	notLast := m.kindPrefix(Row{Kind: RowPane, AncestorIsLast: false})
-	last := m.kindPrefix(Row{Kind: RowPane, AncestorIsLast: true})
+	notLast := m.kindPrefix(Row{Kind: RowPane, Depth: 2, AncestorIsLast: false})
+	last := m.kindPrefix(Row{Kind: RowPane, Depth: 2, AncestorIsLast: true})
 	if got, want := lipgloss.Width(notLast), lipgloss.Width(last); got != want {
 		t.Errorf("ancestor column width = %d (AncestorIsLast=false) vs %d (AncestorIsLast=true), want identical", got, want)
 	}
@@ -456,5 +456,48 @@ func TestPreviewPane_BorderPaddingUnchanged(t *testing.T) {
 	}
 	if got := m.styles.focusedBorderStyle.GetPaddingLeft(); got != 1 {
 		t.Errorf("focusedBorderStyle left padding = %d, want 1 (unchanged)", got)
+	}
+}
+
+// TestKindPrefix_DepthZero_FlatScopeRowsEmptyPrefix proves that depth-zero
+// pane/tab rows (such as synthesized flat agent rows) get an empty kindPrefix
+// with none of TreeVertical, TreeMid, TreeLast, and no ActiveMarker slot padding,
+// identical to a top-level RowCandidate.
+func TestKindPrefix_DepthZero_FlatScopeRowsEmptyPrefix(t *testing.T) {
+	t.Parallel()
+	m := newRenderTestModel(ThemeMocha, FocusList)
+	set := m.icons()
+
+	for _, tt := range []struct {
+		name string
+		row  Row
+	}{
+		{"depth-zero RowPane", Row{Kind: RowPane, Depth: 0}},
+		{"depth-zero RowPane isLast", Row{Kind: RowPane, Depth: 0, IsLast: true}},
+		{"depth-zero RowTab", Row{Kind: RowTab, Depth: 0}},
+		{"depth-zero RowTab isLast", Row{Kind: RowTab, Depth: 0, IsLast: true}},
+		{"depth-zero RowCandidate", Row{Kind: RowCandidate, Depth: 0}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := m.kindPrefix(tt.row)
+			if got != "" {
+				t.Errorf("kindPrefix(%+v) = %q, want empty string", tt.row, got)
+			}
+			if strings.Contains(got, set.TreeVertical) || strings.Contains(got, set.TreeMid) || strings.Contains(got, set.TreeLast) {
+				t.Errorf("kindPrefix(%+v) = %q, must not contain tree glyphs", tt.row, got)
+			}
+		})
+	}
+}
+
+// TestChromeRows_EqualsPreviewChromeRows proves chromeRows (the list pane's
+// vertical chrome budget) matches previewChromeRows (the preview pane's
+// vertical chrome budget). Both panes share the same border top+bottom overhead
+// (2 rows). Divergence causes an off-by-one height mismatch between the list
+// and preview panes.
+func TestChromeRows_EqualsPreviewChromeRows(t *testing.T) {
+	t.Parallel()
+	if chromeRows != previewChromeRows {
+		t.Errorf("chromeRows (%d) != previewChromeRows (%d): panes have mismatched vertical chrome budgets", chromeRows, previewChromeRows)
 	}
 }
