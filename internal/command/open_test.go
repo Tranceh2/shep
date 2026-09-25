@@ -1165,7 +1165,7 @@ func TestOpen_GroupWorkspaceLazilyRunsIntegrationAndDirectSelectsSingleRow(t *te
 
 func TestOpen_SamePathGroups_ResolveDistinctGroupConfigs(t *testing.T) {
 	root := t.TempDir()
-	projDir := filepath.Join(root, "repo-ecorp")
+	projDir := filepath.Join(root, "repo-arcade")
 	if err := os.MkdirAll(filepath.Join(projDir, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1191,21 +1191,21 @@ func TestOpen_SamePathGroups_ResolveDistinctGroupConfigs(t *testing.T) {
 			Name: "Kubernetes", Type: config.WorkspaceTypeGroup, Path: root, SourceOrder: []string{"kube-contexts"},
 		},
 		{
-			Name: "ECORP", Type: config.WorkspaceTypeGroup, Path: root, SourceOrder: []string{"projects"},
+			Name: "fsociety", Type: config.WorkspaceTypeGroup, Path: root, SourceOrder: []string{"projects"},
 		},
 	}
 
-	// 1. Opening "ECORP" must resolve the ECORP group (projects source), NOT the Kubernetes group.
-	driverLatam := &openDriver{detect: true, workspaceID: "wA"}
-	out, errOut, err := runOpen(t, cfg, driverLatam, nil, "ECORP")
+	// 1. Opening "fsociety" must resolve the fsociety group (projects source), NOT the Kubernetes group.
+	driverFsociety := &openDriver{detect: true, workspaceID: "wA"}
+	out, errOut, err := runOpen(t, cfg, driverFsociety, nil, "fsociety")
 	if err != nil {
-		t.Fatalf("open ECORP: %v\nstdout:\n%s\nstderr:\n%s", err, out, errOut)
+		t.Fatalf("open fsociety: %v\nstdout:\n%s\nstderr:\n%s", err, out, errOut)
 	}
-	if driverLatam.lastCand.Source != config.SourceProjects || driverLatam.lastCand.Path != projDir {
-		t.Fatalf("launched candidate for ECORP = %+v, want project candidate in %s", driverLatam.lastCand, projDir)
+	if driverFsociety.lastCand.Source != config.SourceProjects || driverFsociety.lastCand.Path != projDir {
+		t.Fatalf("launched candidate for fsociety = %+v, want project candidate in %s", driverFsociety.lastCand, projDir)
 	}
 	if _, err := os.Stat(counter); !os.IsNotExist(err) {
-		t.Fatalf("kube-contexts integration ran when opening ECORP, want 0 runs")
+		t.Fatalf("kube-contexts integration ran when opening fsociety, want 0 runs")
 	}
 
 	// 2. Opening "Kubernetes" must resolve the Kubernetes group (kube-contexts source).
@@ -2709,4 +2709,24 @@ func TestSelectorFactory_StatusDialerWiredWhenSocketPresent(t *testing.T) {
 			t.Fatal("expected injected dialer, got nil")
 		}
 	})
+}
+
+func TestOpen_AgentsFlagSetsInitialScope(t *testing.T) {
+	t.Parallel()
+	var capturedLayout tui.Layout
+	app := New()
+	app.asyncTUIRun = func(ctx context.Context, producers []tui.SourceProducer, query string, layout tui.Layout) (source.Candidate, tui.RowAction, string, *source.Pane, bool, error) {
+		capturedLayout = layout
+		return source.Candidate{}, tui.RowActionOpen, "", nil, false, tui.ErrCancelled
+	}
+
+	cmd := app.openCmd()
+	cmd.SetArgs([]string{"--agents"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedLayout.InitialScope != tui.ScopeAgents {
+		t.Errorf("captured InitialScope = %v, want ScopeAgents", capturedLayout.InitialScope)
+	}
 }

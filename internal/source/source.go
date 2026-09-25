@@ -207,7 +207,9 @@ type Pane struct {
 	CWD           string
 	ForegroundCWD string
 	Focused       bool
+	Agent         string
 	AgentStatus   string
+	TerminalTitle string
 }
 
 // Session is the CLI-reported identity and optional metadata for one local

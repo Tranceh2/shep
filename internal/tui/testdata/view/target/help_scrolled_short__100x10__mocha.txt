@@ -7,4 +7,4 @@
 │ Session                                                                                          │
 │   esc, ctrl+c, ctrl+g       cancel the picker                                                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-enter open   ? help   esc quit
+enter open   tab agents   ? help   esc quit

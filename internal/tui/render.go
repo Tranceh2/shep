@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -143,6 +144,12 @@ func (m Model) emptyStateLines() []string {
 			"esc clear query",
 		}
 	}
+	if m.scope == ScopeAgents {
+		return []string{
+			"No active agents detected",
+			"tab switch to all workspaces",
+		}
+	}
 	if m.loadingCandidates && len(m.baseFlatCandidates()) == 0 {
 		return []string{
 			"No workspaces yet",
@@ -171,6 +178,17 @@ func (m Model) headerLineCount() int {
 // one source, loading variants while producers stream, "N candidates"
 // unfiltered.
 func (m Model) headerCountText() string {
+	if m.scope == ScopeAgents {
+		n := len(m.rows)
+		counts := m.AgentCounts()
+		if m.query != "" {
+			return strconv.Itoa(n) + " of " + strconv.Itoa(counts.Total) + " agents"
+		}
+		if n == 1 {
+			return "1 agent"
+		}
+		return strconv.Itoa(n) + " agents"
+	}
 	n := len(m.baseFlatCandidates())
 	switch {
 	case m.loadingCandidates && n == 0:
@@ -217,7 +235,11 @@ func (m Model) renderHeader(width int) string {
 	if m.query != "" {
 		query = m.styles.queryStyle.Render(m.query)
 	} else {
-		query = m.styles.mutedStyle.Render("type to filter…")
+		placeholder := "type to filter…"
+		if m.scope == ScopeAgents {
+			placeholder = "filter agents…"
+		}
+		query = m.styles.mutedStyle.Render(placeholder)
 	}
 	search := m.styles.keycapStyle.Render("[/]") + " " + query
 
@@ -228,10 +250,34 @@ func (m Model) renderHeader(width int) string {
 		return lipgloss.NewStyle().Width(width).Render(rightPadToWidth(search, count, width))
 	}
 
-	brand := m.styles.keycapStyle.Render("SHEP") + "  " + m.styles.mutedStyle.Render("Switch workspace")
+	brand := m.styles.keycapStyle.Render("SHEP") + "  " + m.renderScopeTabs()
 	top := rightPadToWidth(brand, count, width)
 	return lipgloss.NewStyle().Width(width).Render(top) + "\n" +
 		lipgloss.NewStyle().Width(width).Render(rightPadToWidth(search, "", width))
+}
+
+func (m Model) renderScopeTabs() string {
+	counts := m.AgentCounts()
+	allLabel := "all"
+	agentsLabel := fmt.Sprintf("agents (%d)", counts.Total)
+
+	var allTab, agentsTab string
+	if m.scope == ScopeAll {
+		allTab = m.styles.keycapStyle.Render("● " + allLabel)
+		if counts.Blocked > 0 {
+			agentsTab = m.styles.statusBlockedStyle.Render(agentsLabel)
+		} else {
+			agentsTab = m.styles.mutedStyle.Render(agentsLabel)
+		}
+	} else {
+		allTab = m.styles.mutedStyle.Render(allLabel)
+		if counts.Blocked > 0 {
+			agentsTab = m.styles.statusBlockedStyle.Render("● " + agentsLabel)
+		} else {
+			agentsTab = m.styles.keycapStyle.Render("● " + agentsLabel)
+		}
+	}
+	return allTab + "   " + agentsTab
 }
 
 // sourceCount is one source's visible top-level match count, used by
@@ -1204,12 +1250,11 @@ func (m Model) footerHints() string {
 	if row, ok := m.currentRow(); ok {
 		caps = append(caps, keycap{keyBindingEnter.footerChord, rowActionDescriptor(row).FooterLabel})
 	}
-	// The preview hint is only advertised when a preview pane is
-	// actually on screen: in modeListOnly there is nothing for Tab to focus,
-	// so advertising it would promise an action the layout cannot deliver.
-	if !narrow && m.mode != modeListOnly {
-		caps = append(caps, keycap{keyBindingTab.footerChord, keyBindingTab.footerLabel})
+	tabLabel := "agents"
+	if m.scope == ScopeAgents {
+		tabLabel = "all"
 	}
+	caps = append(caps, keycap{keyBindingTab.footerChord, tabLabel})
 	if row, ok := m.currentRow(); ok && m.layout.PinToggler != nil {
 		if row.Kind == RowCandidate {
 			label := keyBindingPin.footerLabel

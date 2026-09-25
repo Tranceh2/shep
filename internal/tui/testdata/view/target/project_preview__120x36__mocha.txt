@@ -1,4 +1,4 @@
-SHEP  Switch workspace                                                                                      1 candidates
+SHEP  ● all   agents (0)                                                                                    1 candidates
 [/] type to filter…
 ╭────────────────────────────────────────────────────────────────╮ ╭ PREVIEW · shep ───────────────────────────────────╮
 │ ❯ /home/dev/shep                                               │ │ label  shep                                       │
@@ -34,4 +34,4 @@ SHEP  Switch workspace                                                          
 │                                                                │ │                                                   │
 ╰────────────────────────────────────────────────────────────────╯ │                                                   │
                                                                    ╰───────────────────────────────────────────────────╯
-enter open   tab preview   ? help   esc quit
+enter open   tab agents   ? help   esc quit

@@ -77,46 +77,46 @@ func key(s string) tea.KeyMsg {
 // TestCycleFocus_TabAndShiftTabWrapListAndPreview proves Tab/Shift+Tab
 // cycles focus between the list and the preview pane in both directions,
 // wrapping at each end of the ring (List<->Preview is the whole ring, so
-// wrapping is exercised on every step either direction).
-func TestCycleFocus_TabAndShiftTabWrapListAndPreview(t *testing.T) {
+// TestCycleScope_TabAndShiftTabWrapAllAndAgents proves Tab and Shift+Tab
+// cycle the filter scope between ScopeAll and ScopeAgents.
+func TestCycleScope_TabAndShiftTabWrapAllAndAgents(t *testing.T) {
 	t.Parallel()
 	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
-	m, _ = update(t, m, sizeMsg(120, 36)) // wide mode: preview pane available
-	if m.focus != FocusList {
-		t.Fatalf("initial focus = %v, want FocusList", m.focus)
+	m, _ = update(t, m, sizeMsg(120, 36))
+	if m.scope != ScopeAll {
+		t.Fatalf("initial scope = %v, want ScopeAll", m.scope)
 	}
 	m, _ = update(t, m, key("tab"))
-	if m.focus != FocusPreview {
-		t.Errorf("after tab: focus = %v, want FocusPreview", m.focus)
+	if m.scope != ScopeAgents {
+		t.Errorf("after tab: scope = %v, want ScopeAgents", m.scope)
 	}
-	m, _ = update(t, m, key("tab")) // wraps forward Preview -> List
-	if m.focus != FocusList {
-		t.Errorf("after 2nd tab (wrap): focus = %v, want FocusList", m.focus)
+	m, _ = update(t, m, key("tab")) // wraps forward ScopeAgents -> ScopeAll
+	if m.scope != ScopeAll {
+		t.Errorf("after 2nd tab (wrap): scope = %v, want ScopeAll", m.scope)
 	}
-	m, _ = update(t, m, key("shift+tab")) // wraps backward List -> Preview
-	if m.focus != FocusPreview {
-		t.Errorf("after shift+tab (wrap): focus = %v, want FocusPreview", m.focus)
+	m, _ = update(t, m, key("shift+tab")) // wraps backward ScopeAll -> ScopeAgents
+	if m.scope != ScopeAgents {
+		t.Errorf("after shift+tab (wrap): scope = %v, want ScopeAgents", m.scope)
 	}
 	m, _ = update(t, m, key("shift+tab"))
-	if m.focus != FocusList {
-		t.Errorf("after 2nd shift+tab: focus = %v, want FocusList", m.focus)
+	if m.scope != ScopeAll {
+		t.Errorf("after 2nd shift+tab: scope = %v, want ScopeAll", m.scope)
 	}
 }
 
-// TestCycleFocus_NoOpInListOnlyMode proves Tab/Shift+Tab are no-ops when the
-// current layout has no preview pane available (modeListOnly) — there is
-// nothing else to focus but the list.
-func TestCycleFocus_NoOpInListOnlyMode(t *testing.T) {
+// TestCycleScope_WorksInListOnlyMode proves Tab/Shift+Tab cycle scopes
+// even when the current layout has no preview pane available.
+func TestCycleScope_WorksInListOnlyMode(t *testing.T) {
 	t.Parallel()
 	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
 	m.mode = modeListOnly
 	m, _ = update(t, m, key("tab"))
-	if m.focus != FocusList {
-		t.Errorf("tab in list-only mode: focus = %v, want unchanged FocusList", m.focus)
+	if m.scope != ScopeAgents {
+		t.Errorf("tab in list-only mode: scope = %v, want ScopeAgents", m.scope)
 	}
 	m, _ = update(t, m, key("shift+tab"))
-	if m.focus != FocusList {
-		t.Errorf("shift+tab in list-only mode: focus = %v, want unchanged FocusList", m.focus)
+	if m.scope != ScopeAll {
+		t.Errorf("shift+tab in list-only mode: scope = %v, want ScopeAll", m.scope)
 	}
 }
 
@@ -154,7 +154,7 @@ func TestResize_ToListOnly_FromFocusPreview_RefocusesList(t *testing.T) {
 	t.Parallel()
 	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
 	m, _ = update(t, m, sizeMsg(120, 36)) // wide: preview reachable
-	m, _ = update(t, m, key("tab"))       // focus preview
+	m.focus = FocusPreview
 	if m.focus != FocusPreview {
 		t.Fatalf("setup: expected FocusPreview")
 	}
@@ -177,8 +177,8 @@ func TestResize_ToListOnly_WithHelpOpenPrevFocusPreview_DegradesPrevFocus(t *tes
 	t.Parallel()
 	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
 	m, _ = update(t, m, sizeMsg(120, 36))
-	m, _ = update(t, m, key("tab")) // focus preview
-	m, _ = update(t, m, key("?"))   // open help; prevFocus = FocusPreview
+	m.focus = FocusPreview
+	m, _ = update(t, m, key("?")) // open help; prevFocus = FocusPreview
 	if m.focus != FocusHelp || m.prevFocus != FocusPreview {
 		t.Fatalf("setup: focus = %v, prevFocus = %v, want FocusHelp/FocusPreview", m.focus, m.prevFocus)
 	}
@@ -213,7 +213,7 @@ func TestPreviewFocused_ArrowsScrollViewportNotCursor(t *testing.T) {
 	m.previewSections = []preview.Section{{Kind: config.PreviewDir, Text: longText}}
 	m.previewLoading = false
 	m.syncViewport()
-	m, _ = update(t, m, key("tab")) // focus preview
+	m.focus = FocusPreview
 	startCursor := m.cursor
 	startOffset := m.viewport.YOffset
 
@@ -231,7 +231,7 @@ func TestPreviewFocused_ArrowsScrollViewportNotCursor(t *testing.T) {
 func TestPreviewFocused_PrintableRuneReturnsToListAndSearches(t *testing.T) {
 	t.Parallel()
 	m := NewModel([]source.Candidate{zoxideCandidate("alpha", "/alpha"), zoxideCandidate("beta", "/beta")}, nil)
-	m, _ = update(t, m, key("tab")) // focus preview
+	m.focus = FocusPreview
 	if m.focus != FocusPreview {
 		t.Fatalf("setup: expected FocusPreview")
 	}
@@ -253,7 +253,7 @@ func TestPreviewFocused_CtrlUReturnsToListAndClearsQuery(t *testing.T) {
 	m := NewModel([]source.Candidate{zoxideCandidate("alpha", "/alpha"), zoxideCandidate("beta", "/beta")}, nil)
 	m.query = "al"
 	m.applyFilter()
-	m, _ = update(t, m, key("tab")) // focus preview
+	m.focus = FocusPreview
 	if m.focus != FocusPreview {
 		t.Fatalf("setup: expected FocusPreview")
 	}
@@ -274,7 +274,7 @@ func TestPreviewFocused_BackspaceReturnsToListAndDeletes(t *testing.T) {
 	m := NewModel([]source.Candidate{zoxideCandidate("alpha", "/alpha"), zoxideCandidate("beta", "/beta")}, nil)
 	m.query = "al"
 	m.applyFilter()
-	m, _ = update(t, m, key("tab")) // focus preview
+	m.focus = FocusPreview
 	if m.focus != FocusPreview {
 		t.Fatalf("setup: expected FocusPreview")
 	}
@@ -436,7 +436,7 @@ func TestSelectWithTarget_WorksIdenticallyFromPreviewFocus(t *testing.T) {
 	m, _ = update(t, m, sizeMsg(120, 36))
 	pane := source.Pane{ID: "p0"}
 	m = m.WithCurrentPane(&pane)
-	m, _ = update(t, m, key("tab")) // focus preview
+	m.focus = FocusPreview
 	if m.focus != FocusPreview {
 		t.Fatalf("setup: expected FocusPreview")
 	}
@@ -613,7 +613,7 @@ func TestListOnlyActions_NoOpInFocusPreview(t *testing.T) {
 	m.cursor = 0
 	startCursor := m.cursor
 	startOrientation := m.layout.Orientation
-	m, _ = update(t, m, key("tab")) // focus preview
+	m.focus = FocusPreview
 	if m.focus != FocusPreview {
 		t.Fatalf("setup: expected FocusPreview")
 	}
@@ -696,7 +696,7 @@ func TestHelpToggle_FromPreview_RecordsPrevFocusAndOpens(t *testing.T) {
 	t.Parallel()
 	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
 	m, _ = update(t, m, sizeMsg(120, 36))
-	m, _ = update(t, m, key("tab")) // focus preview
+	m.focus = FocusPreview
 	if m.focus != FocusPreview {
 		t.Fatalf("setup: expected FocusPreview")
 	}
@@ -729,7 +729,7 @@ func TestHelpToggle_EscRoundTrip_FromPreview(t *testing.T) {
 	t.Parallel()
 	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
 	m, _ = update(t, m, sizeMsg(120, 36))
-	m, _ = update(t, m, key("tab")) // focus preview
+	m.focus = FocusPreview
 	m, _ = update(t, m, key("?"))
 	m, _ = update(t, m, key("esc"))
 	if m.focus != FocusPreview {
@@ -811,7 +811,7 @@ func TestEscPriority_NonEmptyQueryClearsAndRefocusesList_FromPreview(t *testing.
 	m, _ = update(t, m, sizeMsg(120, 36))
 	m.query = "abc"
 	m.applyFilter()
-	m, _ = update(t, m, key("tab")) // focus preview
+	m.focus = FocusPreview
 	if m.focus != FocusPreview {
 		t.Fatalf("setup: expected FocusPreview")
 	}
@@ -879,7 +879,7 @@ func TestQ_FromFocusPreview_RefocusesListAndExtendsQuery(t *testing.T) {
 	t.Parallel()
 	m := NewModel([]source.Candidate{zoxideCandidate("queue", "/queue"), zoxideCandidate("other", "/other")}, nil)
 	m, _ = update(t, m, sizeMsg(120, 36))
-	m, _ = update(t, m, key("tab")) // focus preview
+	m.focus = FocusPreview
 	if m.focus != FocusPreview {
 		t.Fatalf("setup: expected FocusPreview")
 	}

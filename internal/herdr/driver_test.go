@@ -219,7 +219,7 @@ func TestDriverSnapshot_ParsesOnlyFullGeneration(t *testing.T) {
 "focused_workspace_id":"w1","focused_tab_id":"w1:t1","focused_pane_id":"w1:p1",
 "workspaces":[{"workspace_id":"w1","label":"project","active_tab_id":"w1:t1","focused":true},{"label":"discard"}],
 "tabs":[{"tab_id":"w1:t1","workspace_id":"w1","label":null,"number":1,"pane_count":1},{"workspace_id":"w1"}],
-"panes":[{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","cwd":"/project","agent_status":"working","unknown":true},{"workspace_id":"w1"}]
+"panes":[{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","cwd":"/project","agent":"opencode","agent_status":"working","terminal_title":"fixing bug","unknown":true},{"workspace_id":"w1"}]
 }}}`)}}}
 
 	snapshot, err := New("herdr", WithRunner(runner)).Snapshot(context.Background())
@@ -232,8 +232,8 @@ func TestDriverSnapshot_ParsesOnlyFullGeneration(t *testing.T) {
 	if len(snapshot.Workspaces) != 1 || len(snapshot.Tabs) != 1 || len(snapshot.Panes) != 1 {
 		t.Fatalf("snapshot did not drop incomplete records: %+v", snapshot)
 	}
-	if snapshot.Panes[0].AgentStatus != "working" || snapshot.FocusedPaneID != "w1:p1" {
-		t.Errorf("snapshot = %+v, want focused working pane", snapshot)
+	if snapshot.Panes[0].AgentStatus != "working" || snapshot.Panes[0].Agent != "opencode" || snapshot.Panes[0].TerminalTitle != "fixing bug" || snapshot.FocusedPaneID != "w1:p1" {
+		t.Errorf("snapshot = %+v, want focused working pane with agent metadata", snapshot)
 	}
 }
 

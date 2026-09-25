@@ -17,46 +17,6 @@ func isPrintable(s string) bool {
 	return r >= 0x20 && r != 0x7f
 }
 
-// focusRing is the ordered set of focus states Tab/Shift+Tab cycle through.
-// FocusHelp is deliberately excluded — it is modal (opened by "?", closed by
-// "?"/Esc only), never a ring member; see cycleFocusForward/Backward.
-var focusRing = []Focus{FocusList, FocusPreview}
-
-// focusRingIndex returns f's position in focusRing, or 0 if f is not a ring
-// member (e.g. FocusHelp — callers guard against reaching the ring at all
-// while help is open, so this is a defensive fallback, never exercised).
-func focusRingIndex(f Focus) int {
-	for i, r := range focusRing {
-		if r == f {
-			return i
-		}
-	}
-	return 0
-}
-
-// cycleFocusForward advances m.focus one step forward in focusRing (Tab),
-// wrapping from the last member back to the first. A no-op when the current
-// layout has no preview pane available (modeListOnly) — there is nothing
-// else to focus but the list.
-func (m *Model) cycleFocusForward() {
-	if m.mode == modeListOnly {
-		return
-	}
-	i := focusRingIndex(m.focus)
-	m.focus = focusRing[(i+1)%len(focusRing)]
-}
-
-// cycleFocusBackward advances m.focus one step backward in focusRing
-// (Shift+Tab), wrapping from the first member to the last. Same modeListOnly
-// no-op as cycleFocusForward.
-func (m *Model) cycleFocusBackward() {
-	if m.mode == modeListOnly {
-		return
-	}
-	i := focusRingIndex(m.focus)
-	m.focus = focusRing[(i-1+len(focusRing))%len(focusRing)]
-}
-
 // scrollViewport applies one scroll key to vp in place: up/down/ctrl+j/
 // ctrl+k move one line, pgup/pgdown move one page, home/end jump to top/
 // bottom. Shared by the preview pane and the help overlay so both scroll
@@ -125,11 +85,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cancelled = true
 		return m, tea.Quit
 	case "tab":
-		m.cycleFocusForward()
-		return m, nil
+		return m.cycleScopeForward()
 	case "shift+tab":
-		m.cycleFocusBackward()
-		return m, nil
+		return m.cycleScopeBackward()
 	case "ctrl+t":
 		return m.selectWithTarget("tab")
 	case "ctrl+p":
@@ -244,12 +202,32 @@ func (m Model) handlePreviewFocusedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // of focus's usual up/down mapping (kept as a stable alternate binding);
 // plain "j"/"k" are intentionally NOT bound to movement here so they fall
 // through to the query instead.
+func (m Model) cycleScopeForward() (tea.Model, tea.Cmd) {
+	m.scope = m.scope.Next()
+	m.cursor = 0
+	m.cursorTouched = false
+	return m, tea.Batch(m.applyFilter(), m.syncPreviewAfterSelectionChange())
+}
+
+func (m Model) cycleScopeBackward() (tea.Model, tea.Cmd) {
+	m.scope = m.scope.Prev()
+	m.cursor = 0
+	m.cursorTouched = false
+	return m, tea.Batch(m.applyFilter(), m.syncPreviewAfterSelectionChange())
+}
+
+// handleListFocusedKey applies one key press while FocusList owns focus.
 func (m Model) handleListFocusedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
 		return m.handleEnter()
 	case "ctrl+l":
 		m.cycleOrientationOverride()
+		return m, nil
+	case "pgup", "pgdown":
+		if scrollViewport(&m.viewport, msg.String()) {
+			return m, nil
+		}
 		return m, nil
 	case "down", "ctrl+j":
 		m.cursorTouched = true

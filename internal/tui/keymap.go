@@ -63,8 +63,8 @@ var (
 		footerChord: keyChordEnter, footerLabel: "open",
 	}
 	keyBindingTab = keyBinding{
-		chord: keyChordTab + " / " + keyChordShiftTab, help: "switch focus between list and preview",
-		footerChord: keyChordTab, footerLabel: "preview",
+		chord: keyChordTab + " / " + keyChordShiftTab, help: "switch between all and agents filter",
+		footerChord: keyChordTab, footerLabel: "agents",
 	}
 	keyBindingCtrlT = keyBinding{
 		chord: keyChordCtrlT, help: "open in a new tab of the current workspace (list or preview focus)",

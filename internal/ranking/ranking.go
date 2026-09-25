@@ -378,8 +378,8 @@ func sortCandidates(candidates []source.Candidate, query string, snapshot Snapsh
 				return !leftCurrent
 			}
 			if !leftCurrent && !rightCurrent {
-				leftMRU := snapshot.workspaceMRURank(left.candidate)
-				rightMRU := snapshot.workspaceMRURank(right.candidate)
+				leftMRU := snapshot.WorkspaceMRURank(left.candidate)
+				rightMRU := snapshot.WorkspaceMRURank(right.candidate)
 				if leftMRU != rightMRU {
 					return leftMRU < rightMRU
 				}
@@ -509,7 +509,7 @@ func isOpenAction(candidate source.Candidate) bool {
 	return candidate.Source == config.SourceHerdr || candidate.Meta["tab_id"] != "" || candidate.Meta["pane_id"] != ""
 }
 
-func (s Snapshot) workspaceMRURank(candidate source.Candidate) int {
+func (s Snapshot) WorkspaceMRURank(candidate source.Candidate) int {
 	if candidate.Source != config.SourceHerdr || candidate.Meta == nil || len(s.workspaceMRU) == 0 {
 		return len(s.workspaceMRU) + 1
 	}

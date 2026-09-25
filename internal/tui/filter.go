@@ -16,14 +16,18 @@ import (
 func (m *Model) applyFilter() tea.Cmd {
 	queryChanged := m.query != m.lastAppliedQuery
 	prevID := m.currentRowID()
-	m.rows = buildRows(rowBuildInput{
-		candidates:         ranking.SortBySourceOrder(m.baseFlatCandidates(), m.query, m.resolvedSourceOrder(), m.rankingSnapshot),
-		query:              m.query,
-		children:           m.fetchAllChildren(),
-		expandedWorkspaces: m.expandedWorkspaces,
-		sourceOrder:        m.sourceOrder,
-		rankingSnapshot:    m.rankingSnapshot,
-	})
+	if m.scope == ScopeAgents {
+		m.rows = m.buildAgentRows()
+	} else {
+		m.rows = buildRows(rowBuildInput{
+			candidates:         ranking.SortBySourceOrder(m.baseFlatCandidates(), m.query, m.resolvedSourceOrder(), m.rankingSnapshot),
+			query:              m.query,
+			children:           m.fetchAllChildren(),
+			expandedWorkspaces: m.expandedWorkspaces,
+			sourceOrder:        m.sourceOrder,
+			rankingSnapshot:    m.rankingSnapshot,
+		})
+	}
 	m.lastAppliedQuery = m.query
 	if queryChanged {
 		m.cursor = 0

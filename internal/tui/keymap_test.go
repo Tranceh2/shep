@@ -127,7 +127,7 @@ func TestHelpBodyText_MatchesApprovedContent(t *testing.T) {
 		"  left/right                collapse/expand a workspace's tabs/panes",
 		"  enter                     open the highlighted row",
 		"  ctrl+f                    pin/unpin the highlighted top-level candidate",
-		"  tab / shift+tab           switch focus between list and preview",
+		"  tab / shift+tab           switch between all and agents filter",
 		"  ctrl+u                    clear the query",
 		"  backspace                 delete the last query character",
 		"",

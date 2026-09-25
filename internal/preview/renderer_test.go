@@ -551,15 +551,15 @@ func TestResolvePreviewNames_SamePathWorkspaces_DistinctPreviews(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Workspaces = []config.WorkspaceConfig{
 		{Name: "Kubernetes", Path: shared, Preview: []string{"cluster", "health"}},
-		{Name: "ECORP", Path: shared, Preview: []string{"git", "dir"}},
+		{Name: "fsociety", Path: shared, Preview: []string{"git", "dir"}},
 	}
 	gotKube := resolvePreviewNames(cfg, source.Candidate{Path: shared, Label: "Kubernetes", Source: config.SourceWorkspaces})
 	if !reflect.DeepEqual(gotKube, []string{"cluster", "health"}) {
 		t.Errorf("got %v, want [cluster health]", gotKube)
 	}
-	gotLatam := resolvePreviewNames(cfg, source.Candidate{Path: shared, Label: "ECORP", Source: config.SourceWorkspaces})
-	if !reflect.DeepEqual(gotLatam, []string{"git", "dir"}) {
-		t.Errorf("got %v, want [git dir]", gotLatam)
+	gotFsociety := resolvePreviewNames(cfg, source.Candidate{Path: shared, Label: "fsociety", Source: config.SourceWorkspaces})
+	if !reflect.DeepEqual(gotFsociety, []string{"git", "dir"}) {
+		t.Errorf("got %v, want [git dir]", gotFsociety)
 	}
 }
 

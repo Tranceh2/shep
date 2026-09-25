@@ -682,7 +682,7 @@ func goldenScenarios() []goldenScenario {
 			setup: func(t *testing.T) Model {
 				m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: ThemeMocha})
 				m, _ = update(t, m, sizeMsg(120, 36))
-				m, _ = update(t, m, key("tab"))
+				m.focus = FocusPreview
 				m, _ = update(t, m, key("?"))
 				return m
 			},
@@ -700,7 +700,7 @@ func goldenScenarios() []goldenScenario {
 			setup: func(t *testing.T) Model {
 				m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: ThemeMocha})
 				m, _ = update(t, m, sizeMsg(120, 36))
-				m, _ = update(t, m, key("tab"))
+				m.focus = FocusPreview
 				return m
 			},
 		},

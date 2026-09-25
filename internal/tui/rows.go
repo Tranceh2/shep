@@ -104,16 +104,32 @@ func rowIdentity(c source.Candidate) string {
 	return c.Source + ":" + key
 }
 
-// fuzzyMatch returns the score and codepoint indexes for a matching query.
-func fuzzyMatch(query, haystack string) (int, []int, bool) {
+func candidateFields(c source.Candidate) fuzzy.CandidateFields {
+	agent := ""
+	status := ""
+	if c.Meta != nil {
+		agent = c.Meta["agent"]
+		status = c.Meta["agent_status"]
+	}
+	path := c.NormalizedPath
+	if path == "" {
+		path = c.Path
+	}
+	return fuzzy.CandidateFields{
+		Source:      c.Source,
+		Path:        path,
+		Agent:       agent,
+		AgentStatus: status,
+	}
+}
+
+func extendedMatch(query string, c source.Candidate, target string) (int, []int, bool) {
 	if query == "" {
 		return 0, nil, true
 	}
-	if !fuzzy.Match(query, haystack) {
-		return 0, nil, false
-	}
-	score, matchedIndexes := fuzzy.Score(query, haystack)
-	return score, matchedIndexes, true
+	eq := fuzzy.ParseExtendedQuery(query)
+	score, indexes, matched := eq.MatchCandidate(target, candidateFields(c))
+	return score, indexes, matched
 }
 
 // candidateHaystack is the searchable "label path" text for one candidate.
@@ -141,6 +157,8 @@ func candidateMetadataHaystack(c source.Candidate, kind RowKind) string {
 		add(c.Meta["tab_label"])
 		add(c.Meta["pane_id"])
 		add(c.Meta["agent_status"])
+		add(c.Meta["agent"])
+		add(c.Meta["terminal_title"])
 	case RowTab:
 		add(c.Meta["tab_label"])
 		add(c.Meta["tab_number"])
@@ -176,7 +194,8 @@ func matchRow(query string, c source.Candidate, kind RowKind) (score int, indexe
 	if query == "" {
 		return 0, nil, true, true
 	}
-	if s, idx, ok := fuzzyMatch(query, candidateHaystack(c)); ok {
+	haystack := candidateHaystack(c)
+	if s, idx, ok := extendedMatch(query, c, haystack); ok {
 		return s, idx, true, true
 	}
 	if _, s, ok := source.MatchAlias(query, c.Aliases); ok {
@@ -186,7 +205,7 @@ func matchRow(query string, c source.Candidate, kind RowKind) (score int, indexe
 	if meta == "" {
 		return 0, nil, false, false
 	}
-	if s, _, ok := fuzzyMatch(query, meta); ok {
+	if s, _, ok := extendedMatch(query, c, meta); ok {
 		return s, nil, true, false
 	}
 	return 0, nil, false, false
@@ -291,7 +310,30 @@ func candidateLayer(query string, c source.Candidate, kind RowKind) int {
 	if query == "" {
 		return 0
 	}
+	eq := fuzzy.ParseExtendedQuery(query)
+	isExt := len(eq.Clauses) > 1 || (len(eq.Clauses) == 1 && len(eq.Clauses[0].Alternatives) > 1) ||
+		len(eq.Terms) > 1 || (len(eq.Terms) == 1 && (eq.Terms[0].Kind != fuzzy.TermFuzzy || eq.Terms[0].Inverse))
+
 	label := strings.TrimSpace(c.Label)
+	path := c.Path
+	if c.NormalizedPath != "" {
+		path = c.NormalizedPath
+	}
+
+	if isExt {
+		fields := candidateFields(c)
+		if _, _, ok := eq.MatchCandidate(label, fields); ok {
+			return ranking.LayerFuzzyLabel
+		}
+		if _, _, ok := eq.MatchCandidate(path, fields); ok {
+			return ranking.LayerPathOrMeta
+		}
+		if _, _, ok := eq.MatchCandidate(candidateMetadataHaystack(c, kind), fields); ok {
+			return ranking.LayerPathOrMeta
+		}
+		return 0
+	}
+
 	if strings.EqualFold(query, label) {
 		return ranking.LayerExact
 	}
@@ -303,10 +345,6 @@ func candidateLayer(query string, c source.Candidate, kind RowKind) int {
 	}
 	if _, _, ok := source.MatchAlias(query, c.Aliases); ok {
 		return ranking.LayerAlias
-	}
-	path := c.Path
-	if c.NormalizedPath != "" {
-		path = c.NormalizedPath
 	}
 	if fuzzy.Match(query, path) || fuzzy.Match(query, candidateMetadataHaystack(c, kind)) {
 		return ranking.LayerPathOrMeta

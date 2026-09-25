@@ -151,7 +151,9 @@ type rawPane struct {
 	CWD           string `json:"cwd"`
 	ForegroundCWD string `json:"foreground_cwd"`
 	Focused       bool   `json:"focused"`
+	Agent         string `json:"agent"`
 	AgentStatus   string `json:"agent_status"`
+	TerminalTitle string `json:"terminal_title"`
 }
 
 type rawTab struct {
@@ -547,7 +549,9 @@ func rawPaneToPane(p rawPane) source.Pane {
 		CWD:           p.CWD,
 		ForegroundCWD: p.ForegroundCWD,
 		Focused:       p.Focused,
+		Agent:         p.Agent,
 		AgentStatus:   p.AgentStatus,
+		TerminalTitle: p.TerminalTitle,
 	}
 }
 

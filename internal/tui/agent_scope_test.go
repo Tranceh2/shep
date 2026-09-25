@@ -1,0 +1,324 @@
+package tui
+
+import (
+	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/tranceh2/shep/internal/ranking"
+	"github.com/tranceh2/shep/internal/source"
+)
+
+func TestAgentScope_OrderingUrgencyAndMRU(t *testing.T) {
+	t.Parallel()
+
+	snapshot := &source.Snapshot{
+		Workspaces: []source.Workspace{
+			{ID: "w1", Label: "fsociety", CWD: "/srv/fsociety"},
+			{ID: "w2", Label: "ecorp", CWD: "/srv/ecorp"},
+		},
+		Tabs: []source.Tab{
+			{ID: "t1", WorkspaceID: "w1", Label: "arcade"},
+			{ID: "t2", WorkspaceID: "w2", Label: "audit"},
+		},
+		Panes: []source.Pane{
+			{
+				ID:            "p_idle",
+				WorkspaceID:   "w1",
+				TabID:         "t1",
+				Label:         "idle-pane",
+				Agent:         "opencode",
+				AgentStatus:   "idle",
+				TerminalTitle: "fsociety idle agent",
+			},
+			{
+				ID:            "p_blocked",
+				WorkspaceID:   "w2",
+				TabID:         "t2",
+				Label:         "blocked-pane",
+				Agent:         "pi",
+				AgentStatus:   "blocked",
+				TerminalTitle: "ecorp security block",
+			},
+			{
+				ID:            "p_working",
+				WorkspaceID:   "w1",
+				TabID:         "t1",
+				Label:         "working-pane",
+				Agent:         "claude",
+				AgentStatus:   "working",
+				TerminalTitle: "payload generator",
+			},
+			{
+				ID:            "p_done",
+				WorkspaceID:   "w1",
+				TabID:         "t1",
+				Label:         "done-pane",
+				Agent:         "opencode",
+				AgentStatus:   "done",
+				TerminalTitle: "finished scan",
+			},
+		},
+	}
+
+	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(*snapshot), Layout{})
+	m.startupSnapshot = snapshot
+	m = m.WithScope(ScopeAgents)
+	m.applyFilter()
+
+	if len(m.rows) != 4 {
+		t.Fatalf("expected 4 agent rows, got %d", len(m.rows))
+	}
+
+	// Expected urgency order: blocked (p_blocked) > working (p_working) > idle (p_idle) > done (p_done)
+	expectedOrder := []string{"p_blocked", "p_working", "p_idle", "p_done"}
+	for i, wantID := range expectedOrder {
+		gotID := m.rows[i].Candidate.Meta["pane_id"]
+		if gotID != wantID {
+			t.Errorf("row[%d] pane_id = %q, want %q", i, gotID, wantID)
+		}
+		if m.rows[i].Action != RowActionFocusTab {
+			t.Errorf("row[%d] action = %v, want RowActionFocusTab", i, m.rows[i].Action)
+		}
+	}
+}
+
+func TestAgentScope_TiedUrgencyBreaksByWorkspaceMRU(t *testing.T) {
+	t.Parallel()
+
+	snapshot := &source.Snapshot{
+		Workspaces: []source.Workspace{
+			{ID: "w_recent", Label: "arcade", CWD: "/srv/arcade"},
+			{ID: "w_older", Label: "allsafe", CWD: "/srv/allsafe"},
+		},
+		Tabs: []source.Tab{
+			{ID: "t1", WorkspaceID: "w_recent", Label: "t1"},
+			{ID: "t2", WorkspaceID: "w_older", Label: "t2"},
+		},
+		Panes: []source.Pane{
+			{
+				ID:          "p_older",
+				WorkspaceID: "w_older",
+				TabID:       "t2",
+				Agent:       "opencode",
+				AgentStatus: "working",
+			},
+			{
+				ID:          "p_recent",
+				WorkspaceID: "w_recent",
+				TabID:       "t1",
+				Agent:       "pi",
+				AgentStatus: "working",
+			},
+		},
+	}
+
+	rs := ranking.Snapshot{}.WithFilteredWorkspaceMRU(snapshot.Workspaces)
+	// Make w_recent more recent (rank 0) than w_older
+	rs = rs.WithWorkspaceMRU([]string{"w_recent", "w_older"})
+
+	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(*snapshot), Layout{})
+	m.startupSnapshot = snapshot
+	m.rankingSnapshot = rs
+	m = m.WithScope(ScopeAgents)
+	m.applyFilter()
+
+	if len(m.rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(m.rows))
+	}
+
+	if m.rows[0].Candidate.Meta["pane_id"] != "p_recent" {
+		t.Errorf("row[0] = %q, want p_recent (more recent workspace)", m.rows[0].Candidate.Meta["pane_id"])
+	}
+	if m.rows[1].Candidate.Meta["pane_id"] != "p_older" {
+		t.Errorf("row[1] = %q, want p_older", m.rows[1].Candidate.Meta["pane_id"])
+	}
+}
+
+func TestAgentScope_LiveStatusUrgencyReorder(t *testing.T) {
+	t.Parallel()
+
+	snapshot := &source.Snapshot{
+		Workspaces: []source.Workspace{
+			{ID: "w1", Label: "fsociety", CWD: "/srv/fsociety"},
+		},
+		Tabs: []source.Tab{
+			{ID: "t1", WorkspaceID: "w1", Label: "t1"},
+		},
+		Panes: []source.Pane{
+			{
+				ID:          "p1",
+				WorkspaceID: "w1",
+				TabID:       "t1",
+				Agent:       "opencode",
+				AgentStatus: "working",
+			},
+			{
+				ID:          "p2",
+				WorkspaceID: "w1",
+				TabID:       "t1",
+				Agent:       "pi",
+				AgentStatus: "idle",
+			},
+		},
+	}
+
+	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(*snapshot), Layout{})
+	m.startupSnapshot = snapshot
+	m = m.WithScope(ScopeAgents)
+	m.applyFilter()
+
+	// Initial order: p1 (working) > p2 (idle)
+	if m.rows[0].Candidate.Meta["pane_id"] != "p1" {
+		t.Fatalf("initial row[0] = %q, want p1", m.rows[0].Candidate.Meta["pane_id"])
+	}
+
+	// Live status: p2 becomes blocked -> should jump to row[0]
+	updatedModel, _ := m.handlePaneStatus(paneStatusMsg{PaneID: "p2", Status: "blocked"})
+	m = updatedModel
+
+	if len(m.rows) != 2 {
+		t.Fatalf("expected 2 rows after update, got %d", len(m.rows))
+	}
+	if m.rows[0].Candidate.Meta["pane_id"] != "p2" {
+		t.Errorf("after p2 blocked, row[0] = %q, want p2", m.rows[0].Candidate.Meta["pane_id"])
+	}
+	if m.rows[0].Candidate.Meta["agent_status"] != "blocked" {
+		t.Errorf("row[0] status = %q, want blocked", m.rows[0].Candidate.Meta["agent_status"])
+	}
+}
+
+func TestAgentScope_Filtering(t *testing.T) {
+	t.Parallel()
+
+	snapshot := &source.Snapshot{
+		Workspaces: []source.Workspace{
+			{ID: "w1", Label: "fsociety", CWD: "/srv/fsociety"},
+		},
+		Tabs: []source.Tab{
+			{ID: "t1", WorkspaceID: "w1", Label: "arcade"},
+		},
+		Panes: []source.Pane{
+			{
+				ID:            "p1",
+				WorkspaceID:   "w1",
+				TabID:         "t1",
+				Agent:         "opencode",
+				AgentStatus:   "blocked",
+				TerminalTitle: "compiler error",
+			},
+			{
+				ID:            "p2",
+				WorkspaceID:   "w1",
+				TabID:         "t1",
+				Agent:         "claude",
+				AgentStatus:   "working",
+				TerminalTitle: "codegen",
+			},
+		},
+	}
+
+	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(*snapshot), Layout{})
+	m.startupSnapshot = snapshot
+	m = m.WithScope(ScopeAgents)
+
+	// Filter by status:blocked
+	m.query = "status:blocked"
+	m.applyFilter()
+	if len(m.rows) != 1 || m.rows[0].Candidate.Meta["pane_id"] != "p1" {
+		t.Errorf("filter status:blocked: expected only p1, got %d rows", len(m.rows))
+	}
+
+	// Filter by agent:claude
+	m.query = "agent:claude"
+	m.applyFilter()
+	if len(m.rows) != 1 || m.rows[0].Candidate.Meta["pane_id"] != "p2" {
+		t.Errorf("filter agent:claude: expected only p2, got %d rows", len(m.rows))
+	}
+
+	// Filter with negation !blocked
+	m.query = "!blocked"
+	m.applyFilter()
+	if len(m.rows) != 1 || m.rows[0].Candidate.Meta["pane_id"] != "p2" {
+		t.Errorf("filter !blocked: expected only p2, got %d rows", len(m.rows))
+	}
+}
+
+func TestAgentScope_Counts(t *testing.T) {
+	t.Parallel()
+
+	snapshot := &source.Snapshot{
+		Panes: []source.Pane{
+			{ID: "p1", Agent: "opencode", AgentStatus: "blocked"},
+			{ID: "p2", Agent: "claude", AgentStatus: "working"},
+			{ID: "p3", Agent: "pi", AgentStatus: "idle"},
+			{ID: "p4", Agent: "opencode", AgentStatus: "done"},
+			{ID: "p5", Agent: "", AgentStatus: ""}, // non-agent pane
+		},
+	}
+
+	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(*snapshot), Layout{})
+	m.startupSnapshot = snapshot
+
+	counts := m.AgentCounts()
+	if counts.Total != 4 {
+		t.Errorf("Total = %d, want 4", counts.Total)
+	}
+	if counts.Blocked != 1 {
+		t.Errorf("Blocked = %d, want 1", counts.Blocked)
+	}
+	if counts.Working != 1 {
+		t.Errorf("Working = %d, want 1", counts.Working)
+	}
+	if counts.Idle != 1 {
+		t.Errorf("Idle = %d, want 1", counts.Idle)
+	}
+	if counts.Done != 1 {
+		t.Errorf("Done = %d, want 1", counts.Done)
+	}
+}
+
+func TestAgentScope_EnterDispatchesFocus(t *testing.T) {
+	t.Parallel()
+
+	snapshot := &source.Snapshot{
+		Workspaces: []source.Workspace{
+			{ID: "w1", Label: "fsociety", CWD: "/srv/fsociety"},
+		},
+		Tabs: []source.Tab{
+			{ID: "t1", WorkspaceID: "w1", Label: "arcade"},
+		},
+		Panes: []source.Pane{
+			{
+				ID:          "p1",
+				WorkspaceID: "w1",
+				TabID:       "t1",
+				Agent:       "opencode",
+				AgentStatus: "blocked",
+			},
+		},
+	}
+
+	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(*snapshot), Layout{})
+	m.startupSnapshot = snapshot
+	m = m.WithScope(ScopeAgents)
+	m.applyFilter()
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected quit cmd on Enter")
+	}
+	mm, ok := next.(Model)
+	if !ok {
+		t.Fatalf("expected Model, got %T", next)
+	}
+	cand, ok := mm.Selected()
+	if !ok {
+		t.Fatal("expected selection on Enter")
+	}
+	if cand.Meta["pane_id"] != "p1" {
+		t.Errorf("selected pane_id = %q, want p1", cand.Meta["pane_id"])
+	}
+	if mm.SelectedAction() != RowActionFocusTab {
+		t.Errorf("SelectedAction = %v, want RowActionFocusTab", mm.SelectedAction())
+	}
+}

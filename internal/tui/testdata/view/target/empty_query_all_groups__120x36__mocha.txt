@@ -1,4 +1,4 @@
-SHEP  Switch workspace                                                                                      7 candidates
+SHEP  ● all   agents (0)                                                                                    7 candidates
 [/] type to filter…
 ╭────────────────────────────────────────────────────────────────╮ ╭ PREVIEW · backend ────────────────────────────────╮
 │ ❯ backend · /srv/backend                                       │ │ label  backend                                    │
@@ -34,4 +34,4 @@ SHEP  Switch workspace                                                          
 │                                                                │ │                                                   │
 ╰────────────────────────────────────────────────────────────────╯ │                                                   │
                                                                    ╰───────────────────────────────────────────────────╯
-enter open   tab preview   ? help   esc quit
+enter open   tab agents   ? help   esc quit

@@ -72,18 +72,15 @@ func TestFooterHints_NarrowDropsPreviewFirst(t *testing.T) {
 	narrowM := NewModelWithLayout(cands, nil, Layout{Theme: ThemeMocha})
 	narrowM, _ = update(t, narrowM, sizeMsg(64, 24))
 
-	narrowPlain := stripNonSGRANSI(narrowM.footerHints())
-	if strings.Contains(narrowPlain, "tab preview") {
-		t.Errorf("narrow footer = %q, must drop the preview hint first", narrowPlain)
+	widePlain := stripNonSGRANSI(wide.footerHints())
+	if !strings.Contains(widePlain, "tab agents") {
+		t.Errorf("wide footer = %q, want the tab agents hint", widePlain)
 	}
-	for _, essential := range []string{"? help", "esc quit"} {
+	narrowPlain := stripNonSGRANSI(narrowM.footerHints())
+	for _, essential := range []string{"tab agents", "? help", "esc quit"} {
 		if !strings.Contains(narrowPlain, essential) {
 			t.Errorf("narrow footer = %q, want %q retained", narrowPlain, essential)
 		}
-	}
-	widePlain := stripNonSGRANSI(wide.footerHints())
-	if !strings.Contains(widePlain, "tab preview") {
-		t.Errorf("wide footer = %q, want the tab preview hint", widePlain)
 	}
 }
 

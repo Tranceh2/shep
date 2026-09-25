@@ -235,7 +235,7 @@ func TestOpen_AsyncLoader_GroupWorkspaceRecursion(t *testing.T) {
 // group among multiple groups sharing the same path drills into that exact group's scoped registry.
 func TestOpen_AsyncLoader_SamePathGroupWorkspaceRecursion(t *testing.T) {
 	root := t.TempDir()
-	projDir := filepath.Join(root, "repo-ecorp")
+	projDir := filepath.Join(root, "repo-arcade")
 	if err := os.MkdirAll(filepath.Join(projDir, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestOpen_AsyncLoader_SamePathGroupWorkspaceRecursion(t *testing.T) {
 	}}
 	cfg.Workspaces = []config.WorkspaceConfig{
 		{Name: "Kubernetes", Type: config.WorkspaceTypeGroup, Path: root, SourceOrder: []string{"kube-contexts"}},
-		{Name: "ECORP", Type: config.WorkspaceTypeGroup, Path: root, SourceOrder: []string{config.SourceProjects}},
+		{Name: "fsociety", Type: config.WorkspaceTypeGroup, Path: root, SourceOrder: []string{config.SourceProjects}},
 	}
 
 	driver := &openDriver{
@@ -266,7 +266,7 @@ func TestOpen_AsyncLoader_SamePathGroupWorkspaceRecursion(t *testing.T) {
 		lastAction:  source.HerdrActionFocused,
 	}
 
-	// Select the "ECORP" group specifically from the candidates in the async TUI runner.
+	// Select the "fsociety" group specifically from the candidates in the async TUI runner.
 	app := New(
 		WithHerdrDriver(driver),
 		WithLayoutApplier(driver),
@@ -277,12 +277,12 @@ func TestOpen_AsyncLoader_SamePathGroupWorkspaceRecursion(t *testing.T) {
 					return source.Candidate{}, tui.RowActionOpen, "", nil, false, msg.Err
 				}
 				for _, c := range msg.Candidates {
-					if c.Meta["group"] == "true" && c.Label == "ECORP" {
+					if c.Meta["group"] == "true" && c.Label == "fsociety" {
 						return c, tui.RowActionOpen, "", nil, true, nil
 					}
 				}
 			}
-			return source.Candidate{}, tui.RowActionOpen, "", nil, false, errors.New("ECORP group candidate not found")
+			return source.Candidate{}, tui.RowActionOpen, "", nil, false, errors.New("fsociety group candidate not found")
 		}),
 	)
 
@@ -304,7 +304,7 @@ func TestOpen_AsyncLoader_SamePathGroupWorkspaceRecursion(t *testing.T) {
 		t.Fatalf("driver got candidate %+v, want projects source in %s", driver.lastCand, projDir)
 	}
 	if _, err := os.Stat(counter); !os.IsNotExist(err) {
-		t.Fatalf("kube-contexts integration was executed when ECORP group was selected")
+		t.Fatalf("kube-contexts integration was executed when fsociety group was selected")
 	}
 }
 

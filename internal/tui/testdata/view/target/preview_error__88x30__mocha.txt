@@ -27,4 +27,4 @@
 │                                              │ │                                     │
 │                                              │ │                                     │
 ╰──────────────────────────────────────────────╯ ╰─────────────────────────────────────╯
-enter open   tab preview   ? help   esc quit
+enter open   tab agents   ? help   esc quit

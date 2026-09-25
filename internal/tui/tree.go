@@ -171,17 +171,28 @@ func synthesizeWorkspaceChildren(workspaceID, parentLabel, parentPath string, ta
 			if path == "" {
 				path = p.CWD
 			}
+			label := p.Label
+			if label == "" && p.TerminalTitle != "" {
+				label = p.TerminalTitle
+			}
+			meta := map[string]string{
+				"workspace_id":    workspaceID,
+				"workspace_label": parentLabel,
+				"tab_id":          tab.ID,
+				"tab_label":       tab.Label,
+				"pane_id":         p.ID,
+				"agent_status":    p.AgentStatus,
+			}
+			if p.Agent != "" {
+				meta["agent"] = p.Agent
+			}
+			if p.TerminalTitle != "" {
+				meta["terminal_title"] = p.TerminalTitle
+			}
 			paneCands = append(paneCands, source.Candidate{
-				Label: p.Label,
+				Label: label,
 				Path:  path,
-				Meta: map[string]string{
-					"workspace_id":    workspaceID,
-					"workspace_label": parentLabel,
-					"tab_id":          tab.ID,
-					"tab_label":       tab.Label,
-					"pane_id":         p.ID,
-					"agent_status":    p.AgentStatus,
-				},
+				Meta:  meta,
 			})
 		}
 		out.Tabs = append(out.Tabs, tabChildren{Tab: tabCand, Panes: paneCands})

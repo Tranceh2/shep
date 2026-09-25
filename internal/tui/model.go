@@ -153,6 +153,7 @@ type Layout struct {
 	RankingSnapshot ranking.Snapshot
 	StatusDialer    StatusDialer
 	PinToggler      PinToggler
+	InitialScope    FilterScope
 }
 
 // Orientation values for Layout.Orientation. The empty string means "auto":
@@ -221,6 +222,7 @@ type Model struct {
 	hasSelected    bool
 	selectedAction RowAction
 	cancelled      bool
+	scope          FilterScope
 	layout         Layout
 	theme          Theme
 	styles         styleSet
@@ -469,6 +471,7 @@ func newModelWithLayout(candidates []source.Candidate, renderer preview.Renderer
 		expandedWorkspaces: map[string]bool{},
 		sourceOrder:        layout.SourceOrder,
 		rankingSnapshot:    snapshot,
+		scope:              layout.InitialScope,
 		spinner:            spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(styles.previewLoadingStyle)),
 		// mode starts "" (unknown/not yet sized): View treats "" the same
 		// as modeWide (side-by-side, using the same width<=0 fallback
@@ -497,6 +500,17 @@ func (m Model) SelectedAction() RowAction { return m.selectedAction }
 // Cancelled reports whether the user quit without selecting
 // (esc/ctrl+c/ctrl+g).
 func (m Model) Cancelled() bool { return m.cancelled }
+
+// Scope returns the active filter scope (ScopeAll or ScopeAgents).
+func (m Model) Scope() FilterScope { return m.scope }
+
+// WithScope returns a copy of the model with the given filter scope activated.
+func (m Model) WithScope(s FilterScope) Model {
+	m.scope = s
+	m.cursor = 0
+	m.cursorTouched = false
+	return m
+}
 
 // Layout returns the model's current session-only Layout (list/preview
 // widths, orientation override, theme), reflecting any live ctrl+l toggle.
@@ -771,6 +785,10 @@ func (m Model) handlePaneStatus(msg paneStatusMsg) (Model, tea.Cmd) {
 	if m.tree != nil {
 		m.tree.UpdatePaneAgentStatus(msg.PaneID, status)
 	}
+	if m.scope == ScopeAgents {
+		cmd := m.applyFilter()
+		return m, tea.Batch(cmd, waitForStatusCmd(m.renderCtx, m.liveStatusEvents))
+	}
 	for i := range m.rows {
 		if m.rows[i].Kind == RowPane && m.rows[i].Candidate.Meta != nil && m.rows[i].Candidate.Meta["pane_id"] == msg.PaneID {
 			m.rows[i].Candidate.Meta["agent_status"] = status
@@ -878,6 +896,8 @@ func (m Model) handleSnapshotResponse(msg snapshotResponseMsg) (Model, tea.Cmd) 
 	m.baseCandidates = spliceHerdrCandidates(m.baseCandidates, replacement)
 	m.candidates = m.baseCandidates
 	m.tree = NewTreeExpanderFromSnapshot(msg.snapshot)
+	snapshotCopy := msg.snapshot
+	m.startupSnapshot = &snapshotCopy
 	if len(m.liveStatuses) > 0 {
 		for paneID, obs := range m.liveStatuses {
 			if obs.seq <= m.snapshotRequestSeq {

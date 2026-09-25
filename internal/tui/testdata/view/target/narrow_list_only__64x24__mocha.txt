@@ -21,4 +21,4 @@
 │                                                              │
 │                                                              │
 ╰──────────────────────────────────────────────────────────────╯
-enter open   ? help   esc quit
+enter open   tab agents   ? help   esc quit

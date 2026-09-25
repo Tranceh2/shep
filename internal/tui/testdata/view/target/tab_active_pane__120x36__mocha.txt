@@ -1,4 +1,4 @@
-SHEP  Switch workspace                                                                                      1 candidates
+SHEP  ● all   agents (0)                                                                                    1 candidates
 [/] type to filter…
 ╭────────────────────────────────────────────────────────────────╮ ╭ PREVIEW · api ────────────────────────────────────╮
 │   backend · /srv/backend                                       │ │ label  api                                        │
@@ -34,4 +34,4 @@ SHEP  Switch workspace                                                          
 │                                                                │ │                                                   │
 ╰────────────────────────────────────────────────────────────────╯ │                                                   │
                                                                    ╰───────────────────────────────────────────────────╯
-enter Focus tab   tab preview   ? help   esc quit
+enter Focus tab   tab agents   ? help   esc quit

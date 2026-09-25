@@ -44,8 +44,8 @@ func TestRenderHeader_NoBrandText(t *testing.T) {
 	if strings.Contains(plain, "shep") {
 		t.Errorf("header must not contain the lowercase brand mark \"shep\": %q", plain)
 	}
-	if !strings.Contains(plain, "SHEP") || !strings.Contains(plain, "Switch workspace") {
-		t.Errorf("header missing the wide orientation line \"SHEP  Switch workspace\": %q", plain)
+	if !strings.Contains(plain, "SHEP") || !strings.Contains(plain, "all") {
+		t.Errorf("header missing the wide orientation line \"SHEP\": %q", plain)
 	}
 	if !strings.Contains(plain, "[/]") {
 		t.Errorf("header missing the \"[/]\" search token: %q", plain)
@@ -71,7 +71,7 @@ func TestView_HeaderLineHasNoBrand(t *testing.T) {
 	if strings.Contains(header, "shep") {
 		t.Errorf("header lines must not contain \"shep\": %q", header)
 	}
-	if !strings.Contains(header, "SHEP") || !strings.Contains(header, "Switch workspace") {
+	if !strings.Contains(header, "SHEP") || !strings.Contains(header, "all") {
 		t.Errorf("header lines missing the wide orientation line: %q", header)
 	}
 }

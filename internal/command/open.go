@@ -43,6 +43,7 @@ type asyncTUIRunFunc func(ctx context.Context, producers []tui.SourceProducer, q
 func (a *App) openCmd() *cobra.Command {
 	var pathFlag string
 	var targetFlag string
+	var agentsFlag bool
 	cmd := &cobra.Command{
 		Use:   "open [query]",
 		Short: "Open a project with Herdr (or print its path when Herdr is absent)",
@@ -80,13 +81,15 @@ projects (already-open herdr workspaces, templates, and groups are rejected).`,
 			if len(args) == 1 {
 				query = args[0]
 			}
-			return a.runOpen(cmd, query, pathFlag, targetFlag)
+			return a.runOpen(cmd, query, pathFlag, targetFlag, agentsFlag)
 		},
 	}
 	cmd.Flags().StringVar(&pathFlag, "path", "",
 		"open the given absolute path directly, bypassing query resolution (used by the Television cable)")
 	cmd.Flags().StringVar(&targetFlag, "target", "workspace",
 		"where to open an entry: workspace (default), tab, or pane")
+	cmd.Flags().BoolVar(&agentsFlag, "agents", false,
+		"open directly in the active agents filter scope")
 	return cmd
 }
 
@@ -734,7 +737,7 @@ func (a *App) buildStreamingProducers(cmdCtx context.Context) []tui.SourceProduc
 // runOpen is the pipeline so tests can call it directly against a fresh App.
 // target is the resolved --target value ("workspace", "tab", or "pane"); for
 // the interactive TUI path, the model can override it via App.chosenTarget.
-func (a *App) runOpen(cmd *cobra.Command, query, pathFlag, targetFlag string) error {
+func (a *App) runOpen(cmd *cobra.Command, query, pathFlag, targetFlag string, agents ...bool) error {
 	out := cmd.OutOrStdout()
 	errOut := cmd.ErrOrStderr()
 	a.chosenTarget = ""
@@ -827,6 +830,9 @@ func (a *App) runOpen(cmd *cobra.Command, query, pathFlag, targetFlag string) er
 	}
 
 	producers := a.buildStreamingProducers(cmd.Context())
+	if len(agents) > 0 && agents[0] {
+		layout.InitialScope = tui.ScopeAgents
+	}
 	cand, action, chosenTarget, currentPane, ok, selErr := a.runAsyncTUI(cmd.Context(), producers, query, layout)
 	if selErr != nil {
 		if errors.Is(selErr, tui.ErrCancelled) {
