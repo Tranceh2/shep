@@ -34,10 +34,9 @@ jobs:
         run: go test -race ./...
 
       - name: Lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-          install-mode: "goinstall"
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+          golangci-lint run
 
       - name: Hardcoded-path guard (CD-5)
         run: ./scripts/check-no-user-paths.sh
