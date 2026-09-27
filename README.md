@@ -31,7 +31,7 @@ I'm sharing it in case someone else in the Herdr or terminal community finds it 
 - ⚡ **Instant Zero-Delay Picker:** First frame renders immediately. Slower providers (like scanning filesystem directories) stream in asynchronously in the background. Zero disk I/O while typing.
 - 🤖 **AI Agents Attention Queue:** Dedicated `all` vs `agents` scope (toggle with `Tab` / `Shift+Tab`). An attention-first queue puts newly blocked (`◉`) or finished (`●`) agents at the top. Once you jump in to inspect an agent, it automatically moves below actively working agents (`⠋`).
 - 🔍 **Extended Fuzzy Filtering (fzf + Snacks style):** Space-separated AND terms, pipe `|` OR matching, exact `'terms`, prefix `^`, suffix `$`, negation `!term`, and field filters (`status:blocked`, `agent:claude`, `source:herdr`, `path:api`).
-- 🔁 **True MRU A↔B Jump-Back:** Ships with a native Herdr plugin action (`tranceh2.shep-jump-back.jump-back`) to toggle back and forth between your two most recently visited workspaces like `prefix + L` in tmux.
+- 🔁 **True MRU A↔B Jump-Back:** Ships with a native Herdr plugin action (`tranceh2.shep.jump-back`) to toggle back and forth between your two most recently visited workspaces like `prefix + L` in tmux.
 - 📐 **Adaptive Ranking & Persistent Pins:** Learns from successful selections using local SQLite WAL storage (private `0600` permissions with auto-quarantine on corruption). Press `Ctrl+F` to pin high-priority entries to the top.
 - 🧩 **Hierarchical Groups & Multi-Pane Templates:** Define nested pickers (`type = "group"`), multi-tab/multi-split layouts with custom focus nodes, and `close_on_exit` flags.
 - 🎨 **Modular Terminal UI:** Built on Charm's Bubble Tea and Lip Gloss with Catppuccin themes (Mocha, Macchiato, Frappe, Latte), auto-color detection, and a pure structural ASCII fallback when `NO_COLOR` is set.
@@ -88,6 +88,18 @@ Or run directly without installing:
 nix run github:tranceh2/shep -- open
 ```
 
+### Publishing to PATH (`shep link`)
+
+To make `shep` available globally on your `$PATH`:
+- If installed via Herdr plugin: run `./bin/shep link` inside the plugin directory to create a symlink at `~/.local/bin/shep`.
+- From source or local build: run `./shep link` from your build directory.
+
+To remove the symlink:
+
+```sh
+shep unlink
+```
+
 ---
 
 ## Quickstart
@@ -105,15 +117,45 @@ shep doctor                 # Validate your configuration and workspace paths
 
 ## Herdr Integration
 
-### 1. Floating Modal Popup
+Shep integrates with Herdr through the unified plugin `tranceh2.shep` (which provides the interactive picker popup, focus history collector, and jump-back navigation).
 
-To open `shep` as a modal popup over your current workspace (just like tmux popup menus), add this to your `~/.config/herdr/config.toml`:
+### 1. Install the Herdr Plugin
+
+**Via Herdr plugin install (recommended):**
+
+```sh
+herdr plugin install Tranceh2/shep/contrib/herdr-plugin
+```
+
+*Note: Requires Go 1.26+ installed. Herdr clones the repository and runs `bash scripts/build.sh`, which compiles the checkout into the plugin-local `bin/shep` with version and commit metadata.*
+
+**Or from a local checkout:**
+
+```sh
+# From your shep repository clone
+herdr plugin link "$PWD/contrib/herdr-plugin"
+cd contrib/herdr-plugin
+bash scripts/build.sh
+```
+
+### 2. Configure Keybindings
+
+Add the keybindings to `~/.config/herdr/config.toml`:
 
 ```toml
+# Open Shep picker popup
 [[keys.command]]
 key = "prefix+ctrl+f"  # Replace with your preferred shortcut
-type = "popup"
-command = "shep open"
+type = "plugin_action"
+command = "tranceh2.shep.open"
+description = "open Shep picker"
+
+# Jump back to previous workspace (A<->B toggle)
+[[keys.command]]
+key = "prefix+tab"
+type = "plugin_action"
+command = "tranceh2.shep.jump-back"
+description = "jump to previous workspace"
 ```
 
 Reload Herdr's configuration:
@@ -126,33 +168,7 @@ When running inside a Herdr popup, `shep` detects the active pane and unlocks in
 - `Ctrl+T`: open the selected candidate as a new **tab** in the current workspace.
 - `Ctrl+P`: open the selected candidate as a **split pane** beside your current pane.
 
-### 2. A↔B Workspace Jump-Back (Previous Workspace Toggle)
-
-`shep` includes a Herdr plugin that records your focus history across workspaces. Pressing the shortcut alternates between your current workspace and the last one visited.
-
-Copy the verified binary into the plugin directory, then link and enable:
-
-```sh
-# Copy your shep binary into the plugin's bin directory
-mkdir -p contrib/jump-back-plugin/bin
-cp $(which shep) contrib/jump-back-plugin/bin/shep
-
-# Link and enable the plugin in Herdr
-herdr plugin link ./contrib/jump-back-plugin
-herdr plugin enable tranceh2.shep-jump-back
-```
-
-Bind the action in `~/.config/herdr/config.toml`:
-
-```toml
-[[keys.command]]
-key = "prefix+tab"
-type = "plugin_action"
-command = "tranceh2.shep-jump-back.jump-back"
-description = "jump to previous workspace"
-```
-
-See [`docs/jump-back.md`](docs/jump-back.md) for detailed error codes, lifecycle rules, and design notes.
+See [`docs/herdr-plugin.md`](docs/herdr-plugin.md) for the full plugin reference and [`docs/jump-back.md`](docs/jump-back.md) for jump-back error codes and lifecycle rules.
 
 ---
 

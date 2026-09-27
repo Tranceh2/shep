@@ -11,7 +11,7 @@ launch ranking when the collector is not running).
 This is intentionally different from Herdr's native `previous_workspace`: the
 native action walks sidebar/order, while Shep `jump-back` uses the observed focus
 MRU and toggles A↔B. The bundled plugin action is
-`tranceh2.shep-jump-back.jump-back`.
+`tranceh2.shep.jump-back`.
 
 For a Herdr keybinding, use the plugin action rather than native
 `previous_workspace`:
@@ -20,7 +20,7 @@ For a Herdr keybinding, use the plugin action rather than native
 [[keys.command]]
 key = "prefix+tab"
 type = "plugin_action"
-command = "tranceh2.shep-jump-back.jump-back"
+command = "tranceh2.shep.jump-back"
 description = "jump to previous workspace"
 ```
 
@@ -30,8 +30,9 @@ Herdr injects `HERDR_SOCKET_PATH` for the current session and
 without shell evaluation.
 
 History is collected by `shep watch-history`, a hidden long-lived command that
-the bundled Herdr plugin starts. Until that collector runs, `jump-back`
-correctly reports `history not ready` (exit 3) and changes nothing.
+the bundled Herdr plugin starts automatically on launch. Until that collector
+runs, `jump-back` correctly reports `history not ready` (exit 3) and changes
+nothing.
 
 ## Quick path
 
@@ -97,53 +98,55 @@ with `0700` and the database with `0600`.
 
 ## Install the collector
 
-The collector runs as a Herdr plugin. Herdr never builds or fetches the binary
-for you: you build it, verify it, and copy that exact executable into the
-plugin directory. Nothing here launches a binary found on the server's `PATH`.
+The collector runs as part of the unified Herdr plugin `tranceh2.shep`.
 
-### 1. Build and verify the binary
+### Option A: Install from GitHub (Remote Install)
+
+When installing via Herdr, Herdr clones the repository and automatically runs
+the declared `[[build]]` step (`bash scripts/build.sh`), which compiles from the
+checkout into plugin-local `bin/shep`, so no manual binary copying is required:
+
+```sh
+herdr plugin install Tranceh2/shep/contrib/herdr-plugin
+```
+
+### Option B: Local Checkout (Development)
+
+For local development or manual installs, link the plugin directory and build
+the binary in place:
 
 ```sh
 cd /path/to/shep
-make build                      # produces ./shep
-./shep --version                # verify it is the build you expect
-./shep watch-history --help     # verify the collector subcommand exists
-```
-
-### 2. Copy it into the plugin directory
-
-```sh
-mkdir -p contrib/jump-back-plugin/bin
-cp ./shep contrib/jump-back-plugin/bin/shep
-./contrib/jump-back-plugin/bin/shep --version   # verify the copy
+herdr plugin link "$PWD/contrib/herdr-plugin"
+cd contrib/herdr-plugin
+bash scripts/build.sh
+./bin/shep --version   # verify the build
 ```
 
 `bin/shep` is an installation artifact. It is intentionally not committed, and
 the plugin's tests assert that it never is.
 
-### 3. Link the plugin
+### Verify and Start
+
+Confirm the plugin is recognized and enabled:
 
 ```sh
-herdr plugin link "$PWD/contrib/jump-back-plugin"
-herdr plugin list                                  # confirm tranceh2.shep-jump-back is listed and enabled
-herdr plugin action list --plugin tranceh2.shep-jump-back
+herdr plugin list                                  # confirm tranceh2.shep is listed and enabled
+herdr plugin action list --plugin tranceh2.shep
 ```
 
-Linking registers the plugin globally for your user. It does **not** start the
-collector.
-
-### 4. Start it for the session you are already in
+For the current session, start or recover the collector immediately:
 
 ```sh
-herdr plugin action invoke tranceh2.shep-jump-back.start
-herdr plugin action invoke tranceh2.shep-jump-back.jump-back
-herdr plugin log list --plugin tranceh2.shep-jump-back   # inspect the run
+herdr plugin action invoke tranceh2.shep.start-history
+herdr plugin action invoke tranceh2.shep.jump-back
+herdr plugin log list --plugin tranceh2.shep       # inspect the run
 ```
 
-From the next Herdr start onward the `[[startup]]` hook does this for you, once
-per enabled plugin, after the session is restored and the API socket is ready.
+From subsequent Herdr starts onward, the `[[startup]]` hook starts the history
+collector automatically once the session is restored and the API socket is ready.
 
-### 5. Confirm it works
+### Confirm it works
 
 ```sh
 shep jump-back    # exit 3 until two distinct workspaces have been focused
@@ -162,7 +165,7 @@ successful jump-back is then observed and makes the next invocation toggle back.
 | Situation | What happens |
 |---|---|
 | **Start against a live owner** | The duplicate refuses immediately and exits without disturbing the incumbent. Its control endpoint is left alone. Safe to invoke the start action any number of times. |
-| **Recover after the owner exited** | Invoke the start action again. The new process acquires the per-socket lock the dead owner released, and history begins a fresh epoch. Nothing from before the gap is trusted. |
+| **Recover after the owner exited** | Invoke the start action (`tranceh2.shep.start-history`) again. The new process acquires the per-socket lock the dead owner released, and history begins a fresh epoch. Nothing from before the gap is trusted. |
 | **A live but hung owner** | Recovery is **refused**, not forced. This plugin never kills, signals, or guesses a process id, and offers no `--force`. `jump-back` meanwhile fails closed with `history not ready` because the control socket does not answer within its bounded timeout. Resolving a hung owner is a deliberate manual act outside this plugin. |
 | **Ctrl-C / SIGTERM** | The collector cancels its run context, closes the I/O it owns, joins its workers, releases the lock, and removes only its own control endpoint. |
 | **Reconnect budget exhausted** | The collector stops with a classified non-zero status. This means the stream was not re-established; it is **not** proof the Herdr host died and is never reported as a clean exit. |
@@ -170,8 +173,8 @@ successful jump-back is then observed and makes the next invocation toggle back.
 ## Disable, unlink, and uninstall
 
 ```sh
-herdr plugin disable tranceh2.shep-jump-back   # stop future autostart
-herdr plugin unlink  tranceh2.shep-jump-back   # unregister, leave files in place
+herdr plugin disable tranceh2.shep   # stop future autostart
+herdr plugin unlink  tranceh2.shep   # unregister, leave files in place
 ```
 
 Both are **future-only**. Neither terminates a collector that is already
@@ -179,9 +182,10 @@ running: an existing child continues until it exits naturally or you stop it
 yourself. What they prevent is the startup hook running on subsequent Herdr
 starts.
 
-To remove the plugin entirely, unlink it and delete `bin/shep`. The history
-database is **preserved by default** — uninstalling the plugin never deletes
-your data. Remove it deliberately if you want it gone:
+To remove the plugin entirely, unlink it and remove the build artifact
+`contrib/herdr-plugin/bin/shep`. The history database is **preserved by default**
+— uninstalling the plugin never deletes your data. Remove it deliberately if you
+want it gone:
 
 ```sh
 rm -f "${XDG_STATE_HOME:-$HOME/.local/state}/shep/jump_history.sqlite3"

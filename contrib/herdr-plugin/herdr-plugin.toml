@@ -1,0 +1,56 @@
+# Herdr plugin manifest for Shep: project, workspace, agent, and navigation tools.
+#
+# Provides:
+#   * Startup hook for the per-socket focus-history collector.
+#   * Interactive picker pane (popup placement) for shep open.
+#   * Declared actions for open, jump-back, start-history, and doctor.
+#   * Build step that compiles the binary from the cloned checkout into the plugin-local bin directory.
+
+id = "tranceh2.shep"
+name = "Shep"
+version = "0.1.1"
+min_herdr_version = "0.8.2"
+description = "Project, workspace, agent, and navigation tools for Herdr."
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["bash", "scripts/build.sh"]
+
+[[startup]]
+command = ["./bin/shep", "watch-history"]
+
+[[panes]]
+id = "picker"
+title = "Shep"
+placement = "popup"
+width = "90%"
+height = "80%"
+command = ["./bin/shep", "open"]
+
+[[actions]]
+id = "open"
+title = "Open Shep picker"
+description = "Open the interactive project and workspace picker popup"
+contexts = ["global", "workspace", "tab", "pane"]
+command = ["bash", "scripts/open-picker.sh"]
+
+[[actions]]
+id = "jump-back"
+title = "Jump to previous workspace"
+description = "Toggle between the two most recently focused workspaces"
+contexts = ["workspace"]
+command = ["./bin/shep", "jump-back"]
+
+[[actions]]
+id = "start-history"
+title = "Start Shep history collector"
+description = "Operator recovery for the focus-history collector"
+contexts = ["workspace"]
+command = ["./bin/shep", "watch-history"]
+
+[[actions]]
+id = "doctor"
+title = "Shep doctor"
+description = "Check configured workspaces and published PATH name"
+contexts = ["global"]
+command = ["./bin/shep", "doctor"]
