@@ -138,12 +138,14 @@ func (a *App) selectorFactory(matches []source.Candidate) *selector.Cascade {
 		layout.RankingSnapshot = a.rankingSnapshot(matches)
 		layout.StatusDialer = a.resolveStatusDialer()
 		layout.PinToggler = a.pinToggler()
+		layout.AckClearer = a.ackClearer()
 		return snapshotCascadeFor(cfg.General.Selector, a.buildPreviewRendererForSnapshot(*a.startupSnapshot), a.currentPane, a.setChosenTarget, a.setChosenAction, *a.startupSnapshot, a.Driver(), a.buildPreviewRendererForSnapshot, cfg.Sources.Herdr.Icon, matches, layout)
 	}
 	layout := layoutFromConfigWithIntegrations(cfg.TUI, cfg.General.SourceOrder, cfg.Integrations, cfg.Sources)
 	layout.RankingSnapshot = a.rankingSnapshot(matches)
 	layout.StatusDialer = a.resolveStatusDialer()
 	layout.PinToggler = a.pinToggler()
+	layout.AckClearer = a.ackClearer()
 	return cascadeFor(cfg.General.Selector, a.buildPreviewRenderer(), a.currentPane, a.setChosenTarget, a.setChosenAction, a.buildTreeExpander(), matches, layout)
 }
 
@@ -166,6 +168,18 @@ func (a *App) pinToggler() tui.PinToggler {
 		}
 		pinned, err := a.rankingStore.TogglePin(ctx, key)
 		return tui.PinToggleResultMsg{Key: key, Pinned: pinned, Err: err}
+	}
+}
+
+func (a *App) ackClearer() tui.AckClearer {
+	return func(ctx context.Context, paneID string) {
+		a.rankingMu.Lock()
+		store := a.rankingStore
+		a.rankingMu.Unlock()
+		if store == nil {
+			return
+		}
+		_ = store.ClearAcknowledgement(ctx, paneID)
 	}
 }
 
@@ -225,11 +239,14 @@ func (a *App) selectorFactoryForOrder(order []string, matches []source.Candidate
 		layout.RankingSnapshot = a.rankingSnapshot(matches)
 		layout.StatusDialer = a.resolveStatusDialer()
 		layout.PinToggler = a.pinToggler()
+		layout.AckClearer = a.ackClearer()
 		return snapshotCascadeFor(cfg.General.Selector, a.buildPreviewRendererForSnapshot(*a.startupSnapshot), a.currentPane, a.setChosenTarget, a.setChosenAction, *a.startupSnapshot, a.Driver(), a.buildPreviewRendererForSnapshot, cfg.Sources.Herdr.Icon, matches, layout)
 	}
 	layout := layoutFromConfigWithIntegrations(cfg.TUI, order, cfg.Integrations, cfg.Sources)
 	layout.RankingSnapshot = a.rankingSnapshot(matches)
 	layout.StatusDialer = a.resolveStatusDialer()
+	layout.PinToggler = a.pinToggler()
+	layout.AckClearer = a.ackClearer()
 	return cascadeFor(cfg.General.Selector, a.buildPreviewRenderer(), a.currentPane, a.setChosenTarget, a.setChosenAction, a.buildTreeExpander(), matches, layout)
 }
 
@@ -815,8 +832,11 @@ func (a *App) runOpen(cmd *cobra.Command, query, pathFlag, targetFlag string, ag
 		a.rankingMu.Lock()
 		rankingReady := a.rankingStore != nil
 		a.rankingMu.Unlock()
-		if outcome == launchOutcomeCompleted && rankingReady && cfg.Ranking.Enabled {
-			a.recordRankingSuccess(cand)
+		if outcome == launchOutcomeCompleted && rankingReady {
+			if cfg.Ranking.Enabled {
+				a.recordRankingSuccess(cand)
+			}
+			a.recordAcknowledgement(cand, a.chosenAction)
 		}
 		return nil
 	}
@@ -825,6 +845,7 @@ func (a *App) runOpen(cmd *cobra.Command, query, pathFlag, targetFlag string, ag
 	layout := layoutFromConfigWithIntegrations(cfg.TUI, cfg.General.SourceOrder, cfg.Integrations, cfg.Sources)
 	layout.StatusDialer = a.resolveStatusDialer()
 	layout.PinToggler = a.pinToggler()
+	layout.AckClearer = a.ackClearer()
 	if err := a.openRankingForPins(cmd.Context()); err != nil {
 		fmt.Fprintf(errOut, "warning: pin storage unavailable: %v\n", err)
 	}
@@ -893,8 +914,11 @@ func (a *App) runOpen(cmd *cobra.Command, query, pathFlag, targetFlag string, ag
 	a.rankingMu.Lock()
 	rankingReady := a.rankingStore != nil
 	a.rankingMu.Unlock()
-	if outcome == launchOutcomeCompleted && rankingReady && cfg.Ranking.Enabled {
-		a.recordRankingSuccess(cand)
+	if outcome == launchOutcomeCompleted && rankingReady {
+		if cfg.Ranking.Enabled {
+			a.recordRankingSuccess(cand)
+		}
+		a.recordAcknowledgement(cand, a.chosenAction)
 	}
 	return nil
 }
@@ -917,6 +941,29 @@ func (a *App) recordRankingSuccess(cand source.Candidate) {
 	ctx, cancel := context.WithTimeout(context.Background(), rankingRecordTimeout)
 	defer cancel()
 	_ = store.RecordSuccess(ctx, keys)
+}
+
+func (a *App) recordAcknowledgement(cand source.Candidate, action tui.RowAction) {
+	if action != tui.RowActionFocusTab {
+		return
+	}
+	if cand.Meta == nil {
+		return
+	}
+	paneID := cand.Meta["pane_id"]
+	status := cand.Meta["agent_status"]
+	if paneID == "" || (strings.ToLower(status) != "blocked" && strings.ToLower(status) != "done") {
+		return
+	}
+	a.rankingMu.Lock()
+	store := a.rankingStore
+	a.rankingMu.Unlock()
+	if store == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), rankingRecordTimeout)
+	defer cancel()
+	_ = store.RecordAcknowledgement(ctx, paneID, status)
 }
 
 func (a *App) hydrateStartupSnapshot(ctx context.Context) error {

@@ -214,15 +214,15 @@ func (m Model) headerCountText() string {
 // Wide (>= headerWideBreakpoint): two lines —
 //
 //	SHEP  Switch workspace                                N candidates
-//	[/]  query-or-placeholder
+//	⌕  query-or-placeholder
 //
 // Line 1 is a small orientation line (a text label, deliberately not a logo
 // or stats bar): "SHEP" in the text role + bold, "Switch workspace" muted,
 // with the result count right-aligned muted. Line 2 is the search line: the
-// "[/]" key token bold, then the live query (accent+bold) or the muted
+// search prompt glyph (⌕ / >) muted, then the live query (accent+bold) or the muted
 // placeholder at empty query.
 //
-// Compact (< headerWideBreakpoint): a single "[/] query-or-placeholder" line
+// Compact (< headerWideBreakpoint): a single "⌕ query-or-placeholder" line
 // with the count right-aligned muted.
 //
 // The query is what the user is actively reading and must never be silently
@@ -240,7 +240,11 @@ func (m Model) renderHeader(width int) string {
 		}
 		query = m.styles.mutedStyle.Render(placeholder)
 	}
-	search := m.styles.keycapStyle.Render("[/]") + " " + query
+	prompt := m.icons().SearchPrompt
+	if prompt == "" {
+		prompt = "⌕"
+	}
+	search := m.styles.mutedStyle.Render(prompt) + " " + query
 
 	if width < headerWideBreakpoint {
 		if width < lipgloss.Width(search)+1+lipgloss.Width(count) {

@@ -33,7 +33,7 @@ func TestOpenPathMigratesVersionedPrivateSchema(t *testing.T) {
 	if version != schemaVersion {
 		t.Fatalf("schema version = %d, want %d", version, schemaVersion)
 	}
-	for _, table := range []string{"exact_usage", "resource_usage", "recent_exact"} {
+	for _, table := range []string{"exact_usage", "resource_usage", "recent_exact", "candidate_pins", "pane_acknowledgements"} {
 		var count int
 		if err := store.db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&count); err != nil {
 			t.Fatal(err)

@@ -258,3 +258,25 @@ func TestNextResponsiveMode_ShortListOnlyKeepsHysteresis(t *testing.T) {
 		t.Errorf("120x12 from list-only = %q, want wide", got)
 	}
 }
+
+// TestPreviewPaneContentSize_HeaderBreakpointParity verifies that previewPaneContentSize
+// calculates the preview viewport height using exactly the same header/footer budget as View()
+// across widths 99 (single-line header) and 100 (two-line header).
+func TestPreviewPaneContentSize_HeaderBreakpointParity(t *testing.T) {
+	t.Parallel()
+
+	for _, w := range []int{99, 100, 120} {
+		for _, h := range []int{12, 24, 36} {
+			m := Model{width: w, height: h, mode: modeWide}
+			headerLines := m.headerLineCount()
+			expectedPaneHeight := h - (headerLines + 1)
+			expectedInnerH := previewBodyHeight(expectedPaneHeight)
+
+			_, gotInnerH := m.previewPaneContentSize()
+			if gotInnerH != expectedInnerH {
+				t.Errorf("width=%d height=%d (headerLines=%d): previewPaneContentSize innerH = %d, want %d",
+					w, h, headerLines, gotInnerH, expectedInnerH)
+			}
+		}
+	}
+}

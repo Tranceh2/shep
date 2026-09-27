@@ -172,7 +172,7 @@ func (m *Model) buildAgentRows() []Row {
 
 	type scoredAgent struct {
 		cand    source.Candidate
-		urgency int
+		tier    int
 		score   int
 		indexes []int
 		mruRank int
@@ -180,7 +180,10 @@ func (m *Model) buildAgentRows() []Row {
 
 	var matched []scoredAgent
 	for _, c := range candidates {
-		urgency := agentStatusUrgency(c.Meta["agent_status"])
+		paneID := c.Meta["pane_id"]
+		status := c.Meta["agent_status"]
+		isAcked := m.rankingSnapshot.IsPaneAcknowledged(paneID, status)
+		tier := agentAttentionTier(status, isAcked)
 		mruRank := m.rankingSnapshot.WorkspaceMRURank(c)
 		score := 0
 		var indexes []int
@@ -197,7 +200,7 @@ func (m *Model) buildAgentRows() []Row {
 
 		matched = append(matched, scoredAgent{
 			cand:    c,
-			urgency: urgency,
+			tier:    tier,
 			score:   score,
 			indexes: indexes,
 			mruRank: mruRank,
@@ -206,8 +209,8 @@ func (m *Model) buildAgentRows() []Row {
 
 	sort.SliceStable(matched, func(i, j int) bool {
 		left, right := matched[i], matched[j]
-		if left.urgency != right.urgency {
-			return left.urgency < right.urgency
+		if left.tier != right.tier {
+			return left.tier < right.tier
 		}
 		if m.query != "" && left.score != right.score {
 			return left.score > right.score
@@ -239,17 +242,18 @@ func (m *Model) buildAgentRows() []Row {
 	return rows
 }
 
-func agentStatusUrgency(status string) int {
+func agentAttentionTier(status string, isAcked bool) int {
 	switch strings.ToLower(status) {
-	case "blocked":
-		return 0 // highest urgency
+	case "blocked", "done":
+		if isAcked {
+			return 3 // acknowledged attention
+		}
+		return 1 // unacknowledged attention
 	case "working":
-		return 1
-	case "idle":
 		return 2
-	case "done":
-		return 3
-	default:
+	case "idle":
 		return 4
+	default:
+		return 5
 	}
 }

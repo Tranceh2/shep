@@ -63,6 +63,10 @@ type IconSet struct {
 	// containing tab (Herdr has no per-pane focus command), never claim to
 	// focus one exact pane.
 	ActiveMarker string
+
+	// SearchPrompt prefixes the search input in the header (e.g. ⌕ for Unicode,
+	// > for ASCII).
+	SearchPrompt string
 }
 
 // iconSets holds every documented tier. IconsUnicode is byte-identical to
@@ -84,6 +88,7 @@ var iconSets = map[string]IconSet{
 		TreeVertical:  "│ ",
 		TabIcon:       "◫",
 		ActiveMarker:  "◆",
+		SearchPrompt:  "⌕",
 	},
 	IconsASCII: {
 		Name:          IconsASCII,
@@ -99,6 +104,7 @@ var iconSets = map[string]IconSet{
 		TreeVertical:  "| ",
 		TabIcon:       "t",
 		ActiveMarker:  "@",
+		SearchPrompt:  ">",
 	},
 }
 

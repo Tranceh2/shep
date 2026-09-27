@@ -44,10 +44,10 @@ func (m *Model) syncHelpViewport() {
 // rendered.
 func (m Model) previewPaneContentSize() (int, int) {
 	// paneHeight mirrors View's own calculation: m.height minus the header
-	// (1) and footer (1) that sit above/below the body.
+	// (headerLineCount()) and footer (1) that sit above/below the body.
 	paneHeight := m.height
 	if paneHeight > 0 {
-		paneHeight -= 2
+		paneHeight -= m.headerLineCount() + 1
 	}
 	switch m.mode {
 	case modeListOnly:

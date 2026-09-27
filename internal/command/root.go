@@ -30,6 +30,8 @@ import (
 type rankingStore interface {
 	Snapshot(context.Context, string) ranking.Snapshot
 	RecordSuccess(context.Context, ranking.Keys) error
+	RecordAcknowledgement(context.Context, string, string) error
+	ClearAcknowledgement(context.Context, string) error
 	TogglePin(context.Context, string) (bool, error)
 	Clear(context.Context) error
 	Close() error

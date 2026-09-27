@@ -29,6 +29,7 @@ type Snapshot struct {
 	recent           []string
 	workspaceMRU     []string
 	pins             map[string]struct{}
+	acknowledgements map[string]string
 	currentExact     string
 	capturedAt       time.Time
 	adaptiveDisabled bool
@@ -87,7 +88,50 @@ func (s Snapshot) CurrentExact() string { return s.currentExact }
 
 // HasHistory reports whether the immutable snapshot contains learned state.
 func (s Snapshot) HasHistory() bool {
-	return len(s.exact) > 0 || len(s.resource) > 0 || len(s.recent) > 0 || len(s.workspaceMRU) > 0
+	return len(s.exact) > 0 || len(s.resource) > 0 || len(s.recent) > 0 || len(s.workspaceMRU) > 0 || len(s.acknowledgements) > 0
+}
+
+// IsPaneAcknowledged reports whether paneID is acknowledged for status.
+func (s Snapshot) IsPaneAcknowledged(paneID, status string) bool {
+	if paneID == "" || status == "" || len(s.acknowledgements) == 0 {
+		return false
+	}
+	ackedStatus, ok := s.acknowledgements[paneID]
+	if !ok {
+		return false
+	}
+	return strings.EqualFold(ackedStatus, status)
+}
+
+// WithAcknowledgement returns a copy with an acknowledgement added/updated in memory.
+func (s Snapshot) WithAcknowledgement(paneID, status string) Snapshot {
+	out := s
+	out.acknowledgements = make(map[string]string, len(s.acknowledgements)+1)
+	for k, v := range s.acknowledgements {
+		out.acknowledgements[k] = v
+	}
+	if paneID != "" && status != "" {
+		out.acknowledgements[paneID] = strings.ToLower(status)
+	}
+	return out
+}
+
+// WithClearedAcknowledgement returns a copy with the acknowledgement for paneID removed in memory.
+func (s Snapshot) WithClearedAcknowledgement(paneID string) Snapshot {
+	if len(s.acknowledgements) == 0 {
+		return s
+	}
+	if _, ok := s.acknowledgements[paneID]; !ok {
+		return s
+	}
+	out := s
+	out.acknowledgements = make(map[string]string, len(s.acknowledgements))
+	for k, v := range s.acknowledgements {
+		if k != paneID {
+			out.acknowledgements[k] = v
+		}
+	}
+	return out
 }
 
 // IsPinned reports whether candidate's stable resource or identity key is pinned.
@@ -179,7 +223,7 @@ func aliasQuality(query string, candidate source.Candidate) (textualQuality, boo
 }
 
 func disabledSnapshot(currentExact string) Snapshot {
-	return Snapshot{currentExact: currentExact, pins: map[string]struct{}{}}
+	return Snapshot{currentExact: currentExact, pins: map[string]struct{}{}, acknowledgements: map[string]string{}}
 }
 
 func exactStorageKey(value string) string {

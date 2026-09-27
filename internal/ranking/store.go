@@ -18,7 +18,8 @@ import (
 )
 
 const (
-	schemaVersion    = 2
+	schemaVersion    = 3
+	ackRetention     = 7 * 24 * time.Hour
 	migrationTimeout = 5 * time.Second
 	busyTimeout      = 100 * time.Millisecond
 	operationTimeout = 5 * time.Second
@@ -179,6 +180,16 @@ func migrate(db *sql.DB) error {
 		}
 		version = 2
 	}
+	if version == 2 {
+		if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS pane_acknowledgements (
+ pane_id TEXT PRIMARY KEY NOT NULL,
+ status TEXT NOT NULL,
+ acked_at INTEGER NOT NULL
+ );`); err != nil {
+			return fmt.Errorf("migrate ranking pane acknowledgements: %w", err)
+		}
+		version = 3
+	}
 	if _, err := tx.Exec("PRAGMA user_version = " + fmt.Sprint(version)); err != nil {
 		return fmt.Errorf("set ranking schema version: %w", err)
 	}
@@ -197,7 +208,7 @@ func (s *Store) Close() error {
 
 func (s *Store) Snapshot(ctx context.Context, currentExact string) Snapshot {
 	now := s.clock()
-	snapshot := Snapshot{enabled: true, exact: map[string]usage{}, resource: map[string]usage{}, pins: map[string]struct{}{}, currentExact: currentExact, capturedAt: now}
+	snapshot := Snapshot{enabled: true, exact: map[string]usage{}, resource: map[string]usage{}, pins: map[string]struct{}{}, acknowledgements: map[string]string{}, currentExact: currentExact, capturedAt: now}
 
 	if s == nil || s.db == nil {
 		return disabledSnapshot(currentExact)
@@ -240,6 +251,24 @@ func (s *Store) Snapshot(ctx context.Context, currentExact string) Snapshot {
 			return disabledSnapshot(currentExact)
 		}
 		snapshot.pins[pinStorageKey(key)] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return disabledSnapshot(currentExact)
+	}
+	_ = rows.Close()
+	ackCutoff := now.Unix() - int64(ackRetention/time.Second)
+	rows, err = tx.QueryContext(readCtx, `SELECT pane_id, status FROM pane_acknowledgements WHERE acked_at >= ?`, ackCutoff)
+	if err != nil {
+		return disabledSnapshot(currentExact)
+	}
+	for rows.Next() {
+		var paneID, status string
+		if err := rows.Scan(&paneID, &status); err != nil {
+			_ = rows.Close()
+			return disabledSnapshot(currentExact)
+		}
+		snapshot.acknowledgements[paneID] = strings.ToLower(status)
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
@@ -363,10 +392,70 @@ func (s *Store) Clear(ctx context.Context) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	for _, table := range []string{"exact_usage", "resource_usage", "recent_exact", "candidate_pins"} {
+	for _, table := range []string{"exact_usage", "resource_usage", "recent_exact", "candidate_pins", "pane_acknowledgements"} {
 		if _, err := tx.ExecContext(writeCtx, "DELETE FROM "+table); err != nil {
 			return err
 		}
+	}
+	return tx.Commit()
+}
+
+// RecordAcknowledgement persists an acknowledgement for paneID at the observed status.
+// Only attention statuses ("blocked", "done") are persisted; non-attention or empty inputs are no-ops.
+func (s *Store) RecordAcknowledgement(ctx context.Context, paneID, status string) error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	paneID = strings.TrimSpace(paneID)
+	status = strings.ToLower(strings.TrimSpace(status))
+	if paneID == "" || (status != "blocked" && status != "done") {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	writeCtx, cancel := boundedWriteContext(ctx)
+	defer cancel()
+	tx, err := s.db.BeginTx(writeCtx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := s.clock().Unix()
+	if _, err := tx.ExecContext(writeCtx, `INSERT INTO pane_acknowledgements(pane_id, status, acked_at) VALUES (?, ?, ?) ON CONFLICT(pane_id) DO UPDATE SET status=excluded.status, acked_at=excluded.acked_at`, paneID, status, now); err != nil {
+		return err
+	}
+	ackCutoff := now - int64(ackRetention/time.Second)
+	if _, err := tx.ExecContext(writeCtx, `DELETE FROM pane_acknowledgements WHERE acked_at < ?`, ackCutoff); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ClearAcknowledgement removes any persisted acknowledgement for paneID.
+func (s *Store) ClearAcknowledgement(ctx context.Context, paneID string) error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	paneID = strings.TrimSpace(paneID)
+	if paneID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	writeCtx, cancel := boundedWriteContext(ctx)
+	defer cancel()
+	tx, err := s.db.BeginTx(writeCtx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := s.clock().Unix()
+	if _, err := tx.ExecContext(writeCtx, `DELETE FROM pane_acknowledgements WHERE pane_id=?`, paneID); err != nil {
+		return err
+	}
+	ackCutoff := now - int64(ackRetention/time.Second)
+	if _, err := tx.ExecContext(writeCtx, `DELETE FROM pane_acknowledgements WHERE acked_at < ?`, ackCutoff); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -70,8 +71,8 @@ func TestAgentScope_OrderingUrgencyAndMRU(t *testing.T) {
 		t.Fatalf("expected 4 agent rows, got %d", len(m.rows))
 	}
 
-	// Expected urgency order: blocked (p_blocked) > working (p_working) > idle (p_idle) > done (p_done)
-	expectedOrder := []string{"p_blocked", "p_working", "p_idle", "p_done"}
+	// Expected tier order: unacknowledged attention (p_blocked, p_done) > working (p_working) > idle (p_idle)
+	expectedOrder := []string{"p_blocked", "p_done", "p_working", "p_idle"}
 	for i, wantID := range expectedOrder {
 		gotID := m.rows[i].Candidate.Meta["pane_id"]
 		if gotID != wantID {
@@ -461,5 +462,168 @@ func TestAgentScope_RowPrimaryText_SessionNameAndStatusIconOnly(t *testing.T) {
 	}
 	if !strings.Contains(nestedPrimary, "·") {
 		t.Errorf("nested tree pane primary %q should contain separator \"·\"", nestedPrimary)
+	}
+}
+
+func TestAgentScope_FullDeterministicTiers(t *testing.T) {
+	t.Parallel()
+
+	snapshot := &source.Snapshot{
+		Workspaces: []source.Workspace{
+			{ID: "w1", Label: "fsociety", CWD: "/srv/fsociety"},
+		},
+		Tabs: []source.Tab{
+			{ID: "t1", WorkspaceID: "w1", Label: "arcade"},
+		},
+		Panes: []source.Pane{
+			{ID: "p_unknown", WorkspaceID: "w1", TabID: "t1", Agent: "agent", AgentStatus: "unknown", TerminalTitle: "unknown agent"},
+			{ID: "p_idle", WorkspaceID: "w1", TabID: "t1", Agent: "agent", AgentStatus: "idle", TerminalTitle: "idle agent"},
+			{ID: "p_blocked_acked", WorkspaceID: "w1", TabID: "t1", Agent: "agent", AgentStatus: "blocked", TerminalTitle: "acked blocked"},
+			{ID: "p_done_acked", WorkspaceID: "w1", TabID: "t1", Agent: "agent", AgentStatus: "done", TerminalTitle: "acked done"},
+			{ID: "p_working", WorkspaceID: "w1", TabID: "t1", Agent: "agent", AgentStatus: "working", TerminalTitle: "working agent"},
+			{ID: "p_done_new", WorkspaceID: "w1", TabID: "t1", Agent: "agent", AgentStatus: "done", TerminalTitle: "new done"},
+			{ID: "p_blocked_new", WorkspaceID: "w1", TabID: "t1", Agent: "agent", AgentStatus: "blocked", TerminalTitle: "new blocked"},
+		},
+	}
+
+	rs := ranking.Snapshot{}.
+		WithAcknowledgement("p_blocked_acked", "blocked").
+		WithAcknowledgement("p_done_acked", "done")
+
+	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(*snapshot), Layout{})
+	m.startupSnapshot = snapshot
+	m.rankingSnapshot = rs
+	m = m.WithScope(ScopeAgents)
+	m.applyFilter()
+
+	if len(m.rows) != 7 {
+		t.Fatalf("expected 7 rows, got %d", len(m.rows))
+	}
+
+	// Expected order:
+	// Tier 1: p_blocked_new, p_done_new (unacknowledged blocked/done, sorted by pane ID)
+	// Tier 2: p_working
+	// Tier 3: p_blocked_acked, p_done_acked (acknowledged blocked/done, sorted by pane ID)
+	// Tier 4: p_idle
+	// Tier 5: p_unknown
+	expectedOrder := []string{
+		"p_blocked_new",
+		"p_done_new",
+		"p_working",
+		"p_blocked_acked",
+		"p_done_acked",
+		"p_idle",
+		"p_unknown",
+	}
+
+	for i, wantID := range expectedOrder {
+		gotID := m.rows[i].Candidate.Meta["pane_id"]
+		if gotID != wantID {
+			t.Errorf("row[%d] pane_id = %q, want %q", i, gotID, wantID)
+		}
+	}
+}
+
+func TestAgentScope_AttentionTierRemainsPrimaryDuringQuery(t *testing.T) {
+	t.Parallel()
+
+	snapshot := &source.Snapshot{
+		Workspaces: []source.Workspace{
+			{ID: "w1", Label: "fsociety", CWD: "/srv/fsociety"},
+		},
+		Tabs: []source.Tab{
+			{ID: "t1", WorkspaceID: "w1", Label: "arcade"},
+		},
+		Panes: []source.Pane{
+			{ID: "p_idle_exact", WorkspaceID: "w1", TabID: "t1", Agent: "agent", AgentStatus: "idle", TerminalTitle: "deploy"},
+			{ID: "p_working_exact", WorkspaceID: "w1", TabID: "t1", Agent: "agent", AgentStatus: "working", TerminalTitle: "deploy"},
+			{ID: "p_blocked_fuzzy", WorkspaceID: "w1", TabID: "t1", Agent: "agent", AgentStatus: "blocked", TerminalTitle: "deep-deploy-job"},
+		},
+	}
+
+	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(*snapshot), Layout{})
+	m.startupSnapshot = snapshot
+	m = m.WithScope(ScopeAgents)
+	m.query = "deploy"
+	m.applyFilter()
+
+	if len(m.rows) != 3 {
+		t.Fatalf("expected 3 rows, got %d", len(m.rows))
+	}
+
+	// Even though p_idle_exact and p_working_exact have higher exact match scores for "deploy",
+	// p_blocked_fuzzy (Tier 1) must sort before p_working_exact (Tier 2) which sorts before p_idle_exact (Tier 4).
+	expectedOrder := []string{"p_blocked_fuzzy", "p_working_exact", "p_idle_exact"}
+	for i, wantID := range expectedOrder {
+		gotID := m.rows[i].Candidate.Meta["pane_id"]
+		if gotID != wantID {
+			t.Errorf("row[%d] pane_id = %q, want %q", i, gotID, wantID)
+		}
+	}
+}
+
+func TestAgentScope_LiveTransitionInvalidatesAckAndRestoresNewAttention(t *testing.T) {
+	t.Parallel()
+
+	snapshot := &source.Snapshot{
+		Workspaces: []source.Workspace{
+			{ID: "w1", Label: "fsociety", CWD: "/srv/fsociety"},
+		},
+		Tabs: []source.Tab{
+			{ID: "t1", WorkspaceID: "w1", Label: "arcade"},
+		},
+		Panes: []source.Pane{
+			{ID: "p1", WorkspaceID: "w1", TabID: "t1", Agent: "agent", AgentStatus: "blocked", TerminalTitle: "scan agent"},
+			{ID: "p2", WorkspaceID: "w1", TabID: "t1", Agent: "agent", AgentStatus: "working", TerminalTitle: "worker agent"},
+		},
+	}
+
+	var clearedPane string
+	ackClearer := func(_ context.Context, paneID string) {
+		clearedPane = paneID
+	}
+
+	rs := ranking.Snapshot{}.WithAcknowledgement("p1", "blocked")
+
+	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(*snapshot), Layout{AckClearer: ackClearer})
+	m.startupSnapshot = snapshot
+	m.rankingSnapshot = rs
+	m = m.WithScope(ScopeAgents)
+	m.applyFilter()
+
+	// Initial: p1 is acknowledged blocked (Tier 3), so p2 (working, Tier 2) is first
+	if m.rows[0].Candidate.Meta["pane_id"] != "p2" || m.rows[1].Candidate.Meta["pane_id"] != "p1" {
+		t.Fatalf("initial order got [%s, %s], want [p2, p1]", m.rows[0].Candidate.Meta["pane_id"], m.rows[1].Candidate.Meta["pane_id"])
+	}
+
+	// Step 1: p1 transitions to "working" -> ack should be invalidated immediately
+	updatedModel, cmd := m.handlePaneStatus(paneStatusMsg{PaneID: "p1", Status: "working"})
+	m = updatedModel
+
+	if m.rankingSnapshot.IsPaneAcknowledged("p1", "blocked") {
+		t.Errorf("in-memory ack for p1 was not cleared on transition to working")
+	}
+
+	// Execute cmd if any to test AckClearer callback
+	if cmd != nil {
+		_ = cmd()
+	}
+	if clearedPane != "p1" {
+		t.Errorf("AckClearer was not called with p1, got %q", clearedPane)
+	}
+
+	// Step 2: p1 transitions back to "blocked" -> must be Tier 1 (new attention!)
+	updatedModel2, _ := m.handlePaneStatus(paneStatusMsg{PaneID: "p1", Status: "blocked"})
+	m = updatedModel2
+
+	if len(m.rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(m.rows))
+	}
+	// p1 is now unacknowledged blocked (Tier 1) -> must be first!
+	if m.rows[0].Candidate.Meta["pane_id"] != "p1" {
+		t.Errorf("row[0] = %q, want p1 (new attention after returning to blocked)", m.rows[0].Candidate.Meta["pane_id"])
+	}
+	if m.rows[1].Candidate.Meta["pane_id"] != "p2" {
+		t.Errorf("row[1] = %q, want p2", m.rows[1].Candidate.Meta["pane_id"])
 	}
 }

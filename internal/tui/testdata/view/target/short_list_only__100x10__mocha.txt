@@ -1,5 +1,5 @@
 SHEP  ● all   agents (0)                                                                7 candidates
-[/] type to filter…
+⌕ type to filter…
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ ❯ backend · /srv/backend                                                                         │
 │   frontend · /srv/frontend                                                                       │

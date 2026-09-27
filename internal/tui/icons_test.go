@@ -46,6 +46,7 @@ func TestResolveIconSet_DefaultsToUnicode(t *testing.T) {
 		TreeVertical:  "│ ",
 		TabIcon:       "◫",
 		ActiveMarker:  "◆",
+		SearchPrompt:  "⌕",
 	}
 	if set != want {
 		t.Errorf("resolveIconSet(\"\") = %+v, want %+v (must match the pre-Phase-8 hardcoded glyphs exactly)", set, want)
@@ -80,6 +81,7 @@ func TestResolveIconSet_ASCII(t *testing.T) {
 		"ExpandOpen":    set.ExpandOpen, "ExpandClosed": set.ExpandClosed,
 		"TreeMid": set.TreeMid, "TreeLast": set.TreeLast,
 		"TreeVertical": set.TreeVertical, "TabIcon": set.TabIcon, "ActiveMarker": set.ActiveMarker,
+		"SearchPrompt": set.SearchPrompt,
 	}
 	for name, glyph := range fields {
 		if glyph == "" {
@@ -312,6 +314,32 @@ func TestRowDisplayText_RespectsConfiguredIconSetEndToEnd(t *testing.T) {
 	}
 	if containsFold(plain, "✓") {
 		t.Errorf("rowDisplayText primary %q must not contain the unicode idle glyph when ascii is configured", plain)
+	}
+}
+
+// TestSearchPrompt_RespectsConfiguredIconSet proves the search prompt in renderHeader
+// uses "⌕" for Unicode and ">" for ASCII tier, styled muted and not with keycap brackets.
+func TestSearchPrompt_RespectsConfiguredIconSet(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		icons      string
+		wantPrompt string
+		wantNo     string
+	}{
+		{IconsUnicode, "⌕", "[/]"},
+		{IconsASCII, ">", "[/]"},
+	} {
+		t.Run(tc.icons, func(t *testing.T) {
+			m := NewModelWithLayout([]source.Candidate{{Label: "a", Source: "zoxide"}}, nil, Layout{Icons: tc.icons, Theme: ThemeMocha})
+			header := stripNonSGRANSI(m.renderHeader(120))
+			if strings.Contains(header, tc.wantNo) {
+				t.Errorf("[%s] header contains %q, want no keycap brackets", tc.icons, tc.wantNo)
+			}
+			if !strings.Contains(header, tc.wantPrompt+" type to filter…") {
+				t.Errorf("[%s] header %q does not contain prompt %q with placeholder", tc.icons, header, tc.wantPrompt)
+			}
+		})
 	}
 }
 

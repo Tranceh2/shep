@@ -1,4 +1,4 @@
-[/] type to filter…                                 7 candidates
+⌕ type to filter…                                   7 candidates
 ╭──────────────────────────────────────────────────────────────╮
 │ ❯ backend · /srv/backend                                     │
 │   frontend · /srv/frontend                                   │

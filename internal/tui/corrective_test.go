@@ -32,7 +32,7 @@ import (
 //
 //	Switch workspace" orientation line (a text label, not a logo) plus the
 //
-// "[/]" search line and the right-aligned count.
+// search prompt line and the right-aligned count.
 func TestRenderHeader_NoBrandText(t *testing.T) {
 	t.Parallel()
 	m := NewModelWithLayout(
@@ -47,8 +47,11 @@ func TestRenderHeader_NoBrandText(t *testing.T) {
 	if !strings.Contains(plain, "SHEP") || !strings.Contains(plain, "all") {
 		t.Errorf("header missing the wide orientation line \"SHEP\": %q", plain)
 	}
-	if !strings.Contains(plain, "[/]") {
-		t.Errorf("header missing the \"[/]\" search token: %q", plain)
+	if strings.Contains(plain, "[/]") {
+		t.Errorf("header must not contain misleading \"[/]\" keycap: %q", plain)
+	}
+	if !strings.Contains(plain, "⌕ type to filter…") {
+		t.Errorf("header missing the \"⌕ type to filter…\" prompt: %q", plain)
 	}
 	if !strings.Contains(plain, "2 candidates") {
 		t.Errorf("header missing count \"2 candidates\": %q", plain)

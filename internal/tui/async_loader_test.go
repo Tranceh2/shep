@@ -49,8 +49,11 @@ func TestModel_AsyncLoader_FirstFrameAvailableBeforeBlockedProducersComplete(t *
 
 	// First frame is rendered immediately without blocking
 	view := m.View()
-	if !strings.Contains(view, "[/]") {
-		t.Errorf("view = %q, want it to contain the search header", view)
+	if strings.Contains(view, "[/]") {
+		t.Errorf("view = %q, want no [/] search keycap", view)
+	}
+	if !strings.Contains(view, "⌕") {
+		t.Errorf("view = %q, want it to contain search prompt ⌕", view)
 	}
 	if !strings.Contains(view, "loading") {
 		t.Errorf("view = %q, want it to contain loading indicator", view)

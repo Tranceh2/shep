@@ -69,6 +69,10 @@ type PinToggleResultMsg struct {
 	Err       error
 }
 
+// AckClearer is the narrow command boundary used by the TUI to invalidate
+// stale persisted acknowledgements when a status transition is observed.
+type AckClearer func(context.Context, string)
+
 // PinToggler is the narrow command boundary used by the TUI for pin changes.
 // It performs no I/O itself; the returned message is delivered to Update.
 type PinToggler func(context.Context, source.Candidate) PinToggleResultMsg
@@ -153,6 +157,7 @@ type Layout struct {
 	RankingSnapshot ranking.Snapshot
 	StatusDialer    StatusDialer
 	PinToggler      PinToggler
+	AckClearer      AckClearer
 	InitialScope    FilterScope
 }
 
@@ -785,16 +790,31 @@ func (m Model) handlePaneStatus(msg paneStatusMsg) (Model, tea.Cmd) {
 	if m.tree != nil {
 		m.tree.UpdatePaneAgentStatus(msg.PaneID, status)
 	}
+
+	var clearCmd tea.Cmd
+	if (m.rankingSnapshot.IsPaneAcknowledged(msg.PaneID, "blocked") && status != "blocked") ||
+		(m.rankingSnapshot.IsPaneAcknowledged(msg.PaneID, "done") && status != "done") {
+		m.rankingSnapshot = m.rankingSnapshot.WithClearedAcknowledgement(msg.PaneID)
+		if m.layout.AckClearer != nil {
+			paneID := msg.PaneID
+			clearer := m.layout.AckClearer
+			clearCmd = func() tea.Msg {
+				clearer(context.Background(), paneID)
+				return nil
+			}
+		}
+	}
+
 	if m.scope == ScopeAgents {
 		cmd := m.applyFilter()
-		return m, tea.Batch(cmd, waitForStatusCmd(m.renderCtx, m.liveStatusEvents))
+		return m, tea.Batch(cmd, clearCmd, waitForStatusCmd(m.renderCtx, m.liveStatusEvents))
 	}
 	for i := range m.rows {
 		if m.rows[i].Kind == RowPane && m.rows[i].Candidate.Meta != nil && m.rows[i].Candidate.Meta["pane_id"] == msg.PaneID {
 			m.rows[i].Candidate.Meta["agent_status"] = status
 		}
 	}
-	return m, waitForStatusCmd(m.renderCtx, m.liveStatusEvents)
+	return m, tea.Batch(clearCmd, waitForStatusCmd(m.renderCtx, m.liveStatusEvents))
 }
 
 // degradeFocusIfPreviewUnavailable corrects m.focus/m.prevFocus after a
@@ -929,6 +949,24 @@ func (m Model) handleSnapshotResponse(msg snapshotResponseMsg) (Model, tea.Cmd) 
 			}))
 		}
 	}
+	var clearCmds []tea.Cmd
+	if msg.snapshot.Panes != nil {
+		for _, p := range msg.snapshot.Panes {
+			status := normalizeStatus(p.AgentStatus)
+			if (m.rankingSnapshot.IsPaneAcknowledged(p.ID, "blocked") && status != "blocked") ||
+				(m.rankingSnapshot.IsPaneAcknowledged(p.ID, "done") && status != "done") {
+				m.rankingSnapshot = m.rankingSnapshot.WithClearedAcknowledgement(p.ID)
+				if m.layout.AckClearer != nil {
+					paneID := p.ID
+					clearer := m.layout.AckClearer
+					clearCmds = append(clearCmds, func() tea.Msg {
+						clearer(context.Background(), paneID)
+						return nil
+					})
+				}
+			}
+		}
+	}
 	m.lastSnapshotAt = m.now()
 	m.previewSeq++
 	m.previewText = ""
@@ -936,7 +974,8 @@ func (m Model) handleSnapshotResponse(msg snapshotResponseMsg) (Model, tea.Cmd) 
 	m.previewErr = ""
 	filterCmd := m.applyFilter()
 	_, previewCmd := m.dispatchPreviewForRow(m.previewSeq)
-	return m, tea.Batch(filterCmd, previewCmd, m.maybeStartSpinner())
+	cmds := append(clearCmds, filterCmd, previewCmd, m.maybeStartSpinner())
+	return m, tea.Batch(cmds...)
 }
 
 // spliceHerdrCandidates preserves every non-Herdr candidate in its original

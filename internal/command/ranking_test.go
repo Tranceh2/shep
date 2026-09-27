@@ -14,8 +14,14 @@ import (
 	"github.com/tranceh2/shep/internal/tui"
 )
 
+type ackRecord struct {
+	paneID string
+	status string
+}
+
 type recordingRankingStore struct {
 	records []source.Candidate
+	acks    []ackRecord
 }
 
 func (s *recordingRankingStore) Snapshot(context.Context, string) ranking.Snapshot {
@@ -27,10 +33,23 @@ func (s *recordingRankingStore) RecordSuccess(_ context.Context, _ ranking.Keys)
 	return nil
 }
 
+func (s *recordingRankingStore) RecordAcknowledgement(_ context.Context, paneID, status string) error {
+	s.acks = append(s.acks, ackRecord{paneID: paneID, status: status})
+	return nil
+}
+
+func (s *recordingRankingStore) ClearAcknowledgement(context.Context, string) error {
+	return nil
+}
+
 func (s *recordingRankingStore) TogglePin(context.Context, string) (bool, error) { return true, nil }
 
-func (s *recordingRankingStore) Clear(context.Context) error { s.records = nil; return nil }
-func (s *recordingRankingStore) Close() error                { return nil }
+func (s *recordingRankingStore) Clear(context.Context) error {
+	s.records = nil
+	s.acks = nil
+	return nil
+}
+func (s *recordingRankingStore) Close() error { return nil }
 
 type failingRankingStore struct {
 	records int
@@ -48,6 +67,12 @@ func (s *failingRankingStore) RecordSuccess(context.Context, ranking.Keys) error
 	s.records++
 	return errors.New("database unavailable")
 }
+func (s *failingRankingStore) RecordAcknowledgement(context.Context, string, string) error {
+	return errors.New("database unavailable")
+}
+func (s *failingRankingStore) ClearAcknowledgement(context.Context, string) error {
+	return errors.New("database unavailable")
+}
 func (s *failingRankingStore) TogglePin(context.Context, string) (bool, error) {
 	return false, errors.New("database unavailable")
 }
@@ -63,6 +88,12 @@ func (s *blockingRankingStore) RecordSuccess(ctx context.Context, _ ranking.Keys
 	close(s.recordStarted)
 	<-ctx.Done()
 	return ctx.Err()
+}
+func (s *blockingRankingStore) RecordAcknowledgement(context.Context, string, string) error {
+	return nil
+}
+func (s *blockingRankingStore) ClearAcknowledgement(context.Context, string) error {
+	return nil
 }
 func (s *blockingRankingStore) TogglePin(context.Context, string) (bool, error) { return false, nil }
 
@@ -207,5 +238,136 @@ func TestRunOpenDoesNotRecordFailedTemplateApplication(t *testing.T) {
 	}
 	if !bytes.Contains(errOut.Bytes(), []byte("warning: template failed")) {
 		t.Fatalf("stderr = %q, want template warning", errOut.String())
+	}
+}
+
+func TestRunOpen_RecordsAcknowledgementOnlyOnFocusTabSuccess(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		action       tui.RowAction
+		cand         source.Candidate
+		focusErr     error
+		wantAckCount int
+		wantPaneID   string
+		wantStatus   string
+	}{
+		{
+			name:   "successful_focus_tab_blocked_pane",
+			action: tui.RowActionFocusTab,
+			cand: source.Candidate{
+				Source: config.SourceHerdr,
+				Meta: map[string]string{
+					"pane_id":      "p_blocked",
+					"tab_id":       "t1",
+					"agent_status": "blocked",
+				},
+			},
+			wantAckCount: 1,
+			wantPaneID:   "p_blocked",
+			wantStatus:   "blocked",
+		},
+		{
+			name:   "successful_focus_tab_done_pane",
+			action: tui.RowActionFocusTab,
+			cand: source.Candidate{
+				Source: config.SourceHerdr,
+				Meta: map[string]string{
+					"pane_id":      "p_done",
+					"tab_id":       "t1",
+					"agent_status": "done",
+				},
+			},
+			wantAckCount: 1,
+			wantPaneID:   "p_done",
+			wantStatus:   "done",
+		},
+		{
+			name:   "failed_focus_tab_does_not_record_ack",
+			action: tui.RowActionFocusTab,
+			cand: source.Candidate{
+				Source: config.SourceHerdr,
+				Meta: map[string]string{
+					"pane_id":      "p_blocked",
+					"tab_id":       "t1",
+					"agent_status": "blocked",
+				},
+			},
+			focusErr:     errors.New("focus failed"),
+			wantAckCount: 0,
+		},
+		{
+			name:   "row_action_open_does_not_record_ack",
+			action: tui.RowActionOpen,
+			cand: source.Candidate{
+				Source: config.SourceHerdr,
+				Meta: map[string]string{
+					"pane_id":      "p_blocked",
+					"tab_id":       "t1",
+					"agent_status": "blocked",
+				},
+			},
+			wantAckCount: 0,
+		},
+		{
+			name:   "working_status_does_not_record_ack",
+			action: tui.RowActionFocusTab,
+			cand: source.Candidate{
+				Source: config.SourceHerdr,
+				Meta: map[string]string{
+					"pane_id":      "p_working",
+					"tab_id":       "t1",
+					"agent_status": "working",
+				},
+			},
+			wantAckCount: 0,
+		},
+		{
+			name:   "missing_pane_id_does_not_record_ack",
+			action: tui.RowActionFocusTab,
+			cand: source.Candidate{
+				Source: config.SourceHerdr,
+				Meta: map[string]string{
+					"tab_id":       "t1",
+					"agent_status": "blocked",
+				},
+			},
+			wantAckCount: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, _ := seedCfg(t, "foo")
+			driver := &openDriver{
+				detect:      true,
+				workspaceID: "wA",
+				focusTabErr: tt.focusErr,
+				lastAction:  source.HerdrActionFocused,
+			}
+			store := &recordingRankingStore{}
+			var out, errOut bytes.Buffer
+			app := New(WithStreams(&out, &errOut), WithHerdrDriver(driver))
+			app.cfg = cfg
+			app.probes = config.Probes{Herdr: true}
+			app.rankingOpen = func() (rankingStore, error) { return store, nil }
+			app.asyncTUIRun = func(ctx context.Context, producers []tui.SourceProducer, query string, layout tui.Layout) (source.Candidate, tui.RowAction, string, *source.Pane, bool, error) {
+				return tt.cand, tt.action, "", nil, true, nil
+			}
+
+			cmd := app.rootCmd()
+			cmd.SetArgs([]string{"open"})
+			_ = cmd.Execute()
+
+			if len(store.acks) != tt.wantAckCount {
+				t.Fatalf("acks recorded = %d, want %d", len(store.acks), tt.wantAckCount)
+			}
+			if tt.wantAckCount > 0 {
+				if store.acks[0].paneID != tt.wantPaneID || store.acks[0].status != tt.wantStatus {
+					t.Errorf("recorded ack = %+v, want {paneID: %q, status: %q}", store.acks[0], tt.wantPaneID, tt.wantStatus)
+				}
+			}
+		})
 	}
 }
