@@ -6,7 +6,29 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tranceh2/shep/internal/config"
 )
+
+// TestApp_HerdrEnvEnablesProbeAndDriver verifies plugin-style startup with a
+// minimal PATH: the valid absolute env binary gates Herdr and is used by the
+// lazily-created driver.
+func TestApp_HerdrEnvEnablesProbeAndDriver(t *testing.T) {
+	binary := filepath.Join(t.TempDir(), "herdr")
+	if err := os.WriteFile(binary, []byte("fake"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HERDR_BIN_PATH", binary)
+	app := New()
+	app.cfg = config.Defaults()
+	app.probes = config.ProbesFor(app.cfg)
+	if !app.probes.Herdr {
+		t.Fatal("valid HERDR_BIN_PATH should enable Herdr")
+	}
+	if app.Driver() == nil {
+		t.Fatal("Driver should be available with valid HERDR_BIN_PATH")
+	}
+}
 
 // TestApp_HelpOutput verifies the skeleton root renders its Long description
 // and exits cleanly with --help. Each case rebuilds the tree via New so flag

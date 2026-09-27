@@ -17,7 +17,7 @@ platforms = ["linux", "macos"]
 command = ["bash", "scripts/build.sh"]
 
 [[startup]]
-command = ["./bin/shep", "watch-history"]
+command = ["bash", "scripts/run-shep.sh", "watch-history"]
 
 [[panes]]
 id = "picker"
@@ -25,7 +25,7 @@ title = "Shep"
 placement = "popup"
 width = "90%"
 height = "80%"
-command = ["./bin/shep", "open"]
+command = ["bash", "scripts/run-shep.sh", "open"]
 
 [[actions]]
 id = "open"
@@ -39,18 +39,18 @@ id = "jump-back"
 title = "Jump to previous workspace"
 description = "Toggle between the two most recently focused workspaces"
 contexts = ["workspace"]
-command = ["./bin/shep", "jump-back"]
+command = ["bash", "scripts/run-shep.sh", "jump-back"]
 
 [[actions]]
 id = "start-history"
 title = "Start Shep history collector"
 description = "Operator recovery for the focus-history collector"
 contexts = ["workspace"]
-command = ["./bin/shep", "watch-history"]
+command = ["bash", "scripts/run-shep.sh", "watch-history"]
 
 [[actions]]
 id = "doctor"
 title = "Shep doctor"
 description = "Check configured workspaces and published PATH name"
 contexts = ["global"]
-command = ["./bin/shep", "doctor"]
+command = ["bash", "scripts/run-shep.sh", "doctor"]

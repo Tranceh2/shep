@@ -1107,6 +1107,62 @@ func TestLoad_SelectorTable(t *testing.T) {
 	}
 }
 
+func TestHerdrBinaryWithEnv_PrecedenceAndValidation(t *testing.T) {
+	t.Parallel()
+	valid := filepath.Join(t.TempDir(), "herdr")
+	if err := os.WriteFile(valid, []byte("fake"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	invalidRelative := "relative/herdr"
+	invalidDirectory := t.TempDir()
+	invalidNonExecutable := filepath.Join(t.TempDir(), "herdr")
+	if err := os.WriteFile(invalidNonExecutable, []byte("fake"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	lookup := func(value string) func(string) (string, bool) {
+		return func(string) (string, bool) { return value, true }
+	}
+	for _, tc := range []struct {
+		name string
+		env  string
+		want string
+	}{
+		{name: "valid absolute", env: valid, want: valid},
+		{name: "blank", env: "   ", want: "herdr"},
+		{name: "relative", env: invalidRelative, want: "herdr"},
+		{name: "directory", env: invalidDirectory, want: "herdr"},
+		{name: "non executable", env: invalidNonExecutable, want: "herdr"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := HerdrBinaryWithEnv(Defaults(), lookup(tc.env)); got != tc.want {
+				t.Fatalf("HerdrBinaryWithEnv = %q, want %q", got, tc.want)
+			}
+			probes := ProbesForWith(Defaults(), lookup(tc.env), func(string) (string, error) {
+				return "", os.ErrNotExist
+			})
+			if probes.Herdr != (tc.want == valid) {
+				t.Fatalf("Herdr probe = %v, want %v", probes.Herdr, tc.want == valid)
+			}
+		})
+	}
+
+	cfg := Defaults()
+	cfg.Herdr.Binary = "configured-herdr"
+	if got := HerdrBinaryWithEnv(cfg, lookup(valid)); got != "configured-herdr" {
+		t.Fatalf("configured Herdr binary = %q, want configured-herdr", got)
+	}
+	probes := ProbesForWith(cfg, lookup(valid), func(name string) (string, error) {
+		if name == "configured-herdr" {
+			return name, nil
+		}
+		return "", os.ErrNotExist
+	})
+	if !probes.Herdr {
+		t.Fatal("configured Herdr binary should remain probeable")
+	}
+}
+
 // TestHerdrBinary_Default checks the empty-config default.
 func TestHerdrBinary_Default(t *testing.T) {
 	t.Parallel()

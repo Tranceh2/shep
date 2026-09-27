@@ -402,6 +402,7 @@ func TestOpen_ExactQueryInvokesDriver(t *testing.T) {
 // TestOpen_SessionsSourceEndToEnd covers the opt-in production path from
 // config source order through collection, resolution, and foreground attach.
 func TestOpen_SessionsSourceEndToEnd(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "")
 	cfg := config.Defaults()
 	cfg.General.SourceOrder = []string{config.SourceSessions}
 	cfg.Sources.Sessions.Icon = "S"
@@ -441,6 +442,7 @@ func TestOpen_SessionsSourceEndToEnd(t *testing.T) {
 // sessions row runs the dedicated foreground attach seam even when it has no
 // usable path or normal Herdr driver.
 func TestLaunch_SessionAttachDispatchesBeforePathAndDriverChecks(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "")
 	t.Setenv("HERDR_SOCKET_PATH", "/tmp/current.sock")
 	t.Setenv("HERDR_SESSION", "current")
 	t.Setenv("HERDR_TEST_ONLY", "remove")
@@ -1654,6 +1656,7 @@ func insidePaneDriver(pane source.Pane) *openDriver {
 // shep is running inside (focus=true so the new tab gets keyboard focus) and
 // runs the command in that tab's root pane, wrapped with close_on_exit.
 func TestOpen_TargetTab_OpensInCurrentWorkspace(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "")
 	cfg, _ := commandWorkspaceCfg(t, "ops", "k9s", true)
 	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
 	driver := insidePaneDriver(pane)
@@ -1753,6 +1756,7 @@ func TestApp_HydrateStartupSnapshot_TimesOut(t *testing.T) {
 // splits a new pane off the current one (right, 0.5, focus=true) and runs the
 // wrapped command there.
 func TestOpen_TargetPane_OpensInCurrentWorkspace(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "")
 	cfg, _ := commandWorkspaceCfg(t, "ops", "k9s", true)
 	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
 	driver := insidePaneDriver(pane)
@@ -1897,6 +1901,7 @@ func TestLaunch_TargetPane_NoCurrentPane_Errors(t *testing.T) {
 // best-effort close the now-ghost pane/tab and surface a real error (exit 1)
 // instead of silently returning nil.
 func TestOpen_TargetTab_ApplyFailureRollsBackAndErrors(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "")
 	cfg, _ := commandWorkspaceCfg(t, "ops", "k9s", false)
 	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
 	driver := insidePaneDriver(pane)
@@ -1925,6 +1930,7 @@ func TestOpen_TargetTab_ApplyFailureRollsBackAndErrors(t *testing.T) {
 // TestOpen_TargetPane_ApplyFailureRollsBackAndErrors mirrors the tab test for
 // --target=pane, confirming the rollback close targets the split pane.
 func TestLaunchInCurrentWorkspaceRollbackUsesIndependentContext(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "")
 	cfg, _ := commandWorkspaceCfg(t, "ops", "k9s", false)
 	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
 	driver := insidePaneDriver(pane)
@@ -1944,6 +1950,7 @@ func TestLaunchInCurrentWorkspaceRollbackUsesIndependentContext(t *testing.T) {
 }
 
 func TestOpen_TargetPane_ApplyFailureRollsBackAndErrors(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "")
 	cfg, _ := commandWorkspaceCfg(t, "ops", "k9s", false)
 	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
 	driver := insidePaneDriver(pane)

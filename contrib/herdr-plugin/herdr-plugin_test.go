@@ -230,7 +230,7 @@ func TestManifest_ExactlyOneStartupHookRunningCollector(t *testing.T) {
 	if len(m.Startup) != 1 {
 		t.Fatalf("startup hooks = %d, want exactly 1", len(m.Startup))
 	}
-	want := []string{"./bin/shep", "watch-history"}
+	want := []string{"bash", "scripts/run-shep.sh", "watch-history"}
 	if !equalSlice(m.Startup[0].Command, want) {
 		t.Fatalf("startup command = %v, want %v", m.Startup[0].Command, want)
 	}
@@ -258,7 +258,7 @@ func TestManifest_ExactlyOneInteractivePickerPane(t *testing.T) {
 	if p.Height != "80%" {
 		t.Fatalf("pane height = %q, want 80%%", p.Height)
 	}
-	wantCmd := []string{"./bin/shep", "open"}
+	wantCmd := []string{"bash", "scripts/run-shep.sh", "open"}
 	if !equalSlice(p.Command, wantCmd) {
 		t.Fatalf("pane command = %v, want %v", p.Command, wantCmd)
 	}
@@ -280,21 +280,21 @@ func TestManifest_DeclaresExpectedActions(t *testing.T) {
 			Title:       "Jump to previous workspace",
 			Description: "Toggle between the two most recently focused workspaces",
 			Contexts:    []string{"workspace"},
-			Command:     []string{"./bin/shep", "jump-back"},
+			Command:     []string{"bash", "scripts/run-shep.sh", "jump-back"},
 		},
 		"start-history": {
 			ID:          "start-history",
 			Title:       "Start Shep history collector",
 			Description: "Operator recovery for the focus-history collector",
 			Contexts:    []string{"workspace"},
-			Command:     []string{"./bin/shep", "watch-history"},
+			Command:     []string{"bash", "scripts/run-shep.sh", "watch-history"},
 		},
 		"doctor": {
 			ID:          "doctor",
 			Title:       "Shep doctor",
 			Description: "Check configured workspaces and published PATH name",
 			Contexts:    []string{"global"},
-			Command:     []string{"./bin/shep", "doctor"},
+			Command:     []string{"bash", "scripts/run-shep.sh", "doctor"},
 		},
 	}
 
@@ -356,14 +356,88 @@ func TestManifest_NeverLaunchesAnUnverifiedBinaryFromPath(t *testing.T) {
 		if first == "shep" {
 			t.Fatalf("command[0] = %q, bare PATH lookup forbidden", first)
 		}
-		if first != "./bin/shep" && first != "bash" {
-			t.Fatalf("command[0] = %q, want ./bin/shep or bash", first)
+		if first != "bash" {
+			t.Fatalf("command[0] = %q, want bash", first)
 		}
-		if first == "bash" {
-			if len(cmd) < 2 || !strings.HasPrefix(cmd[1], "scripts/") {
-				t.Fatalf("bash command %v must run a script under scripts/", cmd)
-			}
+		if len(cmd) < 2 || !strings.HasPrefix(cmd[1], "scripts/") {
+			t.Fatalf("bash command %v must run a script under scripts/", cmd)
 		}
+		if cmd[1] != "scripts/run-shep.sh" && cmd[1] != "scripts/open-picker.sh" {
+			t.Fatalf("command %v uses an unapproved plugin script", cmd)
+		}
+	}
+}
+
+func TestRunShepScript_IsCommittedAndExecutable(t *testing.T) {
+	info, err := os.Stat("scripts/run-shep.sh")
+	if err != nil {
+		t.Fatalf("stat run-shep.sh: %v", err)
+	}
+	if info.Mode()&0o111 == 0 {
+		t.Fatalf("run-shep.sh mode = %v, want executable", info.Mode())
+	}
+	tracked, err := os.ReadFile(filepath.Join(repositoryRoot(t), "contrib/herdr-plugin/scripts/run-shep.sh"))
+	if err != nil || len(tracked) == 0 {
+		t.Fatalf("run-shep.sh is not present in repository: %v", err)
+	}
+}
+
+func TestRunShepScript_PreparesPathWithoutSourcingProfiles(t *testing.T) {
+	pluginRoot := t.TempDir()
+	scriptDir := filepath.Join(pluginRoot, "scripts")
+	binDir := filepath.Join(pluginRoot, "bin")
+	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dataPath := filepath.Join(pluginRoot, "record.json")
+	fakeShep := filepath.Join(binDir, "shep")
+	fake := "#!/bin/bash\nset -euo pipefail\nprintf '%s' \"$PATH\" > \"$RECORD\"\nprintf '\\n%s' \"$@\" >> \"$RECORD\"\n"
+	if err := os.WriteFile(fakeShep, []byte(fake), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyPath(filepath.Join(repositoryRoot(t), "contrib/herdr-plugin/scripts/run-shep.sh"), filepath.Join(scriptDir, "run-shep.sh")); err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(pluginRoot, "home")
+	for _, dir := range []string{filepath.Join(home, ".local/bin"), filepath.Join(home, ".cargo/bin")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	profileMarker := filepath.Join(home, "profile-marker")
+	if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte("touch "+profileMarker+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := filepath.Join(pluginRoot, "old-bin")
+	cmd := exec.Command("bash", filepath.Join(scriptDir, "run-shep.sh"), "list", "--format", "json")
+	cmd.Env = []string{"HOME=" + home, "PATH=" + oldPath, "RECORD=" + dataPath, "USER=test-user", "SHELL=/bin/zsh"}
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("run wrapper: %v\n%s", err, output)
+	}
+	contents, err := os.ReadFile(dataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.SplitN(string(contents), "\n", 2)
+	if len(parts) != 2 {
+		t.Fatalf("recorded output = %q", contents)
+	}
+	pathEntries := strings.Split(parts[0], ":")
+	wantPrefix := []string{filepath.Join(home, ".local/bin"), filepath.Join(home, ".cargo/bin")}
+	if !equalSlice(pathEntries[:len(wantPrefix)], wantPrefix) {
+		t.Fatalf("PATH prefix = %v, want %v", pathEntries, wantPrefix)
+	}
+	if strings.Count(parts[0], filepath.Join(home, ".cargo/bin")) != 1 || !strings.HasSuffix(parts[0], oldPath) {
+		t.Fatalf("PATH = %q, want deduplicated prepended dirs plus original PATH", parts[0])
+	}
+	if parts[1] != "list\n--format\njson" {
+		t.Fatalf("argv = %q", parts[1])
+	}
+	if _, err := os.Stat(profileMarker); !os.IsNotExist(err) {
+		t.Fatalf("shell profile was sourced: marker stat error = %v", err)
 	}
 }
 

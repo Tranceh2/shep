@@ -6,6 +6,8 @@ into a single managed bundle.
 
 ## What the plugin provides
 
+The plugin runtime uses its checked-in wrapper to add existing conventional per-user bin directories without sourcing shell profiles. This keeps optional zoxide and Git tooling discoverable even when the Herdr server started with a minimal `PATH`; no manual `PATH` editing is required for plugin usage.
+
 - **Interactive Picker Popup (`90%` x `80%`):** Launches `shep open` in a native
   modal popup over your active Herdr session.
 - **True MRU A↔B Workspace Toggle (`jump-back`):** Alternates between your two

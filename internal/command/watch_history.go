@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
+	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/herdr"
 	"github.com/tranceh2/shep/internal/herdrwatch"
 	"github.com/tranceh2/shep/internal/history"
@@ -85,7 +86,7 @@ func (a *App) watchHistoryCmd() *cobra.Command {
 			// membership comes from the same authoritative `herdr api snapshot`
 			// path the rest of shep uses. It is called once per bootstrap and
 			// never per focus event.
-			driver := herdr.New(a.Config().HerdrBinary(), herdr.WithBinaryEnv(os.LookupEnv))
+			driver := herdr.New(config.HerdrBinaryWithEnv(a.Config(), os.LookupEnv))
 
 			// Ctrl-C / SIGTERM cancel the run context; Run then closes owned
 			// I/O, joins its workers, releases the flock, and removes only its

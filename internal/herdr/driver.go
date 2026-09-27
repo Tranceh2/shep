@@ -24,7 +24,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -80,11 +79,7 @@ func WithBinaryEnv(lookup func(string) (string, bool)) Option {
 }
 
 func validBinaryPath(path string) bool {
-	if strings.TrimSpace(path) == "" || !filepath.IsAbs(path) {
-		return false
-	}
-	info, err := os.Stat(path)
-	return err == nil && info.Mode().IsRegular() && info.Mode()&0o111 != 0
+	return config.ValidBinaryPath(path)
 }
 
 // Driver is the real source.HerdrDriver backed by the herdr CLI. It is safe
