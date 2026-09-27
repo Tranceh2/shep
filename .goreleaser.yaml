@@ -61,6 +61,7 @@ changelog:
 
 release:
   mode: replace
+  replace_existing_artifacts: true
 
 # Homebrew tap (Cask). Requires a repository Tranceh2/homebrew-tap to exist
 # before a real `goreleaser release` runs. Cross-repo pushes need a token with
