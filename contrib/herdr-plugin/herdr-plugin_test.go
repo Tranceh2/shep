@@ -168,14 +168,27 @@ func repositoryRoot(t *testing.T) string {
 	return root
 }
 
-// gitAvailable reports whether this checkout can answer questions about tracked
-// files: both a git executable and repository metadata are needed, and neither
-// is present in an exported archive or a module-cache extraction.
-func gitAvailable() bool {
+// gitAvailable reports whether THIS source tree can answer questions about
+// tracked files. `git rev-parse` searches upwards, so an enclosing repository
+// would otherwise answer for an exported copy nested inside one and reject its
+// files as untracked. The discovered worktree must be the tree under test.
+func gitAvailable(sourceRoot string) bool {
 	if _, err := exec.LookPath("git"); err != nil {
 		return false
 	}
-	return exec.Command("git", "rev-parse", "--git-dir").Run() == nil
+	out, err := exec.Command("git", "-C", sourceRoot, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return false
+	}
+	discovered, err := filepath.EvalSymlinks(strings.TrimSpace(string(out)))
+	if err != nil {
+		return false
+	}
+	expected, err := filepath.EvalSymlinks(sourceRoot)
+	if err != nil {
+		return false
+	}
+	return discovered == expected
 }
 
 func copyTrackedBuildInputs(t *testing.T, repoRoot, disposableRoot string) {
@@ -416,12 +429,14 @@ func TestPluginScripts_AreTrackedExecutableAndDirectlyInvokable(t *testing.T) {
 		if info.Mode().Perm()&0o100 == 0 {
 			t.Fatalf("%s mode = %o, want an owner-executable bit", relativePath, info.Mode().Perm())
 		}
-		// Tracking is a repository property, so it is only assertable where
-		// repository metadata exists. A vendored copy, an exported tarball, or a
-		// builder without git still proves everything else in this test.
-		if gitAvailable() {
-			if _, err := exec.Command("git", "ls-files", "--error-unmatch", relativePath).CombinedOutput(); err != nil {
-				t.Fatalf("%s is not tracked", relativePath)
+		// Tracking is a repository property, so it is only assertable where this
+		// tree's own repository metadata exists. A vendored copy, an exported
+		// tarball, or a builder without git still proves everything else here.
+		repoRoot := repositoryRoot(t)
+		if gitAvailable(repoRoot) {
+			tracked := filepath.ToSlash(filepath.Join("contrib/herdr-plugin", relativePath))
+			if _, err := exec.Command("git", "-C", repoRoot, "ls-files", "--error-unmatch", tracked).CombinedOutput(); err != nil {
+				t.Fatalf("%s is not tracked", tracked)
 			}
 		}
 		data, err := os.ReadFile(relativePath)
