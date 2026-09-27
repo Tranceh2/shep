@@ -34,3 +34,7 @@ vendor/
 .codegraph/
 # Local AI runtime state
 .atl/
+# Plugin build artifacts
+/contrib/herdr-plugin/bin/
+!/contrib/herdr-plugin/scripts/
+
