@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -16,15 +17,78 @@ const (
 	ScopeAgents
 )
 
-func (s FilterScope) Next() FilterScope {
-	if s == ScopeAll {
-		return ScopeAgents
+type scopeDefinition struct {
+	ID          FilterScope
+	Name        string
+	Label       func(m Model) string
+	Placeholder string
+	FooterLabel string
+	EmptyState  func(m Model) []string
+}
+
+var scopeRegistry = []scopeDefinition{
+	{
+		ID:          ScopeAll,
+		Name:        "all",
+		Label:       func(m Model) string { return "all" },
+		Placeholder: "type to filter…",
+		FooterLabel: "all",
+		EmptyState: func(m Model) []string {
+			if m.loadingCandidates && len(m.baseFlatCandidates()) == 0 {
+				return []string{
+					"No workspaces yet",
+					"Sources are still loading…",
+				}
+			}
+			if len(m.baseFlatCandidates()) == 0 {
+				return []string{"No candidates available"}
+			}
+			return []string{"No workspaces yet"}
+		},
+	},
+	{
+		ID:   ScopeAgents,
+		Name: "agents",
+		Label: func(m Model) string {
+			counts := m.AgentCounts()
+			return fmt.Sprintf("agents (%d)", counts.Total)
+		},
+		Placeholder: "filter agents…",
+		FooterLabel: "agents",
+		EmptyState: func(m Model) []string {
+			return []string{
+				"No active agents detected",
+				"tab switch to all workspaces",
+			}
+		},
+	},
+}
+
+func scopeDefinitionFor(scope FilterScope) scopeDefinition {
+	for _, def := range scopeRegistry {
+		if def.ID == scope {
+			return def
+		}
 	}
-	return ScopeAll
+	return scopeRegistry[0]
+}
+
+func (s FilterScope) Next() FilterScope {
+	for i, def := range scopeRegistry {
+		if def.ID == s {
+			return scopeRegistry[(i+1)%len(scopeRegistry)].ID
+		}
+	}
+	return scopeRegistry[0].ID
 }
 
 func (s FilterScope) Prev() FilterScope {
-	return s.Next()
+	for i, def := range scopeRegistry {
+		if def.ID == s {
+			return scopeRegistry[(i-1+len(scopeRegistry))%len(scopeRegistry)].ID
+		}
+	}
+	return scopeRegistry[0].ID
 }
 
 // AgentCounts summarizes detected agent panes by status.

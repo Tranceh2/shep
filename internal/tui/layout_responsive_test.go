@@ -1,6 +1,13 @@
 package tui
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/tranceh2/shep/internal/config"
+	"github.com/tranceh2/shep/internal/source"
+)
 
 // TestAutoWidthMode_Breakpoints proves the plain width->mode mapping with no
 // prior mode (fresh session) picks the expected mode at each breakpoint. With
@@ -276,6 +283,107 @@ func TestPreviewPaneContentSize_HeaderBreakpointParity(t *testing.T) {
 			if gotInnerH != expectedInnerH {
 				t.Errorf("width=%d height=%d (headerLines=%d): previewPaneContentSize innerH = %d, want %d",
 					w, h, headerLines, gotInnerH, expectedInnerH)
+			}
+		}
+	}
+}
+
+// TestPaneHeightParity_BelowAtAboveCapacity proves that listPane and previewPane
+// heights match exactly across candidate counts below, at, and above ListInnerRows capacity.
+func TestPaneHeightParity_BelowAtAboveCapacity(t *testing.T) {
+	t.Parallel()
+
+	widths := []int{90, 100, 120}
+	heights := []int{12, 16, 24, 36}
+
+	for _, w := range widths {
+		for _, h := range heights {
+			g := computePickerGeometry(w, h, modeWide, Layout{})
+			innerRows := g.ListInnerRows
+
+			candidateCounts := []struct {
+				name  string
+				count int
+			}{
+				{"empty", 0},
+				{"below capacity", max(1, innerRows/2)},
+				{"at capacity", innerRows},
+				{"above capacity", innerRows + 10},
+			}
+
+			for _, cc := range candidateCounts {
+				t.Run(fmt.Sprintf("%dx%d_%s_%d", w, h, cc.name, cc.count), func(t *testing.T) {
+					cands := make([]source.Candidate, cc.count)
+					for i := 0; i < cc.count; i++ {
+						cands[i] = source.Candidate{
+							Label:  fmt.Sprintf("cand-%d", i),
+							Path:   fmt.Sprintf("/path/%d", i),
+							Source: config.SourceProjects,
+						}
+					}
+
+					m := NewModel(cands, nil)
+					m, _ = update(t, m, sizeMsg(w, h))
+
+					listW, prevW := splitWidths(m.width, m.layout)
+					listPane := m.paneBoxStyle(g.PaneOuterHeight, m.focus == FocusList).Render(m.renderList(m.paneContentWidth(listW)))
+					previewStyle := m.paneBoxStyle(g.PaneOuterHeight, m.focus == FocusPreview)
+					previewPane := lipgloss.JoinVertical(
+						lipgloss.Left,
+						m.renderPreviewTopBorder(previewStyle, prevW, m.previewTopBorderText()),
+						previewStyle.BorderTop(false).Render(m.viewport.View()),
+					)
+
+					listH := lipgloss.Height(listPane)
+					prevH := lipgloss.Height(previewPane)
+
+					if listH != prevH {
+						t.Errorf("width=%d height=%d count=%d: listPane height (%d) != previewPane height (%d)",
+							w, h, cc.count, listH, prevH)
+					}
+					if listH != g.PaneOuterHeight {
+						t.Errorf("width=%d height=%d count=%d: listPane height (%d) != PaneOuterHeight (%d)",
+							w, h, cc.count, listH, g.PaneOuterHeight)
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestViewHeight_EqualsTerminalHeight proves that m.View() total line count
+// equals m.height whenever m.height >= 12, across various candidate counts and scopes.
+func TestViewHeight_EqualsTerminalHeight(t *testing.T) {
+	t.Parallel()
+
+	widths := []int{80, 99, 100, 120}
+	heights := []int{12, 15, 24, 36}
+
+	for _, w := range widths {
+		for _, h := range heights {
+			for _, count := range []int{0, 2, 8, 25} {
+				cands := make([]source.Candidate, count)
+				for i := 0; i < count; i++ {
+					cands[i] = source.Candidate{
+						Label:  fmt.Sprintf("cand-%d", i),
+						Path:   fmt.Sprintf("/path/%d", i),
+						Source: config.SourceProjects,
+					}
+				}
+
+				for _, scope := range []FilterScope{ScopeAll, ScopeAgents} {
+					t.Run(fmt.Sprintf("%dx%d_count%d_scope%d", w, h, count, scope), func(t *testing.T) {
+						m := NewModel(cands, nil).WithScope(scope)
+						m, _ = update(t, m, sizeMsg(w, h))
+
+						view := m.View()
+						gotH := lipgloss.Height(view)
+						if gotH != h {
+							t.Errorf("width=%d height=%d count=%d scope=%d: View() height = %d, want %d",
+								w, h, count, scope, gotH, h)
+						}
+					})
+				}
 			}
 		}
 	}

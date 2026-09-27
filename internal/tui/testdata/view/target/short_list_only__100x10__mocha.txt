@@ -6,6 +6,5 @@ SHEP  ● all   agents (0)                                                      
 │   notes                                                                                          │
 │   /tmp                                                                                           │
 │   /home/dev/Downloads                                                                            │
-│                                                                                                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 enter open   tab agents   ? help   esc quit

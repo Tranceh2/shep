@@ -22,40 +22,30 @@ func (m *Model) syncViewport() {
 // every Update (see model.go), mirroring syncViewport's contract for the
 // preview pane. The help overlay replaces the list+preview body entirely
 // (see View), keeping the header hidden and only the footer below it, so
-// the available outer height is m.height minus 1 (footer) before
+// the available outer height is m.height minus g.FooterLines before
 // previewBodyHeight further subtracts the pane border. Only YOffset (the
 // scroll position, mutated while focus==FocusHelp) is meant to persist
 // across renders.
 func (m *Model) syncHelpViewport() {
-	outer := m.height
-	if outer > 0 {
-		outer--
-	}
+	g := m.geometry()
+	outer := max(0, m.height-g.FooterLines)
 	m.helpViewport.Width = m.paneContentWidth(m.width)
 	m.helpViewport.Height = previewBodyHeight(outer)
 	m.helpViewport.SetContent(m.helpBodyText())
 }
 
 // previewPaneContentSize returns the preview pane's current inner content
-// width/height, mirroring exactly what View would compute for the preview
-// pane under the model's current mode/layout — the single source of truth
-// both View and syncViewport draw from (paneContentWidth/previewPaneHeight)
-// so the viewport's scroll math can never disagree with what is actually
-// rendered.
+// width/height from the single-source-of-truth pickerGeometry.
 func (m Model) previewPaneContentSize() (int, int) {
-	// paneHeight mirrors View's own calculation: m.height minus the header
-	// (headerLineCount()) and footer (1) that sit above/below the body.
-	paneHeight := m.height
-	if paneHeight > 0 {
-		paneHeight -= m.headerLineCount() + 1
-	}
-	switch m.mode {
-	case modeListOnly:
+	g := m.geometry()
+	if m.mode == modeListOnly {
 		return 0, 0
-	default: // modeWide, or "" (unknown/headless — matches View's own default)
-		_, prevW := splitWidths(m.width, m.layout)
-		return m.paneContentWidth(prevW), previewBodyHeight(paneHeight)
 	}
+	h := g.PreviewInnerRows
+	if h < 1 {
+		h = 1
+	}
+	return m.paneContentWidth(g.PreviewWidth), h
 }
 
 // ensure the viewport package import is exercised even if a future edit

@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 
@@ -32,16 +31,6 @@ const minPreviewHeight = 12
 // right-aligned count.
 const headerWideBreakpoint = 100
 
-// chromeRows is the fixed vertical overhead of the list pane deducted from
-// the reported terminal height before capping visible rows: the border's
-// top+bottom edges (2). Must stay equal to previewChromeRows so both panes
-// expose identical content row budgets.
-const chromeRows = 2
-
-// previewChromeRows is the fixed vertical overhead of the preview pane: 2
-// (border top+bottom). The preview pane has no header/help line of its own.
-const previewChromeRows = 2
-
 // minList/minPrev are the width-axis minimum pane floors (columns) for a
 // wide (side-by-side) layout.
 const minList = 20
@@ -60,29 +49,20 @@ func (m Model) View() string {
 		return lipgloss.JoinVertical(lipgloss.Left, m.renderHelp(), m.renderFooter())
 	}
 
-	headerLines := m.headerLineCount()
-	// paneHeight accounts for the header (1 or 2 wide lines) + footer (1).
-	paneHeight := m.height
-	if paneHeight > 0 {
-		paneHeight -= headerLines + 1
-	}
-	paneModel := m
-	paneModel.height = paneHeight
-
+	g := m.geometry()
 	header := m.renderHeader(m.width)
 	footer := m.renderFooter()
 
 	var body string
 	switch m.mode {
 	case modeListOnly:
-		body = m.paneBoxStyle(paneHeight, true).Render(paneModel.renderList(m.paneContentWidth(m.width)))
+		body = m.paneBoxStyle(g.PaneOuterHeight, true).Render(m.renderList(m.paneContentWidth(m.width)))
 	default: // modeWide, or "" (unknown/headless default — see model.go)
-		listW, prevW := splitWidths(m.width, m.layout)
-		listPane := m.paneBoxStyle(paneHeight, m.focus == FocusList).Render(paneModel.renderList(m.paneContentWidth(listW)))
-		previewStyle := m.paneBoxStyle(paneHeight, m.focus == FocusPreview)
+		listPane := m.paneBoxStyle(g.PaneOuterHeight, m.focus == FocusList).Render(m.renderList(m.paneContentWidth(g.ListWidth)))
+		previewStyle := m.paneBoxStyle(g.PaneOuterHeight, m.focus == FocusPreview)
 		previewPane := lipgloss.JoinVertical(
 			lipgloss.Left,
-			m.renderPreviewTopBorder(previewStyle, prevW, m.previewTopBorderText()),
+			m.renderPreviewTopBorder(previewStyle, g.PreviewWidth, m.previewTopBorderText()),
 			previewStyle.BorderTop(false).Render(m.viewport.View()),
 		)
 		body = lipgloss.JoinHorizontal(lipgloss.Top, listPane, gap(), previewPane)
@@ -96,23 +76,19 @@ func (m Model) View() string {
 // starts directly with rows. Every rendered line is explicitly padded to
 // width so the list pane never drifts from the split computed by View.
 func (m Model) renderList(width int) string {
-	var b strings.Builder
 	if len(m.rows) == 0 {
-		lines := m.emptyStateLines()
-		for i, line := range lines {
+		var lines []string
+		for i, line := range m.emptyStateLines() {
 			if i > 1 {
 				continue // never exceed the reserved two-state-line budget
 			}
-			b.WriteString(m.styles.mutedStyle.Width(width).Render(truncateToWidth(line, width)))
-			b.WriteString("\n")
+			lines = append(lines, m.styles.mutedStyle.Width(width).Render(truncateToWidth(line, width)))
 		}
-		return b.String()
+		return strings.Join(lines, "\n")
 	}
 	full := m.rows
-	maxRows := m.height
-	if maxRows > 0 {
-		maxRows -= chromeRows
-	}
+	g := m.geometry()
+	maxRows := g.ListInnerRows
 	if maxRows <= 0 {
 		maxRows = len(full)
 	}
@@ -125,11 +101,11 @@ func (m Model) renderList(width int) string {
 			visible = visible[:maxRows]
 		}
 	}
+	lines := make([]string, len(visible))
 	for i, row := range visible {
-		b.WriteString(m.renderRowLine(row, i+offset == m.cursor, width))
-		b.WriteString("\n")
+		lines[i] = m.renderRowLine(row, i+offset == m.cursor, width)
 	}
-	return b.String()
+	return strings.Join(lines, "\n")
 }
 
 // emptyStateLines picks the right "nothing to show" content: a query that
@@ -143,20 +119,9 @@ func (m Model) emptyStateLines() []string {
 			"esc clear query",
 		}
 	}
-	if m.scope == ScopeAgents {
-		return []string{
-			"No active agents detected",
-			"tab switch to all workspaces",
-		}
-	}
-	if m.loadingCandidates && len(m.baseFlatCandidates()) == 0 {
-		return []string{
-			"No workspaces yet",
-			"Sources are still loading…",
-		}
-	}
-	if len(m.baseFlatCandidates()) == 0 {
-		return []string{"No candidates available"}
+	def := scopeDefinitionFor(m.scope)
+	if def.EmptyState != nil {
+		return def.EmptyState(m)
 	}
 	return []string{"No workspaces yet"}
 }
@@ -165,10 +130,7 @@ func (m Model) emptyStateLines() []string {
 // model's current width: 2 at/above headerWideBreakpoint, 1 below. View uses
 // it for the body's vertical budget.
 func (m Model) headerLineCount() int {
-	if m.width >= headerWideBreakpoint {
-		return 2
-	}
-	return 1
+	return headerLineCountForWidth(m.width)
 }
 
 // headerCountText resolves the header's result-count text — the same states
@@ -234,9 +196,9 @@ func (m Model) renderHeader(width int) string {
 	if m.query != "" {
 		query = m.styles.queryStyle.Render(m.query)
 	} else {
-		placeholder := "type to filter…"
-		if m.scope == ScopeAgents {
-			placeholder = "filter agents…"
+		placeholder := scopeDefinitionFor(m.scope).Placeholder
+		if placeholder == "" {
+			placeholder = "type to filter…"
 		}
 		query = m.styles.mutedStyle.Render(placeholder)
 	}
@@ -261,26 +223,30 @@ func (m Model) renderHeader(width int) string {
 
 func (m Model) renderScopeTabs() string {
 	counts := m.AgentCounts()
-	allLabel := "all"
-	agentsLabel := fmt.Sprintf("agents (%d)", counts.Total)
-
-	var allTab, agentsTab string
-	if m.scope == ScopeAll {
-		allTab = m.styles.keycapStyle.Render("● " + allLabel)
-		if counts.Blocked > 0 {
-			agentsTab = m.styles.statusBlockedStyle.Render(agentsLabel)
-		} else {
-			agentsTab = m.styles.mutedStyle.Render(agentsLabel)
+	var tabs []string
+	for _, def := range scopeRegistry {
+		isActive := m.scope == def.ID
+		label := def.Label(m)
+		if isActive {
+			label = "● " + label
 		}
-	} else {
-		allTab = m.styles.mutedStyle.Render(allLabel)
-		if counts.Blocked > 0 {
-			agentsTab = m.styles.statusBlockedStyle.Render("● " + agentsLabel)
+		var rendered string
+		if isActive {
+			if def.ID == ScopeAgents && counts.Blocked > 0 {
+				rendered = m.styles.statusBlockedStyle.Render(label)
+			} else {
+				rendered = m.styles.keycapStyle.Render(label)
+			}
 		} else {
-			agentsTab = m.styles.keycapStyle.Render("● " + agentsLabel)
+			if def.ID == ScopeAgents && counts.Blocked > 0 {
+				rendered = m.styles.statusBlockedStyle.Render(label)
+			} else {
+				rendered = m.styles.mutedStyle.Render(label)
+			}
 		}
+		tabs = append(tabs, rendered)
 	}
-	return allTab + "   " + agentsTab
+	return strings.Join(tabs, "   ")
 }
 
 // sourceCount is one source's visible top-level match count, used by
@@ -1232,7 +1198,7 @@ func (m Model) paneBoxStyle(outerHeight int, focused bool) lipgloss.Style {
 	if inner < 1 {
 		inner = 1
 	}
-	return style.Height(inner)
+	return style.Height(inner).MaxHeight(outerHeight)
 }
 
 // footerNarrowKeycapWidth is the width below which the footer keeps only the
@@ -1267,9 +1233,11 @@ func (m Model) footerHints() string {
 	if row, ok := m.currentRow(); ok {
 		caps = append(caps, keycap{keyBindingEnter.footerChord, rowActionDescriptor(row).FooterLabel})
 	}
-	tabLabel := "agents"
-	if m.scope == ScopeAgents {
-		tabLabel = "all"
+	nextScope := m.scope.Next()
+	nextDef := scopeDefinitionFor(nextScope)
+	tabLabel := nextDef.FooterLabel
+	if tabLabel == "" {
+		tabLabel = nextDef.Name
 	}
 	caps = append(caps, keycap{keyBindingTab.footerChord, tabLabel})
 	if row, ok := m.currentRow(); ok && m.layout.PinToggler != nil {
@@ -1312,10 +1280,8 @@ func (m Model) footerHints() string {
 // short terminal height the bottom of the help content is reachable via
 // scroll instead of being silently cut off.
 func (m Model) renderHelp() string {
-	height := m.height
-	if height > 0 {
-		height--
-	}
+	g := m.geometry()
+	height := max(0, m.height-g.FooterLines)
 	return m.paneBoxStyle(height, true).Render(m.helpViewport.View())
 }
 
