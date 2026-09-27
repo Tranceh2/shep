@@ -653,7 +653,7 @@ func TestRegistry_IntegrationProviderRegistrationAndOrder(t *testing.T) {
 
 func TestScopedRegistry_LazyIntegrationOnlyRunsWhenListed(t *testing.T) {
 	counter := filepath.Join(t.TempDir(), "count")
-	command := []string{"sh", "-c", "n=$((${COUNT:-0}+1)); printf '%s' \"$n\" > \"$COUNT_FILE\"; printf '[{\\\"label\\\":\\\"context\\\"}]'"}
+	command := []string{"sh", "-c", `n=$((${COUNT:-0}+1)); printf '%s' "$n" > "$COUNT_FILE"; printf '[{"label":"context"}]'`}
 	cfg := config.Defaults()
 	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
 	cfg.Integrations = []config.IntegrationConfig{{Name: "kube-contexts", Command: command, Timeout: config.Duration(time.Second)}}

@@ -21,7 +21,7 @@ const (
 	schemaVersion    = 3
 	ackRetention     = 7 * 24 * time.Hour
 	migrationTimeout = 5 * time.Second
-	busyTimeout      = 100 * time.Millisecond
+	busyTimeout      = 1 * time.Second
 	operationTimeout = 5 * time.Second
 	writeTimeout     = 1 * time.Second
 	recoveryTimeout  = 1 * time.Second
@@ -114,7 +114,7 @@ func openPathWithContext(ctx context.Context, path string, now func() time.Time,
 
 	}
 
-	if _, err := db.Exec("PRAGMA busy_timeout = 100"); err != nil {
+	if _, err := db.Exec(fmt.Sprintf("PRAGMA busy_timeout = %d", busyTimeout/time.Millisecond)); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("configure ranking busy timeout: %w", err)
 	}

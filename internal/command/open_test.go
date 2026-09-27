@@ -1135,7 +1135,7 @@ func TestOpen_GroupWorkspaceLazilyRunsIntegrationAndDirectSelectsSingleRow(t *te
 	root := t.TempDir()
 	counter := filepath.Join(t.TempDir(), "count")
 	script := filepath.Join(t.TempDir(), "list-contexts")
-	const scriptBody = "#!/bin/sh\ncount=0\nif [ -f \"$COUNT_FILE\" ]; then count=$(cat \"$COUNT_FILE\"); fi\nprintf '%s' $((count + 1)) > \"$COUNT_FILE\"\nprintf '[{\\\"label\\\":\\\"context\\\",\\\"path\\\":\\\"%s\\\"}]' \"$GROUP_ROOT\"\n"
+	const scriptBody = "#!/bin/sh\ncount=0\nif [ -f \"$COUNT_FILE\" ]; then count=$(cat \"$COUNT_FILE\"); fi\nprintf '%s' $((count + 1)) > \"$COUNT_FILE\"\nprintf '[{\"label\":\"context\",\"path\":\"%s\"}]' \"$GROUP_ROOT\"\n"
 	if err := os.WriteFile(script, []byte(scriptBody), 0o700); err != nil {
 		t.Fatal(err)
 	}
