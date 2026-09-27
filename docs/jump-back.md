@@ -103,8 +103,8 @@ The collector runs as part of the unified Herdr plugin `tranceh2.shep`.
 ### Option A: Install from GitHub (Remote Install)
 
 When installing via Herdr, Herdr clones the repository and automatically runs
-the declared `[[build]]` step (`go build -o bin/shep ./cmd/shep`), so no manual
-binary copying is required:
+the declared `[[build]]` step (`bash scripts/build.sh`), which compiles from the
+checkout into plugin-local `bin/shep`, so no manual binary copying is required:
 
 ```sh
 herdr plugin install Tranceh2/shep/contrib/herdr-plugin
@@ -119,7 +119,7 @@ the binary in place:
 cd /path/to/shep
 herdr plugin link "$PWD/contrib/herdr-plugin"
 cd contrib/herdr-plugin
-go build -o bin/shep ../../cmd/shep
+bash scripts/build.sh
 ./bin/shep --version   # verify the build
 ```
 

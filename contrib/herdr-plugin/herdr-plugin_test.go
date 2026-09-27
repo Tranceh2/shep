@@ -5,6 +5,8 @@ package herdrplugin
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -106,10 +108,120 @@ func TestManifest_ExactlyOneBuildStepCompilingBinary(t *testing.T) {
 	if len(m.Build) != 1 {
 		t.Fatalf("build steps = %d, want exactly 1", len(m.Build))
 	}
-	want := []string{"go", "build", "-o", "bin/shep", "./cmd/shep"}
+	want := []string{"bash", "scripts/build.sh"}
 	if !equalSlice(m.Build[0].Command, want) {
 		t.Fatalf("build command = %v, want %v", m.Build[0].Command, want)
 	}
+}
+
+func TestManifest_BuildsFromHerdrPluginWorkingDirectory(t *testing.T) {
+	m := loadManifest(t)
+	if len(m.Build) != 1 {
+		t.Fatalf("build steps = %d, want exactly 1", len(m.Build))
+	}
+
+	repoRoot := repositoryRoot(t)
+	disposableRoot := t.TempDir()
+	copyTrackedBuildInputs(t, repoRoot, disposableRoot)
+
+	pluginRoot := filepath.Join(disposableRoot, "contrib", "herdr-plugin")
+	cmd := exec.Command(m.Build[0].Command[0], m.Build[0].Command[1:]...)
+	cmd.Dir = pluginRoot
+	cmd.Env = append(os.Environ(), "GOPROXY=off")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build command %v failed from plugin cwd: %v\n%s", m.Build[0].Command, err, output)
+	}
+
+	binaryPath := filepath.Join(pluginRoot, "bin", "shep")
+	info, err := os.Stat(binaryPath)
+	if err != nil {
+		t.Fatalf("stat plugin binary: %v", err)
+	}
+	if info.Mode()&0o111 == 0 {
+		t.Fatalf("plugin binary mode = %v, want executable", info.Mode())
+	}
+
+	versionOutput := runBinary(t, binaryPath, "--version")
+	if strings.TrimSpace(versionOutput) == "" || strings.Contains(versionOutput, "commit: )") {
+		t.Fatalf("version output has empty version or commit metadata: %q", versionOutput)
+	}
+	if !strings.Contains(versionOutput, "commit: ") {
+		t.Fatalf("version output = %q, want commit metadata", versionOutput)
+	}
+
+	if _, err := os.Stat(filepath.Join(disposableRoot, "bin", "shep")); !os.IsNotExist(err) {
+		t.Fatalf("binary was written outside plugin root: err = %v", err)
+	}
+}
+
+func repositoryRoot(t *testing.T) string {
+	t.Helper()
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	root, err := filepath.Abs(filepath.Join(filepath.Dir(currentFile), "..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repository root: %v", err)
+	}
+	return root
+}
+
+func copyTrackedBuildInputs(t *testing.T, repoRoot, disposableRoot string) {
+	t.Helper()
+	paths := []string{"cmd", "internal", "go.mod", "go.sum", "contrib/herdr-plugin/herdr-plugin.toml", "contrib/herdr-plugin/scripts/build.sh"}
+	for _, relativePath := range paths {
+		sourcePath := filepath.Join(repoRoot, relativePath)
+		destinationPath := filepath.Join(disposableRoot, relativePath)
+		if err := copyPath(sourcePath, destinationPath); err != nil {
+			t.Fatalf("copy %s: %v", relativePath, err)
+		}
+	}
+}
+
+func copyPath(sourcePath, destinationPath string) error {
+	info, err := os.Stat(sourcePath)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		if err := os.MkdirAll(destinationPath, info.Mode().Perm()); err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(sourcePath)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if err := copyPath(filepath.Join(sourcePath, entry.Name()), filepath.Join(destinationPath, entry.Name())); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	data, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(destinationPath), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(destinationPath, data, info.Mode().Perm())
+}
+
+func runBinary(t *testing.T, binaryPath string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command(binaryPath, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run %s %v: %v\n%s", binaryPath, args, err, output)
+	}
+	if len(output) == 0 {
+		t.Fatalf("run %s %v produced no output", binaryPath, args)
+	}
+	return string(output)
 }
 
 func TestManifest_ExactlyOneStartupHookRunningCollector(t *testing.T) {

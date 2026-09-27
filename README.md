@@ -127,7 +127,7 @@ Shep integrates with Herdr through the unified plugin `tranceh2.shep` (which pro
 herdr plugin install Tranceh2/shep/contrib/herdr-plugin
 ```
 
-*Note: Requires Go 1.26+ installed. Herdr clones the repository and builds `bin/shep` automatically via the declared build step.*
+*Note: Requires Go 1.26+ installed. Herdr clones the repository and runs `bash scripts/build.sh`, which compiles the checkout into the plugin-local `bin/shep` with version and commit metadata.*
 
 **Or from a local checkout:**
 
@@ -135,7 +135,7 @@ herdr plugin install Tranceh2/shep/contrib/herdr-plugin
 # From your shep repository clone
 herdr plugin link "$PWD/contrib/herdr-plugin"
 cd contrib/herdr-plugin
-go build -o bin/shep ../../cmd/shep
+bash scripts/build.sh
 ```
 
 ### 2. Configure Keybindings

@@ -37,4 +37,3 @@ vendor/
 # Plugin build artifacts
 /contrib/herdr-plugin/bin/
 !/contrib/herdr-plugin/scripts/
-

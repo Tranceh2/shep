@@ -32,7 +32,7 @@ herdr plugin install Tranceh2/shep/contrib/herdr-plugin
 
 Herdr will:
 1. Clone the repository into its managed plugin cache.
-2. Run `go build -o bin/shep ./cmd/shep` inside the plugin directory.
+2. Run `bash scripts/build.sh` from the plugin directory; the script compiles from the checkout into plugin-local `bin/shep` with version and commit metadata.
 3. Register and enable `tranceh2.shep`.
 
 ### Option 2: Link from a Local Checkout (Development)
@@ -43,7 +43,7 @@ For local development or when building from a cloned repository:
 # From the root of your shep repository clone
 herdr plugin link "$PWD/contrib/herdr-plugin"
 cd contrib/herdr-plugin
-go build -o bin/shep ../../cmd/shep
+bash scripts/build.sh
 ```
 
 Verify that Herdr sees the plugin:
