@@ -101,6 +101,17 @@ type App struct {
 	// separate from herdrDriver because layout.apply is a socket transport,
 	// not a CLI subprocess; nil means "build the default client on demand".
 	layoutApplier templates.LayoutApplier
+	// linkFS provides filesystem operations for shep link and unlink.
+	// Production uses realLinkFS; tests inject an in-memory double.
+	linkFS linkFS
+	// userHomeDir resolves the current user's home directory for link/unlink.
+	userHomeDir func() (string, error)
+	// linkEnv reads environment variables for link and unlink.
+	linkEnv linkEnv
+	// executable resolves the current process executable path for link/unlink.
+	executable func() (string, error)
+	// evalSymlinks resolves symbolic links in an executable path for link/unlink.
+	evalSymlinks func(string) (string, error)
 }
 
 // Config returns the loaded configuration, defaulting to path-agnostic
@@ -173,6 +184,31 @@ func WithHistoryMRUReader(reader func(context.Context) ([]string, error)) Option
 // WithAsyncTUIRunner overrides the interactive input-first TUI runner for tests.
 func WithAsyncTUIRunner(runner asyncTUIRunFunc) Option {
 	return func(a *App) { a.asyncTUIRun = runner }
+}
+
+// WithLinkFS injects the filesystem boundary used by link and unlink (intended for tests).
+func WithLinkFS(fs linkFS) Option {
+	return func(a *App) { a.linkFS = fs }
+}
+
+// WithLinkEnv injects the environment variable lookup used by link and unlink.
+func WithLinkEnv(env linkEnv) Option {
+	return func(a *App) { a.linkEnv = env }
+}
+
+// WithUserHomeDir injects the user home directory resolver used by link and unlink.
+func WithUserHomeDir(fn func() (string, error)) Option {
+	return func(a *App) { a.userHomeDir = fn }
+}
+
+// WithExecutable injects the binary executable path resolver used by link and unlink.
+func WithExecutable(fn func() (string, error)) Option {
+	return func(a *App) { a.executable = fn }
+}
+
+// WithEvalSymlinks injects the symlink evaluator used by link and unlink.
+func WithEvalSymlinks(fn func(string) (string, error)) Option {
+	return func(a *App) { a.evalSymlinks = fn }
 }
 
 // setChosenTarget records a target override chosen by the interactive TUI
@@ -310,6 +346,8 @@ func (a *App) rootCmd() *cobra.Command {
 	}
 
 	root.AddCommand(a.initCmd())
+	root.AddCommand(a.linkCmd())
+	root.AddCommand(a.unlinkCmd())
 	root.AddCommand(a.listCmd())
 	root.AddCommand(a.openCmd())
 	root.AddCommand(a.previewCmd())
