@@ -168,6 +168,16 @@ func repositoryRoot(t *testing.T) string {
 	return root
 }
 
+// gitAvailable reports whether this checkout can answer questions about tracked
+// files: both a git executable and repository metadata are needed, and neither
+// is present in an exported archive or a module-cache extraction.
+func gitAvailable() bool {
+	if _, err := exec.LookPath("git"); err != nil {
+		return false
+	}
+	return exec.Command("git", "rev-parse", "--git-dir").Run() == nil
+}
+
 func copyTrackedBuildInputs(t *testing.T, repoRoot, disposableRoot string) {
 	t.Helper()
 	paths := []string{"cmd", "internal", "go.mod", "go.sum", "contrib/herdr-plugin/herdr-plugin.toml", "contrib/herdr-plugin/scripts/build.sh"}
@@ -399,11 +409,20 @@ func TestPluginScripts_AreTrackedExecutableAndDirectlyInvokable(t *testing.T) {
 		if err != nil {
 			t.Fatalf("stat %s: %v", relativePath, err)
 		}
-		if info.Mode().Perm() != 0o755 {
-			t.Fatalf("%s mode = %o, want 0755", relativePath, info.Mode().Perm())
+		// Herdr execs these paths directly, so the owner-executable bit is the
+		// requirement. An exact 0755 would fail under a different umask in a
+		// source archive or module-cache extraction without telling us anything
+		// more about whether Herdr can start the script.
+		if info.Mode().Perm()&0o100 == 0 {
+			t.Fatalf("%s mode = %o, want an owner-executable bit", relativePath, info.Mode().Perm())
 		}
-		if _, err := exec.Command("git", "ls-files", "--error-unmatch", relativePath).CombinedOutput(); err != nil {
-			t.Fatalf("%s is not tracked", relativePath)
+		// Tracking is a repository property, so it is only assertable where
+		// repository metadata exists. A vendored copy, an exported tarball, or a
+		// builder without git still proves everything else in this test.
+		if gitAvailable() {
+			if _, err := exec.Command("git", "ls-files", "--error-unmatch", relativePath).CombinedOutput(); err != nil {
+				t.Fatalf("%s is not tracked", relativePath)
+			}
 		}
 		data, err := os.ReadFile(relativePath)
 		if err != nil {
