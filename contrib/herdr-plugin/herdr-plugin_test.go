@@ -13,17 +13,6 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
-func TestMain(m *testing.M) {
-	if os.Getenv("SHEP_FAKE_HELPER") == "1" {
-		recordPath := os.Getenv("RECORD")
-		if err := os.WriteFile(recordPath, []byte(os.Getenv("PATH")+"\n"+strings.Join(os.Args[1:], "\n")), 0o600); err != nil {
-			os.Exit(1)
-		}
-		os.Exit(0)
-	}
-	os.Exit(m.Run())
-}
-
 type manifest struct {
 	ID              string     `toml:"id"`
 	Name            string     `toml:"name"`
@@ -376,23 +365,85 @@ func TestManifest_NeverLaunchesAnUnverifiedBinaryFromPath(t *testing.T) {
 	}
 }
 
-func TestPluginScripts_ArePOSIXShellAndExecutable(t *testing.T) {
-	for _, name := range []string{"run-shep.sh", "open-picker.sh"} {
-		path := filepath.Join("scripts", name)
-		info, err := os.Stat(path)
+func TestPluginScripts_AreTrackedExecutableAndDirectlyInvokable(t *testing.T) {
+	m := loadManifest(t)
+	commands := make([][]string, 0, len(m.Build)+len(m.Startup)+len(m.Panes)+len(m.Actions)+len(m.Events))
+	for _, build := range m.Build {
+		commands = append(commands, build.Command)
+	}
+	for _, startup := range m.Startup {
+		commands = append(commands, startup.Command)
+	}
+	for _, pane := range m.Panes {
+		commands = append(commands, pane.Command)
+	}
+	for _, action := range m.Actions {
+		commands = append(commands, action.Command)
+	}
+	for _, event := range m.Events {
+		commands = append(commands, event.Command)
+	}
+
+	seen := make(map[string]bool)
+	for _, command := range commands {
+		if len(command) == 0 || !strings.HasPrefix(command[0], "./scripts/") {
+			continue
+		}
+		relativePath := strings.TrimPrefix(command[0], "./")
+		if seen[relativePath] {
+			continue
+		}
+		seen[relativePath] = true
+
+		info, err := os.Stat(relativePath)
 		if err != nil {
-			t.Fatalf("stat %s: %v", path, err)
+			t.Fatalf("stat %s: %v", relativePath, err)
 		}
-		if info.Mode()&0o111 == 0 {
-			t.Fatalf("%s mode = %v, want executable", name, info.Mode())
+		if info.Mode().Perm() != 0o755 {
+			t.Fatalf("%s mode = %o, want 0755", relativePath, info.Mode().Perm())
 		}
-		data, err := os.ReadFile(path)
+		if _, err := exec.Command("git", "ls-files", "--error-unmatch", relativePath).CombinedOutput(); err != nil {
+			t.Fatalf("%s is not tracked", relativePath)
+		}
+		data, err := os.ReadFile(relativePath)
 		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
+			t.Fatalf("read %s: %v", relativePath, err)
 		}
-		if !strings.HasPrefix(string(data), "#!/bin/sh\n") {
-			t.Fatalf("%s does not declare #!/bin/sh", name)
+		if !strings.HasPrefix(string(data), "#!") {
+			t.Fatalf("%s does not begin with a shebang", relativePath)
 		}
+		// Runtime scripts must remain executable with only POSIX sh; build.sh is
+		// intentionally different because install-time builds require Bash and Go.
+		if relativePath == "scripts/run-shep.sh" || relativePath == "scripts/open-picker.sh" {
+			if !strings.HasPrefix(string(data), "#!/bin/sh\n") {
+				t.Fatalf("%s does not declare #!/bin/sh", relativePath)
+			}
+		}
+	}
+}
+
+func writeFakePluginShep(t *testing.T, path string) {
+	t.Helper()
+	const script = `#!/bin/sh
+set -eu
+: "${RECORD:?RECORD must be set}"
+case $RECORD in
+  /*) ;;
+  *) echo "RECORD must be absolute" >&2; exit 2 ;;
+esac
+printf '%s\n' "${PATH-}" >"$RECORD"
+first=1
+for argument do
+  if [ "$first" -eq 1 ]; then
+    printf '%s' "$argument" >>"$RECORD"
+    first=0
+  else
+    printf '\n%s' "$argument" >>"$RECORD"
+  fi
+done
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake plugin shep: %v", err)
 	}
 }
 
@@ -408,13 +459,7 @@ func TestRunShepScript_PreparesPathWithoutSourcingProfiles(t *testing.T) {
 	}
 	dataPath := filepath.Join(pluginRoot, "record.json")
 	fakeShep := filepath.Join(binDir, "shep")
-	testBinary, err := os.ReadFile(os.Args[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(fakeShep, testBinary, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	writeFakePluginShep(t, fakeShep)
 	if err := copyPath(filepath.Join(repositoryRoot(t), "contrib/herdr-plugin/scripts/run-shep.sh"), filepath.Join(scriptDir, "run-shep.sh")); err != nil {
 		t.Fatal(err)
 	}
@@ -430,7 +475,7 @@ func TestRunShepScript_PreparesPathWithoutSourcingProfiles(t *testing.T) {
 	}
 	oldPath := filepath.Join(pluginRoot, "old-bin")
 	cmd := exec.Command("/bin/sh", filepath.Join(scriptDir, "run-shep.sh"), "list", "--format", "json")
-	cmd.Env = []string{"HOME=" + home, "PATH=" + oldPath, "RECORD=" + dataPath, "USER=test-user", "SHELL=fixture-shell", "SHEP_FAKE_HELPER=1"}
+	cmd.Env = []string{"HOME=" + home, "PATH=" + oldPath, "RECORD=" + dataPath, "USER=test-user", "SHELL=fixture-shell"}
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("run wrapper: %v\n%s", err, output)
 	}
@@ -473,13 +518,7 @@ func TestRunShepScript_StartsWithoutBashOnPATH(t *testing.T) {
 	}
 	dataPath := filepath.Join(pluginRoot, "record")
 	fakeShep := filepath.Join(binDir, "shep")
-	testBinary, err := os.ReadFile(os.Args[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(fakeShep, testBinary, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	writeFakePluginShep(t, fakeShep)
 	if err := copyPath(filepath.Join(repositoryRoot(t), "contrib/herdr-plugin/scripts/run-shep.sh"), filepath.Join(scriptDir, "run-shep.sh")); err != nil {
 		t.Fatal(err)
 	}
@@ -491,7 +530,7 @@ func TestRunShepScript_StartsWithoutBashOnPATH(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := exec.Command("/bin/sh", filepath.Join(scriptDir, "run-shep.sh"), "probe")
-	cmd.Env = []string{"PATH=" + shOnlyPath, "RECORD=" + dataPath, "SHEP_FAKE_HELPER=1"}
+	cmd.Env = []string{"PATH=" + shOnlyPath, "RECORD=" + dataPath}
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("run wrapper with bash-free PATH: %v\n%s", err, output)
 	}

@@ -2,6 +2,7 @@ package command
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,7 +31,7 @@ func TestApp_HerdrEnvEnablesProbeAndDriver(t *testing.T) {
 	}
 }
 
-func TestApp_PluginDriverBuildsWhenProbeUnavailable(t *testing.T) {
+func TestApp_PluginDriverSurfacesExecutionFailureWhenProbeUnavailable(t *testing.T) {
 	t.Setenv("HERDR_BIN_PATH", "")
 	app := New()
 	app.cfg = config.Defaults()
@@ -38,8 +39,18 @@ func TestApp_PluginDriverBuildsWhenProbeUnavailable(t *testing.T) {
 	if app.herdrDriverInjected {
 		t.Fatal("driver must not be marked injected")
 	}
-	if app.pluginDriver() == nil {
-		t.Fatal("pluginDriver should return a real driver when probing is unavailable")
+
+	failingBinary := filepath.Join(t.TempDir(), "herdr")
+	if err := os.WriteFile(failingBinary, []byte("#!/bin/sh\nexit 42\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HERDR_BIN_PATH", failingBinary)
+	got, err := app.pluginDriver().ListSessions(context.Background())
+	if err == nil {
+		t.Fatalf("ListSessions() error = nil, want command execution failure; sessions = %v", got)
+	}
+	if !strings.Contains(err.Error(), "herdr session list") || !strings.Contains(err.Error(), "exit status 42") {
+		t.Fatalf("ListSessions() error = %v, want wrapped execution failure", err)
 	}
 }
 
