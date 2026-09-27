@@ -191,6 +191,59 @@ func gitAvailable(sourceRoot string) bool {
 	return discovered == expected
 }
 
+func TestGitAvailable_AcceptsOnlyTheTreeUnderTest(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is unavailable")
+	}
+	worktree := t.TempDir()
+	if out, err := exec.Command("git", "-C", worktree, "init").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+	nested := filepath.Join(worktree, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+
+	for _, tc := range []struct {
+		name string
+		root string
+		want bool
+	}{
+		{"the worktree root itself", worktree, true},
+		{"a directory inside the worktree but not its root", nested, false},
+		{"a directory in no repository at all", outside, false},
+	} {
+		if got := gitAvailable(tc.root); got != tc.want {
+			t.Errorf("gitAvailable(%s) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// assertTracked proves relativePath is tracked in repoRoot. The pathspec is
+// derived from the resolved root rather than a hardcoded package prefix, and a
+// missing file is reported separately because ls-files cannot distinguish an
+// unmatched pathspec from a genuine tracking regression.
+func assertTracked(t *testing.T, repoRoot, relativePath string) {
+	t.Helper()
+	absolutePath, err := filepath.Abs(relativePath)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", relativePath, err)
+	}
+	tracked, err := filepath.Rel(repoRoot, absolutePath)
+	if err != nil {
+		t.Fatalf("locate %s inside %s: %v", relativePath, repoRoot, err)
+	}
+	tracked = filepath.ToSlash(tracked)
+	if _, err := os.Stat(filepath.Join(repoRoot, tracked)); err != nil {
+		t.Fatalf("pathspec %s does not exist in %s: %v", tracked, repoRoot, err)
+	}
+	if _, err := exec.Command("git", "-C", repoRoot, "ls-files", "--error-unmatch", tracked).CombinedOutput(); err != nil {
+		t.Fatalf("%s is not tracked", tracked)
+	}
+}
+
 func copyTrackedBuildInputs(t *testing.T, repoRoot, disposableRoot string) {
 	t.Helper()
 	paths := []string{"cmd", "internal", "go.mod", "go.sum", "contrib/herdr-plugin/herdr-plugin.toml", "contrib/herdr-plugin/scripts/build.sh"}
@@ -431,13 +484,13 @@ func TestPluginScripts_AreTrackedExecutableAndDirectlyInvokable(t *testing.T) {
 		}
 		// Tracking is a repository property, so it is only assertable where this
 		// tree's own repository metadata exists. A vendored copy, an exported
-		// tarball, or a builder without git still proves everything else here.
+		// tarball, or a builder without git still proves everything else here,
+		// so the skip is logged rather than silent.
 		repoRoot := repositoryRoot(t)
 		if gitAvailable(repoRoot) {
-			tracked := filepath.ToSlash(filepath.Join("contrib/herdr-plugin", relativePath))
-			if _, err := exec.Command("git", "-C", repoRoot, "ls-files", "--error-unmatch", tracked).CombinedOutput(); err != nil {
-				t.Fatalf("%s is not tracked", tracked)
-			}
+			assertTracked(t, repoRoot, relativePath)
+		} else {
+			t.Logf("skipping the tracking assertion for %s: no repository metadata for %s", relativePath, repoRoot)
 		}
 		data, err := os.ReadFile(relativePath)
 		if err != nil {
