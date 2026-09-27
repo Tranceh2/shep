@@ -196,18 +196,18 @@ func TestGitAvailable_AcceptsOnlyTheTreeUnderTest(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is unavailable")
 	}
-	// gitAvailable inherits this process's environment, so an ambient GIT_DIR or
-	// GIT_WORK_TREE would aim discovery at the runner's own repository and decide
-	// these cases for reasons unrelated to the function. t.Setenv cannot scrub
-	// them in a parallel test, so say so instead of reporting a meaningless pass.
+	// gitAvailable inherits this process's environment, so any of the variables
+	// below would aim discovery at the runner's own repository and decide these
+	// cases for reasons unrelated to the function. t.Setenv cannot scrub them in
+	// a parallel test, so say so instead of reporting a meaningless pass.
 	for _, name := range []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"} {
 		if _, set := os.LookupEnv(name); set {
 			t.Skipf("%s is set, so git discovery is redirected away from the fixtures", name)
 		}
 	}
 	worktree := t.TempDir()
-	init := exec.Command("git", "-C", worktree, "init")
-	if out, err := init.CombinedOutput(); err != nil {
+	initRepo := exec.Command("git", "-C", worktree, "init")
+	if out, err := initRepo.CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, out)
 	}
 	nested := filepath.Join(worktree, "nested")
