@@ -1,12 +1,27 @@
-# Herdr native popup keybind for launching shep.
-# Copy this [[keys.command]] block into ~/.config/herdr/config.toml. Merge it
-# into an existing [keys] table or [[keys.command]] list; do not duplicate
-# [keys].
+# Herdr keybinding configuration examples for Shep.
+# Copy these [[keys.command]] blocks into ~/.config/herdr/config.toml.
+# Merge them into your existing [keys] table or [[keys.command]] list;
+# do not duplicate [keys].
+
+# --- Option A: Unified Plugin Action (Recommended if using tranceh2.shep plugin) ---
+# Launches the Shep picker popup using the declared plugin action.
 [[keys.command]]
 key = "prefix+ctrl+f" # Pick any key your config does not already bind.
-type = "popup"
-command = "shep open"
+type = "plugin_action"
+command = "tranceh2.shep.open"
+description = "open Shep picker"
 
-# The keybind is global. When shep runs in this popup, it detects the current
-# Herdr pane and enables its in-overlay features. Running `shep open` from a
-# terminal remains supported.
+# --- Option B: Native Popup Keybind (Requires shep on PATH or published via `shep link`) ---
+# Launches shep open directly in a native Herdr popup modal.
+# [[keys.command]]
+# key = "prefix+ctrl+f"
+# type = "popup"
+# command = "shep open"
+
+# --- Workspace Jump-Back (A<->B Previous Workspace Toggle) ---
+# Toggles between the two most recently focused workspaces.
+[[keys.command]]
+key = "prefix+tab"
+type = "plugin_action"
+command = "tranceh2.shep.jump-back"
+description = "jump to previous workspace"

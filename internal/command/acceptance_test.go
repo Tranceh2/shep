@@ -187,10 +187,10 @@ func TestAcceptance_R10S3_OperatorDocsExistAndAreRunnable(t *testing.T) {
 	for _, cmd := range []string{
 		"shep jump-back",
 		"herdr plugin link",
-		"herdr plugin action invoke tranceh2.shep-jump-back.start",
-		"herdr plugin disable tranceh2.shep-jump-back",
-		"herdr plugin unlink  tranceh2.shep-jump-back",
-		"contrib/jump-back-plugin/bin/shep",
+		"herdr plugin action invoke tranceh2.shep.start-history",
+		"herdr plugin disable tranceh2.shep",
+		"herdr plugin unlink  tranceh2.shep",
+		"contrib/herdr-plugin",
 	} {
 		if !bytes.Contains(data, []byte(cmd)) {
 			t.Errorf("missing command %q", cmd)
