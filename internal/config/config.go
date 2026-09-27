@@ -499,33 +499,47 @@ func probeWith(name string, lookPath func(string) (string, error)) bool {
 	return err == nil
 }
 
-// HerdrBinaryWithEnv resolves the effective Herdr executable. An explicit
-// config value wins over plugin injection; otherwise a valid absolute
-// HERDR_BIN_PATH wins over the normal PATH fallback.
-func HerdrBinaryWithEnv(cfg *Config, lookupEnv func(string) (string, bool)) string {
-	if cfg != nil && cfg.Herdr.Binary != "" {
-		return cfg.Herdr.Binary
+// HerdrBinaryWith resolves the effective Herdr executable. A configured binary
+// wins when it is usable, either as a valid absolute executable or through the
+// normal PATH lookup. Otherwise a valid absolute HERDR_BIN_PATH is preferred,
+// followed by the configured value for a command-boundary error, and finally
+// the default PATH name.
+func HerdrBinaryWith(cfg *Config, lookupEnv func(string) (string, bool), lookPath func(string) (string, error)) string {
+	configured := ""
+	if cfg != nil {
+		configured = cfg.Herdr.Binary
+	}
+	if configured != "" && (ValidBinaryPath(configured) || probeWith(configured, lookPath)) {
+		return configured
 	}
 	if lookupEnv != nil {
 		if candidate, ok := lookupEnv("HERDR_BIN_PATH"); ok && ValidBinaryPath(candidate) {
 			return candidate
 		}
 	}
+	if configured != "" {
+		return configured
+	}
 	return "herdr"
 }
 
+// HerdrBinaryWithEnv resolves the effective Herdr executable using the
+// production PATH lookup seam.
+func HerdrBinaryWithEnv(cfg *Config, lookupEnv func(string) (string, bool)) string {
+	return HerdrBinaryWith(cfg, lookupEnv, exec.LookPath)
+}
+
 // ProbesFor returns a Probes snapshot for the binaries shep cares about,
-// honouring an explicit config binary before the plugin's authoritative
-// HERDR_BIN_PATH value.
+// using the same Herdr resolution as the driver.
 func ProbesFor(cfg *Config) Probes {
 	return ProbesForWith(cfg, os.LookupEnv, exec.LookPath)
 }
 
-// ProbesForWith is the hermetic form of ProbesFor. When no explicit Herdr
-// binary is configured, a valid absolute HERDR_BIN_PATH enables the Herdr
-// provider even if that binary is absent from PATH.
+// ProbesForWith is the hermetic form of ProbesFor. A valid absolute
+// HERDR_BIN_PATH enables the Herdr provider even when that binary is absent
+// from PATH, but only after an unusable configured binary has been checked.
 func ProbesForWith(cfg *Config, lookupEnv func(string) (string, bool), lookPath func(string) (string, error)) Probes {
-	herdrBin := HerdrBinaryWithEnv(cfg, lookupEnv)
+	herdrBin := HerdrBinaryWith(cfg, lookupEnv, lookPath)
 	herdrAvailable := ValidBinaryPath(herdrBin) || probeWith(herdrBin, lookPath)
 
 	return Probes{

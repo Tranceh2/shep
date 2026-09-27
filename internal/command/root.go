@@ -234,11 +234,16 @@ func (a *App) Driver() source.HerdrDriver {
 	return a.driverWithOptions()
 }
 
-// pluginDriver returns the Herdr bridge for plugin-invoked commands. Herdr
-// supplies the authoritative executable through HERDR_BIN_PATH because plugin
-// actions run with a deliberately minimal PATH.
+// pluginDriver returns the Herdr bridge for plugin-invoked commands. Unlike
+// the general source path, it constructs a real driver even when probing says
+// the binary is unavailable so command execution reports the failure.
 func (a *App) pluginDriver() source.HerdrDriver {
-	return a.driverWithOptions()
+	if a.herdrDriverInjected {
+		return a.herdrDriver
+	}
+	cfg := a.Config()
+	a.herdrDriver = herdr.New(config.HerdrBinaryWithEnv(cfg, os.LookupEnv))
+	return a.herdrDriver
 }
 
 func (a *App) driverWithOptions() source.HerdrDriver {

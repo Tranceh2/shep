@@ -1107,60 +1107,84 @@ func TestLoad_SelectorTable(t *testing.T) {
 	}
 }
 
-func TestHerdrBinaryWithEnv_PrecedenceAndValidation(t *testing.T) {
+func TestHerdrBinaryWith_PrecedenceAndValidation(t *testing.T) {
 	t.Parallel()
-	valid := filepath.Join(t.TempDir(), "herdr")
-	if err := os.WriteFile(valid, []byte("fake"), 0o700); err != nil {
+	validEnv := filepath.Join(t.TempDir(), "herdr-env")
+	if err := os.WriteFile(validEnv, []byte("fake"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	invalidRelative := "relative/herdr"
-	invalidDirectory := t.TempDir()
-	invalidNonExecutable := filepath.Join(t.TempDir(), "herdr")
-	if err := os.WriteFile(invalidNonExecutable, []byte("fake"), 0o600); err != nil {
+	validConfig := filepath.Join(t.TempDir(), "herdr-config")
+	if err := os.WriteFile(validConfig, []byte("fake"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	invalidEnv := filepath.Join(t.TempDir(), "herdr-invalid")
+	if err := os.WriteFile(invalidEnv, []byte("fake"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	lookup := func(value string) func(string) (string, bool) {
+	lookupEnv := func(value string) func(string) (string, bool) {
 		return func(string) (string, bool) { return value, true }
 	}
-	for _, tc := range []struct {
-		name string
-		env  string
-		want string
-	}{
-		{name: "valid absolute", env: valid, want: valid},
-		{name: "blank", env: "   ", want: "herdr"},
-		{name: "relative", env: invalidRelative, want: "herdr"},
-		{name: "directory", env: invalidDirectory, want: "herdr"},
-		{name: "non executable", env: invalidNonExecutable, want: "herdr"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := HerdrBinaryWithEnv(Defaults(), lookup(tc.env)); got != tc.want {
-				t.Fatalf("HerdrBinaryWithEnv = %q, want %q", got, tc.want)
-			}
-			probes := ProbesForWith(Defaults(), lookup(tc.env), func(string) (string, error) {
-				return "", os.ErrNotExist
-			})
-			if probes.Herdr != (tc.want == valid) {
-				t.Fatalf("Herdr probe = %v, want %v", probes.Herdr, tc.want == valid)
-			}
-		})
-	}
-
-	cfg := Defaults()
-	cfg.Herdr.Binary = "configured-herdr"
-	if got := HerdrBinaryWithEnv(cfg, lookup(valid)); got != "configured-herdr" {
-		t.Fatalf("configured Herdr binary = %q, want configured-herdr", got)
-	}
-	probes := ProbesForWith(cfg, lookup(valid), func(name string) (string, error) {
+	missing := func(string) (string, error) { return "", os.ErrNotExist }
+	resolvable := func(name string) (string, error) {
 		if name == "configured-herdr" {
 			return name, nil
 		}
 		return "", os.ErrNotExist
-	})
-	if !probes.Herdr {
-		t.Fatal("configured Herdr binary should remain probeable")
 	}
+
+	t.Run("usable configured absolute path wins over env", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Herdr.Binary = validConfig
+		if got := HerdrBinaryWith(cfg, lookupEnv(validEnv), missing); got != validConfig {
+			t.Fatalf("HerdrBinaryWith = %q, want %q", got, validConfig)
+		}
+		if probes := ProbesForWith(cfg, lookupEnv(validEnv), missing); !probes.Herdr {
+			t.Fatal("usable configured absolute path should enable Herdr")
+		}
+	})
+
+	t.Run("resolvable configured name wins over env", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Herdr.Binary = "configured-herdr"
+		if got := HerdrBinaryWith(cfg, lookupEnv(validEnv), resolvable); got != "configured-herdr" {
+			t.Fatalf("HerdrBinaryWith = %q, want configured-herdr", got)
+		}
+		if probes := ProbesForWith(cfg, lookupEnv(validEnv), resolvable); !probes.Herdr {
+			t.Fatal("resolvable configured name should enable Herdr")
+		}
+	})
+
+	t.Run("unusable configured name falls back to valid env path", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Herdr.Binary = "stale-configured-herdr"
+		if got := HerdrBinaryWith(cfg, lookupEnv(validEnv), missing); got != validEnv {
+			t.Fatalf("HerdrBinaryWith = %q, want %q", got, validEnv)
+		}
+		if probes := ProbesForWith(cfg, lookupEnv(validEnv), missing); !probes.Herdr {
+			t.Fatal("valid env path should keep Herdr enabled")
+		}
+	})
+
+	t.Run("unusable configured name is preserved without valid env", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Herdr.Binary = "stale-configured-herdr"
+		if got := HerdrBinaryWith(cfg, lookupEnv(invalidEnv), missing); got != cfg.Herdr.Binary {
+			t.Fatalf("HerdrBinaryWith = %q, want configured value", got)
+		}
+		if probes := ProbesForWith(cfg, lookupEnv(invalidEnv), missing); probes.Herdr {
+			t.Fatal("unusable configured value should remain unavailable")
+		}
+	})
+
+	t.Run("invalid env path is ignored", func(t *testing.T) {
+		if got := HerdrBinaryWith(Defaults(), lookupEnv(invalidEnv), missing); got != "herdr" {
+			t.Fatalf("HerdrBinaryWith = %q, want herdr", got)
+		}
+		if probes := ProbesForWith(Defaults(), lookupEnv(invalidEnv), missing); probes.Herdr {
+			t.Fatal("invalid env path should not enable Herdr")
+		}
+	})
 }
 
 // TestHerdrBinary_Default checks the empty-config default.

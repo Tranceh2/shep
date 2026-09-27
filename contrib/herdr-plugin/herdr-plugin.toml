@@ -14,10 +14,10 @@ description = "Project, workspace, agent, and navigation tools for Herdr."
 platforms = ["linux", "macos"]
 
 [[build]]
-command = ["bash", "scripts/build.sh"]
+command = ["./scripts/build.sh"]
 
 [[startup]]
-command = ["bash", "scripts/run-shep.sh", "watch-history"]
+command = ["./scripts/run-shep.sh", "watch-history"]
 
 [[panes]]
 id = "picker"
@@ -25,32 +25,32 @@ title = "Shep"
 placement = "popup"
 width = "90%"
 height = "80%"
-command = ["bash", "scripts/run-shep.sh", "open"]
+command = ["./scripts/run-shep.sh", "open"]
 
 [[actions]]
 id = "open"
 title = "Open Shep picker"
 description = "Open the interactive project and workspace picker popup"
 contexts = ["global", "workspace", "tab", "pane"]
-command = ["bash", "scripts/open-picker.sh"]
+command = ["./scripts/open-picker.sh"]
 
 [[actions]]
 id = "jump-back"
 title = "Jump to previous workspace"
 description = "Toggle between the two most recently focused workspaces"
 contexts = ["workspace"]
-command = ["bash", "scripts/run-shep.sh", "jump-back"]
+command = ["./scripts/run-shep.sh", "jump-back"]
 
 [[actions]]
 id = "start-history"
 title = "Start Shep history collector"
 description = "Operator recovery for the focus-history collector"
 contexts = ["workspace"]
-command = ["bash", "scripts/run-shep.sh", "watch-history"]
+command = ["./scripts/run-shep.sh", "watch-history"]
 
 [[actions]]
 id = "doctor"
 title = "Shep doctor"
 description = "Check configured workspaces and published PATH name"
 contexts = ["global"]
-command = ["bash", "scripts/run-shep.sh", "doctor"]
+command = ["./scripts/run-shep.sh", "doctor"]

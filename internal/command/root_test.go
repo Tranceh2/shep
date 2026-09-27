@@ -30,6 +30,27 @@ func TestApp_HerdrEnvEnablesProbeAndDriver(t *testing.T) {
 	}
 }
 
+func TestApp_PluginDriverBuildsWhenProbeUnavailable(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "")
+	app := New()
+	app.cfg = config.Defaults()
+	app.probes = config.Probes{}
+	if app.herdrDriverInjected {
+		t.Fatal("driver must not be marked injected")
+	}
+	if app.pluginDriver() == nil {
+		t.Fatal("pluginDriver should return a real driver when probing is unavailable")
+	}
+}
+
+func TestApp_PluginDriverKeepsInjectedDriver(t *testing.T) {
+	injected := &openDriver{}
+	app := New(WithHerdrDriver(injected))
+	if got := app.pluginDriver(); got != injected {
+		t.Fatal("pluginDriver did not preserve the injected driver")
+	}
+}
+
 // TestApp_HelpOutput verifies the skeleton root renders its Long description
 // and exits cleanly with --help. Each case rebuilds the tree via New so flag
 // state does not leak between assertions.
