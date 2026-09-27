@@ -196,8 +196,18 @@ func TestGitAvailable_AcceptsOnlyTheTreeUnderTest(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is unavailable")
 	}
+	// gitAvailable inherits this process's environment, so an ambient GIT_DIR or
+	// GIT_WORK_TREE would aim discovery at the runner's own repository and decide
+	// these cases for reasons unrelated to the function. t.Setenv cannot scrub
+	// them in a parallel test, so say so instead of reporting a meaningless pass.
+	for _, name := range []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"} {
+		if _, set := os.LookupEnv(name); set {
+			t.Skipf("%s is set, so git discovery is redirected away from the fixtures", name)
+		}
+	}
 	worktree := t.TempDir()
-	if out, err := exec.Command("git", "-C", worktree, "init").CombinedOutput(); err != nil {
+	init := exec.Command("git", "-C", worktree, "init")
+	if out, err := init.CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, out)
 	}
 	nested := filepath.Join(worktree, "nested")
@@ -239,8 +249,11 @@ func assertTracked(t *testing.T, repoRoot, relativePath string) {
 	if _, err := os.Stat(filepath.Join(repoRoot, tracked)); err != nil {
 		t.Fatalf("pathspec %s does not exist in %s: %v", tracked, repoRoot, err)
 	}
-	if _, err := exec.Command("git", "-C", repoRoot, "ls-files", "--error-unmatch", tracked).CombinedOutput(); err != nil {
-		t.Fatalf("%s is not tracked", tracked)
+	out, err := exec.Command("git", "-C", repoRoot, "ls-files", "--error-unmatch", tracked).CombinedOutput()
+	if err != nil {
+		// Keep git's own output: a tracking regression and a failing git read
+		// the same way without it.
+		t.Fatalf("%s is not tracked: %v: %s", tracked, err, out)
 	}
 }
 
