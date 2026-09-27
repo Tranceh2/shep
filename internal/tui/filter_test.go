@@ -19,7 +19,7 @@ func TestApplyFilter_PutsOpenHerdrBeforeUnopenedMatches(t *testing.T) {
 		other string
 	}{
 		{name: "exact", query: "shep", open: "shep", other: "shep"},
-		{name: "prefix", query: "lat", open: "ECORP/devportal", other: "ecorp-repo"},
+		{name: "prefix", query: "fso", open: "FSOCIETY/arcade", other: "fsociety-repo"},
 		{name: "fuzzy label", query: "dpy", open: "deploy-open", other: "directory-py"},
 	}
 	for _, tc := range cases {

@@ -144,12 +144,12 @@ func TestDedup_CaseFoldLabelCollapse(t *testing.T) {
 // TestDedup_SamePathDifferentLabelPreserved (requirement: explicitly named
 // workspaces targeting the same path must survive as distinct candidates)
 // confirms two candidates with the SAME normalised path but DIFFERENT labels
-// are both kept, so defining "ECORP" and "k8s-ecorp" at the same path does
+// are both kept, so defining "ECORP" and "fsociety" at the same path does
 // not drop the second entry.
 func TestDedup_SamePathDifferentLabelPreserved(t *testing.T) {
 	cands := []source.Candidate{
 		{Path: "/srv/ecorp", Label: "ECORP", Source: "workspaces"},
-		{Path: "/srv/ecorp", Label: "k8s-ecorp", Source: "workspaces"},
+		{Path: "/srv/ecorp", Label: "fsociety", Source: "workspaces"},
 	}
 	out := Dedup(cands)
 	if len(out) != 2 {
@@ -159,7 +159,7 @@ func TestDedup_SamePathDifferentLabelPreserved(t *testing.T) {
 	for _, c := range out {
 		labels[c.Label] = true
 	}
-	if !labels["ECORP"] || !labels["k8s-ecorp"] {
+	if !labels["ECORP"] || !labels["fsociety"] {
 		t.Errorf("expected both labels preserved, got %v", labels)
 	}
 }

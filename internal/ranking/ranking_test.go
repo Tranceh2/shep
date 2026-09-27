@@ -352,9 +352,9 @@ func TestClassifyTextUsesRefinedLabelLayers(t *testing.T) {
 		want  int
 	}{
 		{name: "exact label", query: "Shep", label: "shep", want: LayerExact},
-		{name: "word prefix label", query: "lat", label: "ECORP/devportal", want: LayerPrefix},
+		{name: "word prefix label", query: "fso", label: "FSOCIETY/arcade", want: LayerPrefix},
 		{name: "fuzzy label", query: "dpy", label: "deploy-open", want: LayerFuzzyLabel},
-		{name: "path fallback", query: "lat", label: "repository", path: "/work/ecorp-repo", want: LayerPathOrMeta},
+		{name: "path fallback", query: "fso", label: "repository", path: "/work/fsociety-repo", want: LayerPathOrMeta},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -375,7 +375,7 @@ func TestSortOpenHerdrWinsWithinEveryTextualLayer(t *testing.T) {
 		other string
 	}{
 		{name: "exact", query: "shep", open: "shep", other: "shep"},
-		{name: "prefix", query: "lat", open: "ECORP/devportal", other: "ecorp-repo"},
+		{name: "prefix", query: "fso", open: "FSOCIETY/arcade", other: "fsociety-repo"},
 		{name: "fuzzy label", query: "dpy", open: "deploy-open", other: "directory-py"},
 	}
 	for _, tc := range cases {

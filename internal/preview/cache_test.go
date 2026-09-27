@@ -83,22 +83,22 @@ func TestCache_Key_DistinguishesCandidatesSharingPath(t *testing.T) {
 	cfg := config.PreviewConfig{Default: []string{"identity"}}
 	shared := "/tmp/shep-preview/shared"
 
-	ecorp := source.Candidate{Path: shared, Label: "ECORP", Source: config.SourceWorkspaces, Meta: map[string]string{"group": "true"}}
+	ecorp := source.Candidate{Path: shared, Label: "ecorp", Source: config.SourceWorkspaces, Meta: map[string]string{"group": "true"}}
 	allsafe := source.Candidate{Path: shared, Label: "allsafe", Source: config.SourceWorkspaces, Meta: map[string]string{"command": "allsafe start"}}
-	k8s := source.Candidate{Path: shared, Label: "k8s-ecorp", Source: config.SourceWorkspaces, Meta: map[string]string{"template": "k8s"}}
+	fsociety := source.Candidate{Path: shared, Label: "fsociety", Source: config.SourceWorkspaces, Meta: map[string]string{"template": "fso"}}
 
-	keyLatam := PreviewCacheKey(ecorp, cfg)
-	keyallsafe := PreviewCacheKey(allsafe, cfg)
-	keyK8s := PreviewCacheKey(k8s, cfg)
+	keyEcorp := PreviewCacheKey(ecorp, cfg)
+	keyAllsafe := PreviewCacheKey(allsafe, cfg)
+	keyFsociety := PreviewCacheKey(fsociety, cfg)
 
-	if keyLatam == keyallsafe {
-		t.Errorf("ECORP and allsafe share a path but are distinct candidates; keys must differ (got %q for both)", keyLatam)
+	if keyEcorp == keyAllsafe {
+		t.Errorf("ecorp and allsafe share a path but are distinct candidates; keys must differ (got %q for both)", keyEcorp)
 	}
-	if keyLatam == keyK8s {
-		t.Errorf("ECORP and k8s-ecorp share a path but are distinct candidates; keys must differ (got %q for both)", keyLatam)
+	if keyEcorp == keyFsociety {
+		t.Errorf("ecorp and fsociety share a path but are distinct candidates; keys must differ (got %q for both)", keyEcorp)
 	}
-	if keyallsafe == keyK8s {
-		t.Errorf("allsafe and k8s-ecorp share a path but are distinct candidates; keys must differ (got %q for both)", keyallsafe)
+	if keyAllsafe == keyFsociety {
+		t.Errorf("allsafe and fsociety share a path but are distinct candidates; keys must differ (got %q for both)", keyAllsafe)
 	}
 }
 

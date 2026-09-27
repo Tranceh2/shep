@@ -18,7 +18,7 @@ func TestRender_ExamplesAndDataContext(t *testing.T) {
 		{name: "basename", format: `{{ .Path | osBase }}`, data: Context{Path: "/srv/services/platform-api"}, want: "platform-api"},
 		{name: "prefix cleanup", format: `{{ .Path | osBase | trimPrefix "services-" }}`, data: Context{Path: "/srv/services/platform-api"}, want: "platform-api"},
 		{name: "source condition", format: `{{ if eq .Source "zoxide" }}z-{{ end }}{{ .Path | osBase }}`, data: Context{Path: "/srv/services/platform-api", Source: "zoxide"}, want: "z-platform-api"},
-		{name: "ECORP emoji", format: `✈️ {{ printf "%s/%s" (.Path | osDir | osBase) (.Path | osBase) }}`, data: Context{Path: "/srv/services/platform-api"}, want: "✈️ services/platform-api"},
+		{name: "airplane emoji", format: `✈️ {{ printf "%s/%s" (.Path | osDir | osBase) (.Path | osBase) }}`, data: Context{Path: "/srv/services/platform-api"}, want: "✈️ services/platform-api"},
 		{name: "normalized hash", format: `{{ printf "%s-%s" (.Path | osBase) (slice (.NormalizedPath | sha256sum) 0 8) }}`, data: Context{Path: "/srv/services/platform-api", NormalizedPath: "/srv/services/platform-api"}, want: Name("platform-api-" + hashPrefix("/srv/services/platform-api"))},
 		{name: "whitespace fallback", format: `{{ .Label | trim | default "workspace" }}`, data: Context{Label: "   "}, want: "workspace"},
 		{name: "literal regex replacement", format: `{{ mustRegexReplaceAllLiteral "x" "$1" "x" }}`, data: Context{}, want: "$1"},
@@ -78,7 +78,7 @@ func TestRender_PortablePathMatrix(t *testing.T) {
 		{name: "dot repeated trailing native", format: `{{ .Path | osClean }}`, data: Context{Path: "./services//api/../api/"}, want: "services/api"},
 		{name: "foreign backslash slash text", format: `{{ .Path | clean }}`, data: Context{Path: `C:\services\api`}, want: `C:\services\api`},
 		{name: "foreign slash separator", format: `{{ .Path | clean | base }}`, data: Context{Path: `C:/services/api`}, want: "api"},
-		{name: "unicode and emoji", format: `{{ .Label }}`, data: Context{Label: "✈️ ECORP api"}, want: "✈️ ECORP api"},
+		{name: "unicode and emoji", format: `{{ .Label }}`, data: Context{Label: "✈️ fsociety api"}, want: "✈️ fsociety api"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

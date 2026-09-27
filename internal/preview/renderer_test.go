@@ -752,7 +752,7 @@ func TestRender_HerdrSections_SkipOnNonHerdrCandidate(t *testing.T) {
 
 // TestRender_CacheKey_DoesNotAliasCandidatesSharingPath is the regression
 // test for the real-world repro: multiple [[workspaces]] entries pointing at
-// the identical path (e.g. "ECORP", "allsafe", "k8s-ecorp" all at
+// the identical path (e.g. "ecorp", "allsafe", "fsociety" all at
 // ~/projects) must render their own identity, not a stale cached
 // preview bled over from whichever candidate was rendered first.
 func TestRender_CacheKey_DoesNotAliasCandidatesSharingPath(t *testing.T) {
@@ -761,20 +761,20 @@ func TestRender_CacheKey_DoesNotAliasCandidatesSharingPath(t *testing.T) {
 	r := NewRenderer(cfgWithDefault(config.PreviewIdentity), config.Probes{}, nil, nil)
 	shared := "/tmp/shep-preview/shared"
 
-	gotLatam := mustRender(t, r, candidate("ECORP", shared, config.SourceWorkspaces, ""))
-	gotallsafe := mustRender(t, r, candidate("allsafe", shared, config.SourceWorkspaces, ""))
-	gotK8s := mustRender(t, r, candidate("k8s-ecorp", shared, config.SourceWorkspaces, "k8s"))
+	gotEcorp := mustRender(t, r, candidate("ecorp", shared, config.SourceWorkspaces, ""))
+	gotAllsafe := mustRender(t, r, candidate("allsafe", shared, config.SourceWorkspaces, ""))
+	gotFsociety := mustRender(t, r, candidate("fsociety", shared, config.SourceWorkspaces, "fso"))
 
-	if !strings.HasPrefix(gotLatam, "ECORP\n") {
-		t.Errorf("ECORP candidate must show its own identity: %q", gotLatam)
+	if !strings.HasPrefix(gotEcorp, "ecorp\n") {
+		t.Errorf("ecorp candidate must show its own identity: %q", gotEcorp)
 	}
-	if !strings.HasPrefix(gotallsafe, "allsafe\n") {
-		t.Errorf("allsafe candidate must show its own identity, not ECORP's cached preview: %q", gotallsafe)
+	if !strings.HasPrefix(gotAllsafe, "allsafe\n") {
+		t.Errorf("allsafe candidate must show its own identity, not ecorp's cached preview: %q", gotAllsafe)
 	}
-	if !strings.HasPrefix(gotK8s, "k8s-ecorp\n") {
-		t.Errorf("k8s-ecorp candidate must show its own identity, not a cached collision: %q", gotK8s)
+	if !strings.HasPrefix(gotFsociety, "fsociety\n") {
+		t.Errorf("fsociety candidate must show its own identity, not a cached collision: %q", gotFsociety)
 	}
-	if gotLatam == gotallsafe || gotLatam == gotK8s || gotallsafe == gotK8s {
+	if gotEcorp == gotAllsafe || gotEcorp == gotFsociety || gotAllsafe == gotFsociety {
 		t.Error("distinct workspaces sharing a path must not alias in the preview cache")
 	}
 }

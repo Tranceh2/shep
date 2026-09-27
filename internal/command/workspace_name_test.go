@@ -50,10 +50,10 @@ func TestWorkspaceLaunchRequestPrecedenceAndBypasses(t *testing.T) {
 func TestWorkspaceLaunchRequest_IntegrationLabelsRemainDistinct(t *testing.T) {
 	t.Parallel()
 	app := New()
-	app.cfg = namingConfig("general-name", []config.WildcardConfig{{Pattern: "**", WorkspaceName: "ecorp-wildcard"}})
+	app.cfg = namingConfig("general-name", []config.WildcardConfig{{Pattern: "**", WorkspaceName: "cluster-wildcard"}})
 	candidates := []source.Candidate{
-		{Path: "/srv/ecorp", NormalizedPath: "/srv/ecorp", Label: "kube-prod", Source: "kubernetes", Meta: map[string]string{"integration": "true", "command": "kubectl config get-contexts"}},
-		{Path: "/srv/ecorp", NormalizedPath: "/srv/ecorp", Label: "kube-stage", Source: "kubernetes", Meta: map[string]string{"integration": "true", "command": "kubectl config get-contexts"}},
+		{Path: "/srv/clusters", NormalizedPath: "/srv/clusters", Label: "kube-prod", Source: "kubernetes", Meta: map[string]string{"integration": "true", "command": "kubectl config get-contexts"}},
+		{Path: "/srv/clusters", NormalizedPath: "/srv/clusters", Label: "kube-stage", Source: "kubernetes", Meta: map[string]string{"integration": "true", "command": "kubectl config get-contexts"}},
 	}
 	for _, candidate := range candidates {
 		request, err := app.workspaceLaunchRequest(candidate)
