@@ -130,9 +130,14 @@ When running inside a Herdr popup, `shep` detects the active pane and unlocks in
 
 `shep` includes a Herdr plugin that records your focus history across workspaces. Pressing the shortcut alternates between your current workspace and the last one visited.
 
-Link and enable the plugin:
+Copy the verified binary into the plugin directory, then link and enable:
 
 ```sh
+# Copy your shep binary into the plugin's bin directory
+mkdir -p contrib/jump-back-plugin/bin
+cp $(which shep) contrib/jump-back-plugin/bin/shep
+
+# Link and enable the plugin in Herdr
 herdr plugin link ./contrib/jump-back-plugin
 herdr plugin enable tranceh2.shep-jump-back
 ```
@@ -140,12 +145,14 @@ herdr plugin enable tranceh2.shep-jump-back
 Bind the action in `~/.config/herdr/config.toml`:
 
 ```toml
-[[keys.action]]
+[[keys.command]]
 key = "prefix+tab"
-action = "tranceh2.shep-jump-back.jump-back"
+type = "plugin_action"
+command = "tranceh2.shep-jump-back.jump-back"
+description = "jump to previous workspace"
 ```
 
-See [`docs/jump-back.md`](docs/jump-back.md) for detailed error codes and design notes.
+See [`docs/jump-back.md`](docs/jump-back.md) for detailed error codes, lifecycle rules, and design notes.
 
 ---
 
