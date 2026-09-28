@@ -295,10 +295,19 @@ func (a *App) executeArgs(args []string) error {
 	root := a.rootCmd()
 	root.SetArgs(args)
 	err := root.Execute()
+	a.reportUnhandledError(err)
+	return err
+}
+
+// reportUnhandledError prints err to stderr exactly once when no command in
+// the path has already reported it (see markReported / isUserReportedError).
+// It is split out from executeArgs so the "print exactly once, only when
+// unreported" boundary is directly unit-testable against a hand-built
+// ExitCodeError, independent of any specific subcommand's wiring.
+func (a *App) reportUnhandledError(err error) {
 	if err != nil && !isUserReportedError(err) {
 		fmt.Fprintf(a.err, "error: %s\n", actionableError(err))
 	}
-	return err
 }
 
 func isUserReportedError(err error) bool {

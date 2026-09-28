@@ -126,17 +126,17 @@ func (a *App) jumpBackCmd() *cobra.Command {
 			jumpDriver, ok := driver.(jumpBackDriver)
 			if !ok || driver == nil {
 				fmt.Fprintln(cmd.ErrOrStderr(), "jump-back: herdr is unavailable")
-				return &ExitCodeError{Code: exitNotReady, Err: errors.New("herdr unavailable")}
+				return markReported(&ExitCodeError{Code: exitNotReady, Err: errors.New("herdr unavailable")})
 			}
 			root, err := defaultStateRoot()
 			if err != nil {
 				fmt.Fprintln(cmd.ErrOrStderr(), "jump-back: history store error")
-				return &ExitCodeError{Code: exitStoreError, Err: err}
+				return markReported(&ExitCodeError{Code: exitStoreError, Err: err})
 			}
 			paths, err := resolveSessionPaths(currentHerdrSocketPath(), root)
 			if err != nil {
 				fmt.Fprintln(cmd.ErrOrStderr(), "jump-back: history not ready")
-				return &ExitCodeError{Code: exitNotReady, Err: err}
+				return markReported(&ExitCodeError{Code: exitNotReady, Err: err})
 			}
 			return runJumpBack(cmd.Context(), jumpDriver, unixControlDialer{path: paths.ControlPath},
 				paths.SessionKey, cmd.OutOrStdout(), cmd.ErrOrStderr())
@@ -159,49 +159,49 @@ func runJumpBack(ctx context.Context, driver jumpBackDriver, dialer controlDiale
 	state, err := queryOwnerState(ctx, dialer, sessionKey)
 	if err != nil {
 		fmt.Fprintln(errOut, "jump-back: history not ready")
-		return &ExitCodeError{Code: exitNotReady, Err: err}
+		return markReported(&ExitCodeError{Code: exitNotReady, Err: err})
 	}
 	if state.ClassifiedError != "" {
 		fmt.Fprintln(errOut, "jump-back: history store error")
-		return &ExitCodeError{Code: exitStoreError, Err: errors.New(state.ClassifiedError)}
+		return markReported(&ExitCodeError{Code: exitStoreError, Err: errors.New(state.ClassifiedError)})
 	}
 	if !state.Ready {
 		fmt.Fprintln(errOut, "jump-back: history not ready")
-		return &ExitCodeError{Code: exitNotReady, Err: errors.New("collector reported unready history")}
+		return markReported(&ExitCodeError{Code: exitNotReady, Err: errors.New("collector reported unready history")})
 	}
 
 	// Step 2: the owner's view of "current" must agree with live Herdr state.
 	resolveSnap, err := driver.Snapshot(ctx)
 	if err != nil {
 		fmt.Fprintln(errOut, "jump-back: target session no longer available")
-		return &ExitCodeError{Code: exitSessionUnavailable, Err: err}
+		return markReported(&ExitCodeError{Code: exitSessionUnavailable, Err: err})
 	}
 	current := resolveSnap.FocusedWorkspaceID
 	if current == "" || len(state.MRU) == 0 || state.MRU[0] != current {
 		fmt.Fprintln(errOut, "jump-back: current workspace changed during resolve")
-		return &ExitCodeError{Code: exitCurrentChanged, Err: errors.New("owner state disagrees with fresh snapshot")}
+		return markReported(&ExitCodeError{Code: exitCurrentChanged, Err: errors.New("owner state disagrees with fresh snapshot")})
 	}
 
 	target, ok := resolvePreviousDistinct(state.MRU, current, liveWorkspaceIDs(resolveSnap))
 	if !ok {
 		fmt.Fprintln(errOut, "jump-back: no previous workspace")
-		return &ExitCodeError{Code: exitNoHistory, Err: errors.New("no previous distinct live workspace")}
+		return markReported(&ExitCodeError{Code: exitNoHistory, Err: errors.New("no previous distinct live workspace")})
 	}
 
 	// Step 4: revalidate immediately before focusing.
 	preFocus, err := driver.Snapshot(ctx)
 	if err != nil {
 		fmt.Fprintln(errOut, "jump-back: target session no longer available")
-		return &ExitCodeError{Code: exitSessionUnavailable, Err: err}
+		return markReported(&ExitCodeError{Code: exitSessionUnavailable, Err: err})
 	}
 	live := liveWorkspaceIDs(preFocus)
 	if _, present := live[target]; !present {
 		fmt.Fprintln(errOut, "jump-back: target session no longer available")
-		return &ExitCodeError{Code: exitSessionUnavailable, Err: errors.New("target absent from pre-focus snapshot")}
+		return markReported(&ExitCodeError{Code: exitSessionUnavailable, Err: errors.New("target absent from pre-focus snapshot")})
 	}
 	if preFocus.FocusedWorkspaceID != current {
 		fmt.Fprintln(errOut, "jump-back: current workspace changed during resolve")
-		return &ExitCodeError{Code: exitCurrentChanged, Err: errors.New("current changed before focus")}
+		return markReported(&ExitCodeError{Code: exitCurrentChanged, Err: errors.New("current changed before focus")})
 	}
 
 	// SourceHerdr with a workspace_id focuses the existing workspace; the
@@ -217,7 +217,7 @@ func runJumpBack(ctx context.Context, driver jumpBackDriver, dialer controlDiale
 		// (which may embed an arbitrary command line or payload) stays in the
 		// returned chain for programmatic observability instead of stderr.
 		fmt.Fprintf(errOut, "jump-back: focus failed for workspace %s\n", target)
-		return &ExitCodeError{Code: 1, Err: err}
+		return markReported(&ExitCodeError{Code: 1, Err: err})
 	}
 
 	fmt.Fprintln(out, target)

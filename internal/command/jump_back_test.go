@@ -386,6 +386,40 @@ func TestResolveSessionPaths_PerSocketIsolation(t *testing.T) {
 	}
 }
 
+// TestJumpBackCmd_MissingSocketExitsSingleLineCodeThree exercises the real
+// jumpBackCmd() command path (via App.executeArgs, not the runJumpBack
+// helper) with no HERDR_SOCKET_PATH set, matching the runtime harness's
+// original defect scenario. It pins the full command-level contract in one
+// assertion: exactly one sanitized stderr line, exit code 3 (exitNotReady),
+// and no generic "error:" fallback wrapper — i.e. the whole markReported
+// chain from jumpBackCmd's inline refusal through Execute's fallback holds
+// end to end, not just at the runJumpBack helper layer.
+func TestJumpBackCmd_MissingSocketExitsSingleLineCodeThree(t *testing.T) {
+	t.Setenv("HERDR_SOCKET_PATH", "")
+	var out, errOut bytes.Buffer
+	app := New(WithStreams(&out, &errOut), WithHerdrDriver(&openDriver{}))
+
+	err := app.executeArgs([]string{"jump-back"})
+
+	if err == nil {
+		t.Fatal("expected a non-nil error with no Herdr socket configured")
+	}
+	if got := ExitCode(err); got != exitNotReady {
+		t.Fatalf("exit code = %d, want %d (exitNotReady)", got, exitNotReady)
+	}
+	stderr := errOut.String()
+	lines := strings.Split(strings.TrimRight(stderr, "\n"), "\n")
+	if len(lines) != 1 || lines[0] == "" {
+		t.Fatalf("stderr = %q, want exactly one line", stderr)
+	}
+	if strings.Contains(stderr, "error: ") {
+		t.Fatalf("stderr = %q, want no generic 'error:' fallback wrapper", stderr)
+	}
+	if !strings.Contains(stderr, "jump-back:") {
+		t.Fatalf("stderr = %q, want the jump-back-prefixed sanitized diagnostic", stderr)
+	}
+}
+
 func TestJumpBack_ControlQueryHonoursContextDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
