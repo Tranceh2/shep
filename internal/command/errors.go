@@ -13,6 +13,11 @@ type ExitCodeError struct {
 	Err  error
 }
 
+// reportedToUser marks errors whose command path already emitted a sanitized,
+// user-facing diagnostic. The root execution wrapper must not print the raw
+// error again or change the command's documented output contract.
+func (*ExitCodeError) reportedToUser() {}
+
 func (e *ExitCodeError) Error() string {
 	if e.Err != nil {
 		return e.Err.Error()

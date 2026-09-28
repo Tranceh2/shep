@@ -201,6 +201,49 @@ func TestApp_ExecuteRootStable(t *testing.T) {
 	}
 }
 
+func TestApp_ExecuteUnknownCommandReportsUsageHint(t *testing.T) {
+	t.Parallel()
+
+	var out, errOut bytes.Buffer
+	app := New(WithStreams(&out, &errOut))
+	if err := app.executeArgs([]string{"version"}); err == nil {
+		t.Fatal("unknown command returned nil error")
+	}
+	stderr := errOut.String()
+	if !strings.Contains(stderr, `unknown command "version"`) {
+		t.Fatalf("stderr = %q, want unknown-command diagnostic", stderr)
+	}
+	if !strings.Contains(stderr, "shep --help") {
+		t.Fatalf("stderr = %q, want actionable usage hint", stderr)
+	}
+}
+
+// TestApp_ExecuteDoesNotDoublePrintAlreadyReportedErrors guards the other half
+// of the silent-error fix: a command that already wrote its own sanitized,
+// user-facing message (the established errExitOne / ExitCodeError contract)
+// must not have that message duplicated or wrapped by Execute's new
+// stderr-on-unreported-error path. jump-back's sanitized refusal is real
+// production code exercising that exact contract without a live Herdr socket.
+func TestApp_ExecuteDoesNotDoublePrintAlreadyReportedErrors(t *testing.T) {
+	t.Setenv("HERDR_SOCKET_PATH", "")
+	var out, errOut bytes.Buffer
+	app := New(WithStreams(&out, &errOut), WithHerdrDriver(&openDriver{}))
+	if err := app.executeArgs([]string{"jump-back"}); err == nil {
+		t.Fatal("jump-back with no socket returned nil error")
+	}
+	stderr := errOut.String()
+	lines := strings.Split(strings.TrimRight(stderr, "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("stderr = %q, want exactly one sanitized line, got %d lines", stderr, len(lines))
+	}
+	if strings.Contains(stderr, "error: ") {
+		t.Fatalf("stderr = %q, want no generic 'error:' wrapper around an already-reported diagnostic", stderr)
+	}
+	if !strings.Contains(stderr, "jump-back:") {
+		t.Fatalf("stderr = %q, want the jump-back-prefixed sanitized diagnostic", stderr)
+	}
+}
+
 // TestApp_HelpListsPreviewCommand (WP-4, task 4.4) confirms `shep preview` is
 // registered on the root command tree and shows up in --help.
 func TestApp_HelpListsPreviewCommand(t *testing.T) {

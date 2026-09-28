@@ -91,10 +91,11 @@ func TestInit_RefusesOverwriteWithoutForce(t *testing.T) {
 
 	var out, errOut bytes.Buffer
 	app := New(WithStreams(&out, &errOut))
-	cmd := app.rootCmd()
-	cmd.SetArgs([]string{"init", "--config", path})
-	if e := cmd.Execute(); e == nil {
+	if e := app.executeArgs([]string{"init", "--config", path}); e == nil {
 		t.Fatal("expected error overwriting without --force, got nil")
+	}
+	if !strings.Contains(errOut.String(), "--force") {
+		t.Fatalf("stderr = %q, want actionable --force guidance", errOut.String())
 	}
 }
 

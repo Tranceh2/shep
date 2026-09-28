@@ -8,9 +8,11 @@ package command
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/spf13/cobra"
@@ -283,9 +285,33 @@ func New(opts ...Option) *App {
 }
 
 // Execute builds the command tree and runs it against os.Args. A non-nil
-// error indicates a runtime failure.
+// error indicates a runtime failure. Errors that have not already been
+// reported by a command are written once to the configured stderr stream.
 func (a *App) Execute() error {
-	return a.rootCmd().Execute()
+	return a.executeArgs(os.Args[1:])
+}
+
+func (a *App) executeArgs(args []string) error {
+	root := a.rootCmd()
+	root.SetArgs(args)
+	err := root.Execute()
+	if err != nil && !isUserReportedError(err) {
+		fmt.Fprintf(a.err, "error: %s\n", actionableError(err))
+	}
+	return err
+}
+
+func isUserReportedError(err error) bool {
+	var reported interface{ reportedToUser() }
+	return errors.As(err, &reported)
+}
+
+func actionableError(err error) string {
+	message := err.Error()
+	if strings.HasPrefix(message, "unknown command ") || strings.HasPrefix(message, "unknown flag:") {
+		return message + "\nRun 'shep --help' for usage."
+	}
+	return message
 }
 
 // rootCmd builds the root command. It is constructed per Execute so flag

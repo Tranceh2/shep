@@ -110,6 +110,12 @@ checkout into plugin-local `bin/shep`, so no manual binary copying is required:
 herdr plugin install Tranceh2/shep/contrib/herdr-plugin
 ```
 
+To install a non-default branch or ref, pass it separately with `--ref`:
+
+```sh
+herdr plugin install --ref <branch> Tranceh2/shep/contrib/herdr-plugin
+```
+
 ### Option B: Local Checkout (Development)
 
 For local development or manual installs, link the plugin directory and build

@@ -128,6 +128,12 @@ Shep integrates with Herdr through the unified plugin `tranceh2.shep` (which pro
 herdr plugin install Tranceh2/shep/contrib/herdr-plugin
 ```
 
+To install a non-default branch or ref, pass it separately with `--ref`:
+
+```sh
+herdr plugin install --ref <branch> Tranceh2/shep/contrib/herdr-plugin
+```
+
 *Note: Requires Go 1.26+ installed. Herdr clones the repository and runs `bash scripts/build.sh`, which compiles the checkout into the plugin-local `bin/shep` with version and commit metadata.*
 
 **Or from a local checkout:**
