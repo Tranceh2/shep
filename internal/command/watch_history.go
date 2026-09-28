@@ -145,6 +145,7 @@ func reportCollectorExit(err error, errOut io.Writer) error {
 		fmt.Fprintln(errOut, "watch-history: a collector is already running for this socket; leaving it untouched")
 	case classified != nil:
 		fmt.Fprintf(errOut, "watch-history: %v\n", classified)
+		return markReported(classified)
 	}
 	return classified
 }

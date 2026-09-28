@@ -1699,6 +1699,8 @@ func baseLabelOpen(p string) string {
 }
 
 // errExitOne is a sentinel returned after a command has already written its
-// user-facing diagnostic to stderr. The root execution wrapper recognizes the
-// marker and preserves the existing output contract.
-var errExitOne = &ExitCodeError{Code: 1, Err: fmt.Errorf("exit 1")}
+// user-facing diagnostic to stderr. It is wrapped with markReported so the
+// root execution wrapper recognizes it as already reported and preserves the
+// existing output contract; the exit code itself still comes from the
+// underlying ExitCodeError.
+var errExitOne = markReported(&ExitCodeError{Code: 1, Err: fmt.Errorf("exit 1")})
