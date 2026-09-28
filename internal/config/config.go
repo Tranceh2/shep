@@ -774,7 +774,12 @@ func normalizePreview(p *PreviewConfig) {
 	if p.MaxLines == 0 {
 		p.MaxLines = defaultPreviewMaxLines
 	}
-	if len(p.Default) == 0 {
+	// nil means the document never mentioned preview.default; an explicit
+	// `default = []` decodes to an empty non-nil slice and is a deliberate
+	// request for no default sections, so it must survive normalization. Testing
+	// length instead of nil would silently overwrite that choice — the same
+	// defect this package just fixed for sources.sessions.preview.
+	if p.Default == nil {
 		p.Default = append([]string(nil), defaultPreviewSections...)
 	}
 }
