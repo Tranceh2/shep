@@ -268,15 +268,18 @@ func TestRecordSuccessHonorsRetentionAndKeyCap(t *testing.T) {
 	if _, err := store.db.Exec("DELETE FROM exact_usage"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.Exec("BEGIN"); err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < maxKeys+2; i++ {
-		if _, err := store.db.Exec("INSERT INTO exact_usage(exact_id, count, last_used) VALUES (?, 1, ?)", uniqueKey(i), now.Unix()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := store.db.Exec("COMMIT"); err != nil {
+	// Seed the over-cap state in one SQL statement. Executing 10,002 individual
+	// INSERTs makes this contract test sensitive to race-detector and CI load,
+	// while the behavior under test is the pruning performed by RecordSuccess.
+	if _, err := store.db.Exec(`
+		WITH RECURSIVE keys(i) AS (
+			SELECT 0
+			UNION ALL
+			SELECT i + 1 FROM keys WHERE i < ?
+		)
+		INSERT INTO exact_usage(exact_id, count, last_used)
+		SELECT 'seed-' || i, 1, ? FROM keys
+	`, maxKeys+1, now.Unix()); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.RecordSuccess(context.Background(), Keys{Exact: "cap-marker"}); err != nil {
@@ -701,8 +704,4 @@ func fileMode(path string) os.FileMode {
 		return 0
 	}
 	return info.Mode().Perm()
-}
-
-func uniqueKey(i int) string {
-	return "key-" + time.Duration(i).String()
 }
