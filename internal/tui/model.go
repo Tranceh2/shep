@@ -97,12 +97,11 @@ type LabelFormats struct {
 	Integrations map[string]string
 }
 
-// withDefaults lets direct Model/Layout construction retain the historical
-// rendering behavior. Config.Load already resolves these same defaults for the
-// production path before command wires them into Layout.
+// withDefaults lets direct Model/Layout construction retain the same first-run
+// rendering defaults as config.Load before command wires them into Layout.
 func (f LabelFormats) withDefaults() LabelFormats {
 	if f.Herdr == "" {
-		f.Herdr = defaultLabelWithPathFormat
+		f.Herdr = defaultLabelOnlyFormat
 	}
 	if f.Sessions == "" {
 		f.Sessions = defaultLabelOnlyFormat
@@ -111,10 +110,10 @@ func (f LabelFormats) withDefaults() LabelFormats {
 		f.Workspaces = defaultLabelOnlyFormat
 	}
 	if f.Zoxide == "" {
-		f.Zoxide = defaultPathLabelFormat
+		f.Zoxide = defaultLabelWithPathFallbackFormat
 	}
 	if f.Projects == "" {
-		f.Projects = defaultPathLabelFormat
+		f.Projects = defaultLabelWithPathFallbackFormat
 	}
 	if f.Tab == "" {
 		f.Tab = defaultLabelWithPathFormat
@@ -534,8 +533,8 @@ func (m Model) icons() IconSet {
 }
 
 // labelFormats resolves the model's configured row templates from Layout.
-// Direct test callers that construct a zero-value Layout retain the exact
-// defaults normalized by config.Load in the production path.
+// Direct test callers that construct a zero-value Layout receive the same
+// first-run defaults as the production config path.
 func (m Model) labelFormats() LabelFormats {
 	return m.layout.LabelFormats.withDefaults()
 }

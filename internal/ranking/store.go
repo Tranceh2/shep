@@ -320,6 +320,10 @@ func (s *Store) Record(ctx context.Context, candidate source.Candidate) error {
 }
 
 func (s *Store) RecordSuccess(ctx context.Context, keys Keys) error {
+	return s.recordSuccess(ctx, keys, maxKeys)
+}
+
+func (s *Store) recordSuccess(ctx context.Context, keys Keys, keyCap int) error {
 	if s == nil || s.db == nil || strings.TrimSpace(keys.Exact) == "" {
 		return nil
 	}
@@ -370,10 +374,10 @@ func (s *Store) RecordSuccess(ctx context.Context, keys Keys) error {
 	if _, err := tx.ExecContext(writeCtx, `DELETE FROM recent_exact WHERE selected_at < ?`, cutoff); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(writeCtx, `DELETE FROM exact_usage WHERE exact_id IN (SELECT exact_id FROM exact_usage ORDER BY last_used DESC, count DESC, exact_id ASC LIMIT -1 OFFSET ?)`, maxKeys); err != nil {
+	if _, err := tx.ExecContext(writeCtx, `DELETE FROM exact_usage WHERE exact_id IN (SELECT exact_id FROM exact_usage ORDER BY last_used DESC, count DESC, exact_id ASC LIMIT -1 OFFSET ?)`, keyCap); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(writeCtx, `DELETE FROM resource_usage WHERE resource_id IN (SELECT resource_id FROM resource_usage ORDER BY last_used DESC, count DESC, resource_id ASC LIMIT -1 OFFSET ?)`, maxKeys); err != nil {
+	if _, err := tx.ExecContext(writeCtx, `DELETE FROM resource_usage WHERE resource_id IN (SELECT resource_id FROM resource_usage ORDER BY last_used DESC, count DESC, resource_id ASC LIMIT -1 OFFSET ?)`, keyCap); err != nil {
 		return err
 	}
 	return tx.Commit()

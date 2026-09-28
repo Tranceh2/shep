@@ -245,6 +245,7 @@ func TestRecordSuccessDoesNotPromoteRepeatedCurrentTarget(t *testing.T) {
 
 func TestRecordSuccessHonorsRetentionAndKeyCap(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0)
+	const testKeyCap = 4
 	path := filepath.Join(t.TempDir(), "ranking.sqlite3")
 	store, err := OpenPathWithClock(path, func() time.Time { return now })
 	if err != nil {
@@ -268,26 +269,29 @@ func TestRecordSuccessHonorsRetentionAndKeyCap(t *testing.T) {
 	if _, err := store.db.Exec("DELETE FROM exact_usage"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.Exec("BEGIN"); err != nil {
+	// Use a small package-test cap so this contract exercises the real pruning
+	// SQL within the production one-second write deadline. Production callers
+	// continue to use RecordSuccess, which always supplies maxKeys.
+	if _, err := store.db.Exec(`
+		WITH RECURSIVE keys(i) AS (
+			SELECT 0
+			UNION ALL
+			SELECT i + 1 FROM keys WHERE i < ?
+		)
+		INSERT INTO exact_usage(exact_id, count, last_used)
+		SELECT 'seed-' || i, 1, ? FROM keys
+	`, testKeyCap, now.Unix()); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < maxKeys+2; i++ {
-		if _, err := store.db.Exec("INSERT INTO exact_usage(exact_id, count, last_used) VALUES (?, 1, ?)", uniqueKey(i), now.Unix()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := store.db.Exec("COMMIT"); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.RecordSuccess(context.Background(), Keys{Exact: "cap-marker"}); err != nil {
+	if err := store.recordSuccess(context.Background(), Keys{Exact: "cap-marker"}, testKeyCap); err != nil {
 		t.Fatal(err)
 	}
 	var count int
 	if err := store.db.QueryRow("SELECT count(*) FROM exact_usage").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != maxKeys {
-		t.Fatalf("exact usage count = %d, want %d", count, maxKeys)
+	if count != testKeyCap {
+		t.Fatalf("exact usage count = %d, want %d", count, testKeyCap)
 	}
 }
 
@@ -701,8 +705,4 @@ func fileMode(path string) os.FileMode {
 		return 0
 	}
 	return info.Mode().Perm()
-}
-
-func uniqueKey(i int) string {
-	return "key-" + time.Duration(i).String()
 }

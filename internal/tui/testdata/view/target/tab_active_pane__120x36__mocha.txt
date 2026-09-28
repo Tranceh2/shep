@@ -1,7 +1,7 @@
 SHEP  ● all   agents (0)                                                                                    1 candidates
 ⌕ type to filter…
 ╭────────────────────────────────────────────────────────────────╮ ╭ PREVIEW · api ────────────────────────────────────╮
-│   backend · /srv/backend                                       │ │ label  api                                        │
+│   backend                                                      │ │ label  api                                        │
 │ ❯     └─ ◫ api ·                                               │ │ path                                              │
 │         └─                                                     │ │ kind   herdr tab                                  │
 │                                                                │ │                                                   │

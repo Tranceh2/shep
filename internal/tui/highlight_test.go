@@ -24,7 +24,7 @@ func TestHighlight_EmptyMatchedIndexesUsesBaseStyle(t *testing.T) {
 	if parts[0].rendered {
 		t.Fatal("empty matched indexes rendered per-rune styling")
 	}
-	if got, want := parts[0].style.Render(parts[0].text), m.styles.rowStyle.Render("/home/dev/café"); got != want {
+	if got, want := parts[0].style.Render(parts[0].text), m.styles.rowStyle.Render("café"); got != want {
 		t.Errorf("base row styling = %q, want %q", got, want)
 	}
 }
@@ -32,12 +32,12 @@ func TestHighlight_EmptyMatchedIndexesUsesBaseStyle(t *testing.T) {
 func TestHighlight_MatchedRunesUseAccentStyle(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
-	m.query = "dev" // the visible provider path has the only meaningful match.
+	m.query = "ha" // the visible provider label has the only meaningful match.
 	row := Row{
 		Kind:           RowCandidate,
 		Candidate:      zoxideCandidate("alpha", "/home/dev/alpha"),
 		Match:          MatchDirect,
-		MatchedIndexes: []int{0, 1, 2},
+		MatchedIndexes: []int{0, 1},
 	}
 
 	parts := m.rowLineParts(row)
@@ -49,11 +49,7 @@ func TestHighlight_MatchedRunesUseAccentStyle(t *testing.T) {
 	}
 
 	base := m.styles.rowStyle
-	want := base.Render("/home/") +
-		m.styles.queryStyle.Render("d") +
-		m.styles.queryStyle.Render("e") +
-		m.styles.queryStyle.Render("v") +
-		base.Render("/alpha")
+	want := base.Render("alpha")
 	// renderHighlighted (not a pre-rendered parts[0].text — rendering is now
 	// deferred to display time so truncation can protect the fixed prefix;
 	// see rowPart.renderHighlighted) with maxW<=0 renders the full,
@@ -66,7 +62,7 @@ func TestHighlight_MatchedRunesUseAccentStyle(t *testing.T) {
 func TestHighlight_LabelOnlyMatchDoesNotHighlightProviderPath(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
-	m.query = "café" // matches the hidden provider label, never the visible path.
+	m.query = "café" // matches the visible provider label.
 	cand := zoxideCandidate("café", "/home/dev/project")
 	rows := buildRows(rowBuildInput{query: m.query, candidates: []source.Candidate{cand}})
 	if len(rows) != 1 || rows[0].Match != MatchDirect {
@@ -77,11 +73,11 @@ func TestHighlight_LabelOnlyMatchDoesNotHighlightProviderPath(t *testing.T) {
 	if len(parts) != 1 {
 		t.Fatalf("part count = %d, want 1", len(parts))
 	}
-	if parts[0].rendered {
-		t.Fatal("a label-only match must not paint unrelated runes in the visible provider path")
+	if !parts[0].rendered {
+		t.Fatal("a label match should highlight the visible label")
 	}
-	if got, want := parts[0].style.Render(parts[0].text), m.styles.rowStyle.Render("/home/dev/project"); got != want {
-		t.Errorf("label-only match provider rendering: got %q, want %q", got, want)
+	if got := parts[0].rawText; got != "café" {
+		t.Errorf("label-only match rendering: got %q, want %q", got, "café")
 	}
 }
 
@@ -91,7 +87,7 @@ func TestHighlight_LabelOnlyMatchDoesNotHighlightProviderPath(t *testing.T) {
 func TestHighlight_ProviderPathMatchUsesVisiblePathIndexes(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
-	m.query = "omp"
+	m.query = "com"
 	cand := zoxideCandidate("components", "/home/dev/components")
 
 	row := Row{
@@ -110,19 +106,19 @@ func TestHighlight_ProviderPathMatchUsesVisiblePathIndexes(t *testing.T) {
 	}
 
 	rawRunes := []rune(parts[0].rawText)
-	// rawText excludes the one-cell external gutter. The visible path's "omp"
-	// occupies indexes 11, 12, and 13.
-	wantHighlighted := map[int]bool{11: true, 12: true, 13: true}
+	// rawText excludes the one-cell external gutter. The visible label's "com"
+	// occupies indexes 0, 1, and 2.
+	wantHighlighted := map[int]bool{0: true, 1: true, 2: true}
 	for i, got := range parts[0].highlighted {
 		if want := wantHighlighted[i]; got != want {
 			t.Errorf("highlighted[%d] (rune %q) = %v, want %v — rawText=%q", i, string(rawRunes[i]), got, want, parts[0].rawText)
 		}
 	}
-	if got, want := string(rawRunes[11:14]), "omp"; got != want {
+	if got, want := string(rawRunes[0:3]), "com"; got != want {
 		t.Fatalf("setup sanity: rawText[11:14] = %q, want %q", got, want)
 	}
-	if !strings.HasPrefix(parts[0].rawText, "/home/dev/components") {
-		t.Errorf("rawText = %q, want it to contain only the visible provider path", parts[0].rawText)
+	if !strings.HasPrefix(parts[0].rawText, "components") {
+		t.Errorf("rawText = %q, want it to contain only the visible provider label", parts[0].rawText)
 	}
 }
 
@@ -139,14 +135,14 @@ func TestHighlight_NonDirectMatchesUseNoQueryStyle(t *testing.T) {
 		{
 			name:      "descendant match",
 			match:     MatchDescendant,
-			wantText:  "/home/dev/workspace",
-			wantStyle: m.styles.rowDescendantStyle.Render("/home/dev/workspace"),
+			wantText:  "workspace",
+			wantStyle: m.styles.rowDescendantStyle.Render("workspace"),
 		},
 		{
 			name:      "non-match",
 			match:     MatchNone,
-			wantText:  "/home/dev/workspace",
-			wantStyle: m.styles.rowStyle.Render("/home/dev/workspace"),
+			wantText:  "workspace",
+			wantStyle: m.styles.rowStyle.Render("workspace"),
 		},
 	}
 

@@ -1,7 +1,7 @@
 ⌕ type to filter…                                                           2 candidates
 ╭──────────────────────────────────────────────╮ ╭ PREVIEW · alpha ────────────────────╮
-│ ❯ /a                                         │ │ label  alpha                        │
-│   /b                                         │ │ path   /a                           │
+│ ❯ alpha                                      │ │ label  alpha                        │
+│   beta                                       │ │ path   /a                           │
 │                                              │ │ source zoxide                       │
 │                                              │ │                                     │
 │                                              │ │ ⠿ loading preview…                  │

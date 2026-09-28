@@ -435,12 +435,13 @@ func TestResolvePreviewNames_Precedence(t *testing.T) {
 		}
 	})
 
-	t.Run("built-in fallback when nothing configured at all", func(t *testing.T) {
+	t.Run("configured defaults apply when nothing else matches", func(t *testing.T) {
 		t.Parallel()
 		cfg := config.Defaults()
 		got := resolvePreviewNames(cfg, source.Candidate{Path: "/other/foo", Source: config.SourceZoxide})
-		if len(got) != 1 || got[0] != config.PreviewIdentity {
-			t.Errorf("got %v want [identity]", got)
+		want := []string{config.PreviewAgentStatus, config.PreviewIdentity, config.PreviewGit}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("got %v want %v", got, want)
 		}
 	})
 

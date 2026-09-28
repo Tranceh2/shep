@@ -1,7 +1,7 @@
 SHEP  ● all   agents (0)                                                                                          1 of 1
 ⌕ api
 ╭────────────────────────────────────────────────────────────────╮ ╭ PREVIEW · backend ────────────────────────────────╮
-│ ❯ backend · /srv/backend                                       │ │ label  backend                                    │
+│ ❯ backend                                                      │ │ label  backend                                    │
 │       └─ ◫ api · /srv/backend                                  │ │ path   /srv/backend                               │
 │                                                                │ │                                                   │
 │                                                                │ │                                                   │

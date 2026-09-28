@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/tranceh2/shep/internal/config"
@@ -88,7 +89,7 @@ func TestRowPrimaryText_ConfiguredLabelFormats(t *testing.T) {
 	}
 }
 
-func TestRowPrimaryText_DefaultLabelFormatsPreserveCurrentRendering(t *testing.T) {
+func TestRowPrimaryText_DefaultLabelFormatsAreLabelFirst(t *testing.T) {
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	tab := Row{
 		Kind:   RowTab,
@@ -117,7 +118,7 @@ func TestRowPrimaryText_DefaultLabelFormatsPreserveCurrentRendering(t *testing.T
 			row: Row{Kind: RowCandidate, Candidate: source.Candidate{
 				Source: config.SourceHerdr, Label: "backend", Path: "/srv/backend", Icon: "◆",
 			}},
-			want: "◆ backend · /srv/backend",
+			want: "◆ backend",
 		},
 		{
 			name: "workspace candidate",
@@ -131,14 +132,14 @@ func TestRowPrimaryText_DefaultLabelFormatsPreserveCurrentRendering(t *testing.T
 			row: Row{Kind: RowCandidate, Candidate: source.Candidate{
 				Source: config.SourceZoxide, Label: "cache", Path: "/srv/cache", Icon: "◆",
 			}},
-			want: "◆ /srv/cache",
+			want: "◆ cache",
 		},
 		{
 			name: "project candidate",
 			row: Row{Kind: RowCandidate, Candidate: source.Candidate{
 				Source: config.SourceProjects, Label: "shep", Path: "/srv/shep", Icon: "◆",
 			}},
-			want: "◆ /srv/shep",
+			want: "◆ shep",
 		},
 		{
 			name: "tab number matching label renders once",
@@ -164,6 +165,34 @@ func TestRowPrimaryText_DefaultLabelFormatsPreserveCurrentRendering(t *testing.T
 // integration row's label_format resolves by Candidate.Source (the declared
 // [[integrations]].name), mirroring the fixed built-in fields above but
 // looked up in the open-ended Integrations map instead.
+func TestRowPrimaryText_DefaultDirectoryLabelsUseTildeAndFallback(t *testing.T) {
+	t.Parallel()
+	m := newRenderTestModel(ThemeMocha, FocusList)
+	for _, tt := range []struct {
+		name   string
+		source string
+		label  string
+		path   string
+		want   string
+	}{
+		{name: "zoxide relative label", source: config.SourceZoxide, label: "~/Proyectos/shep", path: "/workspace/Proyectos/shep", want: "~/Proyectos/shep"},
+		{name: "projects relative label", source: config.SourceProjects, label: "~/Proyectos/shep", path: "/workspace/Proyectos/shep", want: "~/Proyectos/shep"},
+		{name: "zoxide empty label fallback", source: config.SourceZoxide, path: "/opt/shep", want: "/opt/shep"},
+		{name: "projects empty label fallback", source: config.SourceProjects, path: "/opt/shep", want: "/opt/shep"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			row := Row{Kind: RowCandidate, Candidate: source.Candidate{Source: tt.source, Label: tt.label, Path: tt.path}}
+			got, _ := m.rowPrimaryText(row)
+			if got != tt.want {
+				t.Fatalf("rowPrimaryText() = %q, want %q", got, tt.want)
+			}
+			if strings.Contains(got, "/workspace/") {
+				t.Fatalf("row leaked absolute path: %q", got)
+			}
+		})
+	}
+}
+
 func TestRowPrimaryText_IntegrationUsesConfiguredFormatKeyedByName(t *testing.T) {
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	m.layout.LabelFormats = LabelFormats{Integrations: map[string]string{"prs": "PR {{.Label}}"}}

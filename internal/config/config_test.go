@@ -375,8 +375,23 @@ preview = ["session_info"]
 	}
 }
 
+func TestDefaults_VisualDefaults(t *testing.T) {
+	t.Parallel()
+
+	cfg := Defaults()
+	if got, want := cfg.Preview.Default, []string{PreviewAgentStatus, PreviewIdentity, PreviewGit}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("preview default sections = %v, want %v", got, want)
+	}
+	if got, want := cfg.TUI.ListWidth, "35%"; got != want {
+		t.Fatalf("tui list_width = %q, want %q", got, want)
+	}
+	if got, want := cfg.TUI.PreviewWidth, "65%"; got != want {
+		t.Fatalf("tui preview_width = %q, want %q", got, want)
+	}
+}
+
 // TestLoad_MissingFileFallsBackToDefaults confirms a missing config path
-// resolves to Defaults rather than an error.
+// resolves to Defaults rather than an error, including the visual defaults.
 func TestLoad_MissingFileFallsBackToDefaults(t *testing.T) {
 	t.Parallel()
 
@@ -397,13 +412,76 @@ func TestLoad_MissingFileFallsBackToDefaults(t *testing.T) {
 	if got, want := cfg.Preview.MaxLines, 50; got != want {
 		t.Errorf("preview max_lines: got %d want %d", got, want)
 	}
-	if len(cfg.Preview.Default) != 0 {
-		t.Errorf("expected no default preview sections, got %v", cfg.Preview.Default)
+	if got, want := cfg.Preview.Default, []string{PreviewAgentStatus, PreviewIdentity, PreviewGit}; !reflect.DeepEqual(got, want) {
+		t.Errorf("preview default sections: got %v want %v", got, want)
+	}
+	if got, want := cfg.TUI.ListWidth, "35%"; got != want {
+		t.Errorf("tui list_width: got %q want %q", got, want)
+	}
+	if got, want := cfg.TUI.PreviewWidth, "65%"; got != want {
+		t.Errorf("tui preview_width: got %q want %q", got, want)
 	}
 }
 
-// TestLoad_RejectsUnknownSourceName (requirement 2) fails fast on a typo'd
-// general.sources entry instead of silently ignoring it.
+// TestLoad_PartialVisualDefaultsAndExplicitOverrides covers how the first-run
+// visual defaults interact with a partial document.
+//
+// The pane split is one decision: validateTUI rejects a pair summing past
+// 100%, so naming one side must NOT pair it with the built-in default for the
+// other. A config carrying only `list_width = "50%"` was valid before these
+// defaults existed and must stay valid — hence the regression case below.
+func TestLoad_PartialVisualDefaultsAndExplicitOverrides(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                  string
+		doc                   string
+		wantList, wantPreview string
+		wantSections          []string
+	}{
+		{name: "partial tui keeps the named side only", doc: "version = 2\n[tui]\nlist_width = \"30%\"\n", wantList: "30%", wantPreview: "", wantSections: []string{PreviewAgentStatus, PreviewIdentity, PreviewGit}},
+		{name: "a majority list width stays loadable", doc: "version = 2\n[tui]\nlist_width = \"50%\"\n", wantList: "50%", wantPreview: "", wantSections: []string{PreviewAgentStatus, PreviewIdentity, PreviewGit}},
+		{name: "naming only the preview side", doc: "version = 2\n[tui]\npreview_width = \"80%\"\n", wantList: "", wantPreview: "80%", wantSections: []string{PreviewAgentStatus, PreviewIdentity, PreviewGit}},
+		{name: "both named", doc: "version = 2\n[tui]\nlist_width = \"45%\"\npreview_width = \"55%\"\n", wantList: "45%", wantPreview: "55%", wantSections: []string{PreviewAgentStatus, PreviewIdentity, PreviewGit}},
+		{name: "explicit preview", doc: "version = 2\n[preview]\ndefault = [\"git\"]\n", wantList: "35%", wantPreview: "65%", wantSections: []string{"git"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(tt.doc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.TUI.ListWidth != tt.wantList || cfg.TUI.PreviewWidth != tt.wantPreview {
+				t.Fatalf("widths = %q/%q, want %q/%q", cfg.TUI.ListWidth, cfg.TUI.PreviewWidth, tt.wantList, tt.wantPreview)
+			}
+			if !reflect.DeepEqual(cfg.Preview.Default, tt.wantSections) {
+				t.Fatalf("preview.default = %v, want %v", cfg.Preview.Default, tt.wantSections)
+			}
+		})
+	}
+}
+
+func TestLoad_ExplicitLabelFormatsWin(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	const doc = "[sources.zoxide]\nlabel_format = \"custom {{.Path}}\"\n[sources.projects]\nlabel_format = \"project {{.Label}}\"\n"
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sources.Zoxide.LabelFormat != "custom {{.Path}}" || cfg.Sources.Projects.LabelFormat != "project {{.Label}}" {
+		t.Fatalf("explicit label formats were replaced: zoxide=%q projects=%q", cfg.Sources.Zoxide.LabelFormat, cfg.Sources.Projects.LabelFormat)
+	}
+}
+
 func TestLoad_RejectsUnknownSourceName(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
@@ -830,7 +908,7 @@ label_format = "project {{.Path}}"
 }
 
 // TestLoad_LabelFormatsDefault verifies empty label format fields resolve to
-// byte-for-byte current rendering behavior during Load.
+// the first-run label-first rendering defaults during Load.
 func TestLoad_LabelFormatsDefault(t *testing.T) {
 	t.Parallel()
 
@@ -845,18 +923,22 @@ func TestLoad_LabelFormatsDefault(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 
-	const labelWithPath = "{{if .Label}}{{.Label}} · {{end}}{{.Path}}"
+	const (
+		labelWithPath         = "{{if .Label}}{{.Label}} · {{end}}{{.Path}}"
+		labelWithPathFallback = "{{if .Label}}{{.Label}}{{else}}{{.Path}}{{end}}"
+	)
 	cases := []struct {
 		field string
 		got   string
 		want  string
 	}{
-		{"sources.herdr.label_format", cfg.Sources.Herdr.LabelFormat, labelWithPath},
+		{"sources.herdr.label_format", cfg.Sources.Herdr.LabelFormat, "{{.Label}}"},
 		{"sources.herdr.tab_label_format", cfg.Sources.Herdr.TabLabelFormat, labelWithPath},
 		{"sources.herdr.pane_label_format", cfg.Sources.Herdr.PaneLabelFormat, labelWithPath},
+		{"sources.sessions.label_format", cfg.Sources.Sessions.LabelFormat, "{{.Label}}"},
 		{"sources.workspaces.label_format", cfg.Sources.Workspaces.LabelFormat, "{{.Label}}"},
-		{"sources.zoxide.label_format", cfg.Sources.Zoxide.LabelFormat, "{{.Path}}"},
-		{"sources.projects.label_format", cfg.Sources.Projects.LabelFormat, "{{.Path}}"},
+		{"sources.zoxide.label_format", cfg.Sources.Zoxide.LabelFormat, labelWithPathFallback},
+		{"sources.projects.label_format", cfg.Sources.Projects.LabelFormat, labelWithPathFallback},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {

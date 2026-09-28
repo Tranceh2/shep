@@ -98,6 +98,13 @@ const (
 	defaultPreviewMaxLines = 50
 )
 
+var defaultPreviewSections = []string{PreviewAgentStatus, PreviewIdentity, PreviewGit}
+
+const (
+	defaultTUIListWidth    = "35%"
+	defaultTUIPreviewWidth = "65%"
+)
+
 // Config is the top-level shep configuration document.
 type Config struct {
 	Version  int            `toml:"version,omitempty"`
@@ -565,6 +572,7 @@ func Defaults() *Config {
 		Wildcards:    []WildcardConfig{},
 		Integrations: []IntegrationConfig{},
 	}
+	normalizeTUI(&cfg.TUI)
 	normalizePreview(&cfg.Preview)
 	normalizeLabelFormats(&cfg.Sources)
 	return cfg
@@ -622,6 +630,13 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg := Defaults()
+	// The pane split is decided by normalizeTUI below, after decoding, because
+	// the two widths are validated as a pair. Clearing the pre-seeded defaults
+	// first is what lets normalizeTUI see which sides the document actually
+	// names; otherwise a config naming one side would be silently paired with a
+	// default it never asked for and rejected for exceeding 100%.
+	cfg.TUI.ListWidth = ""
+	cfg.TUI.PreviewWidth = ""
 	// DisallowUnknownFields makes an unrecognised or legacy/removed key (a
 	// typo'd field, a stale top-level table, an arbitrary [sources.<name>])
 	// fail Load fast instead of silently ignoring it.
@@ -654,6 +669,7 @@ func Load(path string) (*Config, error) {
 	if cfg.General.Selector == "" {
 		cfg.General.Selector = SelectorBuiltin
 	}
+	normalizeTUI(&cfg.TUI)
 	normalizePreview(&cfg.Preview)
 	normalizeLabelFormats(&cfg.Sources)
 	normalizeAliases(cfg)
@@ -720,9 +736,24 @@ func normalizeIntegrations(integrations []IntegrationConfig, preview PreviewConf
 	}
 }
 
-// normalizePreview fills zero-value durations and max_lines with the
-// documented defaults. It runs even when [preview] is absent because those
-// defaults are only meaningful once a custom command is configured.
+// normalizeTUI fills the picker's pane split when the user left it unset.
+//
+// The two widths are one decision, not two independent fields, because
+// validateTUI rejects a pair summing past 100%. Defaulting them separately
+// would make a previously valid `list_width = "50%"` fail against a 65%
+// default the user never asked for, so a config that names either side keeps
+// that side and leaves the other to the renderer's own split. Only a config
+// that names neither receives the built-in 35/65 pair.
+func normalizeTUI(t *TUIConfig) {
+	if t.ListWidth == "" && t.PreviewWidth == "" {
+		t.ListWidth = defaultTUIListWidth
+		t.PreviewWidth = defaultTUIPreviewWidth
+	}
+}
+
+// normalizePreview fills zero-value preview fields with documented defaults.
+// It runs even when [preview] is absent so a partial config receives the same
+// first-run behavior as Defaults().
 func normalizePreview(p *PreviewConfig) {
 	if p.Timeout == 0 {
 		p.Timeout = Duration(defaultPreviewTimeout)
@@ -733,15 +764,22 @@ func normalizePreview(p *PreviewConfig) {
 	if p.MaxLines == 0 {
 		p.MaxLines = defaultPreviewMaxLines
 	}
+	if len(p.Default) == 0 {
+		p.Default = append([]string(nil), defaultPreviewSections...)
+	}
 }
 
-// normalizeLabelFormats fills empty format fields with the current rendering
-// behavior so callers never need to interpret an empty value as a default.
+// normalizeLabelFormats fills empty format fields with the first-run rendering
+// defaults so callers never need to interpret an empty value as a default.
 func normalizeLabelFormats(s *SourcesConfig) {
-	const labelWithPath = "{{if .Label}}{{.Label}} · {{end}}{{.Path}}"
+	const (
+		labelWithPath         = "{{if .Label}}{{.Label}} · {{end}}{{.Path}}"
+		labelWithPathFallback = "{{if .Label}}{{.Label}}{{else}}{{.Path}}{{end}}"
+		labelOnly             = "{{.Label}}"
+	)
 
 	if s.Herdr.LabelFormat == "" {
-		s.Herdr.LabelFormat = labelWithPath
+		s.Herdr.LabelFormat = labelOnly
 	}
 	if s.Herdr.TabLabelFormat == "" {
 		s.Herdr.TabLabelFormat = labelWithPath
@@ -750,19 +788,19 @@ func normalizeLabelFormats(s *SourcesConfig) {
 		s.Herdr.PaneLabelFormat = labelWithPath
 	}
 	if s.Sessions.LabelFormat == "" {
-		s.Sessions.LabelFormat = "{{.Label}}"
+		s.Sessions.LabelFormat = labelOnly
 	}
 	if len(s.Sessions.Preview) == 0 {
 		s.Sessions.Preview = []string{PreviewSessionInfo}
 	}
 	if s.Workspaces.LabelFormat == "" {
-		s.Workspaces.LabelFormat = "{{.Label}}"
+		s.Workspaces.LabelFormat = labelOnly
 	}
 	if s.Zoxide.LabelFormat == "" {
-		s.Zoxide.LabelFormat = "{{.Path}}"
+		s.Zoxide.LabelFormat = labelWithPathFallback
 	}
 	if s.Projects.LabelFormat == "" {
-		s.Projects.LabelFormat = "{{.Path}}"
+		s.Projects.LabelFormat = labelWithPathFallback
 	}
 }
 
@@ -1369,7 +1407,8 @@ func ValidatePreviewNames(names []string, commands map[string]PreviewCommand) er
 // validateTUI enforces that list_width/preview_width are "auto" or a valid
 // percentage string, and that configuring both as percentages never sums
 // past 100% — a picker pane split wider than the terminal, which would
-// overflow the rendered layout.
+// overflow the rendered layout. Load normalizes omitted fields before this
+// check, so the built-in 35/65 split is authoritative for partial configs.
 func validateTUI(t TUIConfig) error {
 	if err := validateWidthField("tui.list_width", t.ListWidth); err != nil {
 		return err

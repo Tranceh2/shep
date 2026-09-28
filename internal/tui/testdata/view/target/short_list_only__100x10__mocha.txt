@@ -1,10 +1,10 @@
 SHEP  ● all   agents (0)                                                                7 candidates
 ⌕ type to filter…
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ ❯ backend · /srv/backend                                                                         │
-│   frontend · /srv/frontend                                                                       │
+│ ❯ backend                                                                                        │
+│   frontend                                                                                       │
 │   notes                                                                                          │
-│   /tmp                                                                                           │
-│   /home/dev/Downloads                                                                            │
+│   tmp                                                                                            │
+│   Downloads                                                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 enter open   tab agents   ? help   esc quit
