@@ -75,9 +75,23 @@ func mustRender(t *testing.T, r Renderer, cand source.Candidate) string {
 	return res.Text
 }
 
+// cfgWithDefault builds a config whose preview sections are exactly names, for
+// every source.
+//
+// It clears the per-source lists as well as setting Preview.Default, because
+// those lists outrank Preview.Default in the renderer — Defaults() supplies them
+// and Load() suppresses them whenever a document writes preview.default, so
+// setting only Preview.Default here would describe a state no real config can
+// reach and would leave these tests exercising the per-source list instead of
+// the sections they name.
 func cfgWithDefault(names ...string) *config.Config {
 	cfg := config.Defaults()
 	cfg.Preview.Default = names
+	cfg.Sources.Herdr.Preview = nil
+	cfg.Sources.Sessions.Preview = nil
+	cfg.Sources.Workspaces.Preview = nil
+	cfg.Sources.Zoxide.Preview = nil
+	cfg.Sources.Projects.Preview = nil
 	return cfg
 }
 
@@ -383,6 +397,85 @@ func TestRender_AllConfiguredSectionsFailFallsBackToIdentity(t *testing.T) {
 	}
 }
 
+// TestResolvePreviewNames_PerSourceDefaultsAndUserControl locks the whole
+// first-run preview contract, which has three layers that are easy to break
+// independently.
+//
+// With nothing configured, each built-in source gets the sections that describe
+// its own rows: a Herdr workspace has tabs, panes and an agent; a zoxide
+// directory is usually not a repository but always has contents.
+//
+// The subtle part is the second case. A per-source list outranks
+// preview.default in the renderer, so shipping built-in per-source lists would
+// make an explicitly written preview.default invisible for every source the
+// picker actually shows. Config normalization therefore suppresses the built-in
+// lists when the document writes preview.default, leaving one obvious control.
+// An explicit [sources.<name>].preview still wins over both.
+func TestResolvePreviewNames_PerSourceDefaultsAndUserControl(t *testing.T) {
+	t.Parallel()
+
+	load := func(t *testing.T, body string) *config.Config {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "config.toml")
+		if err := os.WriteFile(path, []byte("version = 2\n"+body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := config.Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}
+	sections := func(cfg *config.Config, sourceName string) []string {
+		return resolvePreviewNames(cfg, source.Candidate{Source: sourceName, Path: "/tmp", Label: "row"})
+	}
+
+	t.Run("no config gives every source its own sections", func(t *testing.T) {
+		t.Parallel()
+		cfg := load(t, "")
+		for sourceName, want := range map[string][]string{
+			config.SourceHerdr:      {config.PreviewWorkspace, config.PreviewActivePane, config.PreviewAgentStatus},
+			config.SourceWorkspaces: {config.PreviewIdentity, config.PreviewDir},
+			config.SourceZoxide:     {config.PreviewIdentity, config.PreviewDir},
+			config.SourceProjects:   {config.PreviewIdentity, config.PreviewGit, config.PreviewDir},
+		} {
+			if got := sections(cfg, sourceName); !reflect.DeepEqual(got, want) {
+				t.Errorf("%s sections = %v, want %v", sourceName, got, want)
+			}
+		}
+	})
+
+	t.Run("an explicit preview.default reaches every built-in source", func(t *testing.T) {
+		t.Parallel()
+		cfg := load(t, "[preview]\ndefault = [\""+config.PreviewIdentity+"\"]\n")
+		for _, sourceName := range []string{config.SourceHerdr, config.SourceWorkspaces, config.SourceZoxide, config.SourceProjects} {
+			got := sections(cfg, sourceName)
+			if len(got) != 1 || got[0] != config.PreviewIdentity {
+				t.Errorf("%s sections = %v, want the user's [%s]", sourceName, got, config.PreviewIdentity)
+			}
+		}
+	})
+
+	t.Run("an explicit source list wins over preview.default", func(t *testing.T) {
+		t.Parallel()
+		cfg := load(t, "[preview]\ndefault = [\""+config.PreviewIdentity+"\"]\n[sources.zoxide]\npreview = [\""+config.PreviewGit+"\"]\n")
+		if got := sections(cfg, config.SourceZoxide); len(got) != 1 || got[0] != config.PreviewGit {
+			t.Errorf("zoxide sections = %v, want [%s]", got, config.PreviewGit)
+		}
+		if got := sections(cfg, config.SourceProjects); len(got) != 1 || got[0] != config.PreviewIdentity {
+			t.Errorf("projects sections = %v, want the user's [%s]", got, config.PreviewIdentity)
+		}
+	})
+
+	t.Run("an explicit empty source list means no sections", func(t *testing.T) {
+		t.Parallel()
+		cfg := load(t, "[sources.zoxide]\npreview = []\n")
+		if got := sections(cfg, config.SourceZoxide); len(got) != 0 {
+			t.Errorf("zoxide sections = %v, want none", got)
+		}
+	})
+}
+
 // TestResolvePreviewNames_SessionsKeepTheirOwnFallback locks the outcome that a
 // session candidate previews as session_info for an ordinary loaded config.
 //
@@ -495,19 +588,22 @@ func TestResolvePreviewNames_Precedence(t *testing.T) {
 
 	t.Run("default used when nothing else matches", func(t *testing.T) {
 		t.Parallel()
-		cfg := config.Defaults()
-		cfg.Preview.Default = []string{config.PreviewGit}
+		// cfgWithDefault, not Defaults()+Preview.Default: the per-source lists
+		// outrank Preview.Default, and Load() suppresses them precisely when a
+		// document writes preview.default, so this is the only state a real
+		// config can reach with these sections applying to a zoxide row.
+		cfg := cfgWithDefault(config.PreviewGit)
 		got := resolvePreviewNames(cfg, source.Candidate{Path: "/other/foo", Source: config.SourceZoxide})
 		if len(got) != 1 || got[0] != config.PreviewGit {
 			t.Errorf("got %v want [git]", got)
 		}
 	})
 
-	t.Run("configured defaults apply when nothing else matches", func(t *testing.T) {
+	t.Run("built-in per-source sections apply when nothing else matches", func(t *testing.T) {
 		t.Parallel()
 		cfg := config.Defaults()
 		got := resolvePreviewNames(cfg, source.Candidate{Path: "/other/foo", Source: config.SourceZoxide})
-		want := []string{config.PreviewAgentStatus, config.PreviewIdentity, config.PreviewGit}
+		want := []string{config.PreviewIdentity, config.PreviewDir}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("got %v want %v", got, want)
 		}

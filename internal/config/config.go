@@ -98,7 +98,22 @@ const (
 	defaultPreviewMaxLines = 50
 )
 
+// defaultPreviewSections is the generic fallback for a candidate whose source
+// declares no list of its own — a direct --path candidate or an integration
+// without preview sections.
 var defaultPreviewSections = []string{PreviewAgentStatus, PreviewIdentity, PreviewGit}
+
+// Per-source preview defaults. Each built-in source gets the sections that
+// actually describe its candidates, because the generic list wastes the pane on
+// sections that render nothing for that kind of row: a Herdr workspace has tabs,
+// panes and an agent to show and no git status worth repeating, while a zoxide
+// directory is usually not a repository at all but always has contents.
+var (
+	defaultHerdrPreview      = []string{PreviewWorkspace, PreviewActivePane, PreviewAgentStatus}
+	defaultWorkspacesPreview = []string{PreviewIdentity, PreviewDir}
+	defaultZoxidePreview     = []string{PreviewIdentity, PreviewDir}
+	defaultProjectsPreview   = []string{PreviewIdentity, PreviewGit, PreviewDir}
+)
 
 const (
 	defaultTUIListWidth    = "35%"
@@ -584,6 +599,8 @@ func Defaults() *Config {
 	normalizePreview(&cfg.Preview)
 	normalizeLabelFormats(&cfg.Sources)
 	normalizeSourceIcons(&cfg.Sources)
+	// No document exists here, so no preview.default was ever written.
+	normalizeSourcePreviews(&cfg.Sources, false)
 	return cfg
 }
 
@@ -646,6 +663,16 @@ func Load(path string) (*Config, error) {
 	// default it never asked for and rejected for exceeding 100%.
 	cfg.TUI.ListWidth = ""
 	cfg.TUI.PreviewWidth = ""
+	// Same reason: the normalizers below must see what the document itself says,
+	// and Defaults() has already supplied these. Clearing them keeps nil meaning
+	// "absent from the document" through decoding, which is what lets an explicit
+	// preview.default suppress the per-source lists and an explicit `= []`
+	// survive.
+	cfg.Preview.Default = nil
+	cfg.Sources.Herdr.Preview = nil
+	cfg.Sources.Workspaces.Preview = nil
+	cfg.Sources.Zoxide.Preview = nil
+	cfg.Sources.Projects.Preview = nil
 	// DisallowUnknownFields makes an unrecognised or legacy/removed key (a
 	// typo'd field, a stale top-level table, an arbitrary [sources.<name>])
 	// fail Load fast instead of silently ignoring it.
@@ -678,10 +705,14 @@ func Load(path string) (*Config, error) {
 	if cfg.General.Selector == "" {
 		cfg.General.Selector = SelectorBuiltin
 	}
+	// Captured before normalizePreview supplies the built-in list, because that
+	// is the only moment the document's own intent is still visible.
+	userSetPreviewDefault := cfg.Preview.Default != nil
 	normalizeTUI(&cfg.TUI)
 	normalizePreview(&cfg.Preview)
 	normalizeLabelFormats(&cfg.Sources)
 	normalizeSourceIcons(&cfg.Sources)
+	normalizeSourcePreviews(&cfg.Sources, userSetPreviewDefault)
 	normalizeAliases(cfg)
 	normalizeIntegrations(cfg.Integrations, cfg.Preview)
 
@@ -833,6 +864,41 @@ func normalizeSourceIcons(s *SourcesConfig) {
 	}
 	if s.Projects.Icon == "" {
 		s.Projects.Icon = defaultProjectsSourceIcon
+	}
+}
+
+// normalizeSourcePreviews fills each built-in source's preview list when the
+// document names none.
+//
+// nil means the key was absent; an explicit `preview = []` decodes to an empty
+// non-nil slice and is a deliberate request for no sections, so it survives —
+// the same distinction preview.default relies on. Sessions is deliberately
+// absent here: its fallback lives in the renderer so that a user-set
+// preview.default is not shadowed by a value normalization invented.
+//
+// userSetDefault suppresses these built-in lists entirely. Since a per-source
+// list outranks preview.default in the renderer, filling them would make an
+// explicitly written preview.default invisible for the four sources the picker
+// actually shows — the same silent surprise this package removed for
+// sources.sessions.preview. So a document that writes preview.default keeps one
+// obvious control, while a document that writes neither gets per-source lists
+// that suit each kind of row. An explicit [sources.<name>].preview still wins
+// over both.
+func normalizeSourcePreviews(s *SourcesConfig, userSetDefault bool) {
+	if userSetDefault {
+		return
+	}
+	if s.Herdr.Preview == nil {
+		s.Herdr.Preview = append([]string(nil), defaultHerdrPreview...)
+	}
+	if s.Workspaces.Preview == nil {
+		s.Workspaces.Preview = append([]string(nil), defaultWorkspacesPreview...)
+	}
+	if s.Zoxide.Preview == nil {
+		s.Zoxide.Preview = append([]string(nil), defaultZoxidePreview...)
+	}
+	if s.Projects.Preview == nil {
+		s.Projects.Preview = append([]string(nil), defaultProjectsPreview...)
 	}
 }
 
