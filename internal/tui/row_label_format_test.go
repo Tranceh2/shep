@@ -89,6 +89,18 @@ func TestRowPrimaryText_ConfiguredLabelFormats(t *testing.T) {
 	}
 }
 
+func TestRowPrimaryText_SourceIconIsRendered(t *testing.T) {
+	t.Parallel()
+	m := newRenderTestModel(ThemeMocha, FocusList)
+	row := Row{Kind: RowCandidate, Candidate: source.Candidate{
+		Source: config.SourceProjects, Label: "shep", Icon: "\ue702 ", Path: "/srv/shep",
+	}}
+	got := renderRowLineText(m.renderRowLine(row, true, 40))
+	if !strings.Contains(got, "❯ \ue702") || !strings.Contains(got, "shep") {
+		t.Fatalf("rendered row = %q, want source icon and label", got)
+	}
+}
+
 func TestRowPrimaryText_DefaultLabelFormatsAreLabelFirst(t *testing.T) {
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	tab := Row{
