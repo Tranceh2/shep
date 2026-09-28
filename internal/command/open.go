@@ -1698,7 +1698,7 @@ func baseLabelOpen(p string) string {
 	return base
 }
 
-// errExitOne is a sentinel returned purely to drive exit code 1 from main.
-// It is never printed (cobra Silences errors); the user-facing reason was
-// already written to stderr by the caller.
-var errExitOne = fmt.Errorf("exit 1")
+// errExitOne is a sentinel returned after a command has already written its
+// user-facing diagnostic to stderr. The root execution wrapper recognizes the
+// marker and preserves the existing output contract.
+var errExitOne = &ExitCodeError{Code: 1, Err: fmt.Errorf("exit 1")}
