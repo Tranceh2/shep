@@ -208,9 +208,9 @@ func integrationPreviewCommand(cfg *config.Config, sourceName, name string) (con
 	return config.IntegrationPreviewCommand{}, false
 }
 
-// resolvePreviewNames implements the documented precedence: sessions always
-// use their source-level preview because SessionDir is display metadata; other
-// candidates use workspace > wildcard > source > default > identity fallback.
+// resolvePreviewNames implements the documented precedence: workspace >
+// wildcard > source > default > source-specific fallback > identity fallback.
+// Sessions skip path-based overrides because SessionDir is display metadata.
 func resolvePreviewNames(cfg *config.Config, cand source.Candidate) []string {
 	if cand.Source != config.SourceSessions {
 		path := renderPath(cand)
@@ -250,6 +250,9 @@ func resolvePreviewNames(cfg *config.Config, cand source.Candidate) []string {
 	}
 	if len(cfg.Preview.Default) > 0 {
 		return cfg.Preview.Default
+	}
+	if cand.Source == config.SourceSessions {
+		return []string{config.PreviewSessionInfo}
 	}
 	return []string{config.PreviewIdentity}
 }

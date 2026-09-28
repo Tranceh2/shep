@@ -44,6 +44,7 @@ I'm sharing it in case someone else in the Herdr or terminal community finds it 
 - **[Herdr](https://herdr.dev)** (`herdr` executable on `$PATH`) — optional but strongly recommended. When Herdr is absent or stopped, `shep` prints the resolved project path to stdout so terminal scripts still work.
 - **[zoxide](https://github.com/ajeetdsouza/zoxide)** — optional; enabled by default to surface your most frequent directories.
 - **[fzf](https://github.com/junegunn/fzf)** — optional external selector fallback.
+- **Nerd Font** — required for the built-in source icons to render correctly; without it, those glyphs appear as replacement boxes. Herdr itself already assumes Nerd Fonts. On terminals that cannot render Unicode, `[tui].icons = "ascii"` remains available for the picker's own semantic markers (status, tree, and search prompt); it does not affect per-source icons, which are raw configured strings.
 - **[lsd](https://github.com/lsd-rs/lsd)** or **[eza](https://github.com/eza-community/eza)** — optional; used for syntax-colored directory previews (falls back to `ls -la`).
 
 ---

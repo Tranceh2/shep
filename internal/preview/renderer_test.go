@@ -131,6 +131,7 @@ func TestRender_SessionInfoRendersOnlyCandidateMetadata(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := config.Defaults()
+			cfg.Sources.Sessions.Preview = []string{config.PreviewSessionInfo}
 			cand := source.Candidate{Path: "/must-not-be-read", Label: tt.meta["session_name"], Source: config.SourceSessions, Meta: tt.meta}
 			got := mustRender(t, NewRenderer(cfg, config.Probes{}, nil, nil), cand)
 			if got != tt.want {
