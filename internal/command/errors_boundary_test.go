@@ -88,3 +88,50 @@ func TestReportUnhandledError_ReportedExitCodeErrorStaysSilent(t *testing.T) {
 		t.Fatalf("ExitCode(reported) = %d, want 3 (must survive unchanged)", ExitCode(reported))
 	}
 }
+
+// TestReportedExitError_SatisfiesExitCoderDirectly guards the follow-up fix
+// to the advisory finding on reportedExitError: a caller that type-asserts
+// err.(ExitCoder) directly (bypassing errors.As/ExitCode) must still observe
+// the wrapped error's documented code. Before this fix, *reportedExitError
+// had no ExitCode() method of its own, so this direct assertion failed even
+// though errors.As-based consumers (ExitCode()) worked via Unwrap.
+func TestReportedExitError_SatisfiesExitCoderDirectly(t *testing.T) {
+	wrapped := markReported(&ExitCodeError{Code: 5, Err: errors.New("boom")})
+
+	ec, ok := wrapped.(ExitCoder)
+	if !ok {
+		t.Fatal("markReported(err) must satisfy ExitCoder directly, not only through errors.As")
+	}
+	if got := ec.ExitCode(); got != 5 {
+		t.Fatalf("direct ExitCode() = %d, want 5", got)
+	}
+	// The errors.As-based path (used by ExitCode()) must agree.
+	if got := ExitCode(wrapped); got != 5 {
+		t.Fatalf("ExitCode(wrapped) = %d, want 5 (must match direct assertion)", got)
+	}
+}
+
+// TestErrExitOne_IdentityCodeAndReportingProperties pins the three properties
+// every one of the ~45 call sites across the package rely on for the shared
+// errExitOne sentinel: errors.Is identity survives the markReported wrap,
+// the exit code is exactly 1, and the fallback stderr path treats it as
+// already reported (no double-print for the ~45 call sites that already
+// print their own message before returning errExitOne).
+func TestErrExitOne_IdentityCodeAndReportingProperties(t *testing.T) {
+	if !errors.Is(errExitOne, errExitOne) {
+		t.Fatal("errExitOne must be errors.Is-identity-stable with itself")
+	}
+	if ExitCode(errExitOne) != 1 {
+		t.Fatalf("ExitCode(errExitOne) = %d, want 1", ExitCode(errExitOne))
+	}
+	if !isUserReportedError(errExitOne) {
+		t.Fatal("errExitOne must be recognized as already reported to the user")
+	}
+
+	var errOut bytes.Buffer
+	app := New(WithStreams(&bytes.Buffer{}, &errOut))
+	app.reportUnhandledError(errExitOne)
+	if errOut.Len() != 0 {
+		t.Fatalf("stderr = %q, want no fallback output for errExitOne", errOut.String())
+	}
+}

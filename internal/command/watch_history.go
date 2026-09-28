@@ -55,7 +55,7 @@ func (a *App) watchHistoryCmd() *cobra.Command {
 			// prints its own sanitized reason first.
 			fail := func(reason string, err error) error {
 				fmt.Fprintf(cmd.ErrOrStderr(), "watch-history: %s\n", reason)
-				return err
+				return markReported(err)
 			}
 
 			socket := currentHerdrSocketPath()

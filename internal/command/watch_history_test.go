@@ -215,6 +215,84 @@ func TestWatchHistoryCmd_ReportsStartupFailureToStderr(t *testing.T) {
 	if !strings.Contains(errOut.String(), "watch-history:") {
 		t.Fatalf("stderr = %q, want a watch-history-prefixed diagnostic", errOut.String())
 	}
+
+	// The follow-up fix (markReported on the "fail" closure's return) must
+	// hold at the command boundary too: Execute's fallback must not add a
+	// second, generic "error:" line on top of this already-sanitized one.
+	app.reportUnhandledError(err)
+	lines := strings.Split(strings.TrimRight(errOut.String(), "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("stderr = %q, want exactly one line after reportUnhandledError, got %d", errOut.String(), len(lines))
+	}
+	if strings.Contains(errOut.String(), "error: ") {
+		t.Fatalf("stderr = %q, want no generic 'error:' fallback wrapper", errOut.String())
+	}
+}
+
+// TestWatchHistoryCmd_AlreadyRunningRealCollectorPathSingleLineExitZero is a
+// command-level real-path test (not the reportCollectorExit unit helper): it
+// starts a real herdrwatch.Run incumbent, then runs runWatchHistory a second
+// time against the SAME session paths (the same deps wiring watchHistoryCmd's
+// RunE uses), asserting the already-running branch produces exactly one
+// stderr line and exit code 0, and that reportUnhandledError does not add a
+// second line on top.
+func TestWatchHistoryCmd_AlreadyRunningRealCollectorPathSingleLineExitZero(t *testing.T) {
+	root := shortStateRoot(t)
+	paths, err := resolveSessionPaths("/tmp/herdr-incumbent2.sock", root)
+	if err != nil {
+		t.Fatalf("resolveSessionPaths: %v", err)
+	}
+
+	store := openTestHistoryStore(t, paths.DBPath)
+	incumbentCtx, stopIncumbent := context.WithCancel(context.Background())
+	defer stopIncumbent()
+
+	incumbentDone := make(chan error, 1)
+	go func() {
+		incumbentDone <- herdrwatch.Run(incumbentCtx, herdrwatch.Config{
+			SessionKey:  paths.SessionKey,
+			LockPath:    paths.LockPath,
+			ControlPath: paths.ControlPath,
+			Store:       store,
+			Snapshotter: &fakeSnapshotter{},
+			Dialer:      blockedDialer{},
+			Waiter:      holdingWaiter{},
+		})
+	}()
+	waitForSocket(t, paths.ControlPath)
+	defer func() {
+		stopIncumbent()
+		select {
+		case <-incumbentDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("incumbent did not exit after cancellation")
+		}
+	}()
+
+	var errOut bytes.Buffer
+	app := New(WithStreams(&bytes.Buffer{}, &errOut))
+	dupErr := runWatchHistory(context.Background(), watchHistoryDeps{
+		Paths:       paths,
+		Store:       store,
+		Snapshotter: &fakeSnapshotter{},
+		Dialer:      blockedDialer{},
+		Waiter:      holdingWaiter{},
+		ErrOut:      &errOut,
+	})
+
+	if ExitCode(dupErr) != 0 {
+		t.Fatalf("already-running exit code = %d, want 0", ExitCode(dupErr))
+	}
+	lines := strings.Split(strings.TrimRight(errOut.String(), "\n"), "\n")
+	if len(lines) != 1 || !strings.Contains(lines[0], "already running") {
+		t.Fatalf("stderr = %q, want exactly one 'already running' line", errOut.String())
+	}
+
+	app.reportUnhandledError(dupErr)
+	linesAfter := strings.Split(strings.TrimRight(errOut.String(), "\n"), "\n")
+	if len(linesAfter) != 1 {
+		t.Fatalf("stderr after reportUnhandledError = %q, want still exactly one line (nil error needs no reporting)", errOut.String())
+	}
 }
 
 // TestReportCollectorExit_DuplicateStartLogsRejectionAndExitsZero guards the

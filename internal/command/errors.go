@@ -43,6 +43,22 @@ func (e *reportedExitError) Error() string { return e.err.Error() }
 
 func (e *reportedExitError) Unwrap() error { return e.err }
 
+// ExitCode delegates to the wrapped error's ExitCoder implementation, so both
+// a direct err.(ExitCoder) assertion and unwrap-aware consumers (errors.As
+// via ExitCode, below) observe the same documented code through the
+// reportedExitError wrapper. Without this method, a bare type assertion on a
+// markReported error would miss ExitCoder entirely: errors.As only walks
+// Unwrap chains, but a caller that type-asserts err.(ExitCoder) directly
+// (bypassing errors.As) would see no ExitCode() method on
+// *reportedExitError and silently fall through to a wrong/default code.
+func (e *reportedExitError) ExitCode() int {
+	var ec ExitCoder
+	if errors.As(e.err, &ec) {
+		return ec.ExitCode()
+	}
+	return 0
+}
+
 // reportedToUser marks errors whose command path already emitted a
 // sanitized, user-facing diagnostic. The root execution wrapper must not
 // print the raw error again or change the command's documented output

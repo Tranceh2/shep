@@ -1467,7 +1467,7 @@ func (a *App) launchWorkspace(ctx context.Context, driver source.HerdrDriver, ca
 		}
 		if applyErr := templates.Apply(ctx, a.LayoutApplier(), target, tpl); applyErr != nil {
 			fmt.Fprintf(errOut, "warning: template failed: %v\n", applyErr)
-			return launchOutcomeNone, applyErr
+			return launchOutcomeNone, markReported(applyErr)
 		}
 	}
 	return launchOutcomeCompleted, nil
