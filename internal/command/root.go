@@ -228,25 +228,22 @@ func (a *App) setChosenAction(action tui.RowAction) {
 }
 
 // Driver returns the active Herdr driver, lazily building a real one from the
-// loaded config when one was not injected. Returns nil when Herdr is not on
-// PATH (the probe failed); callers treat nil as "fall back to path-print".
+// loaded config when one was not injected. A valid HERDR_BIN_PATH is accepted
+// independently of PATH, matching the Herdr plugin runtime contract.
 func (a *App) Driver() source.HerdrDriver {
 	return a.driverWithOptions()
 }
 
-// pluginDriver returns the Herdr bridge for plugin-invoked commands. Herdr
-// supplies the authoritative executable through HERDR_BIN_PATH because plugin
-// actions run with a deliberately minimal PATH.
+// pluginDriver returns the Herdr bridge for plugin-invoked commands. Unlike
+// the general source path, it constructs a real driver even when probing says
+// the binary is unavailable so command execution reports the failure.
 func (a *App) pluginDriver() source.HerdrDriver {
 	if a.herdrDriverInjected {
 		return a.herdrDriver
 	}
-	// Plugin actions run with a minimal PATH, so the startup-injected absolute
-	// HERDR_BIN_PATH is the authority. If it is absent or invalid, the driver
-	// keeps the configured binary fallback and reports the execution failure at
-	// the command boundary instead of consulting the host PATH probe.
 	cfg := a.Config()
-	return herdr.New(cfg.HerdrBinary(), herdr.WithBinaryEnv(os.LookupEnv))
+	a.herdrDriver = herdr.New(config.HerdrBinaryWithEnv(cfg, os.LookupEnv))
+	return a.herdrDriver
 }
 
 func (a *App) driverWithOptions() source.HerdrDriver {
@@ -257,7 +254,7 @@ func (a *App) driverWithOptions() source.HerdrDriver {
 	if !a.Probes().Herdr {
 		return nil
 	}
-	a.herdrDriver = herdr.New(cfg.HerdrBinary())
+	a.herdrDriver = herdr.New(config.HerdrBinaryWithEnv(cfg, os.LookupEnv))
 	return a.herdrDriver
 }
 

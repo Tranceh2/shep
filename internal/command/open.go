@@ -1348,7 +1348,7 @@ func (a *App) launchSessionAttach(ctx context.Context, cand source.Candidate, er
 	if attach == nil {
 		attach = runSessionAttach
 	}
-	if err := attach(ctx, a.Config().HerdrBinary(), name, stripHerdrEnv(os.Environ())); err != nil {
+	if err := attach(ctx, config.HerdrBinaryWithEnv(a.Config(), os.LookupEnv), name, stripHerdrEnv(os.Environ())); err != nil {
 		fmt.Fprintf(errOut, "warning: herdr session attach failed: %v\n", err)
 		return launchOutcomeNone, errExitOne
 	}
@@ -1502,7 +1502,7 @@ func (a *App) launchInCurrentWorkspace(ctx context.Context, driver source.HerdrD
 	cmd := cand.Meta["command"]
 	closeOnExit := cand.Meta["close_on_exit"] == "true"
 	tpl := config.TemplateConfig{Command: cmd, CloseOnExit: closeOnExit}
-	binary := a.Config().HerdrBinary()
+	binary := config.HerdrBinaryWithEnv(a.Config(), os.LookupEnv)
 	cwd := currentPane.CWD
 
 	var containerPaneID string
