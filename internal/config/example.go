@@ -75,6 +75,12 @@ icons = "unicode"
 # listing) are hardcoded and always available by name; default picks which
 # ones render when nothing more specific (workspace > wildcard > source >
 # this default) applies.
+#
+# With no config at all, each source previews what suits its own rows: herdr
+# shows workspace/active_pane/agent_status, workspaces and zoxide show
+# identity/dir, projects adds git. Writing default here replaces those built-in
+# per-source lists everywhere, so it stays the single obvious control; set
+# [sources.<name>].preview below to override one source on top of it.
 [preview]
 timeout = "150ms"
 cache_ttl = "5s"

@@ -359,6 +359,16 @@ max_lines = 50
 
 # Default sections to render (in order).
 # Built-in sections: "identity", "git", "workspace", "active_pane", "agent_status", "dir"
+#
+# Out of the box each source previews what describes its own rows, so you do not
+# have to configure anything: herdr workspaces show tabs, the active pane and
+# agent status; `workspaces` and zoxide directories show identity and a directory
+# listing; projects adds git. Sessions always show session info.
+#
+# Setting `default` here replaces those built-in per-source lists for every
+# source, so it stays a single obvious control rather than being silently
+# outranked. To change just one source, set `[sources.<name>].preview`, which
+# wins over both.
 default = ["identity", "git"]
 
 # Custom global preview commands (tokenized safely, no raw shell execution)
