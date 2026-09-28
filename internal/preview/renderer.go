@@ -253,7 +253,13 @@ func resolvePreviewNames(cfg *config.Config, cand source.Candidate) []string {
 			}
 		}
 	}
-	if names := sourcePreview(cfg, cand.Source); len(names) > 0 {
+	// A non-nil list is the source's answer, including an explicit empty one:
+	// `preview = []` means "no sections for this source" and must not fall
+	// through to a default the user did not ask for. nil means the key was
+	// absent, so normalization already supplied the built-in list for the four
+	// directory/workspace sources and only sessions and unknown sources arrive
+	// here unset.
+	if names := sourcePreview(cfg, cand.Source); names != nil {
 		return names
 	}
 	if cand.Source == config.SourceSessions {
