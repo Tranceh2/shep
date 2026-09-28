@@ -209,8 +209,16 @@ func integrationPreviewCommand(cfg *config.Config, sourceName, name string) (con
 }
 
 // resolvePreviewNames implements the documented precedence: workspace >
-// wildcard > source > default > source-specific fallback > identity fallback.
+// wildcard > source > source-specific fallback > default > identity fallback.
 // Sessions skip path-based overrides because SessionDir is display metadata.
+//
+// The source-specific fallback sits ahead of Preview.Default because a session
+// candidate carries no path, no git repository and no Herdr pane: the general
+// default sections would render an empty path and nothing else, while
+// session_info is the only section that describes a session at all. Since
+// Preview.Default is now always populated, placing the fallback after it would
+// make it unreachable for every loaded config. A user who names
+// sources.sessions.preview still wins over both.
 func resolvePreviewNames(cfg *config.Config, cand source.Candidate) []string {
 	if cand.Source != config.SourceSessions {
 		path := renderPath(cand)
@@ -248,11 +256,11 @@ func resolvePreviewNames(cfg *config.Config, cand source.Candidate) []string {
 	if names := sourcePreview(cfg, cand.Source); len(names) > 0 {
 		return names
 	}
-	if len(cfg.Preview.Default) > 0 {
-		return cfg.Preview.Default
-	}
 	if cand.Source == config.SourceSessions {
 		return []string{config.PreviewSessionInfo}
+	}
+	if len(cfg.Preview.Default) > 0 {
+		return cfg.Preview.Default
 	}
 	return []string{config.PreviewIdentity}
 }

@@ -67,7 +67,12 @@ func TestHighlight_MatchedRunesUseAccentStyle(t *testing.T) {
 	}
 }
 
-func TestHighlight_LabelOnlyMatchDoesNotHighlightProviderPath(t *testing.T) {
+// TestHighlight_LabelMatchHighlightsTheVisibleLabel covers a query that matches
+// only the label. Rows are label-first now, so the label IS the visible text and
+// the match must be accented there. The old name said the opposite, describing
+// the era when a provider row rendered its path and a label-only match had no
+// rendered rune to accent.
+func TestHighlight_LabelMatchHighlightsTheVisibleLabel(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	m.query = "café" // matches the visible provider label.
@@ -89,10 +94,10 @@ func TestHighlight_LabelOnlyMatchDoesNotHighlightProviderPath(t *testing.T) {
 	}
 }
 
-// TestHighlight_ProviderPathMatchUsesVisiblePathIndexes proves highlighting
-// rescoring follows the text rendered for an ordinary provider candidate,
-// rather than the hidden label or the label+path fuzzy haystack.
-func TestHighlight_ProviderPathMatchUsesVisiblePathIndexes(t *testing.T) {
+// TestHighlight_MatchUsesVisibleRowIndexes proves highlighting rescoring follows
+// the text the row actually renders for an ordinary provider candidate, rather
+// than the label+path fuzzy haystack used for ranking.
+func TestHighlight_MatchUsesVisibleRowIndexes(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	m.query = "com"
