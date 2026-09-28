@@ -32,6 +32,12 @@ hook:
 herdr plugin install Tranceh2/shep/contrib/herdr-plugin
 ```
 
+To install a non-default branch or ref, pass it separately with `--ref`:
+
+```sh
+herdr plugin install --ref <branch> Tranceh2/shep/contrib/herdr-plugin
+```
+
 Herdr will:
 1. Clone the repository into its managed plugin cache.
 2. Run `bash scripts/build.sh` from the plugin directory; the script compiles from the checkout into plugin-local `bin/shep` with version and commit metadata.

@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+_No unreleased changes._
+
+## v0.1.1
+
 ### Breaking
 
 - `close_on_exit` is now validated at config `Load`. Previously-ignored
@@ -22,8 +26,8 @@ All notable changes to this project are documented in this file.
 
 - `shep open --target=workspace|tab|pane` selects where a Command-only entry
   opens: `workspace` (default, unchanged behavior), `tab` (new tab in the
-  Herdr workspace shep is running inside), or `pane` (new pane split beside
-  the current one). `tab`/`pane` require shep to be running inside a Herdr
+  Herdr workspace shep is running inside), or `pane` (new pane split beside the
+  current one). `tab`/`pane` require shep to be running inside a Herdr
   workspace pane and only support Command-only entries.
 - TUI keybindings `Ctrl+T` (open as new tab) and `Ctrl+P` (open as new pane)
   mirror `--target=tab`/`--target=pane` from the interactive picker; `Enter`
@@ -31,6 +35,14 @@ All notable changes to this project are documented in this file.
 - `close_on_exit` now also works on a workspace top-level `command`
   (`[[workspaces]]` with `command = "..."`) and on a simple-command
   `[templates.<name>]` (no `tabs`), not just on template leaf nodes.
+- Herdr plugin builds now honor `HERDR_BIN_PATH` and resolve the Herdr
+  executable from the plugin runtime environment instead of silently dropping
+  the Herdr source when the host starts plugins with a minimal `PATH`.
+- First-run picker presentation now uses a 35/65 list/preview split, label-first
+  rows, per-source Nerd Font icons, and source-specific preview sections:
+  Herdr rows show workspace, active pane, and agent status; workspaces and
+  zoxide show identity and directory; projects show identity, Git, and
+  directory content.
 
 ### Changed
 
@@ -47,4 +59,13 @@ All notable changes to this project are documented in this file.
   cross-label collisions when two `[[workspaces]]` entries share the same
   `path` (a CWD-only match could previously focus the wrong entry's
   workspace).
+- Session previews now apply the session-specific fallback before the global
+  default, while an explicit per-source session preview remains authoritative.
+  Explicit empty preview lists are preserved as an intentional request for no
+  sections instead of being replaced by defaults.
+- Errors from Cobra command dispatch and raw `RunE` failures now reach stderr
+  with an actionable message while preserving existing exit codes. Deliberate
+  quiet paths, including cancelled picker runs and sanitized jump-back
+  diagnostics, remain quiet.
+
 </content>
