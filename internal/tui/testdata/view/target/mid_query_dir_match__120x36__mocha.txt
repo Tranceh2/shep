@@ -1,7 +1,7 @@
 SHEP  ● all   agents (0)                                                                                          1 of 3
 ⌕ alpha
 ╭────────────────────────────────────────────────────────────────╮ ╭ PREVIEW · alpha-dir ──────────────────────────────╮
-│ ❯ /home/dev/alpha-dir                                          │ │ label  alpha-dir                                  │
+│ ❯ alpha-dir                                                    │ │ label  alpha-dir                                  │
 │                                                                │ │ path   /home/dev/alpha-dir                        │
 │                                                                │ │ source zoxide                                     │
 │                                                                │ │                                                   │

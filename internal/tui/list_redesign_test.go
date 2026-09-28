@@ -15,9 +15,9 @@ import (
 //  1. A RowPane's fixed-width ancestor-continuation column (the "│ "
 //     vertical bar) aligns with its parent tab's branch, while its own tree
 //     glyph is one level deeper.
-//  2. Only synthesized Herdr workspace/tab/pane rows use
-//     "<label> · <path>". Ordinary provider candidates show their path only;
-//     RowTab and RowPane have no trailing secondary context.
+//  2. Built-in provider rows are label-first, with a path fallback for
+//     unlabeled candidates. Synthesized Herdr tab/pane rows still use
+//     "<label> · <path>" for their nested context.
 //  3. Fuzzy match visibility already works on both Label and Path for every
 //     row kind via candidateHaystack — locked in here as a regression test.
 //  4. The list pane's leading structural gutter/marker reservation shrinks
@@ -150,7 +150,7 @@ func TestRowPrimaryText_RowCandidate_PathOnly(t *testing.T) {
 		t.Errorf("rowPrimaryText(candidate) = %q, want %q", primary, want)
 	}
 	if strings.Contains(primary, "◆ backend") || strings.Contains(primary, labelPathSeparator) {
-		t.Errorf("rowPrimaryText(candidate) must render provider path only, got %q", primary)
+		t.Errorf("rowPrimaryText(candidate) must use the path fallback without a separator, got %q", primary)
 	}
 }
 
@@ -177,14 +177,14 @@ func TestRowPrimaryText_RowCandidate_HerdrLabelComposition(t *testing.T) {
 		want string
 	}{
 		{
-			name: "labeled Herdr workspace composes label and path",
+			name: "labeled Herdr workspace keeps its label",
 			row: Row{Kind: RowCandidate, Candidate: source.Candidate{
 				Source: config.SourceHerdr,
 				Label:  "backend",
 				Path:   "/srv/backend",
 				Icon:   "◆",
 			}},
-			want: "◆ backend · /srv/backend",
+			want: "◆ backend",
 		},
 		{
 			name: "unlabeled Herdr workspace keeps path only",
@@ -196,14 +196,14 @@ func TestRowPrimaryText_RowCandidate_HerdrLabelComposition(t *testing.T) {
 			want: "◆ /srv/backend",
 		},
 		{
-			name: "labeled ordinary provider keeps path only",
+			name: "labeled ordinary provider keeps its label",
 			row: Row{Kind: RowCandidate, Candidate: source.Candidate{
 				Source: config.SourceZoxide,
 				Label:  "backend",
 				Path:   "/srv/backend",
 				Icon:   "◆",
 			}},
-			want: "◆ /srv/backend",
+			want: "◆ backend",
 		},
 		{
 			name: "labeled Herdr workspace preserves missing suffix",
@@ -214,7 +214,7 @@ func TestRowPrimaryText_RowCandidate_HerdrLabelComposition(t *testing.T) {
 				Icon:    "◆",
 				Missing: true,
 			}},
-			want: "◆ backend · /srv/backend (missing)",
+			want: "◆ backend (missing)",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

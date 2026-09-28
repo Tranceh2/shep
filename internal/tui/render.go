@@ -338,8 +338,8 @@ const (
 )
 
 // rowPart is one styled segment of a row line. Most rows have a single part;
-// SourceZoxide/SourceProjects rows with a full-path label get a second dim
-// part for the shortened parent path.
+// source rows may use a second dim part when a renderer supplies secondary
+// context.
 type rowPart struct {
 	text           string
 	style          lipgloss.Style
@@ -408,28 +408,27 @@ func (m Model) rowLineParts(row Row) []rowPart {
 }
 
 // highlightedRowRunes reports which runes of rawText (a RowCandidate's full
-// marker+prefix+visible-path text) should render with the query accent, and
+// marker+prefix+visible row text) should render with the query accent, and
 // returns rawText itself unchanged as the first result for convenience.
 //
 // It deliberately does NOT reuse row.MatchedIndexes for this: those indexes
 // are scored by fuzzyMatch against candidateHaystack (Label+" "+Path) for
-// visibility and ranking. Ordinary provider candidates render only their path,
-// so highlighting must rescore the visible path alone. A label-only match
-// remains visible but has no corresponding rendered rune to accent; returning
-// false prevents it from coloring unrelated path characters.
+// visibility and ranking. Highlighting must rescore the text the row actually
+// renders, which is now label-first for the built-in directory sources.
 func (m Model) highlightedRowRunes(row Row, fixedPrefixRunes int, rawText string) (string, []bool, bool) {
-	path := []rune(row.Candidate.Path)
-	if len(path) == 0 {
+	runes := []rune(rawText)
+	if fixedPrefixRunes >= len(runes) {
 		return "", nil, false
 	}
-	_, pathIndexes := fuzzy.Score(m.query, string(path))
-	if len(pathIndexes) == 0 {
+	visible := string(runes[fixedPrefixRunes:])
+	_, visibleIndexes := fuzzy.Score(m.query, visible)
+	if len(visibleIndexes) == 0 {
 		return "", nil, false
 	}
 
-	matched := make(map[int]bool, len(pathIndexes))
-	for _, index := range pathIndexes {
-		if index >= 0 && index < len(path) {
+	matched := make(map[int]bool, len(visibleIndexes))
+	for _, index := range visibleIndexes {
+		if index >= 0 && index < len(runes)-fixedPrefixRunes {
 			matched[fixedPrefixRunes+index] = true
 		}
 	}
@@ -437,7 +436,6 @@ func (m Model) highlightedRowRunes(row Row, fixedPrefixRunes int, rawText string
 		return "", nil, false
 	}
 
-	runes := []rune(rawText)
 	highlighted := make([]bool, len(runes))
 	for index := range runes {
 		highlighted[index] = matched[index]
@@ -715,14 +713,14 @@ func (m Model) isActiveFocusRow(row Row) bool {
 	}
 }
 
-// labelPathSeparator and the three default formats intentionally match
-// config.normalizeLabelFormats. They preserve current output for direct
-// zero-value Layout callers, which do not carry a loaded config.
+// The default formats intentionally match config.normalizeLabelFormats. They
+// apply to direct zero-value Layout callers, which do not carry a loaded config.
 const (
-	labelPathSeparator         = " · "
-	defaultLabelWithPathFormat = "{{if .Label}}{{.Label}}" + labelPathSeparator + "{{end}}{{.Path}}"
-	defaultPathLabelFormat     = "{{.Path}}"
-	defaultLabelOnlyFormat     = "{{.Label}}"
+	labelPathSeparator                 = " · "
+	defaultLabelWithPathFormat         = "{{if .Label}}{{.Label}}" + labelPathSeparator + "{{end}}{{.Path}}"
+	defaultLabelWithPathFallbackFormat = "{{if .Label}}{{.Label}}{{else}}{{.Path}}{{end}}"
+	defaultPathLabelFormat             = "{{.Path}}"
+	defaultLabelOnlyFormat             = "{{.Label}}"
 )
 
 // tabLabelPortion resolves a RowTab's label text for the unified primary
@@ -777,8 +775,7 @@ func (m Model) rowLabelFormat(row Row) string {
 		// A declared [[integrations]] source resolves its own configured (or
 		// config.Load-defaulted) label_format via the open-ended Integrations
 		// map. Any other/unknown source (a direct --path candidate, or a
-		// synthesized candidate built directly in Go) keeps the historical
-		// path-only fallback.
+		// synthesized candidate built directly in Go) keeps a safe path fallback.
 		if format, ok := formats.Integrations[row.Candidate.Source]; ok && format != "" {
 			return format
 		}

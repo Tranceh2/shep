@@ -1,13 +1,13 @@
 SHEP  ● all   agents (0)                                                                                    7 candidates
 ⌕ type to filter…
 ╭────────────────────────────────────────────────────────────────╮ ╭ PREVIEW · backend ────────────────────────────────╮
-│ ❯ backend · /srv/backend                                       │ │ label  backend                                    │
-│   frontend · /srv/frontend                                     │ │ path   /srv/backend                               │
+│ ❯ backend                                                      │ │ label  backend                                    │
+│   frontend                                                     │ │ path   /srv/backend                               │
 │   notes                                                        │ │                                                   │
-│   /tmp                                                         │ │                                                   │
-│   /home/dev/Downloads                                          │ │                                                   │
-│   /home/dev/shep                                               │ │                                                   │
-│   /home/dev/dotfiles                                           │ │                                                   │
+│   tmp                                                          │ │                                                   │
+│   Downloads                                                    │ │                                                   │
+│   shep                                                         │ │                                                   │
+│   dotfiles                                                     │ │                                                   │
 │                                                                │ │                                                   │
 │                                                                │ │                                                   │
 │                                                                │ │                                                   │
