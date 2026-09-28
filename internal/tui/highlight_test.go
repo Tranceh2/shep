@@ -48,8 +48,16 @@ func TestHighlight_MatchedRunesUseAccentStyle(t *testing.T) {
 		t.Fatal("matched runes were not rendered with per-rune styling")
 	}
 
+	// Rows are label-first now, so the visible text is the label "alpha" rather
+	// than the path, and the query accents the two runes it matches there. The
+	// point of this test is that those runes render with the accent style while
+	// the rest keeps the base style; asserting a single base-styled string would
+	// pass while proving nothing, because an uncolored profile renders every
+	// style identically.
 	base := m.styles.rowStyle
-	want := base.Render("alpha")
+	accent := m.styles.queryStyle
+	want := base.Render("a") + base.Render("l") + base.Render("p") +
+		accent.Render("h") + accent.Render("a")
 	// renderHighlighted (not a pre-rendered parts[0].text — rendering is now
 	// deferred to display time so truncation can protect the fixed prefix;
 	// see rowPart.renderHighlighted) with maxW<=0 renders the full,
@@ -59,7 +67,12 @@ func TestHighlight_MatchedRunesUseAccentStyle(t *testing.T) {
 	}
 }
 
-func TestHighlight_LabelOnlyMatchDoesNotHighlightProviderPath(t *testing.T) {
+// TestHighlight_LabelMatchHighlightsTheVisibleLabel covers a query that matches
+// only the label. Rows are label-first now, so the label IS the visible text and
+// the match must be accented there. The old name said the opposite, describing
+// the era when a provider row rendered its path and a label-only match had no
+// rendered rune to accent.
+func TestHighlight_LabelMatchHighlightsTheVisibleLabel(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	m.query = "café" // matches the visible provider label.
@@ -81,10 +94,10 @@ func TestHighlight_LabelOnlyMatchDoesNotHighlightProviderPath(t *testing.T) {
 	}
 }
 
-// TestHighlight_ProviderPathMatchUsesVisiblePathIndexes proves highlighting
-// rescoring follows the text rendered for an ordinary provider candidate,
-// rather than the hidden label or the label+path fuzzy haystack.
-func TestHighlight_ProviderPathMatchUsesVisiblePathIndexes(t *testing.T) {
+// TestHighlight_MatchUsesVisibleRowIndexes proves highlighting rescoring follows
+// the text the row actually renders for an ordinary provider candidate, rather
+// than the label+path fuzzy haystack used for ranking.
+func TestHighlight_MatchUsesVisibleRowIndexes(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	m.query = "com"

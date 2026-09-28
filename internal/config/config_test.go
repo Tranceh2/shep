@@ -344,8 +344,8 @@ func TestSessionsSource_OptInRegistration(t *testing.T) {
 	if got, want := defaults.Sources.Sessions.LabelFormat, "{{.Label}}"; got != want {
 		t.Errorf("sessions label format = %q, want %q", got, want)
 	}
-	if got, want := defaults.Sources.Sessions.Preview, []string{PreviewSessionInfo}; !reflect.DeepEqual(got, want) {
-		t.Errorf("sessions preview = %v, want %v", got, want)
+	if got := defaults.Sources.Sessions.Preview; len(got) != 0 {
+		t.Errorf("sessions preview = %v, want unset", got)
 	}
 
 	path := filepath.Join(t.TempDir(), "config.toml")
@@ -379,6 +379,23 @@ func TestDefaults_VisualDefaults(t *testing.T) {
 	t.Parallel()
 
 	cfg := Defaults()
+	for _, tc := range []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: SourceHerdr, got: cfg.Sources.Herdr.Icon, want: "\U000f0cc6 "},
+		{name: SourceWorkspaces, got: cfg.Sources.Workspaces.Icon, want: "\ue615 "},
+		{name: SourceZoxide, got: cfg.Sources.Zoxide.Icon, want: "\uf114 "},
+		{name: SourceProjects, got: cfg.Sources.Projects.Icon, want: "\ue702 "},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s icon = %q, want %q", tc.name, tc.got, tc.want)
+		}
+	}
+	if got := cfg.Sources.Sessions.Icon; got != "" {
+		t.Errorf("sessions icon = %q, want empty (sessions has no default icon)", got)
+	}
 	if got, want := cfg.Preview.Default, []string{PreviewAgentStatus, PreviewIdentity, PreviewGit}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("preview default sections = %v, want %v", got, want)
 	}
@@ -420,6 +437,46 @@ func TestLoad_MissingFileFallsBackToDefaults(t *testing.T) {
 	}
 	if got, want := cfg.TUI.PreviewWidth, "65%"; got != want {
 		t.Errorf("tui preview_width: got %q want %q", got, want)
+	}
+	for _, tc := range []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: SourceHerdr, got: cfg.Sources.Herdr.Icon, want: "\U000f0cc6 "},
+		{name: SourceWorkspaces, got: cfg.Sources.Workspaces.Icon, want: "\ue615 "},
+		{name: SourceZoxide, got: cfg.Sources.Zoxide.Icon, want: "\uf114 "},
+		{name: SourceProjects, got: cfg.Sources.Projects.Icon, want: "\ue702 "},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s icon: got %q want %q", tc.name, tc.got, tc.want)
+		}
+	}
+}
+
+func TestLoad_PresentConfigWithoutSourcesUsesSourceIconDefaults(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("version = 2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: SourceHerdr, got: cfg.Sources.Herdr.Icon, want: "\U000f0cc6 "},
+		{name: SourceWorkspaces, got: cfg.Sources.Workspaces.Icon, want: "\ue615 "},
+		{name: SourceZoxide, got: cfg.Sources.Zoxide.Icon, want: "\uf114 "},
+		{name: SourceProjects, got: cfg.Sources.Projects.Icon, want: "\ue702 "},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s icon = %q, want %q", tc.name, tc.got, tc.want)
+		}
 	}
 }
 
@@ -463,6 +520,44 @@ func TestLoad_PartialVisualDefaultsAndExplicitOverrides(t *testing.T) {
 				t.Fatalf("preview.default = %v, want %v", cfg.Preview.Default, tt.wantSections)
 			}
 		})
+	}
+}
+
+func TestLoad_ExplicitSourceIconsWin(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	const doc = `[sources.herdr]
+icon = "H "
+
+[sources.workspaces]
+icon = "W "
+
+[sources.zoxide]
+icon = "Z "
+
+[sources.projects]
+icon = "P "
+`
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: SourceHerdr, got: cfg.Sources.Herdr.Icon, want: "H "},
+		{name: SourceWorkspaces, got: cfg.Sources.Workspaces.Icon, want: "W "},
+		{name: SourceZoxide, got: cfg.Sources.Zoxide.Icon, want: "Z "},
+		{name: SourceProjects, got: cfg.Sources.Projects.Icon, want: "P "},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s icon = %q, want %q", tc.name, tc.got, tc.want)
+		}
 	}
 }
 

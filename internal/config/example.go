@@ -95,15 +95,15 @@ icon = "󰳆 "
 preview = ["workspace", "active_pane"]
 
 [sources.workspaces]
-icon = " "
+icon = " "
 preview = ["identity", "dir"]
 
 [sources.zoxide]
-icon = " "
+icon = " "
 preview = ["identity", "dir"]
 
 [sources.projects]
-icon = " "
+icon = " "
 # recursive/max_depth bound how deep the projects source scans beneath a
 # group workspace's path. markers can be a file or a directory name; a
 # directory containing any of them is a project. ignore skips noisy

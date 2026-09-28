@@ -105,6 +105,13 @@ const (
 	defaultTUIPreviewWidth = "65%"
 )
 
+const (
+	defaultHerdrSourceIcon      = "\U000f0cc6 "
+	defaultWorkspacesSourceIcon = "\ue615 "
+	defaultZoxideSourceIcon     = "\uf114 "
+	defaultProjectsSourceIcon   = "\ue702 "
+)
+
 // Config is the top-level shep configuration document.
 type Config struct {
 	Version  int            `toml:"version,omitempty"`
@@ -391,9 +398,10 @@ func (d *Duration) UnmarshalText(text []byte) error {
 
 // PreviewConfig configures the workspace preview rendered in the Bubble Tea
 // selector and `shep preview <path>`. Default lists the section names shown
-// when nothing more specific (workspace > wildcard > source > default)
-// applies; Commands declares custom preview commands referenced by name from
-// any `preview = [...]` list alongside the hardcoded built-ins.
+// when nothing more specific (workspace > wildcard > source) applies; a source
+// may provide its own last-resort fallback after Default. Commands declares
+// custom preview commands referenced by name from any `preview = [...]` list
+// alongside the hardcoded built-ins.
 type PreviewConfig struct {
 	Timeout  Duration                  `toml:"timeout,omitempty"`
 	CacheTTL Duration                  `toml:"cache_ttl,omitempty"`
@@ -575,6 +583,7 @@ func Defaults() *Config {
 	normalizeTUI(&cfg.TUI)
 	normalizePreview(&cfg.Preview)
 	normalizeLabelFormats(&cfg.Sources)
+	normalizeSourceIcons(&cfg.Sources)
 	return cfg
 }
 
@@ -672,6 +681,7 @@ func Load(path string) (*Config, error) {
 	normalizeTUI(&cfg.TUI)
 	normalizePreview(&cfg.Preview)
 	normalizeLabelFormats(&cfg.Sources)
+	normalizeSourceIcons(&cfg.Sources)
 	normalizeAliases(cfg)
 	normalizeIntegrations(cfg.Integrations, cfg.Preview)
 
@@ -764,13 +774,19 @@ func normalizePreview(p *PreviewConfig) {
 	if p.MaxLines == 0 {
 		p.MaxLines = defaultPreviewMaxLines
 	}
-	if len(p.Default) == 0 {
+	// nil means the document never mentioned preview.default; an explicit
+	// `default = []` decodes to an empty non-nil slice and is a deliberate
+	// request for no default sections, so it must survive normalization. Testing
+	// length instead of nil would silently overwrite that choice — the same
+	// defect this package just fixed for sources.sessions.preview.
+	if p.Default == nil {
 		p.Default = append([]string(nil), defaultPreviewSections...)
 	}
 }
 
-// normalizeLabelFormats fills empty format fields with the first-run rendering
-// defaults so callers never need to interpret an empty value as a default.
+// normalizeLabelFormats fills empty label format fields with the first-run
+// rendering defaults. Preview lists remain empty when unset so the renderer can
+// distinguish an omitted source preview from an explicitly configured list.
 func normalizeLabelFormats(s *SourcesConfig) {
 	const (
 		labelWithPath         = "{{if .Label}}{{.Label}} · {{end}}{{.Path}}"
@@ -790,9 +806,6 @@ func normalizeLabelFormats(s *SourcesConfig) {
 	if s.Sessions.LabelFormat == "" {
 		s.Sessions.LabelFormat = labelOnly
 	}
-	if len(s.Sessions.Preview) == 0 {
-		s.Sessions.Preview = []string{PreviewSessionInfo}
-	}
 	if s.Workspaces.LabelFormat == "" {
 		s.Workspaces.LabelFormat = labelOnly
 	}
@@ -801,6 +814,25 @@ func normalizeLabelFormats(s *SourcesConfig) {
 	}
 	if s.Projects.LabelFormat == "" {
 		s.Projects.LabelFormat = labelWithPathFallback
+	}
+}
+
+// normalizeSourceIcons fills absent built-in source icons with Nerd Font
+// defaults. Empty strings cannot distinguish omission from an explicit empty
+// TOML value, so an explicit empty icon is treated as omitted and receives the
+// documented default.
+func normalizeSourceIcons(s *SourcesConfig) {
+	if s.Herdr.Icon == "" {
+		s.Herdr.Icon = defaultHerdrSourceIcon
+	}
+	if s.Workspaces.Icon == "" {
+		s.Workspaces.Icon = defaultWorkspacesSourceIcon
+	}
+	if s.Zoxide.Icon == "" {
+		s.Zoxide.Icon = defaultZoxideSourceIcon
+	}
+	if s.Projects.Icon == "" {
+		s.Projects.Icon = defaultProjectsSourceIcon
 	}
 }
 

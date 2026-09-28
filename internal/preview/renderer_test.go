@@ -131,6 +131,7 @@ func TestRender_SessionInfoRendersOnlyCandidateMetadata(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := config.Defaults()
+			cfg.Sources.Sessions.Preview = []string{config.PreviewSessionInfo}
 			cand := source.Candidate{Path: "/must-not-be-read", Label: tt.meta["session_name"], Source: config.SourceSessions, Meta: tt.meta}
 			got := mustRender(t, NewRenderer(cfg, config.Probes{}, nil, nil), cand)
 			if got != tt.want {
@@ -382,9 +383,76 @@ func TestRender_AllConfiguredSectionsFailFallsBackToIdentity(t *testing.T) {
 	}
 }
 
-// TestResolvePreviewNames_Precedence exercises the documented precedence
-// chain end to end: workspace.preview > wildcard.preview >
-// sources.<source>.preview > preview.default > built-in fallback.
+// TestResolvePreviewNames_SessionsKeepTheirOwnFallback locks the outcome that a
+// session candidate previews as session_info for an ordinary loaded config.
+//
+// This is a regression guard with real history: the sessions fallback was first
+// placed AFTER Preview.Default, which looked correct in isolation but became
+// unreachable the moment Preview.Default gained a built-in value — every loaded
+// config then rendered a session as an empty path instead. A session carries no
+// path, no git repository and no Herdr pane, so the general sections describe
+// nothing; only an explicit sources.sessions.preview may override it.
+func TestResolvePreviewNames_SessionsKeepTheirOwnFallback(t *testing.T) {
+	t.Parallel()
+
+	load := func(t *testing.T, body string) *config.Config {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "config.toml")
+		if err := os.WriteFile(path, []byte("version = 2\n"+body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := config.Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}
+	session := source.Candidate{Source: config.SourceSessions, Label: "alpha"}
+
+	t.Run("a loaded config with no preview settings", func(t *testing.T) {
+		t.Parallel()
+		got := resolvePreviewNames(load(t, ""), session)
+		if len(got) != 1 || got[0] != config.PreviewSessionInfo {
+			t.Fatalf("sections = %v, want [%s]", got, config.PreviewSessionInfo)
+		}
+	})
+
+	t.Run("an explicit sessions preview still wins", func(t *testing.T) {
+		t.Parallel()
+		cfg := load(t, "[sources.sessions]\npreview = [\""+config.PreviewDir+"\"]\n")
+		got := resolvePreviewNames(cfg, session)
+		if len(got) != 1 || got[0] != config.PreviewDir {
+			t.Fatalf("sections = %v, want [%s]", got, config.PreviewDir)
+		}
+	})
+}
+
+// TestLoadedConfig_ExplicitEmptyPreviewDefaultDisablesTheDefault proves an
+// explicit `default = []` survives normalization. TOML decodes an omitted key to
+// nil and an empty array to an empty non-nil slice, so normalization must test
+// nil rather than length or it silently overwrites a deliberate choice.
+func TestLoadedConfig_ExplicitEmptyPreviewDefaultDisablesTheDefault(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("version = 2\n[preview]\ndefault = []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Preview.Default) != 0 {
+		t.Fatalf("explicit empty preview.default was overwritten with %v", cfg.Preview.Default)
+	}
+	got := resolvePreviewNames(cfg, source.Candidate{Source: config.SourceZoxide, Path: "/tmp"})
+	if len(got) != 1 || got[0] != config.PreviewIdentity {
+		t.Fatalf("sections = %v, want the bare [%s] fallback", got, config.PreviewIdentity)
+	}
+}
+
+// TestResolvePreviewNames_Precedence exercises the documented precedence chain
+// end to end: workspace.preview > wildcard.preview > sources.<source>.preview >
+// source-specific fallback > preview.default > built-in identity fallback.
 func TestResolvePreviewNames_Precedence(t *testing.T) {
 	t.Parallel()
 
