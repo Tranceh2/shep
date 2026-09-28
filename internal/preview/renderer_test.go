@@ -383,9 +383,6 @@ func TestRender_AllConfiguredSectionsFailFallsBackToIdentity(t *testing.T) {
 	}
 }
 
-// TestResolvePreviewNames_Precedence exercises the documented precedence
-// chain end to end: workspace.preview > wildcard.preview >
-// sources.<source>.preview > preview.default > built-in fallback.
 // TestResolvePreviewNames_SessionsKeepTheirOwnFallback locks the outcome that a
 // session candidate previews as session_info for an ordinary loaded config.
 //
@@ -453,6 +450,9 @@ func TestLoadedConfig_ExplicitEmptyPreviewDefaultDisablesTheDefault(t *testing.T
 	}
 }
 
+// TestResolvePreviewNames_Precedence exercises the documented precedence chain
+// end to end: workspace.preview > wildcard.preview > sources.<source>.preview >
+// source-specific fallback > preview.default > built-in identity fallback.
 func TestResolvePreviewNames_Precedence(t *testing.T) {
 	t.Parallel()
 
