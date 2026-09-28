@@ -43,20 +43,23 @@ func (e *reportedExitError) Error() string { return e.err.Error() }
 
 func (e *reportedExitError) Unwrap() error { return e.err }
 
-// ExitCode delegates to the wrapped error's ExitCoder implementation, so both
-// a direct err.(ExitCoder) assertion and unwrap-aware consumers (errors.As
-// via ExitCode, below) observe the same documented code through the
-// reportedExitError wrapper. Without this method, a bare type assertion on a
-// markReported error would miss ExitCoder entirely: errors.As only walks
-// Unwrap chains, but a caller that type-asserts err.(ExitCoder) directly
-// (bypassing errors.As) would see no ExitCode() method on
+// ExitCode delegates to the package-level ExitCode helper on the wrapped
+// error, so both a direct err.(ExitCoder) assertion and unwrap-aware
+// consumers (errors.As via ExitCode, below) observe the same code through
+// the reportedExitError wrapper. Without this method, a bare type assertion
+// on a markReported error would miss ExitCoder entirely: errors.As only
+// walks Unwrap chains, but a caller that type-asserts err.(ExitCoder)
+// directly (bypassing errors.As) would see no ExitCode() method on
 // *reportedExitError and silently fall through to a wrong/default code.
+//
+// Delegating to ExitCode(e.err) — rather than returning 0 when e.err is not
+// itself an ExitCoder — matters because reportedExitError always wraps a
+// non-nil error (markReported short-circuits nil). A wrapped plain error is
+// still an ordinary failure and must report the package's non-zero failure
+// code (currently 1), never 0: returning 0 here would make a reported
+// failure look like success to any caller that stops at this wrapper.
 func (e *reportedExitError) ExitCode() int {
-	var ec ExitCoder
-	if errors.As(e.err, &ec) {
-		return ec.ExitCode()
-	}
-	return 0
+	return ExitCode(e.err)
 }
 
 // reportedToUser marks errors whose command path already emitted a

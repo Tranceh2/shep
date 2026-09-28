@@ -196,6 +196,14 @@ func TestRunWatchHistory_SecondOwnerRefusesWithoutDisturbingIncumbent(t *testing
 // that cannot start (no HERDR_SOCKET_PATH) exited 1 printing nothing at all.
 // A plugin startup hook that fails silently is undiagnosable, so the command
 // must print its own sanitized reason.
+//
+// It is also the regression guard for the reportedExitError plain-error bug
+// on this second reachable path: resolveSessionPaths returns a plain
+// errors.New (not an ExitCoder), so markReported(err) in the "fail" closure
+// exercises the same wrapper the open.go template-failure path does.
+// ExitCode must report the package's ordinary failure code (1), never 0, and
+// a direct ExitCoder assertion must agree — matching how cmd/shep/main.go
+// derives the process exit status.
 func TestWatchHistoryCmd_ReportsStartupFailureToStderr(t *testing.T) {
 	var errOut bytes.Buffer
 	app := New(WithStreams(&bytes.Buffer{}, &errOut))
@@ -214,6 +222,16 @@ func TestWatchHistoryCmd_ReportsStartupFailureToStderr(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "watch-history:") {
 		t.Fatalf("stderr = %q, want a watch-history-prefixed diagnostic", errOut.String())
+	}
+	if got := ExitCode(err); got != 1 {
+		t.Fatalf("ExitCode(err) = %d, want 1 (plain error wrapped by markReported must never report 0)", got)
+	}
+	ec, ok := err.(ExitCoder)
+	if !ok {
+		t.Fatal("markReported(err) must satisfy ExitCoder directly (cmd/shep/main.go asserts this via ExitCode)")
+	}
+	if got := ec.ExitCode(); got != 1 {
+		t.Fatalf("direct err.(ExitCoder).ExitCode() = %d, want 1", got)
 	}
 
 	// The follow-up fix (markReported on the "fail" closure's return) must
