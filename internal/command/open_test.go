@@ -1081,6 +1081,15 @@ func TestOpen_TemplateSkippedOnFocusedWorkspace(t *testing.T) {
 // TestOpen_TemplateFailureReturnsErrorAfterWarning: a failing template
 // application preserves its warning and non-transactional side effects while
 // returning a failure so the selection is not recorded as successful.
+//
+// This is also the regression guard for the reportedExitError plain-error
+// bug: templates.Apply's failure here is a plain, non-ExitCoder error (from
+// applyLayoutErr, wrapped only by fmt.Errorf in templates.Apply), so
+// markReported(applyErr) in launchWorkspace exercises exactly the path that
+// used to silently coerce to exit code 0. ExitCode must report the package's
+// ordinary failure code (1), and cmd.Execute()'s own return value —
+// asserted directly via ExitCoder, matching how cmd/shep/main.go derives the
+// process exit status — must agree.
 func TestOpen_TemplateFailureReturnsErrorAfterWarning(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Templates["default"] = config.TemplateConfig{Command: "boom"}
@@ -1099,11 +1108,27 @@ func TestOpen_TemplateFailureReturnsErrorAfterWarning(t *testing.T) {
 	app.probes = config.Probes{Herdr: true, Git: true}
 	cmd := app.rootCmd()
 	cmd.SetArgs([]string{"open", "--path", dir})
-	if err := cmd.Execute(); err == nil {
+	err := cmd.Execute()
+	if err == nil {
 		t.Fatal("open should fail when template application fails")
 	}
 	if !strings.Contains(errOut.String(), "template failed") {
 		t.Errorf("stderr = %q, want 'template failed'", errOut.String())
+	}
+	if got := ExitCode(err); got != 1 {
+		t.Fatalf("ExitCode(err) = %d, want 1 (plain error wrapped by markReported must never report 0)", got)
+	}
+	ec, ok := err.(ExitCoder)
+	if !ok {
+		t.Fatal("markReported(applyErr) must satisfy ExitCoder directly (cmd/shep/main.go asserts this via ExitCode)")
+	}
+	if got := ec.ExitCode(); got != 1 {
+		t.Fatalf("direct err.(ExitCoder).ExitCode() = %d, want 1", got)
+	}
+	app.reportUnhandledError(err)
+	lines := strings.Split(strings.TrimRight(errOut.String(), "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("stderr = %q, want exactly one line after reportUnhandledError, got %d", errOut.String(), len(lines))
 	}
 }
 
