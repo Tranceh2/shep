@@ -1942,7 +1942,7 @@ func TestExampleTOML_MatchesCanonicalModel(t *testing.T) {
 			t.Errorf("ExampleTOML missing %q", want)
 		}
 	}
-	for _, bad := range []string{"[layouts", "kind =", "provider_order", "/Users/", "Proyectos"} {
+	for _, bad := range []string{"[layouts", "kind =", "provider_order", "/Users/", "Proyectos", "default = ["} {
 		if strings.Contains(got, bad) {
 			t.Errorf("ExampleTOML must not contain %q:\n%s", bad, got)
 		}
@@ -1953,8 +1953,100 @@ func TestExampleTOML_MatchesCanonicalModel(t *testing.T) {
 	if err := os.WriteFile(path, []byte(got), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Load(path); err != nil {
+	cfg, err := Load(path)
+	if err != nil {
 		t.Fatalf("generated example must load cleanly: %v", err)
+	}
+	if !cfg.Ranking.Enabled {
+		t.Error("example config must load with ranking.enabled = true")
+	}
+	// Load() normalizes an absent preview.default to the generic fallback list,
+	// so nil/absent must be checked against the raw document, not the loaded
+	// Config. Decoding into a bare map[string]any surfaces exactly what the
+	// example document itself declared.
+	var raw map[string]any
+	if err := toml.Unmarshal([]byte(got), &raw); err != nil {
+		t.Fatalf("decode raw example toml: %v", err)
+	}
+	if preview, ok := raw["preview"].(map[string]any); ok {
+		if _, hasDefault := preview["default"]; hasDefault {
+			t.Errorf("example config must not set [preview].default, got %v", preview["default"])
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		got  []string
+		want []string
+	}{
+		{name: "herdr", got: cfg.Sources.Herdr.Preview, want: []string{PreviewWorkspace, PreviewActivePane, PreviewAgentStatus}},
+		{name: "workspaces", got: cfg.Sources.Workspaces.Preview, want: []string{PreviewIdentity, PreviewDir}},
+		{name: "zoxide", got: cfg.Sources.Zoxide.Preview, want: []string{PreviewIdentity, PreviewDir}},
+		{name: "projects", got: cfg.Sources.Projects.Preview, want: []string{PreviewIdentity, PreviewGit, PreviewDir}},
+	} {
+		if !reflect.DeepEqual(tc.got, tc.want) {
+			t.Errorf("sources.%s.preview = %v, want %v", tc.name, tc.got, tc.want)
+		}
+	}
+}
+
+// TestTrackedExamplesConfigTOML_LoadsWithIntendedContract proves the tracked
+// examples/config.toml (the practical first-run example README links to, as
+// distinct from the canonical document ExampleTOML() generates for shep init)
+// both parses and carries its documented contract: adaptive ranking on, a
+// responsive TUI (no explicit layout) with the shipped 35/65 split, no
+// [preview].default global override, and the exact shipped per-source preview
+// lists spelled out per source.
+func TestTrackedExamplesConfigTOML_LoadsWithIntendedContract(t *testing.T) {
+	t.Parallel()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "examples", "config.toml"))
+	if err != nil {
+		t.Fatalf("read tracked examples/config.toml: %v", err)
+	}
+	// Load with an explicit path never consults DiscoverPath, so loading the
+	// isolated temporary copy exercises exactly this document and cannot touch
+	// the operator's real HOME, XDG state, or ranking store.
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("tracked examples/config.toml must load cleanly: %v", err)
+	}
+	if !cfg.Ranking.Enabled {
+		t.Error("examples/config.toml must enable ranking.enabled")
+	}
+	if cfg.TUI.Layout != "" {
+		t.Errorf(`examples/config.toml must leave [tui].layout empty for the responsive default, got %q`, cfg.TUI.Layout)
+	}
+	if cfg.TUI.ListWidth != "35%" || cfg.TUI.PreviewWidth != "65%" {
+		t.Errorf("examples/config.toml must ship the 35/65 split, got list_width %q preview_width %q", cfg.TUI.ListWidth, cfg.TUI.PreviewWidth)
+	}
+	// Load() normalizes an absent preview.default to the generic fallback list,
+	// so the absence contract is pinned against the raw document bytes, not the
+	// loaded Config.
+	var doc map[string]any
+	if err := toml.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("decode raw examples/config.toml: %v", err)
+	}
+	if preview, ok := doc["preview"].(map[string]any); ok {
+		if v, present := preview["default"]; present {
+			t.Errorf("examples/config.toml must not set [preview].default, got %v", v)
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		got  []string
+		want []string
+	}{
+		{name: "herdr", got: cfg.Sources.Herdr.Preview, want: []string{PreviewWorkspace, PreviewActivePane, PreviewAgentStatus}},
+		{name: "workspaces", got: cfg.Sources.Workspaces.Preview, want: []string{PreviewIdentity, PreviewDir}},
+		{name: "zoxide", got: cfg.Sources.Zoxide.Preview, want: []string{PreviewIdentity, PreviewDir}},
+		{name: "projects", got: cfg.Sources.Projects.Preview, want: []string{PreviewIdentity, PreviewGit, PreviewDir}},
+	} {
+		if !reflect.DeepEqual(tc.got, tc.want) {
+			t.Errorf("examples/config.toml sources.%s.preview = %v, want %v", tc.name, tc.got, tc.want)
+		}
 	}
 }
 

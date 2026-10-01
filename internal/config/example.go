@@ -72,20 +72,22 @@ icons = "unicode"
 # [preview] configures the workspace preview shown in the "shep open" selector
 # and the "shep preview" command. Built-in sections (identity, path/label/
 # source, git summary, workspace tabs/panes, active pane buffer, directory
-# listing) are hardcoded and always available by name; default picks which
-# ones render when nothing more specific (workspace > wildcard > source >
-# this default) applies.
+# listing, agent status) are hardcoded and always available by name; a
+# workspace or wildcard's own preview = [...] list wins over anything below.
 #
-# With no config at all, each source previews what suits its own rows: herdr
-# shows workspace/active_pane/agent_status, workspaces and zoxide show
-# identity/dir, projects adds git. Writing default here replaces those built-in
-# per-source lists everywhere, so it stays the single obvious control; set
-# [sources.<name>].preview below to override one source on top of it.
+# This example intentionally does NOT set [preview].default. With no global
+# default, each source falls back to its own [sources.<name>].preview list
+# below — the shipped defaults, spelled out here so they stay visible and
+# editable instead of being an invisible fallback: herdr shows
+# workspace/active_pane/agent_status, workspaces and zoxide show
+# identity/dir, projects adds git. Set [preview]'s own "default" list only
+# if you want ONE list to replace every source's list at once; it is a
+# single global override, not a per-source tweak, so most configs leave it
+# unset, as this example does.
 [preview]
 timeout = "150ms"
 cache_ttl = "5s"
 max_lines = 50
-default = ["identity", "git"]
 
 # [preview.commands.<name>] declares a reusable global preview command referenced
 # by name from any preview = [...] list, alongside the built-ins above. It keeps
@@ -95,10 +97,11 @@ default = ["identity", "git"]
 command = "git -C {{.Path}} log -n 3"
 
 # [sources.<name>] configures the presentation of a built-in source. Only
-# herdr, workspaces, zoxide and projects are recognised.
+# herdr, workspaces, zoxide and projects are recognised. The preview lists
+# below are the exact shipped defaults for each source.
 [sources.herdr]
 icon = "󰳆 "
-preview = ["workspace", "active_pane"]
+preview = ["workspace", "active_pane", "agent_status"]
 
 [sources.workspaces]
 icon = " "

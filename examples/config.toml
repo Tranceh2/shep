@@ -1,0 +1,135 @@
+# shep example configuration — v0.1.1 schema (version = 2)
+#
+# This is a practical, path-agnostic starting point. It is NOT what
+# `shep init` writes (see internal/config/example.go / ExampleTOML() for the
+# exhaustively-commented canonical reference); this file favors a shorter,
+# working example over line-by-line documentation of every field.
+#
+# Copy it to $XDG_CONFIG_HOME/shep/config.toml (or ~/.config/shep/config.toml
+# when XDG_CONFIG_HOME is unset) and replace the example paths below with
+# your own.
+
+version = 2
+
+[general]
+# Built-ins, in merge/display order. "sessions" is opt-in: add it here only
+# if you also want Herdr session rows (not just workspaces) in the picker.
+source_order = ["herdr", "workspaces", "zoxide", "projects"]
+# source_order = ["herdr", "sessions", "workspaces", "zoxide", "projects"]
+selector = "builtin"
+
+[ranking]
+# Local adaptive ranking: learns from successful opens using a private
+# SQLite WAL store. It never records labels, queries, or network state.
+enabled = true
+
+[defaults]
+type = "shell"
+template = "default"
+
+# Responsive TUI: side-by-side on wide terminals, list-only on narrow ones.
+# 35/65 is the shipped default split; layout is left unset so the picker
+# decides automatically (do NOT set layout = "landscape" if you want that).
+[tui]
+list_width = "35%"
+preview_width = "65%"
+theme = "mocha"
+icons = "unicode"
+
+# [preview] intentionally has no "default" key here. Each source below
+# declares its own preview list, which is exactly what shep ships without
+# any [preview] section at all — spelled out so it is easy to tweak one
+# source without silently affecting the others. timeout/cache_ttl/max_lines
+# are the shipped defaults; adjust them only if previews feel slow or noisy.
+[preview]
+timeout = "150ms"
+cache_ttl = "5s"
+max_lines = 50
+
+[sources.herdr]
+icon = "󰳆 "
+preview = ["workspace", "active_pane", "agent_status"]
+
+[sources.workspaces]
+icon = " "
+preview = ["identity", "dir"]
+
+[sources.zoxide]
+icon = " "
+preview = ["identity", "dir"]
+
+[sources.projects]
+icon = " "
+recursive = true
+max_depth = 3
+markers = [".git", "go.mod", "package.json", "Cargo.toml", "pyproject.toml", "flake.nix"]
+ignore = ["node_modules", "vendor", ".direnv", ".devenv", "target", "dist", ".cache"]
+preview = ["identity", "git", "dir"]
+
+# --- Workspaces: a single project, a command workspace, and a group ---
+
+[[workspaces]]
+name = "dotfiles"
+path = "~/dotfiles"
+aliases = ["config"]
+
+[[workspaces]]
+name = "notes"
+path = "~/notes"
+command = "nvim ."
+close_on_exit = true
+
+[[workspaces]]
+name = "projects"
+type = "group"
+path = "~/projects"
+source_order = ["projects", "zoxide"]
+
+  [workspaces.sources.projects]
+  max_depth = 5
+
+# --- Templates: a plain command and a two-tab development layout ---
+
+[templates.default]
+command = ""
+
+[templates.k8s]
+command = "k9s"
+
+[templates.dev]
+description = "development workspace"
+focus = { tab = "AI", node = "opencode" }
+
+[[templates.dev.tabs]]
+name = "code"
+root = "main"
+
+  [[templates.dev.tabs.nodes]]
+  id = "main"
+  split = "rows"
+  children = ["editor", "terminal"]
+  sizes = [80, 20]
+
+  [[templates.dev.tabs.nodes]]
+  id = "editor"
+  command = "nvim ."
+
+  [[templates.dev.tabs.nodes]]
+  id = "terminal"
+  command = ""
+
+[[templates.dev.tabs]]
+name = "AI"
+root = "opencode"
+
+  [[templates.dev.tabs.nodes]]
+  id = "opencode"
+  command = "opencode"
+  close_on_exit = true
+
+# --- Wildcards: apply a template/preview to paths matching a glob ---
+
+[[wildcards]]
+pattern = "~/projects/kubernetes/**"
+template = "k8s"
+preview = ["identity", "git"]
