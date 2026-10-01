@@ -141,11 +141,14 @@ herdr plugin list                                  # confirm tranceh2.shep is li
 herdr plugin action list --plugin tranceh2.shep
 ```
 
-For the current session, start or recover the collector immediately:
+For the current session, start or recover the collector immediately. The
+command takes the bare action ID plus `--plugin tranceh2.shep` (not the
+fully-qualified `tranceh2.shep.<id>` form used in keybinding `command =`
+values):
 
 ```sh
-herdr plugin action invoke tranceh2.shep.start-history
-herdr plugin action invoke tranceh2.shep.jump-back
+herdr plugin action invoke start-history --plugin tranceh2.shep
+herdr plugin action invoke jump-back --plugin tranceh2.shep
 herdr plugin log list --plugin tranceh2.shep       # inspect the run
 ```
 

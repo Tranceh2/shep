@@ -91,6 +91,14 @@ nix run github:tranceh2/shep -- open
 
 ### Publishing to PATH (`shep link`)
 
+`shep link` is **optional**. Installing the Herdr plugin already provides
+every `type = "plugin_action"` keybinding (`shep open`, `jump-back`,
+`start-history`, `doctor`) with no linking step. Run `shep link` only when
+you also want a bare `shep` command available for: a direct shell command
+(`shep list --format tsv`), a script, the Television cable
+([`cables/shep.toml`](cables/shep.toml)), or a native `type = "popup"`
+keybind (as opposed to `type = "plugin_action"`).
+
 To make `shep` available globally on your `$PATH`:
 - If installed via Herdr plugin: run `./bin/shep link` inside the plugin directory to create a symlink at `~/.local/bin/shep`.
 - From source or local build: run `./shep link` from your build directory.
@@ -113,6 +121,40 @@ shep list                  # Output discovered candidates as a plain table
 shep list --format json    # Output candidates as JSON (for scripts/tooling)
 shep doctor                 # Validate your configuration and workspace paths
 ```
+
+---
+
+## Recommended First-Run Setup
+
+1. **Write a config.** Copy [`examples/config.toml`](examples/config.toml) to
+   `~/.config/shep/config.toml` and edit the example paths, or run
+   `shep init` to generate the exhaustively-commented canonical default.
+2. **Install the Herdr plugin.** See [Herdr Integration](#herdr-integration)
+   below. This alone gives you every `plugin_action` keybinding — `shep link`
+   is a separate, optional step (see the callout in that section).
+3. **Add keybindings** to `~/.config/herdr/config.toml` and
+   `herdr server reload-config`.
+4. **Verify** with the plugin's doctor action, which works with the plugin
+   alone:
+   ```sh
+   herdr plugin action invoke doctor --plugin tranceh2.shep
+   ```
+   If you separately installed or linked the `shep` CLI (see
+   [Publishing to PATH](#publishing-to-path-shep-link)), `shep doctor` is an
+   equivalent check. Either way, finish with `herdr plugin list` to confirm
+   `tranceh2.shep` is enabled.
+
+Checklist:
+
+- [ ] `~/.config/shep/config.toml` exists and the plugin doctor action
+      (`herdr plugin action invoke doctor --plugin tranceh2.shep`) reports no
+      errors.
+- [ ] `herdr plugin list` shows `tranceh2.shep` enabled.
+- [ ] Your keybindings reload cleanly (`herdr server reload-config`).
+- [ ] `prefix+ctrl+f` (or your chosen key) opens the picker popup.
+- [ ] `prefix+tab` toggles between two focused workspaces (see
+      [Troubleshooting](#troubleshooting-prefixtab-does-nothing) if it does
+      not).
 
 ---
 
@@ -145,6 +187,13 @@ cd contrib/herdr-plugin
 bash scripts/build.sh
 ```
 
+Installing the plugin (step 1) is all `type = "plugin_action"` keybindings
+need. **`shep link` is NOT required** for the keybindings below — it is a
+separate, optional step described in
+[Publishing to PATH](#publishing-to-path-shep-link), only needed for a bare
+`shep` shell command, a Television cable, or a native `type = "popup"`
+keybind.
+
 ### 2. Configure Keybindings
 
 Add the keybindings to `~/.config/herdr/config.toml`:
@@ -171,11 +220,51 @@ Reload Herdr's configuration:
 herdr server reload-config
 ```
 
+You can also invoke any action manually from the CLI for testing. The
+command takes the bare action ID (not the fully-qualified
+`tranceh2.shep.<id>` form used in `command =` above) plus
+`--plugin tranceh2.shep`:
+
+```sh
+herdr plugin action invoke open --plugin tranceh2.shep
+herdr plugin action invoke jump-back --plugin tranceh2.shep
+```
+
 When running inside a Herdr popup, `shep` detects the active pane and unlocks in-place actions:
 - `Ctrl+T`: open the selected candidate as a new **tab** in the current workspace.
 - `Ctrl+P`: open the selected candidate as a **split pane** beside your current pane.
 
 See [`docs/herdr-plugin.md`](docs/herdr-plugin.md) for the full plugin reference and [`docs/jump-back.md`](docs/jump-back.md) for jump-back error codes and lifecycle rules.
+
+### Troubleshooting: `prefix+tab` does nothing
+
+If your `prefix+tab` keybinding is already correctly configured (`command =
+"tranceh2.shep.jump-back"`) but pressing it does nothing or the picker
+reports no previous workspace, the usual cause is that the background
+history collector (`watch-history`) is not running — `jump-back` needs
+focus events from two distinct workspaces before it has anything to toggle
+between.
+
+1. Confirm the keybinding uses the fully-qualified plugin action command:
+   `command = "tranceh2.shep.jump-back"`.
+2. Reload Herdr's configuration: `herdr server reload-config`.
+3. Start (or recover) the collector for the current session:
+   ```sh
+   herdr plugin action invoke start-history --plugin tranceh2.shep
+   ```
+4. Focus two distinct Herdr workspaces (switch to workspace A, then
+   workspace B) so the collector observes two focus events.
+5. Retry `prefix+tab`, or invoke it directly to confirm:
+   ```sh
+   herdr plugin action invoke jump-back --plugin tranceh2.shep
+   ```
+
+From subsequent Herdr starts onward, the plugin's `[[startup]]` hook starts
+the collector automatically once the session is restored and the API socket
+is ready — step 3 is normally only needed after installing/upgrading the
+plugin or recovering from a crashed collector. See
+[`docs/jump-back.md`](docs/jump-back.md#recovery-refusal-and-shutdown) for
+the full recovery and refusal taxonomy.
 
 ---
 
@@ -233,6 +322,12 @@ Generate a starter configuration file with defaults:
 shep init          # writes config.toml (safe, does not overwrite)
 shep init --force  # overwrites existing config
 ```
+
+Or copy a shorter, ready-to-edit working example from
+[`examples/config.toml`](examples/config.toml) — it is not what `shep init`
+writes (that is the exhaustively-commented canonical reference below), but a
+practical starting point with real `[[workspaces]]`, `[templates.<name>]`,
+and `[[wildcards]]` entries you can adapt directly.
 
 Below is an exhaustive breakdown of every configuration section and parameter.
 

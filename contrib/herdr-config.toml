@@ -4,14 +4,17 @@
 # do not duplicate [keys].
 
 # --- Option A: Unified Plugin Action (Recommended if using tranceh2.shep plugin) ---
-# Launches the Shep picker popup using the declared plugin action.
+# Launches the Shep picker popup using the declared plugin action. This
+# requires ONLY the Herdr plugin to be installed — `shep link` is NOT
+# needed for type = "plugin_action" keybindings.
 [[keys.command]]
 key = "prefix+ctrl+f" # Pick any key your config does not already bind.
 type = "plugin_action"
 command = "tranceh2.shep.open"
 description = "open Shep picker"
 
-# --- Option B: Native Popup Keybind (Requires shep on PATH or published via `shep link`) ---
+# --- Option B: Native Popup Keybind (Requires shep on PATH, published via the
+# separate, optional `shep link` verb) ---
 # Launches shep open directly in a native Herdr popup modal.
 # [[keys.command]]
 # key = "prefix+ctrl+f"

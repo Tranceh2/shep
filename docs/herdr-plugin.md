@@ -74,13 +74,15 @@ The plugin registers four actions under the `tranceh2.shep` namespace:
 | `tranceh2.shep.start-history` | Start Shep history collector | workspace | Operator recovery to restart the background focus watcher |
 | `tranceh2.shep.doctor` | Shep doctor | global | Runs configuration and environment diagnostics |
 
-You can invoke any action manually from the CLI:
+You can invoke any action manually from the CLI. The command takes the bare
+action ID (not the `tranceh2.shep.<id>` form used in keybindings below) plus
+`--plugin tranceh2.shep`:
 
 ```sh
-herdr plugin action invoke tranceh2.shep.open --plugin tranceh2.shep
-herdr plugin action invoke tranceh2.shep.jump-back --plugin tranceh2.shep
-herdr plugin action invoke tranceh2.shep.start-history --plugin tranceh2.shep
-herdr plugin action invoke tranceh2.shep.doctor --plugin tranceh2.shep
+herdr plugin action invoke open --plugin tranceh2.shep
+herdr plugin action invoke jump-back --plugin tranceh2.shep
+herdr plugin action invoke start-history --plugin tranceh2.shep
+herdr plugin action invoke doctor --plugin tranceh2.shep
 ```
 
 ---
