@@ -92,6 +92,7 @@ type LabelFormats struct {
 	Workspaces   string
 	Zoxide       string
 	Projects     string
+	Agents       string
 	Tab          string
 	Pane         string
 	Integrations map[string]string
@@ -114,6 +115,9 @@ func (f LabelFormats) withDefaults() LabelFormats {
 	}
 	if f.Projects == "" {
 		f.Projects = defaultLabelWithPathFallbackFormat
+	}
+	if f.Agents == "" {
+		f.Agents = defaultLabelOnlyFormat
 	}
 	if f.Tab == "" {
 		f.Tab = defaultLabelWithPathFormat
@@ -241,9 +245,14 @@ type Model struct {
 	snapshotDriver      SnapshotDriver
 	rendererForSnapshot SnapshotRendererFactory
 	herdrIcon           string
-	snapshotSeq         int
-	snapshotRefreshing  bool
-	lastSnapshotAt      time.Time
+	agentsIcon          string
+	// snapshotSources records which candidate sources the active snapshot
+	// generation feeds (see SourceResultMsg.SnapshotSources); the periodic
+	// refresh re-derives exactly those source slices.
+	snapshotSources    map[string]bool
+	snapshotSeq        int
+	snapshotRefreshing bool
+	lastSnapshotAt     time.Time
 	// chosenTarget records which target the user picked via ctrl+t ("tab")
 	// or ctrl+p ("pane"). Empty means enter was pressed (or the run was
 	// cancelled), so the caller's --target flag value applies unchanged.
@@ -342,11 +351,18 @@ type SourceResultMsg struct {
 	Snapshot            *source.Snapshot
 	RendererForSnapshot SnapshotRendererFactory
 	HerdrIcon           string
-	Renderer            preview.Renderer
-	CurrentPane         *source.Pane
-	RankingSnapshot     *ranking.Snapshot
-	Err                 error
-	producerID          int
+	AgentsIcon          string
+	// SnapshotSources names the candidate sources this message's Snapshot
+	// generation feeds (config.SourceHerdr, config.SourceAgents): rows of
+	// those sources are re-derived from every later snapshot refresh instead
+	// of going stale in the all view. A message that leaves this empty keeps
+	// the historical herdr-only refresh ownership.
+	SnapshotSources []string
+	Renderer        preview.Renderer
+	CurrentPane     *source.Pane
+	RankingSnapshot *ranking.Snapshot
+	Err             error
+	producerID      int
 }
 
 // SourceProducer is an independent candidate or state loader executed concurrently
@@ -564,6 +580,18 @@ func (m Model) WithSnapshotRefresh(driver SnapshotDriver, snapshot source.Snapsh
 	m.snapshotDriver = driver
 	m.rendererForSnapshot = rendererForSnapshot
 	m.herdrIcon = herdrIcon
+	// The synchronous picker only refreshes families eligible in its source
+	// order. Direct callers with no order retain the historical Herdr default.
+	m.snapshotSources = make(map[string]bool)
+	if m.layout.SourceOrder == nil {
+		m.snapshotSources[config.SourceHerdr] = true
+	} else {
+		for _, name := range m.layout.SourceOrder {
+			if name == config.SourceHerdr || name == config.SourceAgents {
+				m.snapshotSources[name] = true
+			}
+		}
+	}
 	m.tree = NewTreeExpanderFromSnapshot(snapshot)
 	if pane, ok := source.ResolveFocusedPane(snapshot); ok {
 		copy := *pane
@@ -661,6 +689,17 @@ func (m Model) handleSourceResult(msg SourceResultMsg) (Model, tea.Cmd) {
 	}
 	if msg.HerdrIcon != "" {
 		m.herdrIcon = msg.HerdrIcon
+	}
+	if msg.AgentsIcon != "" {
+		m.agentsIcon = msg.AgentsIcon
+	}
+	if len(msg.SnapshotSources) > 0 {
+		if m.snapshotSources == nil {
+			m.snapshotSources = make(map[string]bool, len(msg.SnapshotSources))
+		}
+		for _, src := range msg.SnapshotSources {
+			m.snapshotSources[src] = true
+		}
 	}
 	if msg.CurrentPane != nil {
 		m.currentPane = msg.CurrentPane
@@ -906,13 +945,18 @@ func (m Model) handleSnapshotResponse(msg snapshotResponseMsg) (Model, tea.Cmd) 
 		return m, nil
 	}
 
-	replacement := source.HerdrCandidates(msg.snapshot)
-	if m.herdrIcon != "" {
-		for i := range replacement {
-			replacement[i].Icon = m.herdrIcon
+	if m.snapshotRefreshesSource(config.SourceHerdr) {
+		replacement := source.HerdrCandidates(msg.snapshot)
+		if m.herdrIcon != "" {
+			for i := range replacement {
+				replacement[i].Icon = m.herdrIcon
+			}
+		}
+		m.baseCandidates = spliceHerdrCandidates(m.baseCandidates, replacement)
+		if m.candidatesBySource != nil {
+			m.candidatesBySource[config.SourceHerdr] = replacement
 		}
 	}
-	m.baseCandidates = spliceHerdrCandidates(m.baseCandidates, replacement)
 	m.candidates = m.baseCandidates
 	m.tree = NewTreeExpanderFromSnapshot(msg.snapshot)
 	snapshotCopy := msg.snapshot
@@ -928,6 +972,25 @@ func (m Model) handleSnapshotResponse(msg snapshotResponseMsg) (Model, tea.Cmd) 
 					delete(m.liveStatuses, paneID)
 				}
 			}
+		}
+	}
+	if m.snapshotRefreshesSource(config.SourceAgents) {
+		// Once observed, the agents slice stays refresh-owned so panes that
+		// leave and return are re-derived instead of frozen.
+		if m.snapshotSources == nil {
+			m.snapshotSources = make(map[string]bool, 1)
+		}
+		m.snapshotSources[config.SourceAgents] = true
+		agentReplacement := source.AgentCandidates(snapshotWithLiveStatuses(msg.snapshot, m.liveStatuses))
+		if m.agentsIcon != "" {
+			for i := range agentReplacement {
+				agentReplacement[i].Icon = m.agentsIcon
+			}
+		}
+		m.baseCandidates = spliceSourceCandidates(m.baseCandidates, agentReplacement, config.SourceAgents, "pane_id")
+		m.candidates = m.baseCandidates
+		if m.candidatesBySource != nil {
+			m.candidatesBySource[config.SourceAgents] = agentReplacement
 		}
 	}
 	if pane, ok := source.ResolveFocusedPane(msg.snapshot); ok {
@@ -977,25 +1040,87 @@ func (m Model) handleSnapshotResponse(msg snapshotResponseMsg) (Model, tea.Cmd) 
 	return m, tea.Batch(cmds...)
 }
 
+// snapshotRefreshesSource reports whether the periodic full-generation
+// refresh must re-derive candidates for name. Producers declare the families
+// their shared snapshot feeds (SourceResultMsg.SnapshotSources), while
+// WithSnapshotRefresh uses the synchronous picker's eligible source order.
+// Direct nil-order layouts retain the historical Herdr default and can also
+// refresh observed agent rows. Explicit orders never acquire excluded sources.
+func (m Model) snapshotRefreshesSource(name string) bool {
+	if m.snapshotSources[name] {
+		return true
+	}
+	if name == config.SourceAgents {
+		// With an explicit order, row presence cannot enable an excluded source.
+		if m.layout.SourceOrder != nil {
+			return false
+		}
+		for _, c := range m.baseCandidates {
+			if c.Source == config.SourceAgents {
+				return true
+			}
+		}
+		return false
+	}
+	// Historical default: a generation whose families were never declared
+	// still owns the herdr rows.
+	return len(m.snapshotSources) == 0 && m.layout.SourceOrder == nil && name == config.SourceHerdr
+}
+
+// snapshotWithLiveStatuses returns snapshot with each pane's AgentStatus
+// overridden by the newest surviving live observation, so rows re-derived from
+// the new generation keep live statuses that arrived after the refresh was
+// requested instead of regressing to the snapshot's own (older) value.
+func snapshotWithLiveStatuses(snapshot source.Snapshot, live map[string]liveObservation) source.Snapshot {
+	if len(live) == 0 {
+		return snapshot
+	}
+	effective := snapshot
+	effective.Panes = make([]source.Pane, len(snapshot.Panes))
+	copy(effective.Panes, snapshot.Panes)
+	for i := range effective.Panes {
+		if obs, ok := live[effective.Panes[i].ID]; ok && obs.status != "" {
+			effective.Panes[i].AgentStatus = obs.status
+		}
+	}
+	return effective
+}
+
 // spliceHerdrCandidates preserves every non-Herdr candidate in its original
 // order while replacing, dropping, and appending only the Herdr slice from a
 // new full snapshot generation.
 func spliceHerdrCandidates(base, replacement []source.Candidate) []source.Candidate {
+	return spliceSourceCandidates(base, replacement, config.SourceHerdr, "workspace_id")
+}
+
+// spliceSourceCandidates preserves every candidate outside sourceName in its
+// original order while replacing, dropping, and appending only the named
+// source's slice, matched by Meta[idKey]. Candidates without an id are kept
+// as-is and never matched.
+func spliceSourceCandidates(base, replacement []source.Candidate, sourceName, idKey string) []source.Candidate {
 	byID := make(map[string]source.Candidate, len(replacement))
 	for _, candidate := range replacement {
-		byID[candidate.Meta["workspace_id"]] = candidate
+		id := candidate.Meta[idKey]
+		if id == "" {
+			continue
+		}
+		byID[id] = candidate
 	}
-	lastHerdr := -1
+	last := -1
 	for i, candidate := range base {
-		if candidate.Source == config.SourceHerdr {
-			lastHerdr = i
+		if candidate.Source == sourceName {
+			last = i
 		}
 	}
 	out := make([]source.Candidate, 0, len(base)+len(replacement))
 	used := make(map[string]struct{}, len(replacement))
 	appendNew := func() {
 		for _, candidate := range replacement {
-			id := candidate.Meta["workspace_id"]
+			id := candidate.Meta[idKey]
+			if id == "" {
+				out = append(out, candidate)
+				continue
+			}
 			if _, exists := used[id]; exists {
 				continue
 			}
@@ -1004,20 +1129,22 @@ func spliceHerdrCandidates(base, replacement []source.Candidate) []source.Candid
 		}
 	}
 	for i, candidate := range base {
-		if candidate.Source == config.SourceHerdr {
-			id := candidate.Meta["workspace_id"]
-			if replacementCandidate, exists := byID[id]; exists {
+		if candidate.Source == sourceName {
+			id := candidate.Meta[idKey]
+			if replacementCandidate, exists := byID[id]; id != "" && exists {
 				out = append(out, replacementCandidate)
 				used[id] = struct{}{}
+			} else if id == "" {
+				out = append(out, candidate)
 			}
 		} else {
 			out = append(out, candidate)
 		}
-		if i == lastHerdr {
+		if i == last {
 			appendNew()
 		}
 	}
-	if lastHerdr == -1 {
+	if last == -1 {
 		appendNew()
 	}
 	return out

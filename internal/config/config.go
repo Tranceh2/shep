@@ -35,6 +35,7 @@ const (
 	SourceWorkspaces = "workspaces"
 	SourceZoxide     = "zoxide"
 	SourceProjects   = "projects"
+	SourceAgents     = "agents"
 )
 
 // defaultSourceOrder is used when general.source_order is empty/absent.
@@ -43,7 +44,7 @@ var defaultSourceOrder = []string{SourceHerdr, SourceWorkspaces, SourceZoxide, S
 const CurrentSchemaVersion = 2
 
 var validSourceNames = map[string]bool{
-	SourceHerdr: true, SourceSessions: true, SourceWorkspaces: true, SourceZoxide: true, SourceProjects: true,
+	SourceHerdr: true, SourceSessions: true, SourceWorkspaces: true, SourceZoxide: true, SourceProjects: true, SourceAgents: true,
 }
 
 const defaultIntegrationTimeout = 3 * time.Second
@@ -263,6 +264,14 @@ type SourcesConfig struct {
 	Workspaces WorkspacesSourceConfig `toml:"workspaces,omitempty"`
 	Zoxide     ZoxideSourceConfig     `toml:"zoxide,omitempty"`
 	Projects   ProjectsSourceConfig   `toml:"projects,omitempty"`
+	Agents     AgentsSourceConfig     `toml:"agents,omitempty"`
+}
+
+// AgentsSourceConfig configures the agents source's presentation.
+type AgentsSourceConfig struct {
+	Icon        string   `toml:"icon,omitempty"`
+	LabelFormat string   `toml:"label_format,omitempty"`
+	Preview     []string `toml:"preview,omitempty"`
 }
 
 // HerdrSourceConfig configures the herdr workspaces source's presentation.
@@ -673,6 +682,7 @@ func Load(path string) (*Config, error) {
 	cfg.Sources.Workspaces.Preview = nil
 	cfg.Sources.Zoxide.Preview = nil
 	cfg.Sources.Projects.Preview = nil
+	cfg.Sources.Agents.Preview = nil
 	// DisallowUnknownFields makes an unrecognised or legacy/removed key (a
 	// typo'd field, a stale top-level table, an arbitrary [sources.<name>])
 	// fail Load fast instead of silently ignoring it.
@@ -846,6 +856,9 @@ func normalizeLabelFormats(s *SourcesConfig) {
 	if s.Projects.LabelFormat == "" {
 		s.Projects.LabelFormat = labelWithPathFallback
 	}
+	if s.Agents.LabelFormat == "" {
+		s.Agents.LabelFormat = labelOnly
+	}
 }
 
 // normalizeSourceIcons fills absent built-in source icons with Nerd Font
@@ -986,6 +999,7 @@ func validateLabelFormats(s SourcesConfig) error {
 		{"sources.workspaces.label_format", s.Workspaces.LabelFormat},
 		{"sources.zoxide.label_format", s.Zoxide.LabelFormat},
 		{"sources.projects.label_format", s.Projects.LabelFormat},
+		{"sources.agents.label_format", s.Agents.LabelFormat},
 	}
 	for _, f := range formats {
 		if err := validateRowFormat(f.field, f.format); err != nil {
@@ -1079,6 +1093,7 @@ func validateAllPreviewLists(cfg *Config) error {
 		{"sources.workspaces.preview", cfg.Sources.Workspaces.Preview},
 		{"sources.zoxide.preview", cfg.Sources.Zoxide.Preview},
 		{"sources.projects.preview", cfg.Sources.Projects.Preview},
+		{"sources.agents.preview", cfg.Sources.Agents.Preview},
 	}
 	for _, c := range checks {
 		if err := ValidatePreviewNames(c.names, cfg.Preview.Commands); err != nil {
@@ -1169,8 +1184,8 @@ func validateSources(names []string, integrations ...[]IntegrationConfig) error 
 	}
 	for _, n := range names {
 		if !allowed[n] {
-			return fmt.Errorf("invalid source_order entry %q (valid: %s, %s, %s, %s, %s, or a declared integration)",
-				n, SourceHerdr, SourceSessions, SourceWorkspaces, SourceZoxide, SourceProjects)
+			return fmt.Errorf("invalid source_order entry %q (valid: %s, %s, %s, %s, %s, %s, or a declared integration)",
+				n, SourceHerdr, SourceSessions, SourceWorkspaces, SourceZoxide, SourceProjects, SourceAgents)
 		}
 	}
 	return nil
@@ -1413,6 +1428,9 @@ func validateWorkspaces(workspaces []WorkspaceConfig, templates map[string]Templ
 			return fmt.Errorf("workspaces[%d] (%q): invalid type %q (valid: %s, %s)", i, ws.Name, ws.Type, WorkspaceTypeShell, WorkspaceTypeGroup)
 		}
 		if ws.Type == WorkspaceTypeGroup {
+			if strings.TrimSpace(ws.Path) == "" {
+				return fmt.Errorf("workspaces[%d] (%q): group path is required", i, ws.Name)
+			}
 			if err := validateSources(ws.SourceOrder, integrations); err != nil {
 				return fmt.Errorf("workspaces[%d] (%q): %w", i, ws.Name, err)
 			}

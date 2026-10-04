@@ -257,8 +257,8 @@ func resolvePreviewNames(cfg *config.Config, cand source.Candidate) []string {
 	// `preview = []` means "no sections for this source" and must not fall
 	// through to a default the user did not ask for. nil means the key was
 	// absent, so normalization already supplied the built-in list for the four
-	// directory/workspace sources and only sessions and unknown sources arrive
-	// here unset.
+	// directory/workspace sources and only sessions, an unconfigured agents
+	// source, and unknown sources arrive here unset.
 	if names := sourcePreview(cfg, cand.Source); names != nil {
 		return names
 	}
@@ -286,6 +286,8 @@ func sourcePreview(cfg *config.Config, sourceName string) []string {
 		return cfg.Sources.Zoxide.Preview
 	case config.SourceProjects:
 		return cfg.Sources.Projects.Preview
+	case config.SourceAgents:
+		return cfg.Sources.Agents.Preview
 	}
 	for _, integration := range cfg.Integrations {
 		if integration.Name == sourceName {

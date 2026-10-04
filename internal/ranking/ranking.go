@@ -48,6 +48,16 @@ func (s Snapshot) WithWorkspaceMRU(mru []string) Snapshot {
 	return out
 }
 
+// WithRecent returns a copy of the snapshot with recent exact launch history identities attached.
+func (s Snapshot) WithRecent(identities []string) Snapshot {
+	out := s
+	out.recent = make([]string, len(identities))
+	for i, id := range identities {
+		out.recent[i] = exactStorageKey(id)
+	}
+	return out
+}
+
 // WorkspaceMRU returns a defensive copy of the workspace focus MRU IDs.
 func (s Snapshot) WorkspaceMRU() []string {
 	if len(s.workspaceMRU) == 0 {
@@ -338,7 +348,7 @@ func SortBySourceOrder(candidates []source.Candidate, query string, sourceOrder 
 		}
 		seen[sourceName] = struct{}{}
 		block := bySource[sourceName]
-		if sourceName == config.SourceHerdr || sourceName == config.SourceProjects {
+		if sourceName == config.SourceHerdr || sourceName == config.SourceProjects || sourceName == config.SourceAgents {
 			block = Sort(block, "", snapshot)
 		} else {
 			block = pinFirst(block, snapshot)
@@ -577,6 +587,21 @@ func (s Snapshot) recentRank(identity string) int {
 		}
 	}
 	return len(s.recent) + 1
+}
+
+// PaneRecentRank returns the zero-based recent-selection rank of a pane ID
+// (from recent_exact launch history), or len(recent)+1 when no selection history exists.
+func (s Snapshot) PaneRecentRank(paneID string) int {
+	if paneID == "" {
+		return len(s.recent) + 1
+	}
+	return s.recentRank("herdr:pane:" + paneID)
+}
+
+// RecentRank returns the zero-based recent-selection rank of a candidate
+// (from recent_exact launch history), or len(recent)+1 when no selection history exists.
+func (s Snapshot) RecentRank(candidate source.Candidate) int {
+	return s.recentRank(Identity(candidate))
 }
 
 func (s Snapshot) usageFor(candidate source.Candidate) float64 {

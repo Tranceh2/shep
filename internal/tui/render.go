@@ -755,6 +755,9 @@ func (m Model) rowLabelFormat(row Row) string {
 		// appends " · <path>". Nested tree pane rows (Depth >= 1) continue to use
 		// formats.Pane unchanged.
 		if row.Depth == 0 || row.Candidate.Meta["kind"] == "agent" {
+			if formats.Agents != "" {
+				return formats.Agents
+			}
 			return defaultLabelOnlyFormat
 		}
 		return formats.Pane
@@ -771,6 +774,8 @@ func (m Model) rowLabelFormat(row Row) string {
 		return formats.Zoxide
 	case config.SourceProjects:
 		return formats.Projects
+	case config.SourceAgents:
+		return formats.Agents
 	default:
 		// A declared [[integrations]] source resolves its own configured (or
 		// config.Load-defaulted) label_format via the open-ended Integrations

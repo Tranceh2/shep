@@ -4,8 +4,10 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/ranking"
 	"github.com/tranceh2/shep/internal/source"
 )
@@ -625,5 +627,498 @@ func TestAgentScope_LiveTransitionInvalidatesAckAndRestoresNewAttention(t *testi
 	}
 	if m.rows[1].Candidate.Meta["pane_id"] != "p2" {
 		t.Errorf("row[1] = %q, want p2", m.rows[1].Candidate.Meta["pane_id"])
+	}
+}
+
+func TestAgentScope_CandidatesUseSourceAgents(t *testing.T) {
+	t.Parallel()
+
+	snapshot := &source.Snapshot{
+		Workspaces: []source.Workspace{
+			{ID: "w1", Label: "fsociety", CWD: "/srv/fsociety"},
+		},
+		Tabs: []source.Tab{
+			{ID: "t1", WorkspaceID: "w1", Label: "arcade"},
+		},
+		Panes: []source.Pane{
+			{ID: "p1", WorkspaceID: "w1", TabID: "t1", Agent: "opencode", AgentStatus: "working"},
+		},
+	}
+
+	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(*snapshot), Layout{})
+	m.startupSnapshot = snapshot
+	m = m.WithScope(ScopeAgents)
+	m.applyFilter()
+
+	if len(m.rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(m.rows))
+	}
+	if got, want := m.rows[0].Candidate.Source, config.SourceAgents; got != want {
+		t.Errorf("row[0].Candidate.Source = %q, want %q", got, want)
+	}
+}
+
+func TestAgentScope_CurrentPaneLastAndPreviousFirst(t *testing.T) {
+	t.Parallel()
+
+	snapshot := &source.Snapshot{
+		Workspaces: []source.Workspace{
+			{ID: "w1", Label: "w1", CWD: "/srv/w1"},
+			{ID: "w2", Label: "w2", CWD: "/srv/w2"},
+			{ID: "w3", Label: "w3", CWD: "/srv/w3"},
+		},
+		Tabs: []source.Tab{
+			{ID: "t1", WorkspaceID: "w1", Label: "t1"},
+			{ID: "t2", WorkspaceID: "w2", Label: "t2"},
+			{ID: "t3", WorkspaceID: "w3", Label: "t3"},
+		},
+		Panes: []source.Pane{
+			{ID: "p_current", WorkspaceID: "w1", TabID: "t1", Agent: "claude", AgentStatus: "working"},
+			{ID: "p_prev", WorkspaceID: "w2", TabID: "t2", Agent: "pi", AgentStatus: "working"},
+			{ID: "p_older", WorkspaceID: "w3", TabID: "t3", Agent: "opencode", AgentStatus: "working"},
+		},
+	}
+
+	rs := ranking.Snapshot{}.WithFilteredWorkspaceMRU(snapshot.Workspaces)
+	// w1 is current (MRU 0), w2 is previous (MRU 1), w3 is older (MRU 2)
+	rs = rs.WithWorkspaceMRU([]string{"w1", "w2", "w3"})
+
+	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(*snapshot), Layout{})
+	m.startupSnapshot = snapshot
+	m.rankingSnapshot = rs
+	m = m.WithCurrentPane(&snapshot.Panes[0]) // p_current
+	m = m.WithScope(ScopeAgents)
+	m.applyFilter()
+
+	if len(m.rows) != 3 {
+		t.Fatalf("expected 3 rows, got %d", len(m.rows))
+	}
+
+	// Expected: p_prev (previous focus, MRU 1) -> p_older (older focus, MRU 2) -> p_current (current pane demoted to last)
+	expectedOrder := []string{"p_prev", "p_older", "p_current"}
+	for i, wantID := range expectedOrder {
+		gotID := m.rows[i].Candidate.Meta["pane_id"]
+		if gotID != wantID {
+			t.Errorf("row[%d] = %q, want %q", i, gotID, wantID)
+		}
+	}
+}
+
+func TestAgentScope_CurrentPaneDoesNotHideUnacknowledgedAttention(t *testing.T) {
+	t.Parallel()
+
+	snapshot := &source.Snapshot{
+		Workspaces: []source.Workspace{
+			{ID: "w1", Label: "w1", CWD: "/srv/w1"},
+			{ID: "w2", Label: "w2", CWD: "/srv/w2"},
+		},
+		Tabs: []source.Tab{
+			{ID: "t1", WorkspaceID: "w1", Label: "t1"},
+			{ID: "t2", WorkspaceID: "w2", Label: "t2"},
+		},
+		Panes: []source.Pane{
+			{ID: "p_current_blocked", WorkspaceID: "w1", TabID: "t1", Agent: "claude", AgentStatus: "blocked"},
+			{ID: "p_other_blocked", WorkspaceID: "w2", TabID: "t2", Agent: "pi", AgentStatus: "blocked"},
+			{ID: "p_prev_working", WorkspaceID: "w2", TabID: "t2", Agent: "opencode", AgentStatus: "working"},
+		},
+	}
+
+	rs := ranking.Snapshot{}.WithFilteredWorkspaceMRU(snapshot.Workspaces)
+	rs = rs.WithWorkspaceMRU([]string{"w1", "w2"})
+
+	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(*snapshot), Layout{})
+	m.startupSnapshot = snapshot
+	m.rankingSnapshot = rs
+	m = m.WithCurrentPane(&snapshot.Panes[0]) // p_current_blocked
+	m = m.WithScope(ScopeAgents)
+	m.applyFilter()
+
+	if len(m.rows) != 3 {
+		t.Fatalf("expected 3 rows, got %d", len(m.rows))
+	}
+
+	// Unacknowledged attention is Tier 1 (p_other_blocked, p_current_blocked).
+	// Within Tier 1, p_current_blocked is demoted after p_other_blocked.
+	// But both are before Tier 2 (p_prev_working) — unacknowledged attention is NOT hidden.
+	expectedOrder := []string{"p_other_blocked", "p_current_blocked", "p_prev_working"}
+	for i, wantID := range expectedOrder {
+		gotID := m.rows[i].Candidate.Meta["pane_id"]
+		if gotID != wantID {
+			t.Errorf("row[%d] = %q, want %q", i, gotID, wantID)
+		}
+	}
+}
+
+func TestAgentScope_PriorSelectionFirstViaRanking(t *testing.T) {
+	t.Parallel()
+
+	snapshot := &source.Snapshot{
+		Workspaces: []source.Workspace{
+			{ID: "w1", Label: "w1", CWD: "/srv/w1"},
+		},
+		Tabs: []source.Tab{
+			{ID: "t1", WorkspaceID: "w1", Label: "t1"},
+		},
+		Panes: []source.Pane{
+			{ID: "p_unranked_b", WorkspaceID: "w1", TabID: "t1", Agent: "opencode", AgentStatus: "working"},
+			{ID: "p_older", WorkspaceID: "w1", TabID: "t1", Agent: "gemini", AgentStatus: "working"},
+			{ID: "p_prior", WorkspaceID: "w1", TabID: "t1", Agent: "pi", AgentStatus: "working"},
+			{ID: "p_unranked_a", WorkspaceID: "w1", TabID: "t1", Agent: "cursor", AgentStatus: "working"},
+			{ID: "p_current", WorkspaceID: "w1", TabID: "t1", Agent: "claude", AgentStatus: "working"},
+		},
+	}
+
+	// p_prior was selected most recently, p_older before that.
+	rs := ranking.Snapshot{}.WithRecent([]string{
+		"herdr:pane:p_prior",
+		"herdr:pane:p_older",
+	})
+
+	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(*snapshot), Layout{})
+	m.startupSnapshot = snapshot
+	m.rankingSnapshot = rs
+	m = m.WithCurrentPane(&snapshot.Panes[4]) // p_current
+	m = m.WithScope(ScopeAgents)
+	m.applyFilter()
+
+	if len(m.rows) != 5 {
+		t.Fatalf("expected 5 rows, got %d", len(m.rows))
+	}
+
+	// Expected:
+	// 1. p_prior (most recent prior selection, rank 0)
+	// 2. p_older (older prior selection, rank 1)
+	// 3. p_unranked_a (no history: falls back deterministically by pane_id, "p_unranked_a" < "p_unranked_b")
+	// 4. p_unranked_b (no history: pane_id "p_unranked_b")
+	// 5. p_current (current pane: always demoted to last within tier)
+	expectedOrder := []string{"p_prior", "p_older", "p_unranked_a", "p_unranked_b", "p_current"}
+	for i, wantID := range expectedOrder {
+		gotID := m.rows[i].Candidate.Meta["pane_id"]
+		if gotID != wantID {
+			t.Errorf("row[%d] = %q, want %q", i, gotID, wantID)
+		}
+	}
+}
+
+func TestAgentScope_QueryTieBreaksByCurrentPaneAndMRU(t *testing.T) {
+	t.Parallel()
+
+	snapshot := &source.Snapshot{
+		Workspaces: []source.Workspace{
+			{ID: "w1", Label: "w1", CWD: "/srv/w1"},
+			{ID: "w2", Label: "w2", CWD: "/srv/w2"},
+		},
+		Tabs: []source.Tab{
+			{ID: "t1", WorkspaceID: "w1", Label: "t1"},
+			{ID: "t2", WorkspaceID: "w2", Label: "t2"},
+		},
+		Panes: []source.Pane{
+			{ID: "p_current", WorkspaceID: "w1", TabID: "t1", Agent: "agent", AgentStatus: "working", TerminalTitle: "task"},
+			{ID: "p_other", WorkspaceID: "w2", TabID: "t2", Agent: "agent", AgentStatus: "working", TerminalTitle: "task"},
+		},
+	}
+
+	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(*snapshot), Layout{})
+	m.startupSnapshot = snapshot
+	m = m.WithCurrentPane(&snapshot.Panes[0]) // p_current
+	m = m.WithScope(ScopeAgents)
+	m.query = "task"
+	m.applyFilter()
+
+	if len(m.rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(m.rows))
+	}
+
+	// Both match "task" identically in the same tier.
+	// Current pane must be demoted after the non-current pane.
+	if m.rows[0].Candidate.Meta["pane_id"] != "p_other" {
+		t.Errorf("row[0] = %q, want p_other", m.rows[0].Candidate.Meta["pane_id"])
+	}
+	if m.rows[1].Candidate.Meta["pane_id"] != "p_current" {
+		t.Errorf("row[1] = %q, want p_current", m.rows[1].Candidate.Meta["pane_id"])
+	}
+}
+
+// agentsRefreshFixture builds one agent-pane generation for snapshot-refresh
+// tests: each pane gets a distinct foreground CWD so candidate identity never
+// collides.
+func agentsRefreshFixture(panes ...source.Pane) source.Snapshot {
+	return source.Snapshot{
+		Workspaces: []source.Workspace{
+			{ID: "w1", Label: "ws1", CWD: "/srv/ws1", ActiveTabID: "w1:t1"},
+		},
+		Tabs: []source.Tab{
+			{ID: "w1:t1", WorkspaceID: "w1", Label: "editor", Number: 1, PaneCount: len(panes)},
+		},
+		Panes:              panes,
+		FocusedPaneID:      panes[0].ID,
+		FocusedTabID:       "w1:t1",
+		FocusedWorkspaceID: "w1",
+	}
+}
+
+// TestAgentScope_SnapshotRefreshReplacesSourceAgentsRows proves the periodic
+// full-generation refresh re-derives the agents rows in the all view from the
+// new snapshot instead of leaving stale SourceAgents rows behind: replaced
+// statuses update, departed panes drop, new panes appear, and the refresh
+// never injects herdr workspace rows into a view whose source_order enables
+// only the agents source.
+func TestAgentScope_SnapshotRefreshReplacesSourceAgentsRows(t *testing.T) {
+	t.Parallel()
+
+	snap1 := agentsRefreshFixture(
+		source.Pane{ID: "w1:p1", WorkspaceID: "w1", TabID: "w1:t1", Agent: "claude", AgentStatus: "idle", ForegroundCWD: "/srv/ws1/a"},
+		source.Pane{ID: "w1:p2", WorkspaceID: "w1", TabID: "w1:t1", Agent: "pi", AgentStatus: "working", ForegroundCWD: "/srv/ws1/b"},
+	)
+	snap2 := agentsRefreshFixture(
+		source.Pane{ID: "w1:p1", WorkspaceID: "w1", TabID: "w1:t1", Agent: "claude", AgentStatus: "blocked", ForegroundCWD: "/srv/ws1/a"},
+		source.Pane{ID: "w1:p3", WorkspaceID: "w1", TabID: "w1:t1", Agent: "opencode", AgentStatus: "done", ForegroundCWD: "/srv/ws1/c"},
+	)
+	driver := &scriptedSnapshotDriver{responses: []snapshotDriverResponse{{snapshot: snap2}}}
+
+	prodAgents := func(ctx context.Context) SourceResultMsg {
+		return SourceResultMsg{
+			Source:          config.SourceAgents,
+			Candidates:      source.AgentCandidates(snap1),
+			Snapshot:        &snap1,
+			SnapshotDriver:  driver,
+			SnapshotSources: []string{config.SourceAgents},
+			Tree:            NewTreeExpanderFromSnapshot(snap1),
+		}
+	}
+
+	m := NewModelWithProducers([]SourceProducer{prodAgents}, "", nil, context.Background(), Layout{SourceOrder: []string{config.SourceAgents}})
+	msg := prodAgents(context.Background())
+	msg.producerID = 0
+	next, _ := m.Update(msg)
+	m = next.(Model)
+
+	m.lastSnapshotAt = time.Now().Add(-snapshotTTL)
+	refreshCmd := m.applyFilter()
+	if refreshCmd == nil {
+		t.Fatal("expired generation did not schedule a snapshot refresh")
+	}
+	next, _ = m.Update(refreshCmd())
+	m = next.(Model)
+
+	byPane := map[string]source.Candidate{}
+	for _, c := range m.baseCandidates {
+		if c.Source == config.SourceHerdr {
+			t.Errorf("agents-only refresh introduced herdr row %+v", c)
+			continue
+		}
+		if c.Source == config.SourceAgents {
+			byPane[c.Meta["pane_id"]] = c
+		}
+	}
+	if got := byPane["w1:p1"].Meta["agent_status"]; got != "blocked" {
+		t.Errorf("w1:p1 agent_status = %q, want %q from the new generation", got, "blocked")
+	}
+	if _, ok := byPane["w1:p2"]; ok {
+		t.Error("departed pane w1:p2 still present after refresh")
+	}
+	if got := byPane["w1:p3"].Meta["agent_status"]; got != "done" {
+		t.Errorf("w1:p3 agent_status = %q, want %q for the newly appeared pane", got, "done")
+	}
+}
+
+// TestAgentScope_SnapshotRefreshPreservesLiveStatusAndSelection proves a
+// refresh keeps the newest live pane status over the snapshot's own value,
+// keeps the highlighted row's identity across the rebuild, and survives a late
+// producer arrival without resurrecting stale agents rows.
+func TestAgentScope_SnapshotRefreshPreservesLiveStatusAndSelection(t *testing.T) {
+	t.Parallel()
+
+	snap1 := agentsRefreshFixture(
+		source.Pane{ID: "w1:p1", WorkspaceID: "w1", TabID: "w1:t1", Agent: "claude", AgentStatus: "idle", ForegroundCWD: "/srv/ws1/a"},
+		source.Pane{ID: "w1:p2", WorkspaceID: "w1", TabID: "w1:t1", Agent: "pi", AgentStatus: "working", ForegroundCWD: "/srv/ws1/b"},
+	)
+	// snap2 lists p3 first so index-pinning would visibly lose the selection.
+	snap2 := agentsRefreshFixture(
+		source.Pane{ID: "w1:p3", WorkspaceID: "w1", TabID: "w1:t1", Agent: "opencode", AgentStatus: "done", ForegroundCWD: "/srv/ws1/c"},
+		source.Pane{ID: "w1:p1", WorkspaceID: "w1", TabID: "w1:t1", Agent: "claude", AgentStatus: "working", ForegroundCWD: "/srv/ws1/a"},
+	)
+	driver := &scriptedSnapshotDriver{responses: []snapshotDriverResponse{{snapshot: snap2}}}
+
+	prodAgents := func(ctx context.Context) SourceResultMsg {
+		return SourceResultMsg{
+			Source:          config.SourceAgents,
+			Candidates:      source.AgentCandidates(snap1),
+			Snapshot:        &snap1,
+			SnapshotDriver:  driver,
+			SnapshotSources: []string{config.SourceAgents},
+			Tree:            NewTreeExpanderFromSnapshot(snap1),
+		}
+	}
+
+	m := NewModelWithProducers([]SourceProducer{prodAgents}, "", nil, context.Background(), Layout{SourceOrder: []string{config.SourceAgents}})
+	msg := prodAgents(context.Background())
+	msg.producerID = 0
+	next, _ := m.Update(msg)
+	m = next.(Model)
+
+	// Explicitly navigate to w1:p1's row so selection retention is exercised.
+	p1Row := -1
+	for i, r := range m.rows {
+		if r.Candidate.Meta["pane_id"] == "w1:p1" {
+			p1Row = i
+			break
+		}
+	}
+	if p1Row < 0 {
+		t.Fatalf("no row for w1:p1 in %+v", m.rows)
+	}
+	m.cursor = p1Row
+	m.cursorTouched = true
+	prevRowID := m.currentRowID()
+
+	// Request the refresh first, then let a live observation arrive so it is
+	// newer than the request and must win over snap2's own status for p3.
+	m.lastSnapshotAt = time.Now().Add(-snapshotTTL)
+	refreshCmd := m.applyFilter()
+	if refreshCmd == nil {
+		t.Fatal("expired generation did not schedule a snapshot refresh")
+	}
+	next, _ = m.Update(paneStatusMsg{PaneID: "w1:p3", WorkspaceID: "w1", TabID: "w1:t1", Status: "blocked"})
+	m = next.(Model)
+	next, _ = m.Update(refreshCmd())
+	m = next.(Model)
+
+	if got := m.currentRowID(); got != prevRowID {
+		t.Errorf("selected row after refresh = %q, want %q", got, prevRowID)
+	}
+	byPane := map[string]source.Candidate{}
+	for _, c := range m.baseCandidates {
+		if c.Source == config.SourceAgents {
+			byPane[c.Meta["pane_id"]] = c
+		}
+	}
+	if got := byPane["w1:p3"].Meta["agent_status"]; got != "blocked" {
+		t.Errorf("w1:p3 agent_status = %q, want the live %q to win over the snapshot's %q", got, "blocked", "done")
+	}
+	if got := byPane["w1:p1"].Meta["agent_status"]; got != "working" {
+		t.Errorf("w1:p1 agent_status = %q, want %q from the new generation", got, "working")
+	}
+	if _, ok := byPane["w1:p2"]; ok {
+		t.Error("departed pane w1:p2 still present after refresh")
+	}
+
+	// A late producer arrival rebuilds the candidate set; the refreshed agents
+	// rows must survive it instead of being resurrected from a stale slice.
+	late := SourceResultMsg{
+		Source: config.SourceWorkspaces,
+		Candidates: []source.Candidate{
+			{Label: "ws-late", Path: "/srv/late", Source: config.SourceWorkspaces},
+		},
+		producerID: 1,
+	}
+	next, _ = m.Update(late)
+	m = next.(Model)
+	stale := false
+	for _, c := range m.baseCandidates {
+		if c.Source != config.SourceAgents {
+			continue
+		}
+		if c.Meta["pane_id"] == "w1:p2" {
+			stale = true
+		}
+	}
+	if stale {
+		t.Error("late producer arrival resurrected the stale w1:p2 agents row")
+	}
+}
+
+// TestAgentScope_SourceRowFormattingUsesAgentsLabelFormat verifies the agents
+// source row formatting contract for both row shapes: a flat agents-scope pane
+// row and a SourceAgents candidate row in the all view both render through
+// [sources.agents].label_format with AgentStatus template context, never
+// through the path fallback.
+func TestAgentScope_SourceRowFormattingUsesAgentsLabelFormat(t *testing.T) {
+	t.Parallel()
+
+	m := newRenderTestModel(ThemeMocha, FocusList)
+	m.layout.LabelFormats = LabelFormats{Agents: "{{.Label}} [{{.AgentStatus}}]"}.withDefaults()
+
+	flatPaneRow := Row{
+		Kind:      RowPane,
+		Depth:     0,
+		Action:    RowActionFocusTab,
+		Candidate: source.Candidate{Label: "security scan", Path: "/srv/ws1/src", Meta: map[string]string{"kind": "agent", "agent_status": "blocked"}},
+	}
+	if got := m.renderRowLabel(flatPaneRow); got != "security scan [blocked]" {
+		t.Errorf("flat agent row label = %q, want %q", got, "security scan [blocked]")
+	}
+
+	allViewRow := Row{
+		Kind:      RowCandidate,
+		Candidate: source.Candidate{Label: "codegen", Path: "/srv/ws1/src", Source: config.SourceAgents, Meta: map[string]string{"agent_status": "working"}},
+	}
+	if got := m.renderRowLabel(allViewRow); got != "codegen [working]" {
+		t.Errorf("all-view agents row label = %q, want %q", got, "codegen [working]")
+	}
+}
+
+// TestAgentScope_SnapshotRefreshFillsEmptyAgentsSliceAndKeepsIcon triangulates
+// the declaration-driven ownership: a source_order that enables agents while
+// the startup generation holds no agent panes must still gain agents rows as
+// panes appear later (SnapshotSources, not row presence, owns the slice), and
+// the configured agents icon survives every re-derivation. The same message
+// shape must not import herdr rows into the agents-only view.
+func TestAgentScope_SnapshotRefreshFillsEmptyAgentsSliceAndKeepsIcon(t *testing.T) {
+	t.Parallel()
+
+	const agentsIcon = "🤖 "
+	snap1 := agentsRefreshFixture(
+		source.Pane{ID: "w1:p0", WorkspaceID: "w1", TabID: "w1:t1", CWD: "/srv/ws1/plain"},
+	)
+	snap2 := agentsRefreshFixture(
+		source.Pane{ID: "w1:p9", WorkspaceID: "w1", TabID: "w1:t1", Agent: "claude", AgentStatus: "working", ForegroundCWD: "/srv/ws1/a"},
+	)
+	driver := &scriptedSnapshotDriver{responses: []snapshotDriverResponse{{snapshot: snap2}}}
+
+	prodAgents := func(ctx context.Context) SourceResultMsg {
+		return SourceResultMsg{
+			Source:          config.SourceAgents,
+			Candidates:      source.AgentCandidates(snap1),
+			Snapshot:        &snap1,
+			SnapshotDriver:  driver,
+			SnapshotSources: []string{config.SourceAgents},
+			AgentsIcon:      agentsIcon,
+			Tree:            NewTreeExpanderFromSnapshot(snap1),
+		}
+	}
+
+	m := NewModelWithProducers([]SourceProducer{prodAgents}, "", nil, context.Background(), Layout{SourceOrder: []string{config.SourceAgents}})
+	msg := prodAgents(context.Background())
+	msg.producerID = 0
+	next, _ := m.Update(msg)
+	m = next.(Model)
+
+	m.lastSnapshotAt = time.Now().Add(-snapshotTTL)
+	refreshCmd := m.applyFilter()
+	if refreshCmd == nil {
+		t.Fatal("expired generation did not schedule a snapshot refresh")
+	}
+	next, _ = m.Update(refreshCmd())
+	m = next.(Model)
+
+	var row *source.Candidate
+	for i := range m.baseCandidates {
+		c := &m.baseCandidates[i]
+		switch c.Source {
+		case config.SourceHerdr:
+			t.Errorf("agents-only refresh introduced herdr row %+v", c)
+		case config.SourceAgents:
+			row = c
+		}
+	}
+	if row == nil {
+		t.Fatalf("no agents row re-derived from the new generation: %+v", m.baseCandidates)
+	}
+	if row.Meta["pane_id"] != "w1:p9" {
+		t.Errorf("agents row pane_id = %q, want w1:p9", row.Meta["pane_id"])
+	}
+	if row.Icon != agentsIcon {
+		t.Errorf("agents row icon = %q, want %q", row.Icon, agentsIcon)
 	}
 }

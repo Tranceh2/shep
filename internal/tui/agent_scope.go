@@ -147,85 +147,46 @@ func (m Model) effectivePaneStatus(p source.Pane) string {
 	return p.AgentStatus
 }
 
+func (m Model) snapshotForAgents() source.Snapshot {
+	var snap source.Snapshot
+	if m.startupSnapshot != nil {
+		snap = *m.startupSnapshot
+	} else if m.tree != nil {
+		for wsID, tree := range m.tree.trees {
+			snap.Workspaces = append(snap.Workspaces, source.Workspace{ID: wsID})
+			snap.Tabs = append(snap.Tabs, tree.Tabs...)
+			snap.Panes = append(snap.Panes, tree.Panes...)
+		}
+	}
+	if m.currentPane != nil && m.currentPane.ID != "" {
+		snap.FocusedPaneID = m.currentPane.ID
+	}
+	if len(snap.Panes) == 0 {
+		return snap
+	}
+	effectivePanes := make([]source.Pane, len(snap.Panes))
+	for i, p := range snap.Panes {
+		effectivePanes[i] = p
+		effectivePanes[i].AgentStatus = m.effectivePaneStatus(p)
+	}
+	snap.Panes = effectivePanes
+	return snap
+}
+
+func (m Model) currentPaneID() string {
+	if m.currentPane != nil && m.currentPane.ID != "" {
+		return m.currentPane.ID
+	}
+	if m.startupSnapshot != nil && m.startupSnapshot.FocusedPaneID != "" {
+		return m.startupSnapshot.FocusedPaneID
+	}
+	return ""
+}
+
 // collectAgentCandidates collects flat candidate representations of active Herdr agents.
 func (m Model) collectAgentCandidates() []source.Candidate {
-	panes := m.allSnapshotPanes()
-	if len(panes) == 0 {
-		return nil
-	}
-
-	wsLabels := make(map[string]string)
-	wsCWDs := make(map[string]string)
-	if m.startupSnapshot != nil {
-		for _, ws := range m.startupSnapshot.Workspaces {
-			if ws.ID != "" {
-				wsLabels[ws.ID] = ws.Label
-				wsCWDs[ws.ID] = ws.CWD
-			}
-		}
-	}
-
-	tabLabels := make(map[string]string)
-	if m.startupSnapshot != nil {
-		for _, tab := range m.startupSnapshot.Tabs {
-			if tab.ID != "" {
-				tabLabels[tab.ID] = tab.Label
-			}
-		}
-	}
-
-	var out []source.Candidate
-	for _, p := range panes {
-		status := m.effectivePaneStatus(p)
-		isAgent := p.Agent != "" || (status != "" && status != "unknown")
-		if !isAgent {
-			continue
-		}
-
-		path := p.ForegroundCWD
-		if path == "" {
-			path = p.CWD
-		}
-		if path == "" {
-			path = wsCWDs[p.WorkspaceID]
-		}
-
-		wsLabel := wsLabels[p.WorkspaceID]
-		if wsLabel == "" {
-			wsLabel = p.WorkspaceID
-		}
-
-		tabLabel := tabLabels[p.TabID]
-
-		label := p.TerminalTitle
-		if label == "" {
-			label = p.Label
-		}
-		if label == "" {
-			label = "agent " + p.ID
-		}
-
-		meta := map[string]string{
-			"workspace_id":    p.WorkspaceID,
-			"workspace_label": wsLabel,
-			"tab_id":          p.TabID,
-			"tab_label":       tabLabel,
-			"pane_id":         p.ID,
-			"agent":           p.Agent,
-			"agent_status":    status,
-			"terminal_title":  p.TerminalTitle,
-			"kind":            "agent",
-		}
-
-		out = append(out, source.Candidate{
-			Path:   path,
-			Label:  label,
-			Source: config.SourceHerdr,
-			Meta:   meta,
-		})
-	}
-
-	return out
+	snap := m.snapshotForAgents()
+	return source.AgentCandidates(snap)
 }
 
 func (m *Model) buildAgentRows() []Row {
@@ -235,12 +196,16 @@ func (m *Model) buildAgentRows() []Row {
 	}
 
 	type scoredAgent struct {
-		cand    source.Candidate
-		tier    int
-		score   int
-		indexes []int
-		mruRank int
+		cand           source.Candidate
+		tier           int
+		score          int
+		indexes        []int
+		isCurrent      bool
+		paneRecentRank int
+		mruRank        int
 	}
+
+	currentID := m.currentPaneID()
 
 	var matched []scoredAgent
 	for _, c := range candidates {
@@ -248,7 +213,14 @@ func (m *Model) buildAgentRows() []Row {
 		status := c.Meta["agent_status"]
 		isAcked := m.rankingSnapshot.IsPaneAcknowledged(paneID, status)
 		tier := agentAttentionTier(status, isAcked)
-		mruRank := m.rankingSnapshot.WorkspaceMRURank(c)
+
+		candForMRU := c
+		candForMRU.Source = config.SourceHerdr
+		mruRank := m.rankingSnapshot.WorkspaceMRURank(candForMRU)
+
+		isCurrent := currentID != "" && paneID == currentID
+		paneRecentRank := m.rankingSnapshot.PaneRecentRank(paneID)
+
 		score := 0
 		var indexes []int
 
@@ -263,11 +235,13 @@ func (m *Model) buildAgentRows() []Row {
 		}
 
 		matched = append(matched, scoredAgent{
-			cand:    c,
-			tier:    tier,
-			score:   score,
-			indexes: indexes,
-			mruRank: mruRank,
+			cand:           c,
+			tier:           tier,
+			score:          score,
+			indexes:        indexes,
+			isCurrent:      isCurrent,
+			paneRecentRank: paneRecentRank,
+			mruRank:        mruRank,
 		})
 	}
 
@@ -278,6 +252,12 @@ func (m *Model) buildAgentRows() []Row {
 		}
 		if m.query != "" && left.score != right.score {
 			return left.score > right.score
+		}
+		if left.isCurrent != right.isCurrent {
+			return !left.isCurrent
+		}
+		if left.paneRecentRank != right.paneRecentRank {
+			return left.paneRecentRank < right.paneRecentRank
 		}
 		if left.mruRank != right.mruRank {
 			return left.mruRank < right.mruRank

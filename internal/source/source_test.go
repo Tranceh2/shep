@@ -1364,3 +1364,342 @@ func sameCandidate(got, want Candidate) bool {
 	}
 	return true
 }
+
+func TestAgentCandidates_DerivationAndPrecedence(t *testing.T) {
+	snapshot := Snapshot{
+		FocusedPaneID: "p2",
+		Workspaces: []Workspace{
+			{ID: "w1", Label: "ws1", CWD: "/srv/ws1"},
+			{ID: "w2", Label: "ws2", CWD: "/srv/ws2"},
+		},
+		Tabs: []Tab{
+			{ID: "t1", WorkspaceID: "w1", Label: "tab1"},
+			{ID: "t2", WorkspaceID: "w2", Label: "tab2"},
+		},
+		Panes: []Pane{
+			{
+				ID:            "p1",
+				WorkspaceID:   "w1",
+				TabID:         "t1",
+				Agent:         "pi",
+				AgentStatus:   "blocked",
+				TerminalTitle: "security audit",
+				ForegroundCWD: "/srv/ws1/sub",
+				Focused:       true,
+			},
+			{
+				ID:          "p2",
+				WorkspaceID: "w2",
+				TabID:       "t2",
+				Agent:       "claude",
+				AgentStatus: "working",
+				Label:       "codegen",
+				CWD:         "/srv/ws2/work",
+			},
+			{
+				ID:          "p3",
+				WorkspaceID: "w1",
+				TabID:       "t1",
+				Agent:       "opencode",
+				AgentStatus: "idle",
+			},
+			{
+				ID:          "p4",
+				WorkspaceID: "w1",
+				TabID:       "t1",
+				Agent:       "agent-runner",
+				AgentStatus: "unknown", // unknown with non-empty Agent is included
+			},
+			{
+				ID:          "p_plain",
+				WorkspaceID: "w1",
+				TabID:       "t1",
+				Agent:       "",
+				AgentStatus: "", // non-agent pane, must be excluded
+			},
+			{
+				ID:          "p_unknown",
+				WorkspaceID: "w1",
+				TabID:       "t1",
+				Agent:       "",
+				AgentStatus: "unknown", // unknown without agent, must be excluded
+			},
+		},
+	}
+
+	cands := AgentCandidates(snapshot)
+	if len(cands) != 4 {
+		t.Fatalf("AgentCandidates count = %d, want 4", len(cands))
+	}
+
+	// p1: ForegroundCWD preferred, TerminalTitle preferred, Source is config.SourceAgents
+	c1 := cands[0]
+	if c1.Source != config.SourceAgents {
+		t.Errorf("c1.Source = %q, want %q", c1.Source, config.SourceAgents)
+	}
+	if c1.Path != "/srv/ws1/sub" {
+		t.Errorf("c1.Path = %q, want /srv/ws1/sub", c1.Path)
+	}
+	if c1.Label != "security audit" {
+		t.Errorf("c1.Label = %q, want 'security audit'", c1.Label)
+	}
+	if c1.Meta["focused"] != "true" {
+		t.Errorf("c1.Meta[focused] = %q, want 'true'", c1.Meta["focused"])
+	}
+	if c1.Meta["agent"] != "pi" || c1.Meta["agent_status"] != "blocked" || c1.Meta["kind"] != "agent" {
+		t.Errorf("c1.Meta unexpected: %+v", c1.Meta)
+	}
+
+	// p2: CWD fallback, Label fallback, FocusedPaneID match
+	c2 := cands[1]
+	if c2.Path != "/srv/ws2/work" {
+		t.Errorf("c2.Path = %q, want /srv/ws2/work", c2.Path)
+	}
+	if c2.Label != "codegen" {
+		t.Errorf("c2.Label = %q, want 'codegen'", c2.Label)
+	}
+	if c2.Meta["focused"] != "true" {
+		t.Errorf("c2.Meta[focused] = %q, want 'true' from FocusedPaneID match", c2.Meta["focused"])
+	}
+
+	// p3: workspace CWD fallback, "agent " + ID label fallback
+	c3 := cands[2]
+	if c3.Path != "/srv/ws1" {
+		t.Errorf("c3.Path = %q, want /srv/ws1", c3.Path)
+	}
+	if c3.Label != "agent p3" {
+		t.Errorf("c3.Label = %q, want 'agent p3'", c3.Label)
+	}
+
+	// p4: unknown status with agent name is preserved
+	c4 := cands[3]
+	if c4.Meta["agent"] != "agent-runner" || c4.Meta["agent_status"] != "unknown" {
+		t.Errorf("c4 unexpected: %+v", c4.Meta)
+	}
+}
+
+func TestAgentsProvider_RegistryLifecycle(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Sources.Agents.Icon = "🤖 "
+	probes := config.Probes{Herdr: true}
+
+	reg := NewRegistry(cfg, probes, nil)
+	var agentsProv Provider
+	for _, p := range reg.Providers() {
+		if p.Name() == config.SourceAgents {
+			agentsProv = p
+			break
+		}
+	}
+	if agentsProv == nil {
+		t.Fatal("agents provider not registered in Registry")
+	}
+
+	// IconFor
+	if got, want := reg.IconFor(config.SourceAgents), "🤖 "; got != want {
+		t.Errorf("reg.IconFor(SourceAgents) = %q, want %q", got, want)
+	}
+
+	// By default, agents is not in cfg.General.SourceOrder, so Enabled() should not include it
+	for _, p := range reg.Enabled() {
+		if p.Name() == config.SourceAgents {
+			t.Errorf("default Enabled() contains %q, want excluded", config.SourceAgents)
+		}
+	}
+
+	// When configured in source_order, it runs and Collect() gathers its candidates
+	snapshot := Snapshot{
+		Workspaces: []Workspace{{ID: "w1", Label: "ws1", CWD: "/srv/ws1"}},
+		Panes: []Pane{
+			{ID: "p1", WorkspaceID: "w1", Agent: "opencode", AgentStatus: "working"},
+		},
+	}
+	cfg.General.SourceOrder = []string{config.SourceAgents}
+	regWithAgents := NewRegistry(cfg, probes, nil).WithHerdrSnapshot(snapshot)
+
+	cands, err := regWithAgents.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect error: %v", err)
+	}
+	if len(cands) != 1 {
+		t.Fatalf("Collect cands count = %d, want 1", len(cands))
+	}
+	if cands[0].Source != config.SourceAgents {
+		t.Errorf("cand.Source = %q, want %q", cands[0].Source, config.SourceAgents)
+	}
+	if cands[0].Icon != "🤖 " {
+		t.Errorf("cand.Icon = %q, want %q", cands[0].Icon, "🤖 ")
+	}
+
+	// DisableHerdr disables agentsProvider
+	regWithAgents.DisableHerdr()
+	disabledCands, _ := regWithAgents.Collect(context.Background())
+	if len(disabledCands) != 0 {
+		t.Errorf("Collect after DisableHerdr count = %d, want 0", len(disabledCands))
+	}
+}
+
+// TestScopedRegistry_AgentsRestrictedToGroupRoot proves a group workspace's
+// scoped registry confines the agents source to the group root while the
+// top-level registry stays unscoped. A pane is kept when its derived candidate
+// path (ForegroundCWD first) or its workspace CWD lies at or beneath root —
+// the two can disagree and both are membership signals. Panes tied to neither
+// (including sibling-prefix paths like /srv/group2) are cross-root and must
+// never leak into the nested picker.
+func TestScopedRegistry_AgentsRestrictedToGroupRoot(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.General.SourceOrder = []string{config.SourceAgents}
+	probes := config.Probes{Herdr: true}
+	snapshot := Snapshot{
+		Workspaces: []Workspace{
+			{ID: "w_in", Label: "group-ws", CWD: "/srv/group/w"},
+			{ID: "w_out", Label: "other-ws", CWD: "/other/w"},
+		},
+		Tabs: []Tab{
+			{ID: "t_in", WorkspaceID: "w_in"},
+			{ID: "t_out", WorkspaceID: "w_out"},
+		},
+		Panes: []Pane{
+			// Path tie: foreground CWD under root although the workspace
+			// itself lives elsewhere.
+			{ID: "p_path", WorkspaceID: "w_out", TabID: "t_out", Agent: "claude", AgentStatus: "working", ForegroundCWD: "/srv/group/app"},
+			// Workspace tie: the group's own workspace whose foreground CWD
+			// wandered outside root (workspace path vs ForegroundCWD).
+			{ID: "p_ws", WorkspaceID: "w_in", TabID: "t_in", Agent: "pi", AgentStatus: "blocked", ForegroundCWD: "/other/wander"},
+			// Cross-root: neither path nor workspace under root.
+			{ID: "p_out", WorkspaceID: "w_out", TabID: "t_out", Agent: "opencode", AgentStatus: "idle", ForegroundCWD: "/other/x"},
+			// Sibling-prefix trap: /srv/group2 is not /srv/group.
+			{ID: "p_sibling", WorkspaceID: "w_out", TabID: "t_out", Agent: "runner", AgentStatus: "done", ForegroundCWD: "/srv/group2/app"},
+			// Path falls back to the workspace CWD, itself under root.
+			{ID: "p_fallback", WorkspaceID: "w_in", TabID: "t_in", Agent: "builder", AgentStatus: "done"},
+		},
+	}
+
+	scoped := NewScopedRegistry(cfg, probes, nil, []string{config.SourceAgents}, "/srv/group").WithHerdrSnapshot(snapshot)
+	got, err := scoped.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("scoped Collect error: %v", err)
+	}
+	gotIDs := map[string]bool{}
+	for _, c := range got {
+		gotIDs[c.Meta["pane_id"]] = true
+	}
+	for _, want := range []string{"p_path", "p_ws", "p_fallback"} {
+		if !gotIDs[want] {
+			t.Errorf("scoped agents missing %s (got %v)", want, gotIDs)
+		}
+	}
+	for _, banned := range []string{"p_out", "p_sibling"} {
+		if gotIDs[banned] {
+			t.Errorf("scoped agents leaked cross-root %s (got %v)", banned, gotIDs)
+		}
+	}
+	if len(got) != 3 {
+		t.Errorf("scoped agents count = %d, want 3: %+v", len(got), got)
+	}
+
+	// The top-level registry must not gain a global root filter.
+	unscoped := NewRegistry(cfg, probes, nil).WithHerdrSnapshot(snapshot)
+	all, err := unscoped.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("unscoped Collect error: %v", err)
+	}
+	if len(all) != 5 {
+		t.Errorf("unscoped agents count = %d, want 5 (no global filter)", len(all))
+	}
+}
+
+func TestScopedRegistry_AgentsEmptyRootFailsClosed(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.General.SourceOrder = []string{config.SourceAgents}
+	snapshot := Snapshot{
+		Workspaces: []Workspace{{ID: "other", CWD: "/other"}},
+		Panes:      []Pane{{ID: "p", WorkspaceID: "other", Agent: "pi", AgentStatus: "working", ForegroundCWD: "/other/p"}},
+	}
+	probes := config.Probes{Herdr: true}
+	group := config.WorkspaceConfig{Type: config.WorkspaceTypeGroup, SourceOrder: []string{config.SourceAgents}}
+	scoped := NewScopedRegistryForWorkspace(cfg, probes, nil, group, "").WithHerdrSnapshot(snapshot)
+	got, err := scoped.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("scoped Collect: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("empty-root scoped agents = %+v, want no candidates", got)
+	}
+
+	global := NewRegistry(cfg, probes, nil).WithHerdrSnapshot(snapshot)
+	got, err = global.Collect(context.Background())
+	if err != nil || len(got) != 1 || got[0].Meta["pane_id"] != "p" {
+		t.Fatalf("global unscoped agents = (%+v, %v), want pane p", got, err)
+	}
+}
+
+func TestScopedRegistry_AgentsRootAliasMatchesNormalizedPath(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+	root := filepath.Join(parent, "real")
+	if err := os.MkdirAll(filepath.Join(root, "app"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(parent, "alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.General.SourceOrder = []string{config.SourceAgents}
+	snapshot := Snapshot{
+		Workspaces: []Workspace{{ID: "in", CWD: filepath.Join(root, "app")}, {ID: "out", CWD: filepath.Join(parent, "other")}},
+		Panes: []Pane{
+			{ID: "in", WorkspaceID: "in", Agent: "pi", ForegroundCWD: filepath.Join(root, "app")},
+			{ID: "out", WorkspaceID: "out", Agent: "pi", ForegroundCWD: filepath.Join(parent, "other")},
+		},
+	}
+	got, err := NewScopedRegistry(cfg, config.Probes{Herdr: true}, nil, []string{config.SourceAgents}, alias).
+		WithHerdrSnapshot(snapshot).Collect(context.Background())
+	if err != nil || len(got) != 1 || got[0].Meta["pane_id"] != "in" {
+		t.Fatalf("alias-root agents = (%+v, %v), want only in", got, err)
+	}
+}
+
+// TestAgentCandidatesInRoot_PureScoping locks the group-root membership rule
+// as a pure function: a pane is kept when its derived candidate path or its
+// workspace CWD lies at or beneath root (root itself included), sibling-prefix
+// paths are not descendants, and an empty scoped root returns no panes.
+func TestAgentCandidatesInRoot_PureScoping(t *testing.T) {
+	t.Parallel()
+	snapshot := Snapshot{
+		Workspaces: []Workspace{
+			{ID: "w_in", Label: "group-ws", CWD: "/srv/group/w"},
+			{ID: "w_out", Label: "other-ws", CWD: "/other/w"},
+		},
+		Panes: []Pane{
+			{ID: "p_root", WorkspaceID: "w_out", Agent: "a", AgentStatus: "working", ForegroundCWD: "/srv/group"},
+			{ID: "p_deep", WorkspaceID: "w_out", Agent: "b", AgentStatus: "idle", ForegroundCWD: "/srv/group/deep/app"},
+			{ID: "p_ws", WorkspaceID: "w_in", Agent: "c", AgentStatus: "idle", ForegroundCWD: "/other/wander"},
+			{ID: "p_sibling", WorkspaceID: "w_out", Agent: "d", AgentStatus: "idle", ForegroundCWD: "/srv/group2/app"},
+			{ID: "p_out", WorkspaceID: "w_out", Agent: "e", AgentStatus: "idle", ForegroundCWD: "/other/x"},
+		},
+	}
+
+	for _, tt := range []struct {
+		name string
+		root string
+		want []string
+	}{
+		{name: "scoped keeps root, descendants and workspace ties", root: "/srv/group", want: []string{"p_root", "p_deep", "p_ws"}},
+		{name: "empty scoped root fails closed", root: "", want: nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := AgentCandidatesInRoot(snapshot, tt.root)
+			gotIDs := make([]string, 0, len(got))
+			for _, c := range got {
+				gotIDs = append(gotIDs, c.Meta["pane_id"])
+			}
+			if len(gotIDs) != len(tt.want) || (len(gotIDs) > 0 && !reflect.DeepEqual(gotIDs, tt.want)) {
+				t.Errorf("AgentCandidatesInRoot(%q) = %v, want %v", tt.root, gotIDs, tt.want)
+			}
+		})
+	}
+}

@@ -1360,6 +1360,17 @@ func TestLayoutFromConfigWithIntegrations_ThreadsPerIntegrationLabelFormat(t *te
 	}
 }
 
+func TestLayoutFromConfigWithIntegrations_ThreadsAgentsLabelFormat(t *testing.T) {
+	t.Parallel()
+	sources := config.SourcesConfig{
+		Agents: config.AgentsSourceConfig{LabelFormat: "agent={{.Label}}"},
+	}
+	got := layoutFromConfigWithIntegrations(config.TUIConfig{}, nil, nil, sources)
+	if want := "agent={{.Label}}"; got.LabelFormats.Agents != want {
+		t.Errorf("LabelFormats.Agents = %q, want %q", got.LabelFormats.Agents, want)
+	}
+}
+
 // TestNewTUISelector_StoresRenderer: the tui selector built by
 // cascadeFor/newTUISelector carries the injected Renderer through, so `shep
 // open`'s Bubble Tea fallback gets the real preview.Renderer instead of
@@ -2244,6 +2255,112 @@ func TestOpen_LaunchFocusTabAction_PaneRowFocusesContainingTab(t *testing.T) {
 	}
 	if driver.lastCand.Path != "" {
 		t.Errorf("FocusOrCreate must not be called for a focus-tab action; got candidate %+v", driver.lastCand)
+	}
+}
+
+// TestOpen_LaunchSourceAgentsRoutesToFocusTab proves that any SourceAgents
+// candidate routes to driver.FocusTab using Meta["tab_id"] even when selected
+// with RowActionOpen (e.g. from CLI or nested picker), and never creates a
+// workspace or calls FocusOrCreate.
+func TestOpen_LaunchSourceAgentsRoutesToFocusTab(t *testing.T) {
+	cand := source.Candidate{
+		Source: config.SourceAgents,
+		Label:  "agent-p1",
+		Path:   "/svc/api",
+		Meta:   map[string]string{"workspace_id": "wA", "tab_id": "t1", "pane_id": "p1"},
+	}
+	driver := insidePaneDriver(source.Pane{ID: "cur-p", WorkspaceID: "wA", CWD: "/cur"})
+	errOut, err := runLaunchDirect(t, cand, tui.RowActionOpen, "workspace", nil, driver)
+	if err != nil {
+		t.Fatalf("launch sourceAgents: %v (stderr=%q)", err, errOut)
+	}
+	if len(driver.focused) != 1 || driver.focused[0] != "focus-tab:t1" {
+		t.Errorf("expected FocusTab(t1), got %v", driver.focused)
+	}
+	if driver.lastCand.Path != "" {
+		t.Errorf("FocusOrCreate must not be called for sourceAgents candidate; got %+v", driver.lastCand)
+	}
+	if len(driver.created) != 0 {
+		t.Errorf("no workspace or tab should be created; got %v", driver.created)
+	}
+}
+
+// TestOpen_LaunchSourceAgentsMissingTabIDFailsCleanly proves that a SourceAgents
+// candidate missing Meta["tab_id"] surfaces a clean warning and errExitOne,
+// never creates a workspace, and never calls FocusTab with empty id.
+func TestOpen_LaunchSourceAgentsMissingTabIDFailsCleanly(t *testing.T) {
+	cand := source.Candidate{
+		Source: config.SourceAgents,
+		Label:  "agent-missing-tab",
+		Path:   "/svc/api",
+		Meta:   map[string]string{"workspace_id": "wA", "pane_id": "p1"},
+	}
+	driver := insidePaneDriver(source.Pane{ID: "cur-p", WorkspaceID: "wA", CWD: "/cur"})
+	errOut, err := runLaunchDirect(t, cand, tui.RowActionOpen, "workspace", nil, driver)
+	if err == nil {
+		t.Fatal("expected error for sourceAgents candidate missing tab_id")
+	}
+	if !errors.Is(err, errExitOne) {
+		t.Errorf("expected errExitOne, got %v", err)
+	}
+	if !strings.Contains(errOut, "missing tab id") {
+		t.Errorf("stderr = %q, want 'missing tab id'", errOut)
+	}
+	if len(driver.focused) != 0 {
+		t.Errorf("FocusTab must not be called; got %v", driver.focused)
+	}
+	if driver.lastCand.Path != "" {
+		t.Errorf("FocusOrCreate must not be called; got candidate %+v", driver.lastCand)
+	}
+	if len(driver.created) != 0 {
+		t.Errorf("no workspace or tab should be created; got %v", driver.created)
+	}
+}
+
+// TestOpen_RunOpenCLISelectionSourceAgentsFocusesTabAndNeverCreates proves
+// that when a SourceAgents candidate is resolved and selected through the CLI
+// path (runOpen with query), launch focuses the containing tab and never
+// creates a workspace.
+func TestOpen_RunOpenCLISelectionSourceAgentsFocusesTabAndNeverCreates(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.General.SourceOrder = []string{config.SourceAgents}
+
+	snapshot := source.Snapshot{
+		Workspaces: []source.Workspace{
+			{ID: "wA", Label: "fsociety", CWD: "/srv/fsociety"},
+		},
+		Tabs: []source.Tab{
+			{ID: "t1", WorkspaceID: "wA", Label: "arcade"},
+		},
+		Panes: []source.Pane{
+			{
+				ID:            "p1",
+				WorkspaceID:   "wA",
+				TabID:         "t1",
+				Agent:         "pi",
+				AgentStatus:   "working",
+				TerminalTitle: "security-audit",
+				ForegroundCWD: "/srv/fsociety/sub",
+			},
+		},
+	}
+
+	driver := insidePaneDriver(snapshot.Panes[0])
+	driver.snapshot = snapshot
+
+	out, errOut, err := runOpen(t, cfg, driver, nil, "security-audit")
+	if err != nil {
+		t.Fatalf("runOpen failed: %v (stderr=%q, stdout=%q)", err, errOut, out)
+	}
+
+	if len(driver.focused) != 1 || driver.focused[0] != "focus-tab:t1" {
+		t.Errorf("expected FocusTab(t1), got %v", driver.focused)
+	}
+	if driver.lastCand.Path != "" {
+		t.Errorf("FocusOrCreate must not be called; got %+v", driver.lastCand)
+	}
+	if len(driver.created) != 0 {
+		t.Errorf("no workspace should be created; got %v", driver.created)
 	}
 }
 

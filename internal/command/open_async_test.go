@@ -377,6 +377,148 @@ func TestBuildStreamingProducers_IntegrationFailureSurfacesVisibleError(t *testi
 	}
 }
 
+// agentsSourceSnapshot is one coherent Herdr generation holding a single agent
+// pane plus its containing workspace, so producer tests can assert both the
+// herdr and the agents candidate families derive from the same state.
+func agentsSourceSnapshot() source.Snapshot {
+	return source.Snapshot{
+		Workspaces: []source.Workspace{
+			{ID: "w1", Label: "ws1", ActiveTabID: "w1:t1"},
+		},
+		Tabs: []source.Tab{
+			{ID: "w1:t1", WorkspaceID: "w1", Label: "editor", Number: 1, PaneCount: 1},
+		},
+		Panes: []source.Pane{
+			{ID: "w1:p1", WorkspaceID: "w1", TabID: "w1:t1", CWD: "/srv/ws1", Agent: "claude", AgentStatus: "working", Focused: true},
+		},
+		FocusedWorkspaceID: "w1",
+		FocusedTabID:       "w1:t1",
+		FocusedPaneID:      "w1:p1",
+	}
+}
+
+// TestBuildStreamingProducers_AgentsShareOneSnapshotGeneration proves herdr
+// workspaces and agent panes stream from ONE shared Snapshot generation: a
+// single producer delivers both candidate families (each row keeping its own
+// source identity) together with the snapshot/tree/renderer infra, and the
+// daemon is asked for the state exactly once.
+func TestBuildStreamingProducers_AgentsShareOneSnapshotGeneration(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.General.SourceOrder = []string{config.SourceHerdr, config.SourceAgents}
+	driver := &openDriver{detect: true, snapshot: agentsSourceSnapshot()}
+	app := New(WithHerdrDriver(driver))
+	app.cfg = cfg
+	app.probes = config.Probes{Herdr: true}
+
+	producers := app.buildStreamingProducers(context.Background())
+	var snapshotMsgs []tui.SourceResultMsg
+	for _, p := range producers {
+		msg := p(context.Background())
+		if msg.Err != nil {
+			t.Fatalf("producer Err = %v, want nil", msg.Err)
+		}
+		if msg.Snapshot != nil {
+			snapshotMsgs = append(snapshotMsgs, msg)
+		}
+	}
+	if driver.snapshotCalls != 1 {
+		t.Fatalf("snapshot calls = %d, want exactly one shared generation", driver.snapshotCalls)
+	}
+	if len(snapshotMsgs) != 1 {
+		t.Fatalf("snapshot-carrying messages = %d, want exactly one shared producer", len(snapshotMsgs))
+	}
+	msg := snapshotMsgs[0]
+	if msg.Tree == nil {
+		t.Fatal("shared producer did not carry the tree expander")
+	}
+	if msg.RendererForSnapshot == nil || msg.Renderer == nil {
+		t.Fatal("shared producer did not carry the snapshot preview renderer")
+	}
+	if msg.CurrentPane == nil || msg.CurrentPane.ID != "w1:p1" {
+		t.Errorf("CurrentPane = %+v, want focused pane w1:p1", msg.CurrentPane)
+	}
+	var herdrRows, agentRows int
+	for _, c := range msg.Candidates {
+		switch c.Source {
+		case config.SourceHerdr:
+			herdrRows++
+		case config.SourceAgents:
+			agentRows++
+			if c.Meta["pane_id"] != "w1:p1" {
+				t.Errorf("agents candidate meta = %+v, want pane w1:p1", c.Meta)
+			}
+		default:
+			t.Errorf("unexpected candidate source %q", c.Source)
+		}
+	}
+	if herdrRows != 1 || agentRows != 1 {
+		t.Fatalf("herdr/agent rows = %d/%d, want 1/1 from the shared snapshot generation", herdrRows, agentRows)
+	}
+}
+
+// TestBuildStreamingProducers_AgentsOnlyCarriesSnapshotInfra proves that with
+// general.source_order = ["agents"] the agents-only flow still receives the
+// full Herdr infra (snapshot/tree/renderer/current pane — the source of the
+// Agents view's counts, previews, and focus action) while the normal all view
+// keeps showing only the configured agents rows, all from one snapshot call.
+func TestBuildStreamingProducers_AgentsOnlyCarriesSnapshotInfra(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.General.SourceOrder = []string{config.SourceAgents}
+	driver := &openDriver{detect: true, snapshot: agentsSourceSnapshot()}
+	app := New(WithHerdrDriver(driver))
+	app.cfg = cfg
+	app.probes = config.Probes{Herdr: true}
+
+	producers := app.buildStreamingProducers(context.Background())
+	var msg tui.SourceResultMsg
+	sawSnapshot := false
+	for _, p := range producers {
+		candidate := p(context.Background())
+		if candidate.Err != nil {
+			t.Fatalf("producer Err = %v, want nil", candidate.Err)
+		}
+		if candidate.Snapshot != nil {
+			if sawSnapshot {
+				t.Fatal("more than one producer carried a snapshot generation")
+			}
+			sawSnapshot = true
+			msg = candidate
+		}
+	}
+	if driver.snapshotCalls != 1 {
+		t.Fatalf("snapshot calls = %d, want exactly one", driver.snapshotCalls)
+	}
+	if !sawSnapshot {
+		t.Fatal("agents-only flow did not carry the snapshot generation")
+	}
+	if msg.Tree == nil {
+		t.Fatal("agents-only producer did not carry the tree expander")
+	}
+	if msg.RendererForSnapshot == nil || msg.Renderer == nil {
+		t.Fatal("agents-only producer did not carry the snapshot preview renderer")
+	}
+	if msg.CurrentPane == nil || msg.CurrentPane.ID != "w1:p1" {
+		t.Errorf("CurrentPane = %+v, want focused pane w1:p1", msg.CurrentPane)
+	}
+	var herdrRows, agentRows int
+	for _, c := range msg.Candidates {
+		switch c.Source {
+		case config.SourceHerdr:
+			herdrRows++
+		case config.SourceAgents:
+			agentRows++
+		}
+	}
+	if herdrRows != 0 {
+		t.Errorf("herdr workspace rows = %d, want 0 when herdr is not in source_order", herdrRows)
+	}
+	if agentRows != 1 {
+		t.Errorf("agent rows = %d, want 1", agentRows)
+	}
+}
+
 func TestBuildRankingProducer_LoadsWorkspaceMRU(t *testing.T) {
 	t.Parallel()
 	cfg := config.Defaults()

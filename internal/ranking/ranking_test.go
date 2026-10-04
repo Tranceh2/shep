@@ -298,6 +298,57 @@ func TestSortBySourceOrderLeavesUnrankedSourcesInProviderOrder(t *testing.T) {
 	}
 }
 
+func TestSnapshot_PaneRecentRankAndRecentRank(t *testing.T) {
+	t.Parallel()
+
+	paneCand1 := source.Candidate{
+		Source: config.SourceAgents,
+		Meta:   map[string]string{"pane_id": "p1"},
+	}
+	paneCand2 := source.Candidate{
+		Source: config.SourceAgents,
+		Meta:   map[string]string{"pane_id": "p2"},
+	}
+	paneCandUnknown := source.Candidate{
+		Source: config.SourceAgents,
+		Meta:   map[string]string{"pane_id": "p_unknown"},
+	}
+
+	snap := Snapshot{}.WithRecent([]string{
+		Identity(paneCand1),
+		Identity(paneCand2),
+	})
+
+	// Rank for p1 is 0 (most recent)
+	if got, want := snap.PaneRecentRank("p1"), 0; got != want {
+		t.Errorf("PaneRecentRank(p1) = %d, want %d", got, want)
+	}
+	if got, want := snap.RecentRank(paneCand1), 0; got != want {
+		t.Errorf("RecentRank(paneCand1) = %d, want %d", got, want)
+	}
+
+	// Rank for p2 is 1 (second most recent)
+	if got, want := snap.PaneRecentRank("p2"), 1; got != want {
+		t.Errorf("PaneRecentRank(p2) = %d, want %d", got, want)
+	}
+	if got, want := snap.RecentRank(paneCand2), 1; got != want {
+		t.Errorf("RecentRank(paneCand2) = %d, want %d", got, want)
+	}
+
+	// Rank for unranked pane is len(recent)+1 = 3
+	if got, want := snap.PaneRecentRank("p_unknown"), 3; got != want {
+		t.Errorf("PaneRecentRank(p_unknown) = %d, want %d", got, want)
+	}
+	if got, want := snap.RecentRank(paneCandUnknown), 3; got != want {
+		t.Errorf("RecentRank(paneCandUnknown) = %d, want %d", got, want)
+	}
+
+	// Empty pane ID returns len(recent)+1
+	if got, want := snap.PaneRecentRank(""), 3; got != want {
+		t.Errorf("PaneRecentRank(\"\") = %d, want %d", got, want)
+	}
+}
+
 func TestClassifyTextAliasesStayBelowLabelsAndAbovePath(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

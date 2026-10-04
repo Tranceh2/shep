@@ -387,12 +387,13 @@ type Registry struct {
 // WithHerdrSnapshot supplies the already-captured startup generation to this
 // registry, preventing its herdr provider from issuing another state query.
 func (r *Registry) WithHerdrSnapshot(snapshot Snapshot) *Registry {
-	provider, ok := r.providers[config.SourceHerdr].(*herdrProvider)
-	if !ok {
-		return r
-	}
 	copy := cloneSnapshot(snapshot)
-	provider.snapshot = &copy
+	if provider, ok := r.providers[config.SourceHerdr].(*herdrProvider); ok {
+		provider.snapshot = &copy
+	}
+	if provider, ok := r.providers[config.SourceAgents].(*agentsProvider); ok {
+		provider.snapshot = &copy
+	}
 	return r
 }
 
@@ -400,6 +401,9 @@ func (r *Registry) WithHerdrSnapshot(snapshot Snapshot) *Registry {
 // initial snapshot failure, without retrying fragmented state loading.
 func (r *Registry) DisableHerdr() *Registry {
 	if provider, ok := r.providers[config.SourceHerdr].(*herdrProvider); ok {
+		provider.disabled = true
+	}
+	if provider, ok := r.providers[config.SourceAgents].(*agentsProvider); ok {
 		provider.disabled = true
 	}
 	return r
@@ -429,6 +433,7 @@ func NewRegistry(cfg *config.Config, probes config.Probes, herdrDriver HerdrDriv
 		config.SourceWorkspaces: &workspacesProvider{cfg: cfg},
 		config.SourceZoxide:     &zoxideProvider{probes: probes, cfg: cfg},
 		config.SourceProjects:   &projectsProvider{cfg: cfg, roots: append([]string(nil), cfg.Sources.Projects.Roots...)},
+		config.SourceAgents:     &agentsProvider{driver: herdrDriver, probes: probes, cfg: cfg},
 	}
 	for _, integration := range cfg.Integrations {
 		providers[integration.Name] = &integrationProvider{cfg: integration}
@@ -438,9 +443,9 @@ func NewRegistry(cfg *config.Config, probes config.Probes, herdrDriver HerdrDriv
 
 // NewScopedRegistry builds a Registry for a group workspace's nested picker:
 // only the sources named in the group entry run; the projects source scans
-// beneath root instead of contributing nothing, and the zoxide source is
-// scoped to root's descendants instead of surfacing the user's entire
-// unscoped zoxide history.
+// beneath root instead of contributing nothing, the zoxide source is scoped
+// to root's descendants instead of surfacing the user's entire unscoped
+// zoxide history, and the agents source keeps only panes tied to root.
 func NewScopedRegistry(cfg *config.Config, probes config.Probes, herdrDriver HerdrDriver, sources []string, root string) *Registry {
 	return NewScopedRegistryWithOrder(cfg, probes, herdrDriver, sources, sources, root)
 }
@@ -495,6 +500,10 @@ func newScopedRegistry(cfg *config.Config, probes config.Probes, herdrDriver Her
 		// overrides apply only within this group; the root remains the sole
 		// scan root and global roots are deliberately discarded.
 		config.SourceProjects: &projectsProvider{cfg: scoped, root: root},
+		// The agents provider derives its rows from the shared Herdr
+		// generation but confines them to the group root: a nested group
+		// picker must not surface agent panes from unrelated roots.
+		config.SourceAgents: &agentsProvider{driver: herdrDriver, probes: probes, cfg: scoped, root: root, scoped: true},
 	}
 	for _, integration := range scoped.Integrations {
 		providers[integration.Name] = &integrationProvider{cfg: integration}
@@ -597,6 +606,8 @@ func (r *Registry) IconFor(name string) string {
 		return r.cfg.Sources.Zoxide.Icon
 	case config.SourceProjects:
 		return r.cfg.Sources.Projects.Icon
+	case config.SourceAgents:
+		return r.cfg.Sources.Agents.Icon
 	}
 	for _, integration := range r.cfg.Integrations {
 		if integration.Name == name {

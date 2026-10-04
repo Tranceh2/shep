@@ -324,6 +324,7 @@ func layoutFromConfigWithIntegrations(t config.TUIConfig, sources []string, inte
 	layout.LabelFormats.Workspaces = s.Workspaces.LabelFormat
 	layout.LabelFormats.Zoxide = s.Zoxide.LabelFormat
 	layout.LabelFormats.Projects = s.Projects.LabelFormat
+	layout.LabelFormats.Agents = s.Agents.LabelFormat
 	layout.LabelFormats.Tab = s.Herdr.TabLabelFormat
 	layout.LabelFormats.Pane = s.Herdr.PaneLabelFormat
 	return layout
@@ -610,16 +611,21 @@ func (a *App) buildProviderProducer(p source.Provider, icon string) tui.SourcePr
 	}
 }
 
-func (a *App) buildHerdrProducer(icon string, sessionsIcon string) tui.SourceProducer {
+// snapshotProducerOptions selects which candidate families the single shared
+// Herdr snapshot generation feeds. Herdr workspaces, sessions, and agent panes
+// all derive from one state generation, so whichever families
+// general.source_order enables stream through one producer: the daemon is
+// asked for the state exactly once per startup and the picker never mixes two
+// generations.
+type snapshotProducerOptions struct {
+	herdr    bool
+	sessions bool
+	agents   bool
+}
+
+func (a *App) buildSnapshotProducer(herdrIcon, sessionsIcon, agentsIcon string, opts snapshotProducerOptions) tui.SourceProducer {
 	cfg := a.Config()
 	driver := a.Driver()
-	sessionsEnabled := false
-	for _, src := range cfg.General.SourceOrder {
-		if src == config.SourceSessions {
-			sessionsEnabled = true
-			break
-		}
-	}
 	return func(ctx context.Context) tui.SourceResultMsg {
 		if driver == nil || !driver.Detect(ctx) {
 			return tui.SourceResultMsg{Source: config.SourceHerdr}
@@ -634,17 +640,22 @@ func (a *App) buildHerdrProducer(icon string, sessionsIcon string) tui.SourcePro
 			}
 		}
 
-		rawHerdr := source.HerdrCandidates(snapshot)
-		cands := make([]source.Candidate, 0, len(rawHerdr))
-		for _, c := range rawHerdr {
-			clone := c.Clone()
-			if icon != "" {
-				clone.Icon = icon
+		var cands []source.Candidate
+		var snapshotSources []string
+
+		if opts.herdr {
+			rawHerdr := source.HerdrCandidates(snapshot)
+			for _, c := range rawHerdr {
+				clone := c.Clone()
+				if herdrIcon != "" {
+					clone.Icon = herdrIcon
+				}
+				cands = append(cands, clone)
 			}
-			cands = append(cands, clone)
+			snapshotSources = append(snapshotSources, config.SourceHerdr)
 		}
 
-		if sessionsEnabled {
+		if opts.sessions {
 			sessCtx, sCancel := context.WithTimeout(ctx, source.SessionsListTimeout)
 			sessions, sErr := driver.ListSessions(sessCtx)
 			sCancel()
@@ -658,6 +669,21 @@ func (a *App) buildHerdrProducer(icon string, sessionsIcon string) tui.SourcePro
 					cands = append(cands, clone)
 				}
 			}
+		}
+
+		if opts.agents {
+			// Agent rows keep their own source identity so the model files
+			// them under SourceAgents even though they arrive on this shared
+			// message.
+			rawAgents := source.AgentCandidates(snapshot)
+			for _, c := range rawAgents {
+				clone := c.Clone()
+				if agentsIcon != "" {
+					clone.Icon = agentsIcon
+				}
+				cands = append(cands, clone)
+			}
+			snapshotSources = append(snapshotSources, config.SourceAgents)
 		}
 
 		var currentPane *source.Pane
@@ -677,6 +703,8 @@ func (a *App) buildHerdrProducer(icon string, sessionsIcon string) tui.SourcePro
 			Snapshot:            &snapshot,
 			RendererForSnapshot: a.buildPreviewRendererForSnapshot,
 			HerdrIcon:           cfg.Sources.Herdr.Icon,
+			AgentsIcon:          cfg.Sources.Agents.Icon,
+			SnapshotSources:     snapshotSources,
 			Renderer:            renderer,
 			CurrentPane:         currentPane,
 		}
@@ -720,21 +748,19 @@ func (a *App) buildStreamingProducers(cmdCtx context.Context) []tui.SourceProduc
 
 	var producers []tui.SourceProducer
 
+	// herdr workspaces, sessions, and agent panes all derive from one Herdr
+	// state generation, so they share a single snapshot producer (see
+	// App.buildSnapshotProducer) instead of issuing a Snapshot per family.
+	var includeHerdr, includeAgents bool
+	var standaloneSessions source.Provider
 	for _, p := range registry.Enabled() {
 		switch p.Name() {
 		case config.SourceHerdr:
-			producers = append(producers, a.buildHerdrProducer(registry.IconFor(config.SourceHerdr), registry.IconFor(config.SourceSessions)))
+			includeHerdr = true
 		case config.SourceSessions:
-			hasHerdr := false
-			for _, src := range cfg.General.SourceOrder {
-				if src == config.SourceHerdr {
-					hasHerdr = true
-					break
-				}
-			}
-			if !hasHerdr {
-				producers = append(producers, a.buildProviderProducer(p, registry.IconFor(config.SourceSessions)))
-			}
+			standaloneSessions = p
+		case config.SourceAgents:
+			includeAgents = true
 		default:
 			// workspaces, zoxide, projects, and every declared integration
 			// share the same generic producer builder (see
@@ -742,6 +768,25 @@ func (a *App) buildStreamingProducers(cmdCtx context.Context) []tui.SourceProduc
 			// stream the result through tui.SourceResultMsg.Err on failure.
 			producers = append(producers, a.buildProviderProducer(p, registry.IconFor(p.Name())))
 		}
+	}
+
+	if includeHerdr || includeAgents {
+		producers = append(producers, a.buildSnapshotProducer(
+			registry.IconFor(config.SourceHerdr),
+			registry.IconFor(config.SourceSessions),
+			registry.IconFor(config.SourceAgents),
+			snapshotProducerOptions{
+				herdr: includeHerdr,
+				// sessions ride the snapshot generation only alongside herdr
+				// workspaces (the pre-agents contract); without herdr they
+				// keep their standalone producer.
+				sessions: includeHerdr && standaloneSessions != nil,
+				agents:   includeAgents,
+			},
+		))
+	}
+	if standaloneSessions != nil && !includeHerdr {
+		producers = append(producers, a.buildProviderProducer(standaloneSessions, registry.IconFor(config.SourceSessions)))
 	}
 
 	if cfg.Ranking.Enabled {
@@ -870,7 +915,7 @@ func (a *App) runOpen(cmd *cobra.Command, query, pathFlag, targetFlag string, ag
 		a.currentPane = currentPane
 	}
 
-	if cand.Path != "" && cand.Source != config.SourceSessions && action != tui.RowActionFocusTab {
+	if cand.Path != "" && cand.Source != config.SourceSessions && cand.Source != config.SourceAgents && action != tui.RowActionFocusTab {
 		if _, err := os.Stat(cand.Path); err != nil {
 			cand.Missing = true
 		}
@@ -944,7 +989,7 @@ func (a *App) recordRankingSuccess(cand source.Candidate) {
 }
 
 func (a *App) recordAcknowledgement(cand source.Candidate, action tui.RowAction) {
-	if action != tui.RowActionFocusTab {
+	if action != tui.RowActionFocusTab && cand.Source != config.SourceAgents {
 		return
 	}
 	if cand.Meta == nil {
@@ -1305,21 +1350,14 @@ func (a *App) launch(ctx context.Context, cand source.Candidate, action tui.RowA
 		return launchOutcomePathOnly, nil
 	}
 
-	// A synthesized tree-expand child row (RowActionFocusTab) identifies an
-	// ALREADY-OPEN tab (or a pane inside one) in an ALREADY-OPEN workspace:
-	// it routes straight to FocusTab and bypasses the --target switch
-	// entirely (there is no "workspace"/"tab"/"pane" choice for a candidate
-	// that is itself a tab/pane). A pane row reuses the exact same FocusTab
-	// call as a tab row: Herdr has no "focus this exact pane" command (see
-	// internal/herdr.Driver.FocusTab's own doc comment), so the safest
-	// truthful action for Enter on a pane is focusing its containing tab —
-	// launchChildTab only reads Meta["tab_id"], which every synthesized pane
-	// candidate carries alongside its own pane_id (see internal/tui/tree.go's
-	// synthesizeWorkspaceChildren). Checked before the switch below so it can
-	// never fall through to launchWorkspace/launchInCurrentWorkspace. The
-	// decision is the TUI-owned typed RowAction, not the candidate's Source
-	// string.
-	if action == tui.RowActionFocusTab {
+	// A synthesized tree-expand child row (RowActionFocusTab) or an agents source
+	// selection identifies an ALREADY-OPEN tab (or a pane inside one) in an
+	// ALREADY-OPEN workspace: it routes straight to FocusTab and bypasses the
+	// --target switch entirely (there is no "workspace"/"tab"/"pane" choice for
+	// an existing pane/tab). Herdr has no "focus this exact pane" command, so
+	// focusing its containing tab is the safest truthful action.
+	// launchChildTab only reads Meta["tab_id"].
+	if action == tui.RowActionFocusTab || cand.Source == config.SourceAgents {
 		return a.launchChildTab(ctx, driver, cand, errOut)
 	}
 

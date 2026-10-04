@@ -93,6 +93,34 @@ func applySnapshotRefresh(t *testing.T, m Model) Model {
 	return next.(Model)
 }
 
+func TestSnapshotRefresh_AgentsOnlyLayoutDoesNotIntroduceHerdr(t *testing.T) {
+	initial := snapshotGeneration("w1", "w1:p1", "working")
+	initial.Panes[0].Agent = "pi"
+	replacement := snapshotGeneration("w2", "w2:p1", "idle")
+	replacement.Panes[0].Agent = "pi"
+	driver := &scriptedSnapshotDriver{responses: []snapshotDriverResponse{{snapshot: replacement}}}
+	m := NewModelWithTree(source.AgentCandidates(initial), nil, NewTreeExpanderFromSnapshot(initial),
+		Layout{SourceOrder: []string{config.SourceAgents}}).
+		WithSnapshotRefresh(driver, initial, nil, "")
+	m = applySnapshotRefresh(t, m)
+	if len(m.baseCandidates) != 1 || m.baseCandidates[0].Source != config.SourceAgents || m.baseCandidates[0].Meta["pane_id"] != "w2:p1" {
+		t.Fatalf("agents-only refresh candidates = %+v, want only new agent", m.baseCandidates)
+	}
+}
+
+func TestSnapshotRefresh_ExplicitNonSnapshotSourceKeepsHerdrAbsent(t *testing.T) {
+	initial := source.Snapshot{}
+	replacement := snapshotGeneration("w2", "w2:p1", "working")
+	driver := &scriptedSnapshotDriver{responses: []snapshotDriverResponse{{snapshot: replacement}}}
+	m := NewModelWithTree([]source.Candidate{{Source: config.SourceProjects, Path: "/project"}}, nil,
+		NewTreeExpanderFromSnapshot(initial), Layout{SourceOrder: []string{config.SourceProjects}}).
+		WithSnapshotRefresh(driver, initial, nil, "")
+	m = applySnapshotRefresh(t, m)
+	if len(m.baseCandidates) != 1 || m.baseCandidates[0].Source != config.SourceProjects {
+		t.Fatalf("non-snapshot refresh candidates = %+v, want only projects", m.baseCandidates)
+	}
+}
+
 func TestSnapshotRefresh_GatesByTTLAndSingleFlight(t *testing.T) {
 	initial := snapshotGeneration("w1", "w1:p1", "working")
 	driver := &scriptedSnapshotDriver{responses: []snapshotDriverResponse{{snapshot: snapshotGeneration("w2", "w2:p1", "idle")}}}

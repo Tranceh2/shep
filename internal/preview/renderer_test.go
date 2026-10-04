@@ -1382,3 +1382,53 @@ func TestRenderer_WithSnapshotBuildsImmutableGeneration(t *testing.T) {
 		t.Errorf("second generation renderer did not use its own snapshot: %q", secondText)
 	}
 }
+
+// TestResolvePreviewNames_AgentsHonorConfiguredPreview proves the agents
+// source participates in the preview contract: an explicit
+// [sources.agents].preview is applied to agents rows (it was previously
+// parsed and validated but silently ignored), and an unconfigured agents
+// source keeps falling through to preview.default.
+func TestResolvePreviewNames_AgentsHonorConfiguredPreview(t *testing.T) {
+	t.Parallel()
+
+	load := func(t *testing.T, body string) *config.Config {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "config.toml")
+		if err := os.WriteFile(path, []byte("version = 2\n"+body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := config.Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}
+	agent := source.Candidate{Source: config.SourceAgents, Path: "/srv/ws1/src", Label: "codegen"}
+
+	t.Run("configured sources.agents.preview is applied", func(t *testing.T) {
+		t.Parallel()
+		cfg := load(t, "[sources.agents]\npreview = [\""+config.PreviewAgentStatus+"\"]\n")
+		got := resolvePreviewNames(cfg, agent)
+		if len(got) != 1 || got[0] != config.PreviewAgentStatus {
+			t.Errorf("agents sections = %v, want [%s]", got, config.PreviewAgentStatus)
+		}
+	})
+
+	t.Run("unconfigured agents fall back to preview.default", func(t *testing.T) {
+		t.Parallel()
+		cfg := load(t, "")
+		got := resolvePreviewNames(cfg, agent)
+		want := []string{config.PreviewAgentStatus, config.PreviewIdentity, config.PreviewGit}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("agents sections = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("explicit empty agents preview means no sections", func(t *testing.T) {
+		t.Parallel()
+		cfg := load(t, "[sources.agents]\npreview = []\n")
+		if got := resolvePreviewNames(cfg, agent); len(got) != 0 {
+			t.Errorf("agents sections = %v, want none", got)
+		}
+	})
+}

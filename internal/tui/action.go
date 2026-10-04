@@ -87,6 +87,9 @@ func rowActionDescriptor(r Row) rowActionDescriptorResult {
 		if r.Candidate.Source == config.SourceSessions {
 			return rowActionDescriptorResult{Action: RowActionOpen, FooterLabel: footerLabelOpenSession, HelpText: helpLabelOpenSession}
 		}
+		if r.Candidate.Source == config.SourceAgents {
+			return rowActionDescriptorResult{Action: RowActionFocusTab, FooterLabel: footerLabelFocusContainingTab, HelpText: helpLabelFocusContainingTab}
+		}
 		return rowActionDescriptorResult{Action: RowActionOpen, FooterLabel: footerLabelOpen, HelpText: helpLabelOpen}
 	}
 }

@@ -3175,3 +3175,133 @@ func TestLoad_RejectsInvalidWorkspaceNameFieldsWithScope(t *testing.T) {
 		})
 	}
 }
+
+func TestConfig_AgentsSource_DefaultsAndLoad(t *testing.T) {
+	t.Parallel()
+
+	// 1. Defaults: general.source_order does NOT include agents
+	cfg := Defaults()
+	for _, s := range cfg.General.SourceOrder {
+		if s == SourceAgents {
+			t.Errorf("default source_order contains %q, want excluded", SourceAgents)
+		}
+	}
+	if got := cfg.Sources.Agents.Icon; got != "" {
+		t.Errorf("agents icon = %q, want empty by default", got)
+	}
+	if got, want := cfg.Sources.Agents.LabelFormat, "{{.Label}}"; got != want {
+		t.Errorf("agents label_format = %q, want %q", got, want)
+	}
+
+	// 2. Load with valid [sources.agents] and source_order containing "agents"
+	const doc = `
+[general]
+source_order = ["agents", "herdr"]
+
+[sources.agents]
+icon = "🤖 "
+label_format = "{{.Label}} [{{.AgentStatus}}]"
+preview = ["identity", "active_pane"]
+`
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("load valid agents config: %v", err)
+	}
+	if got, want := loaded.General.SourceOrder, []string{SourceAgents, SourceHerdr}; !reflect.DeepEqual(got, want) {
+		t.Errorf("source_order = %v, want %v", got, want)
+	}
+	if got, want := loaded.Sources.Agents.Icon, "🤖 "; got != want {
+		t.Errorf("sources.agents.icon = %q, want %q", got, want)
+	}
+	if got, want := loaded.Sources.Agents.LabelFormat, "{{.Label}} [{{.AgentStatus}}]"; got != want {
+		t.Errorf("sources.agents.label_format = %q, want %q", got, want)
+	}
+	if got, want := loaded.Sources.Agents.Preview, []string{"identity", "active_pane"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("sources.agents.preview = %v, want %v", got, want)
+	}
+}
+
+func TestConfig_AgentsSource_RejectsInvalid(t *testing.T) {
+	t.Parallel()
+
+	// Invalid label format
+	const docBadLabel = `
+[sources.agents]
+label_format = "{{ .InvalidSyntax "
+`
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "bad_label.toml")
+	if err := os.WriteFile(path, []byte(docBadLabel), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "sources.agents.label_format") {
+		t.Errorf("expected error naming sources.agents.label_format, got %v", err)
+	}
+
+	// Invalid preview section
+	const docBadPreview = `
+[sources.agents]
+preview = ["nonexistent_section"]
+`
+	path2 := filepath.Join(tmp, "bad_preview.toml")
+	if err := os.WriteFile(path2, []byte(docBadPreview), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path2); err == nil || !strings.Contains(err.Error(), "sources.agents.preview") {
+		t.Errorf("expected error naming sources.agents.preview, got %v", err)
+	}
+}
+
+func TestConfig_AgentsSource_GroupRequiresRoot(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name string
+		path string
+	}{
+		{name: "omitted path"},
+		{name: "blank path", path: `path = "   "`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			doc := "[[workspaces]]\nname = \"agents-group\"\ntype = \"group\"\nsource_order = [\"agents\"]\n" + tt.path + "\n"
+			if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "workspaces[0]") || !strings.Contains(err.Error(), "path") {
+				t.Fatalf("Load error = %v, want indexed group path error", err)
+			}
+		})
+	}
+}
+
+func TestConfig_AgentsSource_GroupWorkspaceSourceOrder(t *testing.T) {
+	t.Parallel()
+
+	const doc = `
+[[workspaces]]
+name = "agents-group"
+type = "group"
+path = "~/agents"
+source_order = ["agents", "herdr"]
+`
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "group_agents.toml")
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load group workspace with agents: %v", err)
+	}
+	if len(cfg.Workspaces) != 1 {
+		t.Fatalf("workspaces count = %d, want 1", len(cfg.Workspaces))
+	}
+	if got, want := cfg.Workspaces[0].SourceOrder, []string{SourceAgents, SourceHerdr}; !reflect.DeepEqual(got, want) {
+		t.Errorf("group source_order = %v, want %v", got, want)
+	}
+}

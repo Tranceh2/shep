@@ -179,6 +179,13 @@ func TestRowActionDescriptor_TruthfulPerRowKind(t *testing.T) {
 			// truthfully mentions the pane it belongs to).
 			mustNotContain: []string{"focus pane"},
 		},
+		{
+			name:            "agents candidate row focuses containing tab",
+			row:             Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "pi", Source: config.SourceAgents, Meta: map[string]string{"pane_id": "p1", "tab_id": "t1"}}},
+			wantAction:      RowActionFocusTab,
+			wantFooterExact: "Focus containing tab",
+			mustNotContain:  []string{"focus pane", "create"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
