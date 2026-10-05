@@ -173,10 +173,10 @@ func TestRowPrimaryText_DefaultLabelFormatsAreLabelFirst(t *testing.T) {
 	}
 }
 
-// TestRowPrimaryText_IntegrationUsesConfiguredFormatKeyedByName proves an
-// integration row's label_format resolves by Candidate.Source (the declared
-// [[integrations]].name), mirroring the fixed built-in fields above but
-// looked up in the open-ended Integrations map instead.
+// TestRowPrimaryText_CustomSourceUsesConfiguredFormatKeyedByName proves an
+// custom source row's label_format resolves by Candidate.Source (the declared
+// [[sources.custom]].name), mirroring the fixed built-in fields above but
+// looked up in the open-ended CustomSources map instead.
 func TestRowPrimaryText_DefaultDirectoryLabelsUseTildeAndFallback(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
@@ -205,9 +205,9 @@ func TestRowPrimaryText_DefaultDirectoryLabelsUseTildeAndFallback(t *testing.T) 
 	}
 }
 
-func TestRowPrimaryText_IntegrationUsesConfiguredFormatKeyedByName(t *testing.T) {
+func TestRowPrimaryText_CustomSourceUsesConfiguredFormatKeyedByName(t *testing.T) {
 	m := newRenderTestModel(ThemeMocha, FocusList)
-	m.layout.LabelFormats = LabelFormats{Integrations: map[string]string{"prs": "PR {{.Label}}"}}
+	m.layout.LabelFormats = LabelFormats{CustomSources: map[string]string{"prs": "PR {{.Label}}"}}
 	row := Row{Kind: RowCandidate, Candidate: source.Candidate{
 		Source: "prs", Label: "42", Icon: "P",
 	}}
@@ -217,14 +217,14 @@ func TestRowPrimaryText_IntegrationUsesConfiguredFormatKeyedByName(t *testing.T)
 	}
 }
 
-// TestRowPrimaryText_IntegrationDefaultFormatIsLabelOnly proves the
-// label_format config.Load defaults every declared integration to
-// ("{{.Label}}", see config.normalizeIntegrations) renders label-only, since
-// a command-only integration row (Meta["command"] set, no Path) would
+// TestRowPrimaryText_CustomSourceDefaultFormatIsLabelOnly proves the
+// label_format config.Load defaults every declared custom source to
+// ("{{.Label}}", see config.normalizeCustomSources) renders label-only, since
+// a command-only custom source row (Meta["command"] set, no Path) would
 // otherwise render blank under the historical path-only fallback.
-func TestRowPrimaryText_IntegrationDefaultFormatIsLabelOnly(t *testing.T) {
+func TestRowPrimaryText_CustomSourceDefaultFormatIsLabelOnly(t *testing.T) {
 	m := newRenderTestModel(ThemeMocha, FocusList)
-	m.layout.LabelFormats = LabelFormats{Integrations: map[string]string{"prs": "{{.Label}}"}}
+	m.layout.LabelFormats = LabelFormats{CustomSources: map[string]string{"prs": "{{.Label}}"}}
 	row := Row{Kind: RowCandidate, Candidate: source.Candidate{
 		Source: "prs", Label: "PR 42", Icon: "P", Meta: map[string]string{"command": "gh pr view 42"},
 	}}
@@ -235,9 +235,9 @@ func TestRowPrimaryText_IntegrationDefaultFormatIsLabelOnly(t *testing.T) {
 }
 
 // TestRowPrimaryText_UndeclaredSourceKeepsPathOnlyFallback proves a source
-// name absent from Layout.LabelFormats.Integrations (not a declared
-// [[integrations]] entry — e.g. a direct --path candidate) keeps the
-// historical path-only default, unaffected by the integrations feature.
+// name absent from Layout.LabelFormats.CustomSources (not a declared
+// [[sources.custom]] entry — e.g. a direct --path candidate) keeps the
+// historical path-only default, unaffected by the custom sources feature.
 func TestRowPrimaryText_UndeclaredSourceKeepsPathOnlyFallback(t *testing.T) {
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	row := Row{Kind: RowCandidate, Candidate: source.Candidate{

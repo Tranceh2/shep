@@ -41,24 +41,24 @@ func Normalize(input string) (string, error) {
 	return pathutil.Normalize(input)
 }
 
-// Dedup normalises each candidate and removes duplicate candidates. Integration
+// Dedup normalises each candidate and removes duplicate candidates. Custom-source
 // candidates are actionable routes, so their stable ranking.Identity is the
 // deduplication key and filesystem path/label collisions are irrelevant. Other
 // non-Herdr candidates retain the established path+case-insensitive-label rule.
-// Herdr- and sessions-sourced candidates are exempt from non-integration
+// Herdr- and sessions-sourced candidates are exempt from non-custom source
 // collapse: each is an independently actionable daemon target and may
 // legitimately share a label+path. The returned slice preserves input order;
 // survivors carry a defensive Meta copy and their NormalizedPath.
 //
-// This is an O(N^2) scan for path-backed non-integration candidates because
-// SameDir depends on a Stat syscall. Integration identity lookup is O(1).
+// This is an O(N^2) scan for path-backed non-custom source candidates because
+// SameDir depends on a Stat syscall. Custom-source identity lookup is O(1).
 func Dedup(candidates []source.Candidate) []source.Candidate {
 	if len(candidates) == 0 {
 		return nil
 	}
 	out := make([]source.Candidate, 0, len(candidates))
-	nonIntegrationLabelBuckets := make(map[string][]int, len(candidates))
-	integrationIdentities := make(map[string]struct{}, len(candidates))
+	nonCustomSourceLabelBuckets := make(map[string][]int, len(candidates))
+	customSourceIdentities := make(map[string]struct{}, len(candidates))
 	for _, c := range candidates {
 		norm, err := Normalize(c.Path)
 		if err != nil {
@@ -69,13 +69,13 @@ func Dedup(candidates []source.Candidate) []source.Candidate {
 		clone := c.Clone()
 		clone.NormalizedPath = norm
 
-		if c.Meta["integration"] == "true" {
+		if c.Meta["custom_source"] == "true" {
 			identity := ranking.Identity(clone)
 			if identity != "" {
-				if _, duplicate := integrationIdentities[identity]; duplicate {
+				if _, duplicate := customSourceIdentities[identity]; duplicate {
 					continue
 				}
-				integrationIdentities[identity] = struct{}{}
+				customSourceIdentities[identity] = struct{}{}
 			}
 			out = append(out, clone)
 			continue
@@ -91,7 +91,7 @@ func Dedup(candidates []source.Candidate) []source.Candidate {
 
 		labelKey := strings.ToLower(c.Label)
 		duplicate := false
-		for _, keptIdx := range nonIntegrationLabelBuckets[labelKey] {
+		for _, keptIdx := range nonCustomSourceLabelBuckets[labelKey] {
 			kept := out[keptIdx]
 			if kept.NormalizedPath == norm || pathutil.SameDir(kept.NormalizedPath, norm) {
 				duplicate = true
@@ -102,7 +102,7 @@ func Dedup(candidates []source.Candidate) []source.Candidate {
 			continue
 		}
 		out = append(out, clone)
-		nonIntegrationLabelBuckets[labelKey] = append(nonIntegrationLabelBuckets[labelKey], len(out)-1)
+		nonCustomSourceLabelBuckets[labelKey] = append(nonCustomSourceLabelBuckets[labelKey], len(out)-1)
 	}
 	return out
 }

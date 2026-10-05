@@ -89,12 +89,12 @@ func TestSortUsesCheapOpenActionWithinLabelQualityTie(t *testing.T) {
 	}
 }
 
-func TestSortOpenHerdrWorkspaceOutranksIntegrationAtSameMatchLayer(t *testing.T) {
+func TestSortOpenHerdrWorkspaceOutranksCustomSourceAtSameMatchLayer(t *testing.T) {
 	open := source.Candidate{Source: config.SourceHerdr, Path: "/repo", Label: "deploy", Meta: map[string]string{"workspace_id": "open"}}
-	integration := source.Candidate{Source: "prs", Path: "/repo", Label: "deploy", Meta: map[string]string{"command": "gh pr view 1"}}
-	got := Sort([]source.Candidate{integration, open}, "deploy", Snapshot{enabled: true})
+	customSource := source.Candidate{Source: "prs", Path: "/repo", Label: "deploy", Meta: map[string]string{"command": "gh pr view 1"}}
+	got := Sort([]source.Candidate{customSource, open}, "deploy", Snapshot{enabled: true})
 	if Identity(got[0]) != Identity(open) {
-		t.Fatalf("open workspace did not outrank integration at same match layer: %+v", got)
+		t.Fatalf("open workspace did not outrank customSource at same match layer: %+v", got)
 	}
 }
 

@@ -327,15 +327,15 @@ func TestRender_NoDefaultFallsBackToIdentity(t *testing.T) {
 // Render must never come back as a blank success; it must fall back to a
 // clean identity preview instead, and any command failure must stay hidden
 // (never surfaced as an error/warning).
-func TestRender_IntegrationLocalCommandsUseMetadataAndRemainScoped(t *testing.T) {
+func TestRender_CustomSourceLocalCommandsUseMetadataAndRemainScoped(t *testing.T) {
 	t.Parallel()
 	cfg := config.Defaults()
 	cfg.Preview.Default = []string{config.PreviewIdentity}
-	cfg.Integrations = []config.IntegrationConfig{
-		{Name: "kube-a", Preview: []string{"cluster"}, PreviewCommands: map[string]config.IntegrationPreviewCommand{
+	cfg.Sources.Custom = []config.CustomSourceConfig{
+		{Name: "kube-a", Preview: []string{"cluster"}, PreviewCommands: map[string]config.CustomSourcePreviewCommand{
 			"cluster": {Command: []string{"kube-preview", "{{ index .Meta \"context\" }}"}, Timeout: config.Duration(time.Second), MaxLines: 12},
 		}},
-		{Name: "kube-b", Preview: []string{"cluster"}, PreviewCommands: map[string]config.IntegrationPreviewCommand{
+		{Name: "kube-b", Preview: []string{"cluster"}, PreviewCommands: map[string]config.CustomSourcePreviewCommand{
 			"cluster": {Command: []string{"other-preview", "{{ index .Meta \"context\" }}"}, Timeout: config.Duration(time.Second), MaxLines: 12},
 		}},
 	}
@@ -357,17 +357,17 @@ func TestRender_IntegrationLocalCommandsUseMetadataAndRemainScoped(t *testing.T)
 	foreign := source.Candidate{Path: "/tmp", Label: "prod", Source: "unknown", Meta: map[string]string{"context": "cluster prod west"}}
 	got := mustRender(t, r, foreign)
 	if strings.Contains(got, "cluster ok") || runner.calls != 0 {
-		t.Fatalf("foreign candidate used integration-local command: output=%q calls=%d", got, runner.calls)
+		t.Fatalf("foreign candidate used custom source-local command: output=%q calls=%d", got, runner.calls)
 	}
 }
 
-func TestRender_IntegrationLocalFailureDoesNotHideOtherSections(t *testing.T) {
+func TestRender_CustomSourceLocalFailureDoesNotHideOtherSections(t *testing.T) {
 	t.Parallel()
 	cfg := config.Defaults()
-	cfg.Integrations = []config.IntegrationConfig{{
+	cfg.Sources.Custom = []config.CustomSourceConfig{{
 		Name:    "kube",
 		Preview: []string{"cluster", "health"},
-		PreviewCommands: map[string]config.IntegrationPreviewCommand{
+		PreviewCommands: map[string]config.CustomSourcePreviewCommand{
 			"cluster": {Command: []string{"cluster"}, Timeout: config.Duration(time.Second), MaxLines: 12},
 			"health":  {Command: []string{"health"}, Timeout: config.Duration(time.Millisecond), MaxLines: 10},
 		},
@@ -609,11 +609,11 @@ func TestResolvePreviewNames_Precedence(t *testing.T) {
 		}
 	})
 
-	t.Run("declared integration preview wins over default", func(t *testing.T) {
+	t.Run("declared custom source preview wins over default", func(t *testing.T) {
 		t.Parallel()
 		cfg := config.Defaults()
 		cfg.Preview.Default = []string{config.PreviewGit}
-		cfg.Integrations = []config.IntegrationConfig{{Name: "prs", Preview: []string{config.PreviewIdentity}}}
+		cfg.Sources.Custom = []config.CustomSourceConfig{{Name: "prs", Preview: []string{config.PreviewIdentity}}}
 		got := resolvePreviewNames(cfg, source.Candidate{Label: "PR 42", Source: "prs"})
 		if len(got) != 1 || got[0] != config.PreviewIdentity {
 			t.Errorf("got %v want [identity]", got)

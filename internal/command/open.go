@@ -284,7 +284,7 @@ func treeActiveFor(matches []source.Candidate) bool {
 // orientation through the same way. This is the user's configured DEFAULT
 // orientation for the session — the live ctrl+l keybinding may flip it
 // in-memory afterwards without ever writing back to cfg. sources is
-// [general].sources (already normalized non-empty by config.Load()), threaded
+// [general].source_order (already normalized non-empty by config.Load()), threaded
 // through as Layout.SourceOrder so the picker's row order matches the
 // configured provider order instead of a hardcoded literal — the same order
 // source.Registry.Enabled() already collects candidates in. t.Icons threads
@@ -293,14 +293,14 @@ func treeActiveFor(matches []source.Candidate) bool {
 // compatibility with direct callers; production passes the normalized loaded
 // config to thread resolved row format templates into the Model.
 func layoutFromConfig(t config.TUIConfig, sources []string, sourceConfigs ...config.SourcesConfig) tui.Layout {
-	return layoutFromConfigWithIntegrations(t, sources, nil, sourceConfigs...)
+	return layoutFromConfigWithCustomSources(t, sources, nil, sourceConfigs...)
 }
 
-// layoutFromConfigWithIntegrations extends layoutFromConfig with the
-// declared [[integrations]] label formats, keyed by name so each
-// integration's own label_format resolves per-source at render time (see
-// tui.LabelFormats.Integrations / rowLabelFormat).
-func layoutFromConfigWithIntegrations(t config.TUIConfig, sources []string, integrations []config.IntegrationConfig, sourceConfigs ...config.SourcesConfig) tui.Layout {
+// layoutFromConfigWithCustomSources extends layoutFromConfig with the
+// declared [[sources.custom]] label formats, keyed by name so each
+// custom source's label_format resolves per-source at render time (see
+// tui.LabelFormats.CustomSources / rowLabelFormat).
+func layoutFromConfigWithCustomSources(t config.TUIConfig, sources []string, customSources []config.CustomSourceConfig, sourceConfigs ...config.SourcesConfig) tui.Layout {
 	layout := tui.Layout{
 		ListWidth:    t.ListWidth,
 		PreviewWidth: t.PreviewWidth,
@@ -318,21 +318,21 @@ func layoutFromConfigWithIntegrations(t config.TUIConfig, sources []string, inte
 			tab.Kind = tui.TabAgents
 		default:
 			tab.Kind = tui.TabSource
-			for _, integration := range integrations {
-				if integration.Name == id {
-					tab.Kind = tui.TabIntegration
+			for _, customSource := range customSources {
+				if customSource.Name == id {
+					tab.Kind = tui.TabCustomSource
 					break
 				}
 			}
 		}
 		layout.Tabs = append(layout.Tabs, tab)
 	}
-	if len(integrations) > 0 {
-		formats := make(map[string]string, len(integrations))
-		for _, integration := range integrations {
-			formats[integration.Name] = integration.LabelFormat
+	if len(customSources) > 0 {
+		formats := make(map[string]string, len(customSources))
+		for _, customSource := range customSources {
+			formats[customSource.Name] = customSource.LabelFormat
 		}
-		layout.LabelFormats.Integrations = formats
+		layout.LabelFormats.CustomSources = formats
 	}
 	if len(sourceConfigs) == 0 {
 		return layout
@@ -354,7 +354,7 @@ func layoutFromConfigWithIntegrations(t config.TUIConfig, sources []string, inte
 // providers are loaded on activation, never added to general.source_order.
 func (a *App) pickerLayout(order []string, matches []source.Candidate) tui.Layout {
 	cfg := a.Config()
-	layout := layoutFromConfigWithIntegrations(cfg.TUI, order, cfg.Integrations, cfg.Sources)
+	layout := layoutFromConfigWithCustomSources(cfg.TUI, order, cfg.Sources.Custom, cfg.Sources)
 	registry := a.withStartupSnapshot(source.NewRegistry(cfg, a.Probes(), a.Driver()))
 	providers := make(map[string]source.Provider)
 	for _, provider := range registry.Providers() {
@@ -909,7 +909,7 @@ func (a *App) buildStreamingProducers(cmdCtx context.Context, explicitAgents ...
 		case config.SourceAgents:
 			includeAgents = true
 		default:
-			// workspaces, zoxide, projects, and every declared integration
+			// workspaces, zoxide, projects, and every declared custom source
 			// share the same generic producer builder (see
 			// App.buildProviderProducer): they all just call p.List(ctx) and
 			// stream the result through tui.SourceResultMsg.Err on failure.
@@ -1490,8 +1490,8 @@ func (a *App) launch(ctx context.Context, cand source.Candidate, action tui.RowA
 		fmt.Fprintf(errOut, "path does not exist: %s\n", displayPath(cand))
 		return launchOutcomeNone, errExitOne
 	}
-	if target == "workspace" && cand.Meta["integration"] == "true" && strings.TrimSpace(cand.Path) == "" {
-		fmt.Fprintln(errOut, "--target=workspace requires an integration row path")
+	if target == "workspace" && cand.Meta["custom_source"] == "true" && strings.TrimSpace(cand.Path) == "" {
+		fmt.Fprintln(errOut, "--target=workspace requires a custom source row path")
 		return launchOutcomeNone, errExitOne
 	}
 
@@ -1596,7 +1596,7 @@ func (a *App) workspaceLaunchRequest(cand source.Candidate) (source.WorkspaceLau
 	if cand.Source == config.SourceHerdr {
 		return source.WorkspaceLaunchRequest{Candidate: cand}, nil
 	}
-	if cand.Source == config.SourceWorkspaces || cand.Meta["integration"] == "true" {
+	if cand.Source == config.SourceWorkspaces || cand.Meta["custom_source"] == "true" {
 		return source.WorkspaceLaunchRequest{Candidate: cand, WorkspaceName: workspacename.Name(cand.Label)}, nil
 	}
 	normalized := cand.NormalizedPath

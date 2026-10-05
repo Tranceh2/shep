@@ -395,6 +395,7 @@ func TestResolveSessionPaths_PerSocketIsolation(t *testing.T) {
 // chain from jumpBackCmd's inline refusal through Execute's fallback holds
 // end to end, not just at the runJumpBack helper layer.
 func TestJumpBackCmd_MissingSocketExitsSingleLineCodeThree(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HERDR_SOCKET_PATH", "")
 	var out, errOut bytes.Buffer
 	app := New(WithStreams(&out, &errOut), WithHerdrDriver(&openDriver{}))

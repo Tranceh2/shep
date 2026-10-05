@@ -32,7 +32,7 @@ template = "default"
 # decides automatically (do NOT set layout = "landscape" if you want that).
 [tui]
 # Ordered top tabs. Default: ["all", "agents"]. A source tab does not enable
-# that source in "all"; integrations and groups need matching declarations.
+# that source in "all"; custom sources and groups need matching declarations.
 tabs = ["all", "agents"]
 # tabs = ["all", "projects", "pull-requests", "project-group", "agents"]
 list_width = "35%"
@@ -132,11 +132,11 @@ root = "opencode"
   command = "opencode"
   close_on_exit = true
 
-# To activate the custom tabs shown in [tui].tabs above, declare an
-# integration that emits Shep candidates and a group with id = "project-group".
-# [[integrations]]
+# To activate the custom tabs shown in [tui].tabs above, declare a
+# command-backed custom source that emits Shep candidates and a group with id = "project-group".
+# [[sources.custom]]
 # name = "pull-requests"
-# command = ["my-pr-list", "--json"]
+# command = ["/path/to/list-prs-for-shep"] # emits Shep JSON rows
 
 # --- Wildcards: apply a template/preview to paths matching a glob ---
 

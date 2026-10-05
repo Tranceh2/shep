@@ -9,11 +9,11 @@ import (
 	"github.com/tranceh2/shep/internal/source"
 )
 
-func TestIntegrationRejectsReservedMetadata(t *testing.T) {
+func TestCustomSourceRejectsReservedMetadata(t *testing.T) {
 	t.Parallel()
 	keys := []string{
 		"command", "template", "close_on_exit", "group", "group_sources", "group_template",
-		"parent_template", "workspace_id", "tab_id", "pane_id", "integration", "integration_id",
+		"parent_template", "workspace_id", "tab_id", "pane_id", "custom_source", "custom_source_id",
 		"active_tab_id", "agent_status", "branch", "default", "entry_id", "head", "is_worktree",
 		"main_worktree", "repo", "running", "session_dir", "session_name", "socket_path",
 		"tab_label", "tab_number", "tab_panes", "workspace_label", "workspace_tabs",
@@ -21,7 +21,7 @@ func TestIntegrationRejectsReservedMetadata(t *testing.T) {
 	for _, key := range keys {
 		t.Run(key, func(t *testing.T) {
 			payload := []byte(`[{"label":"row","meta":{"` + key + `":"attacker"}}]`)
-			_, err := source.ParseIntegrationJSON("test", payload)
+			_, err := source.ParseCustomSourceJSON("test", payload)
 			if err == nil {
 				t.Fatalf("meta key %q was accepted", key)
 			}
@@ -33,19 +33,19 @@ func TestIntegrationRejectsReservedMetadata(t *testing.T) {
 	}
 }
 
-func TestIntegrationTypedReservedFieldsRemainUsable(t *testing.T) {
+func TestCustomSourceTypedReservedFieldsRemainUsable(t *testing.T) {
 	t.Parallel()
-	candidates, err := source.ParseIntegrationJSON("test", []byte(`[{"id":"id","label":"row","command":"run","template":"tpl","close_on_exit":true,"meta":{"context":"safe"}}]`))
+	candidates, err := source.ParseCustomSourceJSON("test", []byte(`[{"id":"id","label":"row","command":"run","template":"tpl","close_on_exit":true,"meta":{"context":"safe"}}]`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := candidates[0].Meta; got["command"] != "run" || got["template"] != "tpl" || got["close_on_exit"] != "true" || got["integration"] != "true" || got["integration_id"] != "id" || got["context"] != "safe" {
+	if got := candidates[0].Meta; got["command"] != "run" || got["template"] != "tpl" || got["close_on_exit"] != "true" || got["custom_source"] != "true" || got["custom_source_id"] != "id" || got["context"] != "safe" {
 		t.Fatalf("typed fields/meta = %#v", got)
 	}
 }
 
-func TestIntegrationAliasesRejectControlCharacters(t *testing.T) {
-	candidates, err := source.ParseIntegrationJSONWithAliases("test", []byte(`[{"label":"row","aliases":["safe","bad\nvalue"]}]`), []string{"shared\tbad"})
+func TestCustomSourceAliasesRejectControlCharacters(t *testing.T) {
+	candidates, err := source.ParseCustomSourceJSONWithAliases("test", []byte(`[{"label":"row","aliases":["safe","bad\nvalue"]}]`), []string{"shared\tbad"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestIntegrationAliasesRejectControlCharacters(t *testing.T) {
 	}
 }
 
-func TestIntegrationAliasesDoNotChangeIdentity(t *testing.T) {
+func TestCustomSourceAliasesDoNotChangeIdentity(t *testing.T) {
 	cases := []struct {
 		name string
 		one  string
@@ -65,28 +65,28 @@ func TestIntegrationAliasesDoNotChangeIdentity(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			one, err := source.ParseIntegrationJSON("prs", []byte(tc.one))
+			one, err := source.ParseCustomSourceJSON("prs", []byte(tc.one))
 			if err != nil {
 				t.Fatal(err)
 			}
-			two, err := source.ParseIntegrationJSON("prs", []byte(tc.two))
+			two, err := source.ParseCustomSourceJSON("prs", []byte(tc.two))
 			if err != nil {
 				t.Fatal(err)
 			}
 			if ranking.Identity(one[0]) != ranking.Identity(two[0]) {
-				t.Fatal("integration identity changed when aliases changed")
+				t.Fatal("custom_source identity changed when aliases changed")
 			}
 		})
 	}
 }
 
-func TestIntegrationCommandOnlyIdentityIsStableAndOpaque(t *testing.T) {
+func TestCustomSourceCommandOnlyIdentityIsStableAndOpaque(t *testing.T) {
 	payload := []byte(`[{"id":"42","label":"PR 42","command":"gh pr view 42"}]`)
-	first, err := source.ParseIntegrationJSON("prs", payload)
+	first, err := source.ParseCustomSourceJSON("prs", payload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := source.ParseIntegrationJSON("prs", payload)
+	second, err := source.ParseCustomSourceJSON("prs", payload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,36 +94,36 @@ func TestIntegrationCommandOnlyIdentityIsStableAndOpaque(t *testing.T) {
 		t.Fatalf("identity changed across parses: %q != %q", got, want)
 	}
 	if ranking.Resource(first[0]) != "" {
-		t.Fatal("command-only integration unexpectedly has a resource key")
+		t.Fatal("command-only custom_source unexpectedly has a resource key")
 	}
 	if key := ranking.PinKey(first[0]); key == "" || !hasOpaqueKeyPrefix(key) {
-		t.Fatalf("command-only integration key is not opaque: %q", key)
+		t.Fatalf("command-only custom_source key is not opaque: %q", key)
 	}
 }
 
-func TestIntegrationCommandOnlyIdentityFallbackIsDeterministic(t *testing.T) {
-	one, err := source.ParseIntegrationJSON("prs", []byte(`[{"label":"PR 42","command":"gh pr view 42"}]`))
+func TestCustomSourceCommandOnlyIdentityFallbackIsDeterministic(t *testing.T) {
+	one, err := source.ParseCustomSourceJSON("prs", []byte(`[{"label":"PR 42","command":"gh pr view 42"}]`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	two, err := source.ParseIntegrationJSON("prs", []byte(`[{"label":"PR 42","command":"gh pr view 42"}]`))
+	two, err := source.ParseCustomSourceJSON("prs", []byte(`[{"label":"PR 42","command":"gh pr view 42"}]`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if ranking.Identity(one[0]) != ranking.Identity(two[0]) {
-		t.Fatal("fallback integration identity is not deterministic")
+		t.Fatal("fallback custom_source identity is not deterministic")
 	}
 }
 
-func TestIntegrationSharedAndRowAliasesCombine(t *testing.T) {
-	candidates, err := source.ParseIntegrationJSON("kube-contexts", []byte(`[{"label":"prod","aliases":[" row ","K8S"]}]`))
+func TestCustomSourceSharedAndRowAliasesCombine(t *testing.T) {
+	candidates, err := source.ParseCustomSourceJSON("kube-contexts", []byte(`[{"label":"prod","aliases":[" row ","K8S"]}]`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got, want := candidates[0].Aliases, []string{"row", "K8S"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("row aliases = %v, want %v", got, want)
 	}
-	candidates, err = source.ParseIntegrationJSONWithAliases("kube-contexts", []byte(`[{"label":"prod","aliases":["row","K8S"]}]`), []string{"k8s", " shared ", "K8S"})
+	candidates, err = source.ParseCustomSourceJSONWithAliases("kube-contexts", []byte(`[{"label":"prod","aliases":["row","K8S"]}]`), []string{"k8s", " shared ", "K8S"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,21 +132,21 @@ func TestIntegrationSharedAndRowAliasesCombine(t *testing.T) {
 	}
 }
 
-func TestIntegrationRejectsConflictingDuplicateIDs(t *testing.T) {
-	_, err := source.ParseIntegrationJSON("kube-contexts", []byte(`[
+func TestCustomSourceRejectsConflictingDuplicateIDs(t *testing.T) {
+	_, err := source.ParseCustomSourceJSON("kube-contexts", []byte(`[
 		{"id":"cluster-a","label":"cluster-a","command":"kubectl --context direct"},
 		{"id":"cluster-a","label":"cluster-a","command":"kubectl --context connect"}
 	]`))
 	if err == nil {
-		t.Fatal("expected conflicting duplicate integration ids to be rejected")
+		t.Fatal("expected conflicting duplicate custom_source ids to be rejected")
 	}
-	if got := err.Error(); got != `row 1: integration id "cluster-a" has conflicting commands` {
+	if got := err.Error(); got != `row 1: custom source id "cluster-a" has conflicting commands` {
 		t.Fatalf("error = %q, want deterministic duplicate-id error", got)
 	}
 }
 
-func TestIntegrationAllowsIdenticalDuplicateIDs(t *testing.T) {
-	candidates, err := source.ParseIntegrationJSON("kube-contexts", []byte(`[
+func TestCustomSourceAllowsIdenticalDuplicateIDs(t *testing.T) {
+	candidates, err := source.ParseCustomSourceJSON("kube-contexts", []byte(`[
 		{"id":"cluster-a","label":"cluster-a","command":"kubectl --context direct"},
 		{"id":"cluster-a","label":"cluster-a","command":"kubectl --context direct"}
 	]`))

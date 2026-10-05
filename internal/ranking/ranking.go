@@ -284,11 +284,11 @@ func Identity(candidate source.Candidate) string {
 				return field.prefix + value
 			}
 		}
-		if candidate.Meta["integration"] == "true" {
-			if id := strings.TrimSpace(candidate.Meta["integration_id"]); id != "" {
-				return pathKey("integration:"+candidate.Source, id)
+		if candidate.Meta["custom_source"] == "true" {
+			if id := strings.TrimSpace(candidate.Meta["custom_source_id"]); id != "" {
+				return pathKey("custom_source:"+candidate.Source, id)
 			}
-			return pathKey("integration:"+candidate.Source, candidate.Label+"\x00"+candidate.Meta["command"])
+			return pathKey("custom_source:"+candidate.Source, candidate.Label+"\x00"+candidate.Meta["command"])
 		}
 	}
 	path := candidate.NormalizedPath
@@ -508,7 +508,7 @@ func classifyText(query string, candidate source.Candidate) textualQuality {
 }
 
 // permittedMetadata mirrors the existing guarded metadata search contract.
-// Arbitrary integration Meta remains inert for discovery; aliases have their
+// Arbitrary custom-source Meta remains inert for discovery; aliases have their
 // own typed field and are handled before this fallback.
 func permittedMetadata(candidate source.Candidate) []string {
 	if candidate.Meta == nil {

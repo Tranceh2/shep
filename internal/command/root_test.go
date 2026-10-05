@@ -225,6 +225,7 @@ func TestApp_ExecuteUnknownCommandReportsUsageHint(t *testing.T) {
 // stderr-on-unreported-error path. jump-back's sanitized refusal is real
 // production code exercising that exact contract without a live Herdr socket.
 func TestApp_ExecuteDoesNotDoublePrintAlreadyReportedErrors(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HERDR_SOCKET_PATH", "")
 	var out, errOut bytes.Buffer
 	app := New(WithStreams(&out, &errOut), WithHerdrDriver(&openDriver{}))

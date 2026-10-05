@@ -136,10 +136,10 @@ func TestSupportsCurrentWorkspaceTarget(t *testing.T) {
 		{name: "command plus group edge excluded", cand: Candidate{Source: config.SourceWorkspaces, Meta: map[string]string{"command": "nvim", "group": "true"}}, want: false},
 		{name: "command plus template edge excluded", cand: Candidate{Source: config.SourceWorkspaces, Meta: map[string]string{"command": "nvim", "template": "k8s"}}, want: false},
 		{name: "unknown source excluded", cand: Candidate{Source: "path"}, want: false},
-		{name: "integration command-only", cand: Candidate{Source: "prs", Meta: map[string]string{"command": "gh pr view"}}, want: true},
-		{name: "integration without command excluded", cand: Candidate{Source: "prs"}, want: false},
-		{name: "integration group excluded", cand: Candidate{Source: "prs", Meta: map[string]string{"command": "gh pr view", "group": "true"}}, want: false},
-		{name: "integration template excluded", cand: Candidate{Source: "prs", Meta: map[string]string{"command": "gh pr view", "template": "dev"}}, want: false},
+		{name: "custom source command-only", cand: Candidate{Source: "prs", Meta: map[string]string{"command": "gh pr view"}}, want: true},
+		{name: "custom source without command excluded", cand: Candidate{Source: "prs"}, want: false},
+		{name: "custom source group excluded", cand: Candidate{Source: "prs", Meta: map[string]string{"command": "gh pr view", "group": "true"}}, want: false},
+		{name: "custom source template excluded", cand: Candidate{Source: "prs", Meta: map[string]string{"command": "gh pr view", "template": "dev"}}, want: false},
 		{name: "synthesized tree child excluded", cand: Candidate{Meta: map[string]string{"workspace_id": "wA", "tab_id": "t1"}}, want: false},
 		{name: "nil meta command-only workspace", cand: Candidate{Source: config.SourceWorkspaces, Meta: map[string]string{"command": "yazi", "close_on_exit": "true"}}, want: true},
 	}
@@ -577,10 +577,10 @@ func TestScopedProjectsUseEffectiveGroupMaxDepth(t *testing.T) {
 	}
 }
 
-func TestIntegrationProvider_ParseJSONRows(t *testing.T) {
+func TestCustomSourceProvider_ParseJSONRows(t *testing.T) {
 	t.Parallel()
 	const payload = `[{"label":"PR 42","path":"/repo","command":"gh pr view 42","icon":"","template":"dev","close_on_exit":true,"aliases":[" review ","PR"],"meta":{"number":"42","context":"feature"}}]`
-	got, err := ParseIntegrationJSON("prs", []byte(payload))
+	got, err := ParseCustomSourceJSON("prs", []byte(payload))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -588,14 +588,14 @@ func TestIntegrationProvider_ParseJSONRows(t *testing.T) {
 		t.Fatalf("candidates = %d, want 1", len(got))
 	}
 	want := Candidate{Path: "/repo", Label: "PR 42", Icon: "", Source: "prs", Aliases: []string{"review", "PR"}, Meta: map[string]string{
-		"command": "gh pr view 42", "template": "dev", "close_on_exit": "true", "number": "42", "context": "feature", "integration": "true",
+		"command": "gh pr view 42", "template": "dev", "close_on_exit": "true", "number": "42", "context": "feature", "custom_source": "true",
 	}}
 	if !reflect.DeepEqual(got[0], want) {
 		t.Fatalf("candidate = %+v, want %+v", got[0], want)
 	}
 }
 
-func TestIntegrationProvider_ParseJSONRowsRejectsMalformedPartialAndEmpty(t *testing.T) {
+func TestCustomSourceProvider_ParseJSONRowsRejectsMalformedPartialAndEmpty(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
@@ -608,17 +608,17 @@ func TestIntegrationProvider_ParseJSONRowsRejectsMalformedPartialAndEmpty(t *tes
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := ParseIntegrationJSON("prs", []byte(tt.json)); err == nil {
+			if _, err := ParseCustomSourceJSON("prs", []byte(tt.json)); err == nil {
 				t.Fatal("expected parse error")
 			}
 		})
 	}
-	if got, err := ParseIntegrationJSON("prs", []byte(`[]`)); err != nil || len(got) != 0 {
+	if got, err := ParseCustomSourceJSON("prs", []byte(`[]`)); err != nil || len(got) != 0 {
 		t.Fatalf("empty array = (%v, %v), want empty candidates and nil error", got, err)
 	}
 }
 
-func TestIntegrationProvider_ListFailureAndTimeoutAreVisible(t *testing.T) {
+func TestCustomSourceProvider_ListFailureAndTimeoutAreVisible(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name    string
@@ -630,33 +630,33 @@ func TestIntegrationProvider_ListFailureAndTimeoutAreVisible(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p := &integrationProvider{cfg: config.IntegrationConfig{Name: "prs", Command: tt.command, Timeout: config.Duration(tt.timeout)}}
+			p := &customSourceProvider{cfg: config.CustomSourceConfig{Name: "prs", Command: tt.command, Timeout: config.Duration(tt.timeout)}}
 			_, err := p.List(context.Background())
 			if err == nil {
-				t.Fatal("expected integration error")
+				t.Fatal("expected custom source error")
 			}
 		})
 	}
 }
 
-func TestRegistry_IntegrationProviderRegistrationAndOrder(t *testing.T) {
+func TestRegistry_CustomSourceProviderRegistrationAndOrder(t *testing.T) {
 	t.Parallel()
 	cfg := config.Defaults()
-	cfg.Integrations = []config.IntegrationConfig{{Name: "prs", Command: []string{"printf", "[]"}}}
+	cfg.Sources.Custom = []config.CustomSourceConfig{{Name: "prs", Command: []string{"printf", "[]"}}}
 	cfg.General.SourceOrder = []string{"prs"}
 	r := NewRegistry(cfg, config.Probes{}, nil)
 	got := r.Enabled()
 	if len(got) != 1 || got[0].Name() != "prs" {
-		t.Fatalf("enabled providers = %v, want integration prs", got)
+		t.Fatalf("enabled providers = %v, want custom source prs", got)
 	}
 }
 
-func TestScopedRegistry_LazyIntegrationOnlyRunsWhenListed(t *testing.T) {
+func TestScopedRegistry_LazyCustomSourceOnlyRunsWhenListed(t *testing.T) {
 	counter := filepath.Join(t.TempDir(), "count")
 	command := []string{"sh", "-c", `n=$((${COUNT:-0}+1)); printf '%s' "$n" > "$COUNT_FILE"; printf '[{"label":"context"}]'`}
 	cfg := config.Defaults()
 	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
-	cfg.Integrations = []config.IntegrationConfig{{Name: "kube-contexts", Command: command, Timeout: config.Duration(time.Second)}}
+	cfg.Sources.Custom = []config.CustomSourceConfig{{Name: "kube-contexts", Command: command, Timeout: config.Duration(time.Second)}}
 	t.Setenv("COUNT_FILE", counter)
 
 	top, err := NewRegistry(cfg, config.Probes{}, nil).Collect(context.Background())
@@ -664,10 +664,10 @@ func TestScopedRegistry_LazyIntegrationOnlyRunsWhenListed(t *testing.T) {
 		t.Fatalf("top-level collect: %v", err)
 	}
 	if len(top) != 0 {
-		t.Fatalf("top-level candidates = %v, want no integration candidates", top)
+		t.Fatalf("top-level candidates = %v, want no custom source candidates", top)
 	}
 	if _, err := os.Stat(counter); !os.IsNotExist(err) {
-		t.Fatalf("integration ran at top level, count file stat = %v", err)
+		t.Fatalf("custom source ran at top level, count file stat = %v", err)
 	}
 
 	group := config.WorkspaceConfig{Type: config.WorkspaceTypeGroup, SourceOrder: []string{"kube-contexts"}}
@@ -676,10 +676,10 @@ func TestScopedRegistry_LazyIntegrationOnlyRunsWhenListed(t *testing.T) {
 		t.Fatalf("group collect: %v", err)
 	}
 	if len(got) != 1 || got[0].Label != "context" {
-		t.Fatalf("group candidates = %v, want integration candidate", got)
+		t.Fatalf("group candidates = %v, want custom source candidate", got)
 	}
 	if data, err := os.ReadFile(counter); err != nil || string(data) != "1" {
-		t.Fatalf("integration count = %q, read error = %v, want exactly one run", data, err)
+		t.Fatalf("custom source count = %q, read error = %v, want exactly one run", data, err)
 	}
 }
 

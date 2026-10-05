@@ -23,11 +23,11 @@ const (
 type TabKind string
 
 const (
-	TabAll         TabKind = "all"
-	TabAgents      TabKind = "agents"
-	TabSource      TabKind = "source"
-	TabIntegration TabKind = "integration"
-	TabGroup       TabKind = "group"
+	TabAll          TabKind = "all"
+	TabAgents       TabKind = "agents"
+	TabSource       TabKind = "source"
+	TabCustomSource TabKind = "custom_source"
+	TabGroup        TabKind = "group"
 )
 
 // TabDefinition describes one configured tab. Group loaders are invoked only
@@ -174,8 +174,8 @@ func (m Model) tabPresentation() scopeDefinition {
 		return def
 	default:
 		kind := "source"
-		if tab.Kind == TabIntegration {
-			kind = "integration"
+		if tab.Kind == TabCustomSource {
+			kind = "custom source"
 		}
 		if tab.Kind == TabGroup {
 			kind = "group"

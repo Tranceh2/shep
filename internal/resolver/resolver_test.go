@@ -164,72 +164,72 @@ func TestDedup_SamePathDifferentLabelPreserved(t *testing.T) {
 	}
 }
 
-func integrationCandidate(label, path, id, command string) source.Candidate {
+func customSourceCandidate(label, path, id, command string) source.Candidate {
 	return source.Candidate{
 		Path:   path,
 		Label:  label,
 		Source: "kube-contexts",
 		Meta: map[string]string{
-			"integration":    "true",
-			"integration_id": id,
-			"command":        command,
+			"custom_source":    "true",
+			"custom_source_id": id,
+			"command":          command,
 		},
 	}
 }
 
-// TestDedup_IntegrationIdentityPreservesRoutes proves integrations do not lose
+// TestDedup_CustomSourceIdentityPreservesRoutes proves custom sources do not lose
 // actionable routes merely because their display label and cwd are equal.
-func TestDedup_IntegrationIdentityPreservesRoutes(t *testing.T) {
+func TestDedup_CustomSourceIdentityPreservesRoutes(t *testing.T) {
 	t.Parallel()
 	candidates := []source.Candidate{
-		integrationCandidate("cluster-a", "/repo", "direct:cluster-a", "kubectl --context direct:cluster-a"),
-		integrationCandidate("cluster-a", "/repo", "connect:cluster-a", "kubectl --context connect:cluster-a"),
+		customSourceCandidate("cluster-a", "/repo", "direct:cluster-a", "kubectl --context direct:cluster-a"),
+		customSourceCandidate("cluster-a", "/repo", "connect:cluster-a", "kubectl --context connect:cluster-a"),
 	}
 
 	got := Dedup(candidates)
 	if len(got) != 2 {
-		t.Fatalf("Dedup collapsed distinct integration routes: got %d candidates: %+v", len(got), got)
+		t.Fatalf("Dedup collapsed distinct customSource routes: got %d candidates: %+v", len(got), got)
 	}
-	if got[0].Meta["integration_id"] != "direct:cluster-a" || got[1].Meta["integration_id"] != "connect:cluster-a" {
-		t.Fatalf("integration order or identity changed: %+v", got)
+	if got[0].Meta["custom_source_id"] != "direct:cluster-a" || got[1].Meta["custom_source_id"] != "connect:cluster-a" {
+		t.Fatalf("customSource order or identity changed: %+v", got)
 	}
 }
 
-// TestDedup_IntegrationIdentityDuplicateKeepsFirst proves identical stable
+// TestDedup_CustomSourceIdentityDuplicateKeepsFirst proves identical stable
 // identities collapse deterministically without using slice position as an id.
-func TestDedup_IntegrationIdentityDuplicateKeepsFirst(t *testing.T) {
+func TestDedup_CustomSourceIdentityDuplicateKeepsFirst(t *testing.T) {
 	t.Parallel()
-	first := integrationCandidate("cluster-a", "/first", "cluster-a", "kubectl --context cluster-a")
-	second := integrationCandidate("renamed", "/second", "cluster-a", "kubectl --context cluster-a")
+	first := customSourceCandidate("cluster-a", "/first", "cluster-a", "kubectl --context cluster-a")
+	second := customSourceCandidate("renamed", "/second", "cluster-a", "kubectl --context cluster-a")
 
 	got := Dedup([]source.Candidate{first, second})
 	if len(got) != 1 {
-		t.Fatalf("identical integration identity must collapse: %+v", got)
+		t.Fatalf("identical customSource identity must collapse: %+v", got)
 	}
 	if got[0].Path != first.Path {
 		t.Fatalf("duplicate survivor = %q, want first-seen path %q", got[0].Path, first.Path)
 	}
 }
 
-// TestDedup_PathBackedIntegrationUsesExactIdentityButSharesResource proves
+// TestDedup_PathBackedCustomSourceUsesExactIdentityButSharesResource proves
 // candidate dedup and pin affinity intentionally use different keys.
-func TestDedup_PathBackedIntegrationUsesExactIdentityButSharesResource(t *testing.T) {
+func TestDedup_PathBackedCustomSourceUsesExactIdentityButSharesResource(t *testing.T) {
 	t.Parallel()
-	first := integrationCandidate("cluster-a", "/repo", "direct:cluster-a", "kubectl --context direct:cluster-a")
-	second := integrationCandidate("cluster-a", "/repo", "connect:cluster-a", "kubectl --context connect:cluster-a")
+	first := customSourceCandidate("cluster-a", "/repo", "direct:cluster-a", "kubectl --context direct:cluster-a")
+	second := customSourceCandidate("cluster-a", "/repo", "connect:cluster-a", "kubectl --context connect:cluster-a")
 
 	got := Dedup([]source.Candidate{first, second})
 	if len(got) != 2 {
-		t.Fatalf("path-backed integration routes must both survive: %+v", got)
+		t.Fatalf("path-backed customSource routes must both survive: %+v", got)
 	}
 	if ranking.Identity(got[0]) == ranking.Identity(got[1]) {
-		t.Fatal("distinct path-backed integration routes share exact identity")
+		t.Fatal("distinct path-backed customSource routes share exact identity")
 	}
 	if ranking.Resource(got[0]) != ranking.Resource(got[1]) {
-		t.Fatal("path-backed integration routes must share resource affinity")
+		t.Fatal("path-backed customSource routes must share resource affinity")
 	}
 	if ranking.PinKey(got[0]) != ranking.PinKey(got[1]) {
-		t.Fatal("path-backed integration pins must share the resource key")
+		t.Fatal("path-backed customSource pins must share the resource key")
 	}
 }
 

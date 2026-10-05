@@ -1158,7 +1158,7 @@ func TestOpen_GroupWorkspaceDrillsIntoNestedPicker(t *testing.T) {
 	}
 }
 
-func TestOpen_GroupWorkspaceLazilyRunsIntegrationAndDirectSelectsSingleRow(t *testing.T) {
+func TestOpen_GroupWorkspaceLazilyRunsCustomSourceAndDirectSelectsSingleRow(t *testing.T) {
 	root := t.TempDir()
 	counter := filepath.Join(t.TempDir(), "count")
 	script := filepath.Join(t.TempDir(), "list-contexts")
@@ -1171,7 +1171,7 @@ func TestOpen_GroupWorkspaceLazilyRunsIntegrationAndDirectSelectsSingleRow(t *te
 
 	cfg := config.Defaults()
 	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
-	cfg.Integrations = []config.IntegrationConfig{{
+	cfg.Sources.Custom = []config.CustomSourceConfig{{
 		Name: "kube-contexts", Command: []string{script}, Timeout: config.Duration(time.Second), LabelFormat: "context={{.Label}}",
 	}}
 	cfg.Workspaces = []config.WorkspaceConfig{{
@@ -1183,10 +1183,10 @@ func TestOpen_GroupWorkspaceLazilyRunsIntegrationAndDirectSelectsSingleRow(t *te
 		t.Fatalf("open Kubernetes: %v", err)
 	}
 	if driver.lastCand.Source != "kube-contexts" || driver.lastCand.Label != "context" {
-		t.Fatalf("launched candidate = %+v, want the nested integration row", driver.lastCand)
+		t.Fatalf("launched candidate = %+v, want the nested custom source row", driver.lastCand)
 	}
 	if data, err := os.ReadFile(counter); err != nil || string(data) != "1" {
-		t.Fatalf("integration count = %q, read error = %v, want exactly one lazy run", data, err)
+		t.Fatalf("custom source count = %q, read error = %v, want exactly one lazy run", data, err)
 	}
 }
 
@@ -1209,7 +1209,7 @@ func TestOpen_SamePathGroups_ResolveDistinctGroupConfigs(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
 	cfg.Sources.Projects = config.ProjectsSourceConfig{Markers: []string{".git"}}
-	cfg.Integrations = []config.IntegrationConfig{{
+	cfg.Sources.Custom = []config.CustomSourceConfig{{
 		Name: "kube-contexts", Command: []string{script}, Timeout: config.Duration(time.Second), LabelFormat: "context={{.Label}}",
 	}}
 	// Two groups sharing the exact same Path, but different names and source orders.
@@ -1232,7 +1232,7 @@ func TestOpen_SamePathGroups_ResolveDistinctGroupConfigs(t *testing.T) {
 		t.Fatalf("launched candidate for fsociety = %+v, want project candidate in %s", driverFsociety.lastCand, projDir)
 	}
 	if _, err := os.Stat(counter); !os.IsNotExist(err) {
-		t.Fatalf("kube-contexts integration ran when opening fsociety, want 0 runs")
+		t.Fatalf("kube-contexts custom source ran when opening fsociety, want 0 runs")
 	}
 
 	// 2. Opening "Kubernetes" must resolve the Kubernetes group (kube-contexts source).
@@ -1338,34 +1338,34 @@ func TestLayoutFromConfig_EmptyLayoutDefaultsToZeroOrientation(t *testing.T) {
 	}
 }
 
-// TestLayoutFromConfigWithIntegrations_ThreadsPerIntegrationLabelFormat
-// proves layoutFromConfigWithIntegrations resolves each declared
-// [[integrations]] entry's label_format into Layout.LabelFormats.Integrations,
+// TestLayoutFromConfigWithCustomSources_ThreadsPerCustomSourceLabelFormat
+// proves layoutFromConfigWithCustomSources resolves each declared
+// [[sources.custom]] entry's label_format into Layout.LabelFormats.CustomSources,
 // keyed by name, alongside the five fixed built-in fields layoutFromConfig
 // already threads.
-func TestLayoutFromConfigWithIntegrations_ThreadsPerIntegrationLabelFormat(t *testing.T) {
+func TestLayoutFromConfigWithCustomSources_ThreadsPerCustomSourceLabelFormat(t *testing.T) {
 	t.Parallel()
-	integrations := []config.IntegrationConfig{
+	customSources := []config.CustomSourceConfig{
 		{Name: "prs", LabelFormat: "PR {{.Label}}"},
 		{Name: "issues", LabelFormat: "#{{.Label}}"},
 	}
 	order := []string{"issues", "prs"}
-	got := layoutFromConfigWithIntegrations(config.TUIConfig{}, order, integrations)
+	got := layoutFromConfigWithCustomSources(config.TUIConfig{}, order, customSources)
 	want := map[string]string{"prs": "PR {{.Label}}", "issues": "#{{.Label}}"}
-	if !reflect.DeepEqual(got.LabelFormats.Integrations, want) {
-		t.Errorf("LabelFormats.Integrations = %v, want %v", got.LabelFormats.Integrations, want)
+	if !reflect.DeepEqual(got.LabelFormats.CustomSources, want) {
+		t.Errorf("LabelFormats.CustomSources = %v, want %v", got.LabelFormats.CustomSources, want)
 	}
 	if !reflect.DeepEqual(got.SourceOrder, order) {
-		t.Errorf("nested integration SourceOrder = %v, want %v", got.SourceOrder, order)
+		t.Errorf("nested custom source SourceOrder = %v, want %v", got.SourceOrder, order)
 	}
 }
 
-func TestLayoutFromConfigWithIntegrations_ThreadsAgentsLabelFormat(t *testing.T) {
+func TestLayoutFromConfigWithCustomSources_ThreadsAgentsLabelFormat(t *testing.T) {
 	t.Parallel()
 	sources := config.SourcesConfig{
 		Agents: config.AgentsSourceConfig{LabelFormat: "agent={{.Label}}"},
 	}
-	got := layoutFromConfigWithIntegrations(config.TUIConfig{}, nil, nil, sources)
+	got := layoutFromConfigWithCustomSources(config.TUIConfig{}, nil, nil, sources)
 	if want := "agent={{.Label}}"; got.LabelFormats.Agents != want {
 		t.Errorf("LabelFormats.Agents = %q, want %q", got.LabelFormats.Agents, want)
 	}
@@ -2117,20 +2117,20 @@ func TestOpen_TargetPane_ProjectsCandidate_Opens(t *testing.T) {
 	}
 }
 
-// TestOpen_TargetTab_IntegrationCandidate_Opens proves an integration row
+// TestOpen_TargetTab_CustomSourceCandidate_Opens proves an custom source row
 // carrying a command supports --target=tab through the exact same
 // SupportsCurrentWorkspaceTarget/launchInCurrentWorkspace path as a
 // [[workspaces]] command entry, with no parallel launch code.
-func TestOpen_TargetTab_IntegrationCandidate_Opens(t *testing.T) {
+func TestOpen_TargetTab_CustomSourceCandidate_Opens(t *testing.T) {
 	cand := source.Candidate{Source: "prs", Path: "/repo", Label: "PR 42", Meta: map[string]string{"command": "gh pr view 42"}}
 	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
 	driver := insidePaneDriver(pane)
 	errOut, err := runLaunchDirect(t, cand, tui.RowActionOpen, "tab", &pane, driver)
 	if err != nil {
-		t.Fatalf("launch --target=tab integration: %v (stderr=%q)", err, errOut)
+		t.Fatalf("launch --target=tab custom source: %v (stderr=%q)", err, errOut)
 	}
 	if len(driver.created) != 1 || driver.created[0] != "tab:wA:/cur:PR 42:focus" {
-		t.Errorf("expected one focused CreateTab for the integration candidate, got %v", driver.created)
+		t.Errorf("expected one focused CreateTab for the custom source candidate, got %v", driver.created)
 	}
 	want := "run:new-p:gh pr view 42"
 	if len(driver.ran) != 1 || driver.ran[0] != want {
@@ -2138,30 +2138,30 @@ func TestOpen_TargetTab_IntegrationCandidate_Opens(t *testing.T) {
 	}
 }
 
-// TestOpen_TargetTab_IntegrationCandidateWithoutCommand_Errors proves an
-// integration row with no command is rejected the same way a plain path is:
-// disallowTarget's default branch, not a special integration-only message.
-func TestOpen_TargetTab_IntegrationCandidateWithoutCommand_Errors(t *testing.T) {
+// TestOpen_TargetTab_CustomSourceCandidateWithoutCommand_Errors proves an
+// custom source row with no command is rejected the same way a plain path is:
+// disallowTarget's default branch, not a special custom source-only message.
+func TestOpen_TargetTab_CustomSourceCandidateWithoutCommand_Errors(t *testing.T) {
 	cand := source.Candidate{Source: "prs", Path: "/repo", Label: "PR 42"}
 	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
 	driver := insidePaneDriver(pane)
 	errOut, err := runLaunchDirect(t, cand, tui.RowActionOpen, "tab", &pane, driver)
 	if err == nil {
-		t.Fatal("expected an error for --target=tab on a commandless integration row")
+		t.Fatal("expected an error for --target=tab on a commandless custom source row")
 	}
 	if !strings.Contains(errOut, "requires an entry with a command") {
 		t.Errorf("stderr = %q, want the no-command message", errOut)
 	}
 }
 
-// TestOpen_IntegrationRowWithPathOpensAsWorkspace proves an integration row
+// TestOpen_CustomSourceRowWithPathOpensAsWorkspace proves an custom source row
 // carrying a path opens through the ordinary FocusOrCreate workspace path —
-// no special-cased integration launch branch exists.
-func TestOpen_IntegrationRowWithPathOpensAsWorkspace(t *testing.T) {
+// no special-cased custom source launch branch exists.
+func TestOpen_CustomSourceRowWithPathOpensAsWorkspace(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Defaults()
 	cfg.General.SourceOrder = []string{"prs"}
-	cfg.Integrations = []config.IntegrationConfig{{Name: "prs", Command: []string{"printf", "[]"}}}
+	cfg.Sources.Custom = []config.CustomSourceConfig{{Name: "prs", Command: []string{"printf", "[]"}}}
 	driver := &openDriver{detect: true, workspaceID: "w-new", lastAction: source.HerdrActionFocused}
 	app := New(WithStreams(&bytes.Buffer{}, &bytes.Buffer{}))
 	app.herdrDriver = driver
@@ -2173,7 +2173,7 @@ func TestOpen_IntegrationRowWithPathOpensAsWorkspace(t *testing.T) {
 	var out, errOut bytes.Buffer
 	_, err := app.launch(context.Background(), cand, tui.RowActionOpen, "workspace", nil, &out, &errOut)
 	if err != nil {
-		t.Fatalf("launch workspace target for integration row: %v (stderr=%q)", err, errOut.String())
+		t.Fatalf("launch workspace target for custom source row: %v (stderr=%q)", err, errOut.String())
 	}
 	if driver.lastCand.Path != dir {
 		t.Errorf("FocusOrCreate candidate path = %q, want %q", driver.lastCand.Path, dir)
@@ -2879,7 +2879,7 @@ func TestOpen_AmbiguousQueryTabOnlySourcesAndGroup(t *testing.T) {
 		{Name: "team two", Path: filepath.Join(root, "two")},
 		{ID: "team", Name: "Team", Type: config.WorkspaceTypeGroup, Path: root, SourceOrder: []string{config.SourceProjects}},
 	}
-	cfg.Integrations = []config.IntegrationConfig{{Name: "review", Command: []string{"echo", `[{"label":"team review","path":"/review"}]`}}}
+	cfg.Sources.Custom = []config.CustomSourceConfig{{Name: "review", Command: []string{"echo", `[{"label":"team review","path":"/review"}]`}}}
 	app := New()
 	app.cfg = cfg
 	all := []source.Candidate{{Source: config.SourceWorkspaces, Label: "team one", Path: filepath.Join(root, "one")}, {Source: config.SourceWorkspaces, Label: "team two", Path: filepath.Join(root, "two")}}
@@ -2943,7 +2943,7 @@ func TestOpen_ConfiguredTabsAndHiddenAgents(t *testing.T) {
 	app := New()
 	cfg := config.Defaults()
 	cfg.TUI.Tabs = []string{"projects", "review", "team"}
-	cfg.Integrations = []config.IntegrationConfig{{Name: "review"}}
+	cfg.Sources.Custom = []config.CustomSourceConfig{{Name: "review"}}
 	cfg.Workspaces = []config.WorkspaceConfig{{ID: "team", Name: "Team", Type: config.WorkspaceTypeGroup, Path: t.TempDir(), SourceOrder: []string{config.SourceProjects}}}
 	app.cfg = cfg
 	app.probes = config.Probes{Herdr: true}
@@ -2976,7 +2976,7 @@ func TestOpen_ConfiguredTabsAndHiddenAgents(t *testing.T) {
 	if !foundSnapshot {
 		t.Error("--agents did not schedule the agents snapshot provider")
 	}
-	if len(captured.Tabs) != 3 || captured.Tabs[1].Kind != tui.TabIntegration || captured.Tabs[2].Kind != tui.TabGroup || captured.Tabs[2].Load == nil {
+	if len(captured.Tabs) != 3 || captured.Tabs[1].Kind != tui.TabCustomSource || captured.Tabs[2].Kind != tui.TabGroup || captured.Tabs[2].Load == nil {
 		t.Fatalf("configured tabs = %+v", captured.Tabs)
 	}
 }

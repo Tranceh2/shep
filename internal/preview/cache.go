@@ -54,20 +54,20 @@ func PreviewCacheKey(cand source.Candidate, cfg config.PreviewConfig) string {
 	return fmt.Sprintf("%s|%x", candidateFingerprint(cand), sha256.Sum256([]byte(configFingerprint(cfg))))
 }
 
-// PreviewCacheKeyWithIntegrations extends PreviewCacheKey with the integration
+// PreviewCacheKeyWithCustomSources extends PreviewCacheKey with the custom source
 // definitions because local command changes must invalidate cached output too.
-func PreviewCacheKeyWithIntegrations(cand source.Candidate, cfg config.PreviewConfig, integrations []config.IntegrationConfig) string {
-	return fmt.Sprintf("%s|%x", PreviewCacheKey(cand, cfg), sha256.Sum256([]byte(integrationFingerprint(integrations))))
+func PreviewCacheKeyWithCustomSources(cand source.Candidate, cfg config.PreviewConfig, customSources []config.CustomSourceConfig) string {
+	return fmt.Sprintf("%s|%x", PreviewCacheKey(cand, cfg), sha256.Sum256([]byte(customSourceFingerprint(customSources))))
 }
 
-func integrationFingerprint(integrations []config.IntegrationConfig) string {
+func customSourceFingerprint(customSources []config.CustomSourceConfig) string {
 	var b strings.Builder
-	for _, integration := range integrations {
-		b.WriteString(strconv.Quote(integration.Name))
+	for _, customSource := range customSources {
+		b.WriteString(strconv.Quote(customSource.Name))
 		b.WriteByte('=')
-		b.WriteString(strconv.Quote(fmt.Sprint(integration.Preview)))
+		b.WriteString(strconv.Quote(fmt.Sprint(customSource.Preview)))
 		b.WriteByte(':')
-		b.WriteString(strconv.Quote(fmt.Sprint(integration.PreviewCommands)))
+		b.WriteString(strconv.Quote(fmt.Sprint(customSource.PreviewCommands)))
 		b.WriteByte('|')
 	}
 	return b.String()

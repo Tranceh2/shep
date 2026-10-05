@@ -348,7 +348,7 @@ func (m Model) visibleSourceCounts() []sourceCount {
 	if tab := m.activeDefinition(); tab.Kind == TabGroup && len(tab.SourceOrder) > 0 {
 		order = tab.SourceOrder
 	}
-	if tab := m.activeDefinition(); tab.Kind == TabSource || tab.Kind == TabIntegration {
+	if tab := m.activeDefinition(); tab.Kind == TabSource || tab.Kind == TabCustomSource {
 		order = []string{tab.ID}
 	}
 	for _, src := range order {
@@ -855,11 +855,11 @@ func (m Model) rowLabelFormat(row Row) string {
 	case config.SourceAgents:
 		return formats.Agents
 	default:
-		// A declared [[integrations]] source resolves its own configured (or
-		// config.Load-defaulted) label_format via the open-ended Integrations
+		// A declared [[sources.custom]] source resolves its own configured (or
+		// config.Load-defaulted) label_format via the open-ended CustomSources
 		// map. Any other/unknown source (a direct --path candidate, or a
 		// synthesized candidate built directly in Go) keeps a safe path fallback.
-		if format, ok := formats.Integrations[row.Candidate.Source]; ok && format != "" {
+		if format, ok := formats.CustomSources[row.Candidate.Source]; ok && format != "" {
 			return format
 		}
 		return defaultPathLabelFormat

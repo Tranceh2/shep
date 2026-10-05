@@ -387,7 +387,7 @@ template = "default"
 [tui]
 # Ordered top tabs; omitted or [] defaults to ["all", "agents"].
 # Built-in source tabs: herdr, workspaces, zoxide, projects, sessions.
-# Integration tabs use their declared name; group tabs use [[workspaces]].id.
+# Custom source tabs use their declared name; group tabs use [[workspaces]].id.
 tabs = ["all", "agents"]
 # Layout orientation:
 # - "landscape": Forces side-by-side split (list on left, preview on right).
@@ -411,23 +411,23 @@ icons = "unicode"
 ---
 
 Tabs can be reordered or reduced to one entry. `all` runs only providers in
-`[general].source_order`; a source or integration tab listed only in `[tui].tabs`
+`[general].source_order`; a source or custom source tab listed only in `[tui].tabs`
 loads that provider without adding its rows to `all`. Group tabs evaluate their
 root and `source_order` only when selected, sharing the Herdr snapshot where
 available. Duplicate, unknown, ambiguous and non-group tab references fail
 configuration validation. `shep open --agents` opens the Agents view even if
 `agents` is not among the visible tabs; the next Tab returns to the configured cycle.
 
-For example, add the following entries to the same config to expose an
-integration and a group shortcut:
+For example, add the following entries to the same config to expose a
+custom source and a group shortcut:
 
 ```toml
 [tui]
 tabs = ["all", "pull-requests", "team-projects", "agents"]
 
-[[integrations]]
+[[sources.custom]]
 name = "pull-requests"
-command = ["my-pr-list", "--json"] # emits Shep integration candidates
+command = ["/path/to/list-prs-for-shep"] # emits Shep JSON rows
 
 [[workspaces]]
 id = "team-projects" # unique, stable tab reference (not name or path)
@@ -598,18 +598,25 @@ preview = ["identity", "git"]
 
 ---
 
-### `[[integrations]]` — Custom Command Providers
+### `[[sources.custom]]` — Custom Command Providers
 
-Add external tools that emit JSON arrays of candidates to display in the picker.
+Declare a command-backed source that writes a JSON array of Shep rows (not a tool's native JSON). Use an argv-only helper to transform external output; Shep does not invoke a shell or interpolate the list command.
 
 ```toml
-[[integrations]]
+[general]
+source_order = ["herdr", "workspaces", "pull-requests"]
+
+[[sources.custom]]
 name = "pull-requests"
-command = ["gh", "pr", "list", "--json", "number,title,headRefName"]
+command = ["/path/to/list-prs-for-shep"]
 icon = " "
 aliases = ["pr", "review"]
+label_format = "PR {{.Label}}"
+preview = ["identity"]
 timeout = "3s"
 ```
+
+The helper must print rows such as `[{"id":"42","label":"#42 fix bug","command":"gh pr checkout 42","aliases":["bug"]}]`. A row needs a label; it may also supply an ID, path, command, icon, aliases, template, close_on_exit, or inert string metadata. Reserved metadata keys cannot override identity or launch behavior. Use a group's `source_order` instead of `[general].source_order` to run the provider only when that group opens. Private `[sources.custom.preview_commands.<name>]` entries accept argv lists and inherit the global preview time and line limits unless overridden. The generated config example documents the full row and preview contract.
 
 ---
 

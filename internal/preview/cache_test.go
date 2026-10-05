@@ -123,25 +123,40 @@ func TestCache_Key_SameCandidateRepeatsHit(t *testing.T) {
 	}
 }
 
-func TestCache_Key_DistinguishesPathBackedIntegrationRoutes(t *testing.T) {
+func TestCache_Key_CustomSourcePreviewCommandChangesInvalidate(t *testing.T) {
+	t.Parallel()
+	cand := source.Candidate{Source: "prs", Label: "PR 42"}
+	cfg := config.PreviewConfig{Default: []string{"identity"}}
+	base := []config.CustomSourceConfig{{Name: "prs", Preview: []string{"detail"}, PreviewCommands: map[string]config.CustomSourcePreviewCommand{
+		"detail": {Command: []string{"echo", "first"}},
+	}}}
+	changed := []config.CustomSourceConfig{{Name: "prs", Preview: []string{"detail"}, PreviewCommands: map[string]config.CustomSourcePreviewCommand{
+		"detail": {Command: []string{"echo", "second"}},
+	}}}
+	if PreviewCacheKeyWithCustomSources(cand, cfg, base) == PreviewCacheKeyWithCustomSources(cand, cfg, changed) {
+		t.Fatal("changing a private custom-source preview command must invalidate its cached output")
+	}
+}
+
+func TestCache_Key_DistinguishesPathBackedCustomSourceRoutes(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.PreviewConfig{Default: []string{"identity"}}
-	baseMeta := map[string]string{"integration": "true"}
+	baseMeta := map[string]string{"custom_source": "true"}
 	direct := source.Candidate{
 		Path:   "/repo",
 		Label:  "cluster-a",
 		Source: "kube-contexts",
-		Meta:   map[string]string{"integration": baseMeta["integration"], "integration_id": "direct:cluster-a", "command": "kubectl --context direct:cluster-a"},
+		Meta:   map[string]string{"custom_source": baseMeta["custom_source"], "custom_source_id": "direct:cluster-a", "command": "kubectl --context direct:cluster-a"},
 	}
 	connect := source.Candidate{
 		Path:   "/repo",
 		Label:  "cluster-a",
 		Source: "kube-contexts",
-		Meta:   map[string]string{"integration": baseMeta["integration"], "integration_id": "connect:cluster-a", "command": "kubectl --context connect:cluster-a"},
+		Meta:   map[string]string{"custom_source": baseMeta["custom_source"], "custom_source_id": "connect:cluster-a", "command": "kubectl --context connect:cluster-a"},
 	}
 	if PreviewCacheKey(direct, cfg) == PreviewCacheKey(connect, cfg) {
-		t.Fatal("distinct path-backed integration routes must not share a preview cache key")
+		t.Fatal("distinct path-backed custom source routes must not share a preview cache key")
 	}
 }
 

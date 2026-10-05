@@ -27,7 +27,7 @@ import (
 )
 
 // Built-in source names. general.source_order lists which of these are enabled
-// and in what merge/display order. Declared integration names extend this set
+// and in what merge/display order. Declared custom source names extend this set
 // for the current config document; unknown names still fail Load fast.
 const (
 	SourceHerdr      = "herdr"
@@ -47,7 +47,7 @@ var validSourceNames = map[string]bool{
 	SourceHerdr: true, SourceSessions: true, SourceWorkspaces: true, SourceZoxide: true, SourceProjects: true, SourceAgents: true,
 }
 
-const defaultIntegrationTimeout = 3 * time.Second
+const defaultCustomSourceTimeout = 3 * time.Second
 
 // Selector values for the [general].selector field. They pick the interactive
 // candidate picker used by `shep open` after the direct (exact/single) match.
@@ -100,7 +100,7 @@ const (
 )
 
 // defaultPreviewSections is the generic fallback for a candidate whose source
-// declares no list of its own — a direct --path candidate or an integration
+// declares no list of its own — a direct --path candidate or a custom source
 // without preview sections.
 var defaultPreviewSections = []string{PreviewAgentStatus, PreviewIdentity, PreviewGit}
 
@@ -149,9 +149,6 @@ type Config struct {
 	// in declaration order; the first pattern matching the candidate's
 	// normalised path or base name wins.
 	Wildcards []WildcardConfig `toml:"wildcards,omitempty"`
-	// Integrations lists external argv-only commands whose JSON rows become
-	// first-class picker candidates.
-	Integrations []IntegrationConfig `toml:"integrations,omitempty"`
 }
 
 // RankingConfig controls local adaptive candidate ranking. Disabled mode must
@@ -160,8 +157,8 @@ type RankingConfig struct {
 	Enabled bool `toml:"enabled,omitempty"`
 }
 
-// General holds global tweaks. SourceOrder lists the enabled built-in source
-// names and their merge/display order; Selector picks the interactive
+// General holds global tweaks. SourceOrder lists enabled built-in and declared
+// custom source names in merge/display order; Selector picks the interactive
 // picker for `shep open` after the direct match. WorkspaceName applies only to
 // newly created dynamic workspaces.
 type General struct {
@@ -256,9 +253,8 @@ var validTUIIcons = map[string]bool{
 // at validation.
 const TUILayoutLandscape = "landscape"
 
-// SourcesConfig configures the built-in source providers. Only these
-// tables are recognised; there is no support for arbitrary
-// user-defined provider kinds.
+// SourcesConfig configures the built-in providers and command-backed custom sources.
+// Only the named built-in tables and [[sources.custom]] entries are recognised.
 type SourcesConfig struct {
 	Herdr      HerdrSourceConfig      `toml:"herdr,omitempty"`
 	Sessions   SessionsSourceConfig   `toml:"sessions,omitempty"`
@@ -266,6 +262,7 @@ type SourcesConfig struct {
 	Zoxide     ZoxideSourceConfig     `toml:"zoxide,omitempty"`
 	Projects   ProjectsSourceConfig   `toml:"projects,omitempty"`
 	Agents     AgentsSourceConfig     `toml:"agents,omitempty"`
+	Custom     []CustomSourceConfig   `toml:"custom,omitempty"`
 }
 
 // AgentsSourceConfig configures the agents source's presentation.
@@ -322,24 +319,24 @@ type ProjectsSourceConfig struct {
 	Preview     []string `toml:"preview,omitempty"`
 }
 
-// IntegrationConfig declares one external argv-only JSON source. Each command
+// CustomSourceConfig declares one external argv-only JSON source. Each command
 // must write a JSON array of row objects; see the user-facing config example
 // for the accepted row fields.
-type IntegrationConfig struct {
-	Name            string                               `toml:"name"`
-	Command         []string                             `toml:"command"`
-	Icon            string                               `toml:"icon,omitempty"`
-	Timeout         Duration                             `toml:"timeout,omitempty"`
-	LabelFormat     string                               `toml:"label_format,omitempty"`
-	Aliases         []string                             `toml:"aliases,omitempty"`
-	Preview         []string                             `toml:"preview,omitempty"`
-	PreviewCommands map[string]IntegrationPreviewCommand `toml:"preview_commands,omitempty"`
+type CustomSourceConfig struct {
+	Name            string                                `toml:"name"`
+	Command         []string                              `toml:"command"`
+	Icon            string                                `toml:"icon,omitempty"`
+	Timeout         Duration                              `toml:"timeout,omitempty"`
+	LabelFormat     string                                `toml:"label_format,omitempty"`
+	Aliases         []string                              `toml:"aliases,omitempty"`
+	Preview         []string                              `toml:"preview,omitempty"`
+	PreviewCommands map[string]CustomSourcePreviewCommand `toml:"preview_commands,omitempty"`
 }
 
-// IntegrationPreviewCommand is a private preview command belonging to one
-// integration. Command is argv, not a shell string. Zero timeout/max_lines
+// CustomSourcePreviewCommand is a private preview command belonging to one
+// custom source. Command is argv, not a shell string. Zero timeout/max_lines
 // values inherit the normalized global [preview] defaults during Load.
-type IntegrationPreviewCommand struct {
+type CustomSourcePreviewCommand struct {
 	Command  []string `toml:"command"`
 	Timeout  Duration `toml:"timeout,omitempty"`
 	MaxLines int      `toml:"max_lines,omitempty"`
@@ -596,16 +593,15 @@ func ProbesForWith(cfg *Config, lookupEnv func(string) (string, bool), lookPath 
 // pristine machine without leaking developer paths into the shipped defaults.
 func Defaults() *Config {
 	cfg := &Config{
-		Version:      CurrentSchemaVersion,
-		General:      General{SourceOrder: append([]string(nil), defaultSourceOrder...), Selector: SelectorBuiltin},
-		Herdr:        Herdr{},
-		Ranking:      RankingConfig{Enabled: true},
-		Defaults:     DefaultsConfig{Type: WorkspaceTypeShell, Template: "default"},
-		Sources:      SourcesConfig{},
-		Workspaces:   []WorkspaceConfig{},
-		Templates:    map[string]TemplateConfig{"default": {Command: ""}},
-		Wildcards:    []WildcardConfig{},
-		Integrations: []IntegrationConfig{},
+		Version:    CurrentSchemaVersion,
+		General:    General{SourceOrder: append([]string(nil), defaultSourceOrder...), Selector: SelectorBuiltin},
+		Herdr:      Herdr{},
+		Ranking:    RankingConfig{Enabled: true},
+		Defaults:   DefaultsConfig{Type: WorkspaceTypeShell, Template: "default"},
+		Sources:    SourcesConfig{Custom: []CustomSourceConfig{}},
+		Workspaces: []WorkspaceConfig{},
+		Templates:  map[string]TemplateConfig{"default": {Command: ""}},
+		Wildcards:  []WildcardConfig{},
 	}
 	normalizeTUI(&cfg.TUI)
 	normalizePreview(&cfg.Preview)
@@ -692,6 +688,9 @@ func Load(path string) (*Config, error) {
 	dec := toml.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(cfg); err != nil {
+		if strings.Contains(err.Error(), "strict mode") && bytes.Contains(data, []byte("[[integrations]]")) {
+			return nil, fmt.Errorf("parse config %q: [[integrations]] was removed; declare command-backed sources under [[sources.custom]]: %w", resolved, err)
+		}
 		return nil, fmt.Errorf("parse config %q: %w", resolved, err)
 	}
 	if cfg.Version != CurrentSchemaVersion {
@@ -709,8 +708,8 @@ func Load(path string) (*Config, error) {
 	if cfg.Wildcards == nil {
 		cfg.Wildcards = []WildcardConfig{}
 	}
-	if cfg.Integrations == nil {
-		cfg.Integrations = []IntegrationConfig{}
+	if cfg.Sources.Custom == nil {
+		cfg.Sources.Custom = []CustomSourceConfig{}
 	}
 	if len(cfg.General.SourceOrder) == 0 {
 		cfg.General.SourceOrder = append([]string(nil), defaultSourceOrder...)
@@ -727,7 +726,7 @@ func Load(path string) (*Config, error) {
 	normalizeSourceIcons(&cfg.Sources)
 	normalizeSourcePreviews(&cfg.Sources, userSetPreviewDefault)
 	normalizeAliases(cfg)
-	normalizeIntegrations(cfg.Integrations, cfg.Preview)
+	normalizeCustomSources(cfg.Sources.Custom, cfg.Preview)
 
 	if err := validate(cfg); err != nil {
 		return nil, fmt.Errorf("parse config %q: %w", resolved, err)
@@ -762,30 +761,30 @@ func normalizeAliases(cfg *Config) {
 	for i := range cfg.Workspaces {
 		cfg.Workspaces[i].Aliases = normalize(cfg.Workspaces[i].Aliases)
 	}
-	for i := range cfg.Integrations {
-		cfg.Integrations[i].Aliases = normalize(cfg.Integrations[i].Aliases)
+	for i := range cfg.Sources.Custom {
+		cfg.Sources.Custom[i].Aliases = normalize(cfg.Sources.Custom[i].Aliases)
 	}
 }
 
-// normalizeIntegrations fills each declared integration's zero-value timeout
+// normalizeCustomSources fills each declared custom source's zero-value timeout
 // and label format with the documented defaults, mirroring normalizePreview's
 // fill-in-defaults contract for the sibling [preview] table.
-func normalizeIntegrations(integrations []IntegrationConfig, preview PreviewConfig) {
-	for i := range integrations {
-		if integrations[i].Timeout == 0 {
-			integrations[i].Timeout = Duration(defaultIntegrationTimeout)
+func normalizeCustomSources(customSources []CustomSourceConfig, preview PreviewConfig) {
+	for i := range customSources {
+		if customSources[i].Timeout == 0 {
+			customSources[i].Timeout = Duration(defaultCustomSourceTimeout)
 		}
-		if integrations[i].LabelFormat == "" {
-			integrations[i].LabelFormat = "{{.Label}}"
+		if customSources[i].LabelFormat == "" {
+			customSources[i].LabelFormat = "{{.Label}}"
 		}
-		for name, command := range integrations[i].PreviewCommands {
+		for name, command := range customSources[i].PreviewCommands {
 			if command.Timeout == 0 {
 				command.Timeout = preview.Timeout
 			}
 			if command.MaxLines == 0 {
 				command.MaxLines = preview.MaxLines
 			}
-			integrations[i].PreviewCommands[name] = command
+			customSources[i].PreviewCommands[name] = command
 		}
 	}
 }
@@ -927,10 +926,10 @@ func validate(cfg *Config) error {
 	if err := validateWorkspaceNames(cfg); err != nil {
 		return err
 	}
-	if err := validateIntegrations(cfg.Integrations); err != nil {
+	if err := validateCustomSources(cfg.Sources.Custom); err != nil {
 		return err
 	}
-	if err := validateSources(cfg.General.SourceOrder, cfg.Integrations); err != nil {
+	if err := validateSources(cfg.General.SourceOrder, cfg.Sources.Custom); err != nil {
 		return err
 	}
 	if err := validateLabelFormats(cfg.Sources); err != nil {
@@ -942,7 +941,7 @@ func validate(cfg *Config) error {
 	if err := validateTemplates(cfg.Templates); err != nil {
 		return err
 	}
-	if err := validateWorkspaces(cfg.Workspaces, cfg.Templates, cfg.Integrations); err != nil {
+	if err := validateWorkspaces(cfg.Workspaces, cfg.Templates, cfg.Sources.Custom); err != nil {
 		return err
 	}
 	if err := validateWildcards(cfg.Wildcards, cfg.Templates); err != nil {
@@ -959,8 +958,8 @@ func validate(cfg *Config) error {
 	if err := validatePreviewCommandTemplates(cfg.Preview.Commands); err != nil {
 		return err
 	}
-	for i, integration := range cfg.Integrations {
-		if err := validateIntegrationPreviewCommands(integration, i, cfg.Preview.Commands); err != nil {
+	for i, customSource := range cfg.Sources.Custom {
+		if err := validateCustomSourcePreviewCommands(customSource, i, cfg.Preview.Commands); err != nil {
 			return err
 		}
 	}
@@ -1036,9 +1035,9 @@ func validatePreviewCommandTemplates(commands map[string]PreviewCommand) error {
 	return nil
 }
 
-func validateIntegrationPreviewCommands(integration IntegrationConfig, index int, global map[string]PreviewCommand) error {
-	for name, command := range integration.PreviewCommands {
-		field := fmt.Sprintf("integrations[%d] (%q).preview_commands.%s", index, integration.Name, name)
+func validateCustomSourcePreviewCommands(customSource CustomSourceConfig, index int, global map[string]PreviewCommand) error {
+	for name, command := range customSource.PreviewCommands {
+		field := fmt.Sprintf("sources.custom[%d] (%q).preview_commands.%s", index, customSource.Name, name)
 		if strings.TrimSpace(name) == "" {
 			return fmt.Errorf("%s: name is required", field)
 		}
@@ -1090,7 +1089,7 @@ func validateRowFormat(field, format string) error {
 
 // validateAllPreviewLists validates every `preview = [...]` list found
 // outside [preview] itself. Built-in-source, workspace, and wildcard lists use
-// built-ins plus global commands; integration lists additionally use their own
+// built-ins plus global commands; custom source lists additionally use their own
 // private commands.
 func validateAllPreviewLists(cfg *Config) error {
 	checks := []struct {
@@ -1119,81 +1118,81 @@ func validateAllPreviewLists(cfg *Config) error {
 			return fmt.Errorf("wildcards[%d] (%q).preview: %w", i, w.Pattern, err)
 		}
 	}
-	for i, integration := range cfg.Integrations {
-		if err := validateIntegrationPreviewNames(integration, i, cfg.Preview.Commands); err != nil {
+	for i, customSource := range cfg.Sources.Custom {
+		if err := validateCustomSourcePreviewNames(customSource, i, cfg.Preview.Commands); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func validateIntegrationPreviewNames(integration IntegrationConfig, index int, global map[string]PreviewCommand) error {
-	for _, name := range integration.Preview {
+func validateCustomSourcePreviewNames(customSource CustomSourceConfig, index int, global map[string]PreviewCommand) error {
+	for _, name := range customSource.Preview {
 		if builtinPreviewNames[name] {
 			continue
 		}
 		if _, ok := global[name]; ok {
 			continue
 		}
-		if _, ok := integration.PreviewCommands[name]; ok {
+		if _, ok := customSource.PreviewCommands[name]; ok {
 			continue
 		}
-		return fmt.Errorf("integrations[%d] (%q).preview: %q is not a built-in preview, global preview.commands entry, or local preview_commands entry", index, integration.Name, name)
+		return fmt.Errorf("sources.custom[%d] (%q).preview: %q is not a built-in preview, global preview.commands entry, or local preview_commands entry", index, customSource.Name, name)
 	}
 	return nil
 }
 
-func validateIntegrations(integrations []IntegrationConfig) error {
-	seen := make(map[string]struct{}, len(integrations))
-	for i, integration := range integrations {
-		name := strings.TrimSpace(integration.Name)
+func validateCustomSources(customSources []CustomSourceConfig) error {
+	seen := make(map[string]struct{}, len(customSources))
+	for i, customSource := range customSources {
+		name := strings.TrimSpace(customSource.Name)
 		if name == "" {
-			return fmt.Errorf("integrations[%d]: name is required", i)
+			return fmt.Errorf("sources.custom[%d]: name is required", i)
 		}
 		if validSourceNames[name] || name == "all" {
-			return fmt.Errorf("integrations[%d] (%q): name collides with built-in source or tab", i, name)
+			return fmt.Errorf("sources.custom[%d] (%q): name collides with built-in source or tab", i, name)
 		}
 		if _, ok := seen[name]; ok {
-			return fmt.Errorf("integrations[%d] (%q): duplicate name", i, name)
+			return fmt.Errorf("sources.custom[%d] (%q): duplicate name", i, name)
 		}
 		seen[name] = struct{}{}
-		if len(integration.Command) == 0 || strings.TrimSpace(integration.Command[0]) == "" {
-			return fmt.Errorf("integrations[%d] (%q): command is required", i, name)
+		if len(customSource.Command) == 0 || strings.TrimSpace(customSource.Command[0]) == "" {
+			return fmt.Errorf("sources.custom[%d] (%q): command is required", i, name)
 		}
-		for j, arg := range integration.Command {
+		for j, arg := range customSource.Command {
 			if strings.IndexByte(arg, 0) >= 0 {
-				return fmt.Errorf("integrations[%d] (%q): command[%d] contains NUL", i, name, j)
+				return fmt.Errorf("sources.custom[%d] (%q): command[%d] contains NUL", i, name, j)
 			}
 			if j == 0 && strings.ContainsAny(arg, "\r\n\t") {
-				return fmt.Errorf("integrations[%d] (%q): command[0] contains control characters", i, name)
+				return fmt.Errorf("sources.custom[%d] (%q): command[0] contains control characters", i, name)
 			}
 		}
 
-		if integration.Timeout <= 0 {
-			return fmt.Errorf("integrations[%d] (%q): timeout must be > 0", i, name)
+		if customSource.Timeout <= 0 {
+			return fmt.Errorf("sources.custom[%d] (%q): timeout must be > 0", i, name)
 		}
-		if err := validateRowFormat(fmt.Sprintf("integrations[%d].label_format", i), integration.LabelFormat); err != nil {
+		if err := validateRowFormat(fmt.Sprintf("sources.custom[%d].label_format", i), customSource.LabelFormat); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// validateSources rejects any name not in validSourceNames or the declared
-// integrations so a typo still fails fast instead of silently disabling a source.
-func validateSources(names []string, integrations ...[]IntegrationConfig) error {
+// validateSources rejects names outside validSourceNames and the declared
+// custom sources, so typos fail fast instead of silently disabling a source.
+func validateSources(names []string, customSources ...[]CustomSourceConfig) error {
 	allowed := make(map[string]bool, len(validSourceNames))
 	for name := range validSourceNames {
 		allowed[name] = true
 	}
-	if len(integrations) > 0 {
-		for _, integration := range integrations[0] {
-			allowed[integration.Name] = true
+	if len(customSources) > 0 {
+		for _, customSource := range customSources[0] {
+			allowed[customSource.Name] = true
 		}
 	}
 	for _, n := range names {
 		if !allowed[n] {
-			return fmt.Errorf("invalid source_order entry %q (valid: %s, %s, %s, %s, %s, %s, or a declared integration)",
+			return fmt.Errorf("invalid source_order entry %q (valid: %s, %s, %s, %s, %s, %s, or a declared custom source)",
 				n, SourceHerdr, SourceSessions, SourceWorkspaces, SourceZoxide, SourceProjects, SourceAgents)
 		}
 	}
@@ -1426,7 +1425,7 @@ func validateTemplateNode(prefix, tabName string, n TemplateNode, byID map[strin
 // must exist. It also enforces that close_on_exit, when set, is consistent
 // with the workspace shape: rejected on a Type="group" workspace, on a
 // workspace that sets a Template, or on a workspace with an empty Command.
-func validateWorkspaces(workspaces []WorkspaceConfig, templates map[string]TemplateConfig, integrations []IntegrationConfig) error {
+func validateWorkspaces(workspaces []WorkspaceConfig, templates map[string]TemplateConfig, customSources []CustomSourceConfig) error {
 	for i, ws := range workspaces {
 		if strings.TrimSpace(ws.Name) == "" {
 			return fmt.Errorf("workspaces[%d]: name is required", i)
@@ -1440,7 +1439,7 @@ func validateWorkspaces(workspaces []WorkspaceConfig, templates map[string]Templ
 			if strings.TrimSpace(ws.Path) == "" {
 				return fmt.Errorf("workspaces[%d] (%q): group path is required", i, ws.Name)
 			}
-			if err := validateSources(ws.SourceOrder, integrations); err != nil {
+			if err := validateSources(ws.SourceOrder, customSources); err != nil {
 				return fmt.Errorf("workspaces[%d] (%q): %w", i, ws.Name, err)
 			}
 		}
@@ -1506,7 +1505,7 @@ func validatePreview(p PreviewConfig) error {
 }
 
 // isValidPreviewName reports whether name is a hardcoded built-in or a key
-// in the global commands map. Used for global preview lists; integration lists
+// in the global commands map. Used for global preview lists; custom source lists
 // additionally accept only their own local command map.
 func isValidPreviewName(name string, commands map[string]PreviewCommand) bool {
 	if builtinPreviewNames[name] {
@@ -1573,11 +1572,11 @@ func validateTabs(cfg *Config) error {
 	for _, name := range []string{SourceHerdr, SourceWorkspaces, SourceZoxide, SourceProjects, SourceSessions} {
 		known[name] = "source"
 	}
-	for _, integration := range cfg.Integrations {
-		if integration.Name == "all" || integration.Name == "agents" {
-			return fmt.Errorf("integrations name %q: collides with built-in tab scope", integration.Name)
+	for _, customSource := range cfg.Sources.Custom {
+		if customSource.Name == "all" || customSource.Name == "agents" {
+			return fmt.Errorf("sources.custom name %q: collides with built-in tab scope", customSource.Name)
 		}
-		known[integration.Name] = "integration"
+		known[customSource.Name] = "custom source"
 	}
 	for i, ws := range cfg.Workspaces {
 		if ws.ID == "" {
@@ -1603,11 +1602,11 @@ func validateTabs(cfg *Config) error {
 		seen[tab] = true
 		kind := known[tab]
 		switch kind {
-		case "scope", "source", "integration", "group":
+		case "scope", "source", "custom source", "group":
 		case "workspace":
 			return fmt.Errorf("tui.tabs: %q references a non-group workspace; set type = %q", tab, WorkspaceTypeGroup)
 		default:
-			return fmt.Errorf("tui.tabs: unknown tab %q (use all, agents, a built-in source, declared integration or group workspace id)", tab)
+			return fmt.Errorf("tui.tabs: unknown tab %q (use all, agents, a built-in source, declared custom source or group workspace id)", tab)
 		}
 	}
 	return nil

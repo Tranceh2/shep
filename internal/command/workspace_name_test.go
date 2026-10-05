@@ -29,7 +29,7 @@ func TestWorkspaceLaunchRequestPrecedenceAndBypasses(t *testing.T) {
 		{name: "general", candidate: base, cfg: namingConfig("general-name", nil), want: "general-name"},
 		{name: "normalized fallback", candidate: base, cfg: namingConfig("", nil), want: base.NormalizedPath},
 		{name: "explicit workspace", candidate: source.Candidate{Path: base.Path, NormalizedPath: base.NormalizedPath, Label: "explicit", Source: config.SourceWorkspaces}, cfg: namingConfig("general-name", []config.WildcardConfig{{Pattern: "**", WorkspaceName: "wildcard"}}), want: "explicit"},
-		{name: "integration label", candidate: source.Candidate{Path: base.Path, NormalizedPath: base.NormalizedPath, Label: "integration-label", Source: "kubernetes", Meta: map[string]string{"integration": "true"}}, cfg: namingConfig("general-name", []config.WildcardConfig{{Pattern: "**", WorkspaceName: "wildcard"}}), want: "integration-label"},
+		{name: "custom source label", candidate: source.Candidate{Path: base.Path, NormalizedPath: base.NormalizedPath, Label: "custom source-label", Source: "kubernetes", Meta: map[string]string{"custom_source": "true"}}, cfg: namingConfig("general-name", []config.WildcardConfig{{Pattern: "**", WorkspaceName: "wildcard"}}), want: "custom source-label"},
 		{name: "existing herdr bypass", candidate: source.Candidate{Path: base.Path, Label: "existing", Source: config.SourceHerdr, Meta: map[string]string{"workspace_id": "w1"}}, cfg: namingConfig("general-name", nil), want: ""},
 	}
 	for _, tc := range cases {
@@ -47,13 +47,13 @@ func TestWorkspaceLaunchRequestPrecedenceAndBypasses(t *testing.T) {
 	}
 }
 
-func TestWorkspaceLaunchRequest_IntegrationLabelsRemainDistinct(t *testing.T) {
+func TestWorkspaceLaunchRequest_CustomSourceLabelsRemainDistinct(t *testing.T) {
 	t.Parallel()
 	app := New()
 	app.cfg = namingConfig("general-name", []config.WildcardConfig{{Pattern: "**", WorkspaceName: "cluster-wildcard"}})
 	candidates := []source.Candidate{
-		{Path: "/srv/clusters", NormalizedPath: "/srv/clusters", Label: "kube-prod", Source: "kubernetes", Meta: map[string]string{"integration": "true", "command": "kubectl config get-contexts"}},
-		{Path: "/srv/clusters", NormalizedPath: "/srv/clusters", Label: "kube-stage", Source: "kubernetes", Meta: map[string]string{"integration": "true", "command": "kubectl config get-contexts"}},
+		{Path: "/srv/clusters", NormalizedPath: "/srv/clusters", Label: "kube-prod", Source: "kubernetes", Meta: map[string]string{"custom_source": "true", "command": "kubectl config get-contexts"}},
+		{Path: "/srv/clusters", NormalizedPath: "/srv/clusters", Label: "kube-stage", Source: "kubernetes", Meta: map[string]string{"custom_source": "true", "command": "kubectl config get-contexts"}},
 	}
 	for _, candidate := range candidates {
 		request, err := app.workspaceLaunchRequest(candidate)
@@ -149,7 +149,7 @@ func TestWorkspaceLaunchRequest_WorktreeConditionalTemplate(t *testing.T) {
 	}
 }
 
-func TestLaunch_PathlessIntegrationWorkspaceFailsFast(t *testing.T) {
+func TestLaunch_PathlessCustomSourceWorkspaceFailsFast(t *testing.T) {
 	t.Parallel()
 	app := New()
 	app.cfg = namingConfig("general-name", nil)
@@ -160,16 +160,16 @@ func TestLaunch_PathlessIntegrationWorkspaceFailsFast(t *testing.T) {
 	_, err := app.launch(context.Background(), source.Candidate{
 		Label:  "kube-prod",
 		Source: "kubernetes",
-		Meta:   map[string]string{"integration": "true", "command": "kubectl get pods"},
+		Meta:   map[string]string{"custom_source": "true", "command": "kubectl get pods"},
 	}, tui.RowActionOpen, "workspace", nil, &out, &errOut)
 	if !errors.Is(err, errExitOne) {
 		t.Fatalf("launch error = %v, want errExitOne", err)
 	}
-	if got, want := errOut.String(), "--target=workspace requires an integration row path\n"; got != want {
+	if got, want := errOut.String(), "--target=workspace requires a custom source row path\n"; got != want {
 		t.Fatalf("stderr = %q, want %q", got, want)
 	}
 	if driver.lastCand.Path != "" || out.Len() != 0 {
-		t.Fatalf("pathless integration reached Herdr or stdout: candidate=%+v stdout=%q", driver.lastCand, out.String())
+		t.Fatalf("pathless custom source reached Herdr or stdout: candidate=%+v stdout=%q", driver.lastCand, out.String())
 	}
 }
 

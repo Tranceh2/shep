@@ -17,7 +17,7 @@ version = 2
 # source_order lists the enabled built-in sources and their merge/display order.
 # Built-ins are herdr, sessions (opt-in), workspaces, zoxide, and projects.
 # Valid names: herdr, sessions, workspaces, zoxide, projects, plus any name
-# declared in [[integrations]] below. Unknown names fail fast.
+# declared in [[sources.custom]] below. Unknown names fail fast.
 source_order = ["herdr", "workspaces", "zoxide", "projects"]
 # selector picks the interactive picker for "shep open" after the direct
 # (exact / single-match) short-circuit. Valid values: builtin, fzf, auto.
@@ -123,7 +123,7 @@ markers = [".git", ".project", "package.json", "go.mod", "Cargo.toml", "pyprojec
 ignore = ["node_modules", "vendor", ".direnv", ".devenv", "target", "dist", ".cache"]
 preview = ["identity", "git", "dir"]
 
-# [[integrations]] declares an external command that emits picker rows as a
+# [[sources.custom]] declares an external command that emits picker rows as a
 # JSON array on stdout. command is argv only — no shell, no "sh -c", no
 # interpolation — so it never needs quoting or escaping; write a small script
 # (a jq filter, a Python/Go helper, etc.) if you need to reshape a tool's
@@ -132,8 +132,8 @@ preview = ["identity", "git", "dir"]
 # aliases, icon, template, close_on_exit, and inert string metadata. Metadata
 # cannot override launch, identity, grouping, control, or TUI fields. Reserved
 # keys are rejected with a row/key error; use typed row fields for command,
-# template, and close_on_exit, and integration is always set internally. A row with
-# path opens as an ordinary workspace through the normal open pipeline; a row
+# template, and close_on_exit. The custom-source marker is set internally.
+# A row with path opens as an ordinary workspace through the open pipeline; a row
 # with command runs that command instead (in the root pane of a freshly
 # created workspace, or via --target=tab/pane inside the current one); a row
 # may set both. name must be unique and must not collide with a built-in
@@ -141,24 +141,24 @@ preview = ["identity", "git", "dir"]
 # there and include it only in a group's source_order to load it lazily when
 # that group opens. Example: a script wrapping "gh pr list --json number,title,headRefName"
 # and reshaping each PR into {"label": "#42 fix bug", "command": "gh pr checkout 42",
-# "aliases": ["review", "bug"], "meta": {"branch": "fix-bug"}}:
-# [[integrations]]
+# "aliases": ["review", "bug"], "meta": {"context": "review"}}:
+# [[sources.custom]]
 # name = "prs"
 # command = ["/path/to/shep/scripts/list-prs.sh"]
 # aliases = ["pull request", "review"]
 # icon = " "
 # timeout = "3s"
-# preview selects built-ins, global commands, and only this integration's
+# preview selects built-ins, global commands, and only this custom source's
 # private preview_commands entries, in the listed order. Local names cannot
 # collide with built-in or global preview names; the same local name may be used
-# by different integrations. Local timeout/max_lines inherit [preview] values
-# when omitted. Integration JSON rows provide metadata only and cannot declare
+# by different custom sources. Local timeout/max_lines inherit [preview] values
+# when omitted. Custom source JSON rows provide metadata only and cannot declare
 # executable preview commands.
 # preview = ["identity", "cluster", "health"]
-# [integrations.preview_commands.cluster]
+# [sources.custom.preview_commands.cluster]
 # command = ["kubectl", "config", "view", "--minify", "-o", "jsonpath={..context}"]
 # max_lines = 12
-# [integrations.preview_commands.health]
+# [sources.custom.preview_commands.health]
 # command = ["kubectl", "get", "--context", "{{ index .Meta \"context\" }}", "--raw", "/healthz"]
 # timeout = "1s"
 # max_lines = 10
@@ -195,8 +195,8 @@ preview = ["identity", "git", "dir"]
 # type = "group" turns an entry into a nested picker source rooted at path,
 # drawing candidates from its own source_order list. If source_order is omitted,
 # the global source order is used while the group's source membership remains
-# scoped. Declared integrations can
-# be listed here without being added to general.source_order; they run lazily
+# scoped. Declared custom sources can be listed here without being added to
+# general.source_order; they run lazily
 # only after this group opens.
 # [[workspaces]]
 # name = "projects"
@@ -207,8 +207,8 @@ preview = ["identity", "git", "dir"]
 # max_depth = 5
 # template = "dev"
 #
-# A group may list a declared integration in source_order without adding it to
-# general.source_order. That integration command runs lazily only after the
+# A group may list a declared custom source in source_order without adding it to
+# general.source_order. That custom source command runs lazily only after the
 # group opens, and its rows use the normal picker and launch behavior.
 
 # [templates.<name>] describes what opens after Enter for a freshly created

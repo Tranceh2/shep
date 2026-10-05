@@ -14,51 +14,51 @@ import (
 	"github.com/tranceh2/shep/internal/config"
 )
 
-const maxIntegrationOutputBytes = 64 * 1024
+const maxCustomSourceOutputBytes = 64 * 1024
 
-// reservedIntegrationMetaKeys are keys owned by Shep's providers and launch
-// pipeline. Integration rows may expose arbitrary inert metadata, but they
+// reservedCustomSourceMetaKeys are keys owned by Shep's providers and launch
+// pipeline. Custom-source rows may expose arbitrary inert metadata, but they
 // must use typed row fields for the public command/template/close-on-exit
 // contract and cannot forge internal identity, grouping, control, or display
 // state through meta.
-var reservedIntegrationMetaKeys = map[string]struct{}{
-	"active_tab_id":   {},
-	"agent_status":    {},
-	"branch":          {},
-	"close_on_exit":   {},
-	"command":         {},
-	"default":         {},
-	"entry_id":        {},
-	"group":           {},
-	"group_sources":   {},
-	"group_template":  {},
-	"head":            {},
-	"integration":     {},
-	"integration_id":  {},
-	"is_worktree":     {},
-	"main_worktree":   {},
-	"pane_id":         {},
-	"parent_template": {},
-	"repo":            {},
-	"running":         {},
-	"session_dir":     {},
-	"session_name":    {},
-	"socket_path":     {},
-	"tab_id":          {},
-	"tab_label":       {},
-	"tab_number":      {},
-	"tab_panes":       {},
-	"template":        {},
-	"workspace_id":    {},
-	"workspace_label": {},
-	"workspace_tabs":  {},
+var reservedCustomSourceMetaKeys = map[string]struct{}{
+	"active_tab_id":    {},
+	"agent_status":     {},
+	"branch":           {},
+	"close_on_exit":    {},
+	"command":          {},
+	"default":          {},
+	"entry_id":         {},
+	"group":            {},
+	"group_sources":    {},
+	"group_template":   {},
+	"head":             {},
+	"custom_source":    {},
+	"custom_source_id": {},
+	"is_worktree":      {},
+	"main_worktree":    {},
+	"pane_id":          {},
+	"parent_template":  {},
+	"repo":             {},
+	"running":          {},
+	"session_dir":      {},
+	"session_name":     {},
+	"socket_path":      {},
+	"tab_id":           {},
+	"tab_label":        {},
+	"tab_number":       {},
+	"tab_panes":        {},
+	"template":         {},
+	"workspace_id":     {},
+	"workspace_label":  {},
+	"workspace_tabs":   {},
 }
 
-// integrationRow is the deliberately small JSON contract accepted from an
-// integration command. The command must print one JSON array of rows. Meta is
+// customSourceRow is the deliberately small JSON contract accepted from a
+// custom source command. The command must print one JSON array of rows. Meta is
 // inert presentation/preview data; reserved internal keys are rejected rather
 // than allowed to alter launch, identity, grouping, or control behavior.
-type integrationRow struct {
+type customSourceRow struct {
 	ID          string            `json:"id,omitempty"`
 	Label       string            `json:"label"`
 	Path        string            `json:"path,omitempty"`
@@ -70,21 +70,21 @@ type integrationRow struct {
 	Meta        map[string]string `json:"meta,omitempty"`
 }
 
-// ParseIntegrationJSON parses the documented integration row array into
+// ParseCustomSourceJSON parses the documented custom source row array into
 // ordinary source candidates. The whole payload is rejected when it is not a
 // JSON array, contains no rows, or contains a row without a non-empty label.
 // Repeated explicit IDs are allowed when their effective commands agree; the
 // resolver later keeps the first row for that stable identity. An explicit ID
 // with conflicting commands is rejected because choosing one route would hide
-// an actionable integration definition.
-func ParseIntegrationJSON(name string, payload []byte) ([]Candidate, error) {
-	return parseIntegrationJSON(name, payload, nil)
+// an actionable custom source definition.
+func ParseCustomSourceJSON(name string, payload []byte) ([]Candidate, error) {
+	return parseCustomSourceJSON(name, payload, nil)
 }
 
-// ParseIntegrationJSONWithAliases parses rows and applies shared integration
+// ParseCustomSourceJSONWithAliases parses rows and applies shared custom-source
 // aliases before combining and normalizing each row's aliases.
-func ParseIntegrationJSONWithAliases(name string, payload []byte, sharedAliases []string) ([]Candidate, error) {
-	return parseIntegrationJSON(name, payload, sharedAliases)
+func ParseCustomSourceJSONWithAliases(name string, payload []byte, sharedAliases []string) ([]Candidate, error) {
+	return parseCustomSourceJSON(name, payload, sharedAliases)
 }
 
 func normalizeAliases(aliases []string) []string {
@@ -108,16 +108,16 @@ func normalizeAliases(aliases []string) []string {
 	return out
 }
 
-func parseIntegrationJSON(name string, payload []byte, sharedAliases []string) ([]Candidate, error) {
+func parseCustomSourceJSON(name string, payload []byte, sharedAliases []string) ([]Candidate, error) {
 	if len(bytes.TrimSpace(payload)) == 0 {
-		return nil, errors.New("integration output is empty")
+		return nil, errors.New("custom source output is empty")
 	}
-	var rows []integrationRow
+	var rows []customSourceRow
 	if err := json.Unmarshal(payload, &rows); err != nil {
 		return nil, fmt.Errorf("parse JSON rows: %w", err)
 	}
 	if rows == nil {
-		return nil, errors.New("integration output must be a JSON array")
+		return nil, errors.New("custom source output must be a JSON array")
 	}
 	candidates := make([]Candidate, 0, len(rows))
 	explicitIDs := make(map[string]string, len(rows))
@@ -126,7 +126,7 @@ func parseIntegrationJSON(name string, payload []byte, sharedAliases []string) (
 			return nil, fmt.Errorf("row %d: label is required", i)
 		}
 		for key := range row.Meta {
-			if _, reserved := reservedIntegrationMetaKeys[key]; reserved {
+			if _, reserved := reservedCustomSourceMetaKeys[key]; reserved {
 				return nil, fmt.Errorf("row %d: meta key %q is reserved; use the row field for this value", i, key)
 			}
 		}
@@ -146,16 +146,16 @@ func parseIntegrationJSON(name string, payload []byte, sharedAliases []string) (
 		if id := strings.TrimSpace(row.ID); id != "" {
 			command := meta["command"]
 			if previousCommand, seen := explicitIDs[id]; seen && previousCommand != command {
-				return nil, fmt.Errorf("row %d: integration id %q has conflicting commands", i, id)
+				return nil, fmt.Errorf("row %d: custom source id %q has conflicting commands", i, id)
 			}
 			explicitIDs[id] = command
 		}
 		// This marker lets the shared target predicate distinguish an external
-		// integration from direct/path candidates without adding a parallel
+		// custom source from direct/path candidates without adding a parallel
 		// launch path or passing config through the source package.
-		meta["integration"] = "true"
+		meta["custom_source"] = "true"
 		if strings.TrimSpace(row.ID) != "" {
-			meta["integration_id"] = strings.TrimSpace(row.ID)
+			meta["custom_source_id"] = strings.TrimSpace(row.ID)
 		}
 		aliases := append([]string{}, sharedAliases...)
 		aliases = append(aliases, row.Aliases...)
@@ -177,7 +177,7 @@ type cappedOutput struct {
 }
 
 func (w *cappedOutput) Write(p []byte) (int, error) {
-	remaining := maxIntegrationOutputBytes - w.buf.Len()
+	remaining := maxCustomSourceOutputBytes - w.buf.Len()
 	if remaining <= 0 {
 		w.exceeded = true
 		return len(p), nil
@@ -195,15 +195,15 @@ func (w *cappedOutput) Len() int      { return w.buf.Len() }
 
 var _ io.Writer = (*cappedOutput)(nil)
 
-type integrationProvider struct {
-	cfg config.IntegrationConfig
+type customSourceProvider struct {
+	cfg config.CustomSourceConfig
 }
 
-func (p *integrationProvider) Name() string { return p.cfg.Name }
+func (p *customSourceProvider) Name() string { return p.cfg.Name }
 
-func (p *integrationProvider) List(ctx context.Context) ([]Candidate, error) {
+func (p *customSourceProvider) List(ctx context.Context) ([]Candidate, error) {
 	if len(p.cfg.Command) == 0 || p.cfg.Command[0] == "" {
-		return nil, errors.New("integration command is empty")
+		return nil, errors.New("custom source command is empty")
 	}
 	timeout := time.Duration(p.cfg.Timeout)
 	if timeout <= 0 {
@@ -218,23 +218,23 @@ func (p *integrationProvider) List(ctx context.Context) ([]Candidate, error) {
 	err := cmd.Run()
 	if err != nil {
 		if errors.Is(commandCtx.Err(), context.DeadlineExceeded) {
-			return nil, fmt.Errorf("integration %q timed out after %s", p.cfg.Name, timeout)
+			return nil, fmt.Errorf("custom source %q timed out after %s", p.cfg.Name, timeout)
 		}
-		return nil, fmt.Errorf("integration %q failed: %w", p.cfg.Name, err)
+		return nil, fmt.Errorf("custom source %q failed: %w", p.cfg.Name, err)
 	}
 	if err := commandCtx.Err(); err != nil {
-		return nil, fmt.Errorf("integration %q: %w", p.cfg.Name, err)
+		return nil, fmt.Errorf("custom source %q: %w", p.cfg.Name, err)
 	}
 	if stdout.exceeded {
-		return nil, fmt.Errorf("integration %q output exceeds maximum size of %d bytes", p.cfg.Name, maxIntegrationOutputBytes)
+		return nil, fmt.Errorf("custom source %q output exceeds maximum size of %d bytes", p.cfg.Name, maxCustomSourceOutputBytes)
 	}
 	if stderr.Len() > 0 {
-		return nil, fmt.Errorf("integration %q wrote to stderr", p.cfg.Name)
+		return nil, fmt.Errorf("custom source %q wrote to stderr", p.cfg.Name)
 	}
 	out := stdout.Bytes()
-	candidates, err := ParseIntegrationJSONWithAliases(p.cfg.Name, out, p.cfg.Aliases)
+	candidates, err := ParseCustomSourceJSONWithAliases(p.cfg.Name, out, p.cfg.Aliases)
 	if err != nil {
-		return nil, fmt.Errorf("integration %q: %w", p.cfg.Name, err)
+		return nil, fmt.Errorf("custom source %q: %w", p.cfg.Name, err)
 	}
 	for i := range candidates {
 		if candidates[i].Icon == "" && p.cfg.Icon != "" {

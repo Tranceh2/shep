@@ -135,7 +135,7 @@ func NewRenderer(cfg *config.Config, probes config.Probes, git GitProvider, runn
 // in turn, joining non-empty blocks with a blank line, then caches the
 // result by path and config.
 func (r *defaultRenderer) Render(ctx context.Context, cand source.Candidate) (Result, error) {
-	key := PreviewCacheKeyWithIntegrations(cand, r.cfg.Preview, r.cfg.Integrations)
+	key := PreviewCacheKeyWithCustomSources(cand, r.cfg.Preview, r.cfg.Sources.Custom)
 	if cached, ok := r.cache.Get(key); ok {
 		return cached, nil
 	}
@@ -187,8 +187,8 @@ func (r *defaultRenderer) renderSection(ctx context.Context, cand source.Candida
 	case config.PreviewDir:
 		return r.renderDirSection(ctx, cand)
 	default:
-		if cmd, ok := integrationPreviewCommand(r.cfg, cand.Source, name); ok {
-			return r.renderIntegrationCommand(ctx, cmd, cand)
+		if cmd, ok := customSourcePreviewCommand(r.cfg, cand.Source, name); ok {
+			return r.renderCustomSourceCommand(ctx, cmd, cand)
 		}
 		cmd, ok := r.cfg.Preview.Commands[name]
 		if !ok {
@@ -198,14 +198,14 @@ func (r *defaultRenderer) renderSection(ctx context.Context, cand source.Candida
 	}
 }
 
-func integrationPreviewCommand(cfg *config.Config, sourceName, name string) (config.IntegrationPreviewCommand, bool) {
-	for _, integration := range cfg.Integrations {
-		if integration.Name == sourceName {
-			cmd, ok := integration.PreviewCommands[name]
+func customSourcePreviewCommand(cfg *config.Config, sourceName, name string) (config.CustomSourcePreviewCommand, bool) {
+	for _, customSource := range cfg.Sources.Custom {
+		if customSource.Name == sourceName {
+			cmd, ok := customSource.PreviewCommands[name]
 			return cmd, ok
 		}
 	}
-	return config.IntegrationPreviewCommand{}, false
+	return config.CustomSourcePreviewCommand{}, false
 }
 
 // resolvePreviewNames implements the documented precedence: workspace >
@@ -272,8 +272,8 @@ func resolvePreviewNames(cfg *config.Config, cand source.Candidate) []string {
 }
 
 // sourcePreview returns the configured [sources.<name>].preview list for the
-// candidate's source, or the declared [[integrations]] entry's own preview
-// list for an integration source, or nil when unset/unknown.
+// candidate's source, or the declared [[sources.custom]] entry's own preview
+// list for a custom source, or nil when unset/unknown.
 func sourcePreview(cfg *config.Config, sourceName string) []string {
 	switch sourceName {
 	case config.SourceHerdr:
@@ -289,9 +289,9 @@ func sourcePreview(cfg *config.Config, sourceName string) []string {
 	case config.SourceAgents:
 		return cfg.Sources.Agents.Preview
 	}
-	for _, integration := range cfg.Integrations {
-		if integration.Name == sourceName {
-			return integration.Preview
+	for _, customSource := range cfg.Sources.Custom {
+		if customSource.Name == sourceName {
+			return customSource.Preview
 		}
 	}
 	return nil
@@ -490,7 +490,7 @@ func (r *defaultRenderer) renderCustomCommand(ctx context.Context, cmd config.Pr
 	return r.runCommand(ctx, argv, r.cfg.Preview.Timeout, r.cfg.Preview.MaxLines, cand)
 }
 
-func (r *defaultRenderer) renderIntegrationCommand(ctx context.Context, cmd config.IntegrationPreviewCommand, cand source.Candidate) (string, bool) {
+func (r *defaultRenderer) renderCustomSourceCommand(ctx context.Context, cmd config.CustomSourcePreviewCommand, cand source.Candidate) (string, bool) {
 	if r.runner == nil || len(cmd.Command) == 0 || cmd.Command[0] == "" {
 		return "", false
 	}

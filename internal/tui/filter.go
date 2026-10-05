@@ -31,7 +31,7 @@ func (m *Model) applyFilter() tea.Cmd {
 			if len(tab.SourceOrder) > 0 {
 				order = tab.SourceOrder
 			}
-		} else if tab.Kind == TabSource || tab.Kind == TabIntegration {
+		} else if tab.Kind == TabSource || tab.Kind == TabCustomSource {
 			// Streaming producers retain undeduplicated provider results; a
 			// synchronous tab-only source instead uses its lazy result.
 			if tab.Load != nil {
@@ -47,7 +47,7 @@ func (m *Model) applyFilter() tea.Cmd {
 			}
 			candidates = filtered
 		}
-		if tab.Kind == TabSource || tab.Kind == TabIntegration {
+		if tab.Kind == TabSource || tab.Kind == TabCustomSource {
 			order = []string{tab.ID}
 		}
 

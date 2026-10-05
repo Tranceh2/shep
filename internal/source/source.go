@@ -435,8 +435,8 @@ func NewRegistry(cfg *config.Config, probes config.Probes, herdrDriver HerdrDriv
 		config.SourceProjects:   &projectsProvider{cfg: cfg, roots: append([]string(nil), cfg.Sources.Projects.Roots...)},
 		config.SourceAgents:     &agentsProvider{driver: herdrDriver, probes: probes, cfg: cfg},
 	}
-	for _, integration := range cfg.Integrations {
-		providers[integration.Name] = &integrationProvider{cfg: integration}
+	for _, customSource := range cfg.Sources.Custom {
+		providers[customSource.Name] = &customSourceProvider{cfg: customSource}
 	}
 	return &Registry{providers: providers, cfg: cfg, probes: probes}
 }
@@ -454,7 +454,7 @@ func NewScopedRegistry(cfg *config.Config, probes config.Probes, herdrDriver Her
 // order. The source list controls which providers are available; order controls
 // which of those providers run and how they are ranked/displayed. Keeping these
 // separate lets a group with omitted source_order inherit the global order while
-// preserving its explicit source membership and lazy integrations.
+// preserving its explicit source membership and lazy custom sources.
 func NewScopedRegistryWithOrder(cfg *config.Config, probes config.Probes, herdrDriver HerdrDriver, sources, order []string, root string) *Registry {
 	if len(sources) == 0 {
 		sources = order
@@ -485,10 +485,9 @@ func newScopedRegistry(cfg *config.Config, probes config.Probes, herdrDriver Her
 	projects := config.MergeProjectsSourceConfig(cfg.Sources.Projects, override)
 	projects.Roots = nil
 	scoped := &config.Config{
-		General:      config.General{SourceOrder: append([]string(nil), order...), Selector: cfg.General.Selector},
-		Sources:      cfg.Sources,
-		Defaults:     cfg.Defaults,
-		Integrations: append([]config.IntegrationConfig(nil), cfg.Integrations...),
+		General:  config.General{SourceOrder: append([]string(nil), order...), Selector: cfg.General.Selector},
+		Sources:  cfg.Sources,
+		Defaults: cfg.Defaults,
 	}
 	scoped.Sources.Projects = projects
 	providers := map[string]Provider{
@@ -505,8 +504,8 @@ func newScopedRegistry(cfg *config.Config, probes config.Probes, herdrDriver Her
 		// picker must not surface agent panes from unrelated roots.
 		config.SourceAgents: &agentsProvider{driver: herdrDriver, probes: probes, cfg: scoped, root: root, scoped: true},
 	}
-	for _, integration := range scoped.Integrations {
-		providers[integration.Name] = &integrationProvider{cfg: integration}
+	for _, customSource := range scoped.Sources.Custom {
+		providers[customSource.Name] = &customSourceProvider{cfg: customSource}
 	}
 	return &Registry{
 		providers: providers,
@@ -609,9 +608,9 @@ func (r *Registry) IconFor(name string) string {
 	case config.SourceAgents:
 		return r.cfg.Sources.Agents.Icon
 	}
-	for _, integration := range r.cfg.Integrations {
-		if integration.Name == name {
-			return integration.Icon
+	for _, customSource := range r.cfg.Sources.Custom {
+		if customSource.Name == name {
+			return customSource.Icon
 		}
 	}
 	return ""

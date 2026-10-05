@@ -81,21 +81,21 @@ const snapshotTTL = 5 * time.Second
 
 // LabelFormats contains the resolved source-specific row templates needed by
 // render.go. It deliberately carries only presentation strings rather than a
-// config.Config so Model remains a session-only view model. Integrations maps
-// a declared [[integrations]].name to its resolved label_format, since the
-// set of integration sources is open-ended (unlike the five fixed built-in
+// config.Config so Model remains a session-only view model. CustomSources maps
+// a declared [[sources.custom]].name to its resolved label_format, since the
+// set of custom sources is open-ended (unlike the five fixed built-in
 // fields above) and keyed by the same name candidates already carry as
 // Candidate.Source.
 type LabelFormats struct {
-	Herdr        string
-	Sessions     string
-	Workspaces   string
-	Zoxide       string
-	Projects     string
-	Agents       string
-	Tab          string
-	Pane         string
-	Integrations map[string]string
+	Herdr         string
+	Sessions      string
+	Workspaces    string
+	Zoxide        string
+	Projects      string
+	Agents        string
+	Tab           string
+	Pane          string
+	CustomSources map[string]string
 }
 
 // withDefaults lets direct Model/Layout construction retain the same first-run
@@ -565,7 +565,7 @@ func (m Model) SelectedAction() RowAction { return m.selectedAction }
 func (m Model) Cancelled() bool { return m.cancelled }
 
 // Scope returns the legacy all/agents view category. ActiveTab identifies
-// the exact configured source, integration or group tab.
+// the exact configured source, custom source or group tab.
 func (m Model) Scope() FilterScope { return m.scope }
 
 // WithScope returns a copy of the model with the given filter scope activated.

@@ -252,7 +252,7 @@ func TestOpen_AsyncLoader_SamePathGroupWorkspaceRecursion(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
 	cfg.Sources.Projects = config.ProjectsSourceConfig{Markers: []string{".git"}}
-	cfg.Integrations = []config.IntegrationConfig{{
+	cfg.Sources.Custom = []config.CustomSourceConfig{{
 		Name: "kube-contexts", Command: []string{script}, Timeout: config.Duration(time.Second), LabelFormat: "context={{.Label}}",
 	}}
 	cfg.Workspaces = []config.WorkspaceConfig{
@@ -304,19 +304,19 @@ func TestOpen_AsyncLoader_SamePathGroupWorkspaceRecursion(t *testing.T) {
 		t.Fatalf("driver got candidate %+v, want projects source in %s", driver.lastCand, projDir)
 	}
 	if _, err := os.Stat(counter); !os.IsNotExist(err) {
-		t.Fatalf("kube-contexts integration was executed when fsociety group was selected")
+		t.Fatalf("kube-contexts custom source was executed when fsociety group was selected")
 	}
 }
 
-// TestBuildStreamingProducers_IncludesIntegrationProviderCandidates proves an
-// integration named in general.source_order gets a streaming producer via
+// TestBuildStreamingProducers_IncludesCustomSourceProviderCandidates proves an
+// custom source named in general.source_order gets a streaming producer via
 // buildProviderProducer (the same producer builder [[workspaces]]/zoxide/
 // projects already use), and that its candidates reach the picker.
-func TestBuildStreamingProducers_IncludesIntegrationProviderCandidates(t *testing.T) {
+func TestBuildStreamingProducers_IncludesCustomSourceProviderCandidates(t *testing.T) {
 	t.Parallel()
 	cfg := config.Defaults()
 	cfg.General.SourceOrder = []string{"prs"}
-	cfg.Integrations = []config.IntegrationConfig{{
+	cfg.Sources.Custom = []config.CustomSourceConfig{{
 		Name:    "prs",
 		Command: []string{"printf", `[{"label":"PR 42","command":"gh pr view 42"}]`},
 	}}
@@ -332,28 +332,28 @@ func TestBuildStreamingProducers_IncludesIntegrationProviderCandidates(t *testin
 		if msg.Source == "prs" {
 			sawSource = true
 			if msg.Err != nil {
-				t.Fatalf("integration producer Err = %v, want nil", msg.Err)
+				t.Fatalf("custom source producer Err = %v, want nil", msg.Err)
 			}
 			got = append(got, msg.Candidates...)
 		}
 	}
 	if !sawSource {
-		t.Fatal("expected a streaming producer for the integration source")
+		t.Fatal("expected a streaming producer for the custom source source")
 	}
 	if len(got) != 1 || got[0].Label != "PR 42" {
-		t.Fatalf("integration candidates = %+v, want one PR 42 row", got)
+		t.Fatalf("custom source candidates = %+v, want one PR 42 row", got)
 	}
 }
 
-// TestBuildStreamingProducers_IntegrationFailureSurfacesVisibleError proves a
-// failing/timing-out integration command reports its error on the producer's
+// TestBuildStreamingProducers_CustomSourceFailureSurfacesVisibleError proves a
+// failing/timing-out custom source command reports its error on the producer's
 // SourceResultMsg.Err (the existing partial-failure contract) instead of
 // silently returning an empty candidate list.
-func TestBuildStreamingProducers_IntegrationFailureSurfacesVisibleError(t *testing.T) {
+func TestBuildStreamingProducers_CustomSourceFailureSurfacesVisibleError(t *testing.T) {
 	t.Parallel()
 	cfg := config.Defaults()
 	cfg.General.SourceOrder = []string{"prs"}
-	cfg.Integrations = []config.IntegrationConfig{{
+	cfg.Sources.Custom = []config.CustomSourceConfig{{
 		Name:    "prs",
 		Command: []string{"false"},
 	}}
@@ -367,13 +367,13 @@ func TestBuildStreamingProducers_IntegrationFailureSurfacesVisibleError(t *testi
 		msg := p(context.Background())
 		if msg.Source == "prs" {
 			if msg.Err == nil {
-				t.Fatal("expected a visible error from the failing integration producer")
+				t.Fatal("expected a visible error from the failing custom source producer")
 			}
 			sawErr = true
 		}
 	}
 	if !sawErr {
-		t.Fatal("expected the integration producer to run and report an error")
+		t.Fatal("expected the custom source producer to run and report an error")
 	}
 }
 

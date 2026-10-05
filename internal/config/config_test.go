@@ -56,7 +56,7 @@ name = "Kubernetes"
 path = "/tmp/kube"
 aliases = [" k8s ", "KUBE", "k8s", " "]
 
-[[integrations]]
+[[sources.custom]]
 name = "kube-contexts"
 command = ["printf", "[]"]
 aliases = [" k8s ", "K8S", "kube"]
@@ -71,8 +71,8 @@ aliases = [" k8s ", "K8S", "kube"]
 	if got, want := cfg.Workspaces[0].Aliases, []string{"k8s", "KUBE"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("workspace aliases = %v, want %v", got, want)
 	}
-	if got, want := cfg.Integrations[0].Aliases, []string{"k8s", "kube"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("integration aliases = %v, want %v", got, want)
+	if got, want := cfg.Sources.Custom[0].Aliases, []string{"k8s", "kube"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("custom source aliases = %v, want %v", got, want)
 	}
 }
 
@@ -88,6 +88,9 @@ func TestDefaults_PathAgnostic(t *testing.T) {
 	}
 	if cfg.Workspaces == nil {
 		t.Fatal("Defaults Workspaces slice must be non-nil")
+	}
+	if cfg.Sources.Custom == nil {
+		t.Fatal("Defaults custom sources slice must be non-nil")
 	}
 	if cfg.Wildcards == nil {
 		t.Fatal("Defaults Wildcards slice must be non-nil")
@@ -594,13 +597,36 @@ func TestLoad_RejectsUnknownSourceName(t *testing.T) {
 	}
 }
 
-func TestLoad_ParsesAndEnablesCommandIntegration(t *testing.T) {
+func TestLoad_CustomSourceSchema(t *testing.T) {
+	for _, tc := range []struct {
+		name, doc, want string
+	}{
+		{name: "new declaration", doc: "[[sources.custom]]\nname = \"prs\"\ncommand = [\"printf\", \"[]\"]\n", want: ""},
+		{name: "obsolete declaration", doc: "[[integrations]]\nname = \"prs\"\ncommand = [\"printf\", \"[]\"]\n", want: "[[integrations]] was removed; declare command-backed sources under [[sources.custom]]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(tc.doc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(path)
+			if tc.want == "" && err != nil {
+				t.Fatalf("new source rejected: %v", err)
+			}
+			if tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoad_ParsesAndEnablesCommandCustomSource(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.toml")
 	doc := `[general]
 source_order = ["herdr", "prs", "projects"]
 
-[[integrations]]
+[[sources.custom]]
 name = "prs"
 command = ["gh", "pr", "list", "--json", "number,title"]
 icon = "PR"
@@ -613,32 +639,32 @@ preview = ["identity"]
 	}
 	cfg, err := Load(path)
 	if err != nil {
-		t.Fatalf("load integration config: %v", err)
+		t.Fatalf("load custom source config: %v", err)
 	}
-	if got, want := len(cfg.Integrations), 1; got != want {
-		t.Fatalf("integrations = %d, want %d", got, want)
+	if got, want := len(cfg.Sources.Custom), 1; got != want {
+		t.Fatalf("custom sources = %d, want %d", got, want)
 	}
-	got := cfg.Integrations[0]
+	got := cfg.Sources.Custom[0]
 	if got.Name != "prs" || len(got.Command) != 5 || got.Icon != "PR" || time.Duration(got.Timeout) != 3*time.Second {
-		t.Errorf("integration = %+v", got)
+		t.Errorf("custom source = %+v", got)
 	}
 	if got.LabelFormat != "PR {{.Label}}" || !reflect.DeepEqual(got.Preview, []string{"identity"}) {
-		t.Errorf("integration presentation = %+v", got)
+		t.Errorf("custom source presentation = %+v", got)
 	}
 }
 
-func TestLoad_IntegrationValidationFailsFast(t *testing.T) {
+func TestLoad_CustomSourceValidationFailsFast(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
 		doc  string
 		want string
 	}{
-		{name: "empty name", doc: "[[integrations]]\nname = \" \"\ncommand = [\"printf\"]\n", want: "name is required"},
-		{name: "duplicate name", doc: "[[integrations]]\nname = \"prs\"\ncommand = [\"printf\"]\n\n[[integrations]]\nname = \"prs\"\ncommand = [\"printf\"]\n", want: "duplicate"},
-		{name: "built-in collision", doc: "[[integrations]]\nname = \"projects\"\ncommand = [\"printf\"]\n", want: "built-in source"},
-		{name: "empty command", doc: "[[integrations]]\nname = \"prs\"\ncommand = []\n", want: "command is required"},
-		{name: "invalid timeout", doc: "[[integrations]]\nname = \"prs\"\ncommand = [\"printf\"]\ntimeout = \"-1s\"\n", want: "timeout"},
+		{name: "empty name", doc: "[[sources.custom]]\nname = \" \"\ncommand = [\"printf\"]\n", want: "name is required"},
+		{name: "duplicate name", doc: "[[sources.custom]]\nname = \"prs\"\ncommand = [\"printf\"]\n\n[[sources.custom]]\nname = \"prs\"\ncommand = [\"printf\"]\n", want: "duplicate"},
+		{name: "built-in collision", doc: "[[sources.custom]]\nname = \"projects\"\ncommand = [\"printf\"]\n", want: "built-in source"},
+		{name: "empty command", doc: "[[sources.custom]]\nname = \"prs\"\ncommand = []\n", want: "command is required"},
+		{name: "invalid timeout", doc: "[[sources.custom]]\nname = \"prs\"\ncommand = [\"printf\"]\ntimeout = \"-1s\"\n", want: "timeout"},
 		{name: "unknown source order", doc: "[general]\nsource_order = [\"prs\"]\n", want: "invalid source_order"},
 	}
 	for _, tt := range tests {
@@ -655,22 +681,22 @@ func TestLoad_IntegrationValidationFailsFast(t *testing.T) {
 	}
 }
 
-func TestLoad_IntegrationTimeoutDefaultsToThreeSeconds(t *testing.T) {
+func TestLoad_CustomSourceTimeoutDefaultsToThreeSeconds(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(path, []byte("[[integrations]]\nname = \"prs\"\ncommand = [\"printf\"]\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("[[sources.custom]]\nname = \"prs\"\ncommand = [\"printf\"]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if got, want := time.Duration(cfg.Integrations[0].Timeout), 3*time.Second; got != want {
-		t.Errorf("integration timeout = %v, want %v", got, want)
+	if got, want := time.Duration(cfg.Sources.Custom[0].Timeout), 3*time.Second; got != want {
+		t.Errorf("custom source timeout = %v, want %v", got, want)
 	}
 }
 
-func TestLoad_ParsesIntegrationScopedPreviewCommandsAndInheritsDefaults(t *testing.T) {
+func TestLoad_ParsesCustomSourceScopedPreviewCommandsAndInheritsDefaults(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.toml")
 	const doc = `[preview]
@@ -678,16 +704,16 @@ func TestLoad_ParsesIntegrationScopedPreviewCommandsAndInheritsDefaults(t *testi
  max_lines = 25
  commands.shared = { command = "printf global" }
 
-[[integrations]]
+[[sources.custom]]
 name = "kube-contexts"
 command = ["/path/kube-contexts"]
 preview = ["identity", "cluster", "health"]
 
-[integrations.preview_commands.cluster]
+[sources.custom.preview_commands.cluster]
 command = ["/path/kube-preview", "cluster", "{{ index .Meta \"context\" }}"]
 max_lines = 12
 
-[integrations.preview_commands.health]
+[sources.custom.preview_commands.health]
 command = ["/path/kube-preview", "health", "{{ index .Meta \"context\" }}"]
 timeout = "1s"
 max_lines = 10
@@ -699,8 +725,8 @@ max_lines = 10
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	integration := cfg.Integrations[0]
-	cluster, ok := integration.PreviewCommands["cluster"]
+	customSource := cfg.Sources.Custom[0]
+	cluster, ok := customSource.PreviewCommands["cluster"]
 	if !ok {
 		t.Fatal("cluster preview command was not decoded")
 	}
@@ -713,7 +739,7 @@ max_lines = 10
 	if cluster.MaxLines != 12 {
 		t.Errorf("cluster max_lines = %d, want 12", cluster.MaxLines)
 	}
-	health := integration.PreviewCommands["health"]
+	health := customSource.PreviewCommands["health"]
 	if got, want := time.Duration(health.Timeout), time.Second; got != want {
 		t.Errorf("health timeout = %v, want %v", got, want)
 	}
@@ -722,20 +748,20 @@ max_lines = 10
 	}
 }
 
-func TestLoad_IntegrationPreviewNamespaceValidation(t *testing.T) {
+func TestLoad_CustomSourcePreviewNamespaceValidation(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
 		doc  string
 		want string
 	}{
-		{name: "empty argv", doc: "[[integrations]]\nname=\"kube\"\ncommand=[\"printf\"]\n[integrations.preview_commands.cluster]\ncommand=[]\n", want: "preview_commands.cluster: command is required"},
-		{name: "empty argv zero", doc: "[[integrations]]\nname=\"kube\"\ncommand=[\"printf\"]\n[integrations.preview_commands.cluster]\ncommand=[\"\"]\n", want: "preview_commands.cluster: command[0] is required"},
-		{name: "negative timeout", doc: "[[integrations]]\nname=\"kube\"\ncommand=[\"printf\"]\n[integrations.preview_commands.cluster]\ncommand=[\"printf\"]\ntimeout=\"-1s\"\n", want: "preview_commands.cluster: timeout"},
-		{name: "negative max lines", doc: "[[integrations]]\nname=\"kube\"\ncommand=[\"printf\"]\n[integrations.preview_commands.cluster]\ncommand=[\"printf\"]\nmax_lines=-1\n", want: "preview_commands.cluster: max_lines"},
-		{name: "built-in collision", doc: "[[integrations]]\nname=\"kube\"\ncommand=[\"printf\"]\n[integrations.preview_commands.identity]\ncommand=[\"printf\"]\n", want: "preview_commands.identity: collides with built-in"},
-		{name: "global collision", doc: "[preview.commands.cluster]\ncommand=\"printf\"\n\n[[integrations]]\nname=\"kube\"\ncommand=[\"printf\"]\n[integrations.preview_commands.cluster]\ncommand=[\"printf\"]\n", want: "preview_commands.cluster: collides with global"},
-		{name: "foreign local", doc: "[[integrations]]\nname=\"kube-a\"\ncommand=[\"printf\"]\npreview=[\"cluster\"]\n[integrations.preview_commands.other]\ncommand=[\"printf\"]\n\n[[integrations]]\nname=\"kube-b\"\ncommand=[\"printf\"]\n[integrations.preview_commands.cluster]\ncommand=[\"printf\"]\n", want: "integrations[0] (\"kube-a\").preview"},
+		{name: "empty argv", doc: "[[sources.custom]]\nname=\"kube\"\ncommand=[\"printf\"]\n[sources.custom.preview_commands.cluster]\ncommand=[]\n", want: "preview_commands.cluster: command is required"},
+		{name: "empty argv zero", doc: "[[sources.custom]]\nname=\"kube\"\ncommand=[\"printf\"]\n[sources.custom.preview_commands.cluster]\ncommand=[\"\"]\n", want: "preview_commands.cluster: command[0] is required"},
+		{name: "negative timeout", doc: "[[sources.custom]]\nname=\"kube\"\ncommand=[\"printf\"]\n[sources.custom.preview_commands.cluster]\ncommand=[\"printf\"]\ntimeout=\"-1s\"\n", want: "preview_commands.cluster: timeout"},
+		{name: "negative max lines", doc: "[[sources.custom]]\nname=\"kube\"\ncommand=[\"printf\"]\n[sources.custom.preview_commands.cluster]\ncommand=[\"printf\"]\nmax_lines=-1\n", want: "preview_commands.cluster: max_lines"},
+		{name: "built-in collision", doc: "[[sources.custom]]\nname=\"kube\"\ncommand=[\"printf\"]\n[sources.custom.preview_commands.identity]\ncommand=[\"printf\"]\n", want: "preview_commands.identity: collides with built-in"},
+		{name: "global collision", doc: "[preview.commands.cluster]\ncommand=\"printf\"\n\n[[sources.custom]]\nname=\"kube\"\ncommand=[\"printf\"]\n[sources.custom.preview_commands.cluster]\ncommand=[\"printf\"]\n", want: "preview_commands.cluster: collides with global"},
+		{name: "foreign local", doc: "[[sources.custom]]\nname=\"kube-a\"\ncommand=[\"printf\"]\npreview=[\"cluster\"]\n[sources.custom.preview_commands.other]\ncommand=[\"printf\"]\n\n[[sources.custom]]\nname=\"kube-b\"\ncommand=[\"printf\"]\n[sources.custom.preview_commands.cluster]\ncommand=[\"printf\"]\n", want: "sources.custom[0] (\"kube-a\").preview"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -751,35 +777,35 @@ func TestLoad_IntegrationPreviewNamespaceValidation(t *testing.T) {
 	}
 }
 
-func TestLoad_IntegrationLocalNamesMayRepeatAcrossIntegrations(t *testing.T) {
+func TestLoad_CustomSourceLocalNamesMayRepeatAcrossCustomSources(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.toml")
-	const doc = `[[integrations]]
+	const doc = `[[sources.custom]]
 name = "kube-a"
 command = ["printf"]
 preview = ["cluster"]
-[integrations.preview_commands.cluster]
+[sources.custom.preview_commands.cluster]
 command = ["printf", "a"]
 
-[[integrations]]
+[[sources.custom]]
 name = "kube-b"
 command = ["printf"]
 preview = ["cluster"]
-[integrations.preview_commands.cluster]
+[sources.custom.preview_commands.cluster]
 command = ["printf", "b"]
 `
 	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path); err != nil {
-		t.Fatalf("same local name across integrations should load: %v", err)
+		t.Fatalf("same local name across custom sources should load: %v", err)
 	}
 }
 
-func TestLoad_GroupSourceOrderAllowsDeclaredIntegrationWithoutGlobalSource(t *testing.T) {
+func TestLoad_GroupSourceOrderAllowsDeclaredCustomSourceWithoutGlobalSource(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.toml")
-	const doc = `[[integrations]]
+	const doc = `[[sources.custom]]
 name = "kube-contexts"
 command = ["printf", "[]"]
 
@@ -797,7 +823,7 @@ source_order = ["kube-contexts"]
 	}
 	cfg, err := Load(path)
 	if err != nil {
-		t.Fatalf("load group integration config: %v", err)
+		t.Fatalf("load group custom source config: %v", err)
 	}
 	if got, want := cfg.Workspaces[0].SourceOrder, []string{"kube-contexts"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("group source_order = %v, want %v", got, want)
@@ -1509,7 +1535,7 @@ func TestLoad_RejectsUnknownPreviewNameAnywhere(t *testing.T) {
 		{name: "source", doc: "[sources.herdr]\npreview = [\"nope\"]\n"},
 		{name: "workspace", doc: "[[workspaces]]\nname = \"x\"\npath = \"~/x\"\npreview = [\"nope\"]\n"},
 		{name: "wildcard", doc: "[[wildcards]]\npattern = \"*.go\"\npreview = [\"nope\"]\n"},
-		{name: "integration", doc: "[[integrations]]\nname = \"prs\"\ncommand = [\"printf\"]\npreview = [\"nope\"]\n"},
+		{name: "custom source", doc: "[[sources.custom]]\nname = \"prs\"\ncommand = [\"printf\"]\npreview = [\"nope\"]\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1932,7 +1958,7 @@ func TestExampleTOML_MatchesCanonicalModel(t *testing.T) {
 		"version = 2", "[general]", "source_order = [", "[defaults]", "type = ",
 		"template = ", "[tui]", "list_width", "preview_width", `layout = "landscape"`, "[preview]",
 		"[preview.commands.", "[sources.herdr]", "[sources.projects]",
-		"markers = ", "[templates.default]", "[templates.k8s]", "[[integrations]]",
+		"markers = ", "[templates.default]", "[templates.k8s]", "[[sources.custom]]",
 		`theme accepts "mocha", "macchiato", "frappe",`,
 		`"latte", "plain", or "inherit". "inherit" delegates explicitly to the`,
 		`Exact precedence is NO_COLOR > SHEP_THEME > explicit config theme`,
@@ -3314,12 +3340,12 @@ func TestLoad_TabsValidation(t *testing.T) {
 		{name: "default", want: []string{"all", "agents"}},
 		{name: "empty", doc: "[tui]\ntabs = []\n", want: []string{"all", "agents"}},
 		{name: "ordered", doc: "[tui]\ntabs = [\"projects\", \"all\", \"agents\"]\n", want: []string{"projects", "all", "agents"}},
-		{name: "integration and group", doc: "[tui]\ntabs = [\"review\", \"team\"]\n[[integrations]]\nname = \"review\"\ncommand = [\"echo\"]\n[[workspaces]]\nid = \"team\"\nname = \"Team\"\ntype = \"group\"\npath = \"~/team\"\n", want: []string{"review", "team"}},
+		{name: "custom source and group", doc: "[tui]\ntabs = [\"review\", \"team\"]\n[[sources.custom]]\nname = \"review\"\ncommand = [\"echo\"]\n[[workspaces]]\nid = \"team\"\nname = \"Team\"\ntype = \"group\"\npath = \"~/team\"\n", want: []string{"review", "team"}},
 		{name: "unknown", doc: "[tui]\ntabs = [\"missing\"]\n", wantErr: "tui.tabs"},
 		{name: "duplicate", doc: "[tui]\ntabs = [\"all\", \"all\"]\n", wantErr: "duplicate"},
 		{name: "non group", doc: "[tui]\ntabs = [\"team\"]\n[[workspaces]]\nid = \"team\"\nname = \"Team\"\npath = \"~/team\"\n", wantErr: "group"},
 		{name: "ambiguous IDs", doc: "[tui]\ntabs = [\"team\"]\n[[workspaces]]\nid = \"team\"\nname = \"One\"\ntype = \"group\"\npath = \"~/one\"\n[[workspaces]]\nid = \"team\"\nname = \"Two\"\ntype = \"group\"\npath = \"~/two\"\n", wantErr: "ambiguous"},
-		{name: "integration collision", doc: "[tui]\ntabs = [\"review\"]\n[[integrations]]\nname = \"review\"\ncommand = [\"echo\"]\n[[workspaces]]\nid = \"review\"\nname = \"Team\"\ntype = \"group\"\npath = \"~/team\"\n", wantErr: "ambiguous"},
+		{name: "custom source collision", doc: "[tui]\ntabs = [\"review\"]\n[[sources.custom]]\nname = \"review\"\ncommand = [\"echo\"]\n[[workspaces]]\nid = \"review\"\nname = \"Team\"\ntype = \"group\"\npath = \"~/team\"\n", wantErr: "ambiguous"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -19,7 +19,7 @@ func TestConfiguredTabs_FilterAndNavigation(t *testing.T) {
 		{Source: "review", Path: "/r", Label: "review item"},
 	}
 	m := NewModelWithLayout(candidates, nil, Layout{Tabs: []TabDefinition{
-		{ID: "review", Kind: TabIntegration},
+		{ID: "review", Kind: TabCustomSource},
 		{ID: "projects", Kind: TabSource},
 		{ID: "all", Kind: TabAll},
 	}})
@@ -27,7 +27,7 @@ func TestConfiguredTabs_FilterAndNavigation(t *testing.T) {
 		t.Fatalf("initial tab = %q", got)
 	}
 	if len(m.rows) != 1 || m.rows[0].Candidate.Label != "review item" {
-		t.Fatalf("integration rows = %+v", m.rows)
+		t.Fatalf("custom source rows = %+v", m.rows)
 	}
 	if !strings.Contains(m.footerHints(), "projects") {
 		t.Errorf("footer = %q", m.footerHints())
@@ -129,7 +129,7 @@ func TestConfiguredTabs_QueryTabOnlyProviderPreservesAll(t *testing.T) {
 	calls := 0
 	layout := Layout{SourceOrder: []string{config.SourceWorkspaces}, Tabs: []TabDefinition{
 		{ID: "all", Kind: TabAll},
-		{ID: "review", Kind: TabIntegration, Load: func(context.Context, *source.Snapshot) ([]source.Candidate, error) {
+		{ID: "review", Kind: TabCustomSource, Load: func(context.Context, *source.Snapshot) ([]source.Candidate, error) {
 			calls++
 			return []source.Candidate{{Source: "review", Path: "/review", Label: "team review"}}, nil
 		}},
@@ -219,7 +219,7 @@ func TestConfiguredTabs_EmptyStates(t *testing.T) {
 		kind TabKind
 		want string
 	}{
-		{name: "integration", kind: TabIntegration, want: "No integration candidates available"},
+		{name: "custom source", kind: TabCustomSource, want: "No custom source candidates available"},
 		{name: "group", kind: TabGroup, want: "No group candidates available"},
 		{name: "source", kind: TabSource, want: "No source candidates available"},
 	}
@@ -375,7 +375,7 @@ func TestConfiguredTabs_GroupOrderAndSelection(t *testing.T) {
 
 func TestConfiguredTabs_SourceUsesUndeduplicatedProviderRows(t *testing.T) {
 	m := NewModelWithProducers(nil, "", nil, context.Background(), Layout{SourceOrder: []string{config.SourceProjects}, Tabs: []TabDefinition{
-		{ID: "all", Kind: TabAll}, {ID: "review", Kind: TabIntegration},
+		{ID: "all", Kind: TabAll}, {ID: "review", Kind: TabCustomSource},
 	}})
 	m, _ = update(t, m, SourceResultMsg{Source: config.SourceProjects, Candidates: []source.Candidate{{Path: "/same", Label: "project", Source: config.SourceProjects}}})
 	m, _ = update(t, m, SourceResultMsg{Source: "review", Candidates: []source.Candidate{{Path: "/same", Label: "pull request", Source: "review"}}})
@@ -385,13 +385,13 @@ func TestConfiguredTabs_SourceUsesUndeduplicatedProviderRows(t *testing.T) {
 	next, _ := m.cycleScopeForward()
 	m = next.(Model)
 	if len(m.rows) != 1 || m.rows[0].Candidate.Label != "pull request" {
-		t.Fatalf("integration rows = %+v", m.rows)
+		t.Fatalf("custom source rows = %+v", m.rows)
 	}
 }
 
 func TestConfiguredTabs_AllKeepsEnabledRowOnPathCollision(t *testing.T) {
 	m := NewModelWithProducers(nil, "", nil, context.Background(), Layout{SourceOrder: []string{config.SourceProjects}, Tabs: []TabDefinition{
-		{ID: "all", Kind: TabAll}, {ID: "review", Kind: TabIntegration},
+		{ID: "all", Kind: TabAll}, {ID: "review", Kind: TabCustomSource},
 	}})
 	m, _ = update(t, m, SourceResultMsg{Source: config.SourceProjects, Candidates: []source.Candidate{{Path: "/same", NormalizedPath: "/same", Label: "project", Source: config.SourceProjects}}})
 	m, _ = update(t, m, SourceResultMsg{Source: "review", Candidates: []source.Candidate{{Path: "/same", NormalizedPath: "/same", Label: "pull request", Source: "review"}}})
@@ -401,7 +401,7 @@ func TestConfiguredTabs_AllKeepsEnabledRowOnPathCollision(t *testing.T) {
 	next, _ := m.cycleScopeForward()
 	m = next.(Model)
 	if len(m.rows) != 1 || m.rows[0].Candidate.Label != "pull request" {
-		t.Fatalf("integration collision rows = %+v", m.rows)
+		t.Fatalf("custom source collision rows = %+v", m.rows)
 	}
 }
 

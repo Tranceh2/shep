@@ -129,10 +129,10 @@ func TestPreviewTopBorderText_IsLabelTitle(t *testing.T) {
 		t.Errorf("ASCII preview title = %q, must not emit a Unicode-only separator", titleASCII)
 	}
 
-	// An integration candidate's preview title uses its own label too.
+	// An custom source candidate's preview title uses its own label too.
 	m.layout.Icons = IconsUnicode
 	m.rows = []Row{{Kind: RowCandidate, Candidate: source.Candidate{Label: "scratch-buffer", Source: "hermes"}}}
 	if got := m.previewTopBorderText(); !strings.Contains(got, "scratch-buffer") {
-		t.Errorf("integration preview title = %q, want the label", got)
+		t.Errorf("custom source preview title = %q, want the label", got)
 	}
 }
