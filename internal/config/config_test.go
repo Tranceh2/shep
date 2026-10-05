@@ -3305,3 +3305,41 @@ source_order = ["agents", "herdr"]
 		t.Errorf("group source_order = %v, want %v", got, want)
 	}
 }
+
+func TestLoad_TabsValidation(t *testing.T) {
+	cases := []struct {
+		name, doc, wantErr string
+		want               []string
+	}{
+		{name: "default", want: []string{"all", "agents"}},
+		{name: "empty", doc: "[tui]\ntabs = []\n", want: []string{"all", "agents"}},
+		{name: "ordered", doc: "[tui]\ntabs = [\"projects\", \"all\", \"agents\"]\n", want: []string{"projects", "all", "agents"}},
+		{name: "integration and group", doc: "[tui]\ntabs = [\"review\", \"team\"]\n[[integrations]]\nname = \"review\"\ncommand = [\"echo\"]\n[[workspaces]]\nid = \"team\"\nname = \"Team\"\ntype = \"group\"\npath = \"~/team\"\n", want: []string{"review", "team"}},
+		{name: "unknown", doc: "[tui]\ntabs = [\"missing\"]\n", wantErr: "tui.tabs"},
+		{name: "duplicate", doc: "[tui]\ntabs = [\"all\", \"all\"]\n", wantErr: "duplicate"},
+		{name: "non group", doc: "[tui]\ntabs = [\"team\"]\n[[workspaces]]\nid = \"team\"\nname = \"Team\"\npath = \"~/team\"\n", wantErr: "group"},
+		{name: "ambiguous IDs", doc: "[tui]\ntabs = [\"team\"]\n[[workspaces]]\nid = \"team\"\nname = \"One\"\ntype = \"group\"\npath = \"~/one\"\n[[workspaces]]\nid = \"team\"\nname = \"Two\"\ntype = \"group\"\npath = \"~/two\"\n", wantErr: "ambiguous"},
+		{name: "integration collision", doc: "[tui]\ntabs = [\"review\"]\n[[integrations]]\nname = \"review\"\ncommand = [\"echo\"]\n[[workspaces]]\nid = \"review\"\nname = \"Team\"\ntype = \"group\"\npath = \"~/team\"\n", wantErr: "ambiguous"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(tc.doc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(cfg.TUI.Tabs, tc.want) {
+				t.Fatalf("tabs = %v, want %v", cfg.TUI.Tabs, tc.want)
+			}
+		})
+	}
+}

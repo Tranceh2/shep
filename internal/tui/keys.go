@@ -203,17 +203,21 @@ func (m Model) handlePreviewFocusedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // plain "j"/"k" are intentionally NOT bound to movement here so they fall
 // through to the query instead.
 func (m Model) cycleScopeForward() (tea.Model, tea.Cmd) {
-	m.scope = m.scope.Next()
+	next := m.adjacentTab(1)
+	m.activeTab = next.ID
+	m.scope = scopeForTab(next.ID)
 	m.cursor = 0
 	m.cursorTouched = false
-	return m, tea.Batch(m.applyFilter(), m.syncPreviewAfterSelectionChange())
+	return m, tea.Batch(m.maybeLoadGroup(), m.applyFilter(), m.syncPreviewAfterSelectionChange())
 }
 
 func (m Model) cycleScopeBackward() (tea.Model, tea.Cmd) {
-	m.scope = m.scope.Prev()
+	next := m.adjacentTab(-1)
+	m.activeTab = next.ID
+	m.scope = scopeForTab(next.ID)
 	m.cursor = 0
 	m.cursorTouched = false
-	return m, tea.Batch(m.applyFilter(), m.syncPreviewAfterSelectionChange())
+	return m, tea.Batch(m.maybeLoadGroup(), m.applyFilter(), m.syncPreviewAfterSelectionChange())
 }
 
 // handleListFocusedKey applies one key press while FocusList owns focus.

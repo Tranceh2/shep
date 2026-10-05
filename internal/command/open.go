@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -134,14 +135,14 @@ func (a *App) selectorFactory(matches []source.Candidate) *selector.Cascade {
 	}
 	cfg := a.Config()
 	if a.startupSnapshot != nil {
-		layout := layoutFromConfigWithIntegrations(cfg.TUI, cfg.General.SourceOrder, cfg.Integrations, cfg.Sources)
+		layout := a.pickerLayout(cfg.General.SourceOrder, matches)
 		layout.RankingSnapshot = a.rankingSnapshot(matches)
 		layout.StatusDialer = a.resolveStatusDialer()
 		layout.PinToggler = a.pinToggler()
 		layout.AckClearer = a.ackClearer()
 		return snapshotCascadeFor(cfg.General.Selector, a.buildPreviewRendererForSnapshot(*a.startupSnapshot), a.currentPane, a.setChosenTarget, a.setChosenAction, *a.startupSnapshot, a.Driver(), a.buildPreviewRendererForSnapshot, cfg.Sources.Herdr.Icon, matches, layout)
 	}
-	layout := layoutFromConfigWithIntegrations(cfg.TUI, cfg.General.SourceOrder, cfg.Integrations, cfg.Sources)
+	layout := a.pickerLayout(cfg.General.SourceOrder, matches)
 	layout.RankingSnapshot = a.rankingSnapshot(matches)
 	layout.StatusDialer = a.resolveStatusDialer()
 	layout.PinToggler = a.pinToggler()
@@ -235,14 +236,14 @@ func (a *App) selectorFactoryForOrder(order []string, matches []source.Candidate
 	}
 	cfg := a.Config()
 	if a.startupSnapshot != nil {
-		layout := layoutFromConfigWithIntegrations(cfg.TUI, order, cfg.Integrations, cfg.Sources)
+		layout := a.pickerLayout(order, matches)
 		layout.RankingSnapshot = a.rankingSnapshot(matches)
 		layout.StatusDialer = a.resolveStatusDialer()
 		layout.PinToggler = a.pinToggler()
 		layout.AckClearer = a.ackClearer()
 		return snapshotCascadeFor(cfg.General.Selector, a.buildPreviewRendererForSnapshot(*a.startupSnapshot), a.currentPane, a.setChosenTarget, a.setChosenAction, *a.startupSnapshot, a.Driver(), a.buildPreviewRendererForSnapshot, cfg.Sources.Herdr.Icon, matches, layout)
 	}
-	layout := layoutFromConfigWithIntegrations(cfg.TUI, order, cfg.Integrations, cfg.Sources)
+	layout := a.pickerLayout(order, matches)
 	layout.RankingSnapshot = a.rankingSnapshot(matches)
 	layout.StatusDialer = a.resolveStatusDialer()
 	layout.PinToggler = a.pinToggler()
@@ -308,6 +309,24 @@ func layoutFromConfigWithIntegrations(t config.TUIConfig, sources []string, inte
 		SourceOrder:  sources,
 		Icons:        t.Icons,
 	}
+	for _, id := range t.Tabs {
+		tab := tui.TabDefinition{ID: id}
+		switch id {
+		case "all":
+			tab.Kind = tui.TabAll
+		case "agents":
+			tab.Kind = tui.TabAgents
+		default:
+			tab.Kind = tui.TabSource
+			for _, integration := range integrations {
+				if integration.Name == id {
+					tab.Kind = tui.TabIntegration
+					break
+				}
+			}
+		}
+		layout.Tabs = append(layout.Tabs, tab)
+	}
 	if len(integrations) > 0 {
 		formats := make(map[string]string, len(integrations))
 		for _, integration := range integrations {
@@ -327,6 +346,92 @@ func layoutFromConfigWithIntegrations(t config.TUIConfig, sources []string, inte
 	layout.LabelFormats.Agents = s.Agents.LabelFormat
 	layout.LabelFormats.Tab = s.Herdr.TabLabelFormat
 	layout.LabelFormats.Pane = s.Herdr.PaneLabelFormat
+	return layout
+}
+
+// pickerLayout shares configured tab definitions and scoped loaders between
+// streaming startup and the synchronous ambiguous-query picker. Tab-only
+// providers are loaded on activation, never added to general.source_order.
+func (a *App) pickerLayout(order []string, matches []source.Candidate) tui.Layout {
+	cfg := a.Config()
+	layout := layoutFromConfigWithIntegrations(cfg.TUI, order, cfg.Integrations, cfg.Sources)
+	registry := a.withStartupSnapshot(source.NewRegistry(cfg, a.Probes(), a.Driver()))
+	providers := make(map[string]source.Provider)
+	for _, provider := range registry.Providers() {
+		providers[provider.Name()] = provider
+	}
+	for i := range layout.Tabs {
+		tab := &layout.Tabs[i]
+		for _, ws := range cfg.Workspaces {
+			if ws.ID != tab.ID || ws.Type != config.WorkspaceTypeGroup {
+				continue
+			}
+			tab.Kind = tui.TabGroup
+			tab.Label = ws.Name
+			groupOrder := effectiveGroupSourceOrder(cfg, ws, true, nil)
+			tab.SourceOrder = groupOrder
+			workspace := ws
+			tab.Load = func(ctx context.Context, snapshot *source.Snapshot) ([]source.Candidate, error) {
+				root, err := pathutil.ExpandTilde(workspace.Path)
+				if err != nil {
+					return nil, err
+				}
+				scoped := source.NewScopedRegistryForWorkspaceWithOrder(cfg, a.Probes(), a.Driver(), workspace, groupOrder, root)
+				if snapshot != nil {
+					scoped.WithHerdrSnapshot(*snapshot)
+				} else if a.startupSnapshotAttempted {
+					scoped.DisableHerdr()
+				}
+				candidates, err := scoped.Collect(ctx)
+				if workspace.Template != "" {
+					for i := range candidates {
+						if candidates[i].Meta == nil {
+							candidates[i].Meta = make(map[string]string)
+						}
+						if candidates[i].Meta["template"] == "" && candidates[i].Meta["command"] == "" {
+							candidates[i].Meta["parent_template"] = workspace.Template
+						}
+					}
+				}
+				return candidates, err
+			}
+			break
+		}
+		if matches == nil || tab.Kind == tui.TabGroup || tab.Kind == tui.TabAll || tab.Kind == tui.TabAgents {
+			continue
+		}
+		// Already collected providers reuse their resolver matches. Only
+		// tab-only providers need a separate, lazy collection.
+		if slices.Contains(order, tab.ID) {
+			continue
+		}
+		provider := providers[tab.ID]
+		if provider == nil {
+			continue
+		}
+		if tab.ID == config.SourceHerdr {
+			tab.SourceOrder = []string{config.SourceHerdr}
+		}
+		tab.Load = func(ctx context.Context, snapshot *source.Snapshot) ([]source.Candidate, error) {
+			var rows []source.Candidate
+			var err error
+			if provider.Name() == config.SourceHerdr && snapshot != nil {
+				rows = source.HerdrCandidates(*snapshot)
+			} else {
+				rows, err = provider.List(ctx)
+			}
+			icon := registry.IconFor(provider.Name())
+			out := make([]source.Candidate, 0, len(rows))
+			for _, row := range rows {
+				copy := row.Clone()
+				if icon != "" {
+					copy.Icon = icon
+				}
+				out = append(out, copy)
+			}
+			return out, err
+		}
+	}
 	return layout
 }
 
@@ -741,7 +846,7 @@ func (a *App) buildRankingProducer() tui.SourceProducer {
 	}
 }
 
-func (a *App) buildStreamingProducers(cmdCtx context.Context) []tui.SourceProducer {
+func (a *App) buildStreamingProducers(cmdCtx context.Context, explicitAgents ...bool) []tui.SourceProducer {
 	cfg := a.Config()
 	probes := a.Probes()
 	registry := source.NewRegistry(cfg, probes, a.Driver())
@@ -753,7 +858,49 @@ func (a *App) buildStreamingProducers(cmdCtx context.Context) []tui.SourceProduc
 	// App.buildSnapshotProducer) instead of issuing a Snapshot per family.
 	var includeHerdr, includeAgents bool
 	var standaloneSessions source.Provider
-	for _, p := range registry.Enabled() {
+	enabled := registry.Enabled()
+	requested := make(map[string]bool)
+	if len(explicitAgents) > 0 && explicitAgents[0] {
+		requested[config.SourceAgents] = true
+	}
+	for _, tab := range cfg.TUI.Tabs {
+		if tab == "all" {
+			continue
+		}
+		isGroup := false
+		for _, ws := range cfg.Workspaces {
+			if ws.ID == tab && ws.Type == config.WorkspaceTypeGroup {
+				isGroup = true
+				order := effectiveGroupSourceOrder(cfg, ws, true, nil)
+				for _, name := range order {
+					if name == config.SourceHerdr || name == config.SourceAgents {
+						requested[config.SourceHerdr] = true
+						break
+					}
+				}
+				break
+			}
+		}
+		if !isGroup {
+			requested[tab] = true
+		}
+	}
+	for _, p := range registry.Providers() {
+		if !requested[p.Name()] {
+			continue
+		}
+		found := false
+		for _, active := range enabled {
+			if active.Name() == p.Name() {
+				found = true
+				break
+			}
+		}
+		if !found {
+			enabled = append(enabled, p)
+		}
+	}
+	for _, p := range enabled {
 		switch p.Name() {
 		case config.SourceHerdr:
 			includeHerdr = true
@@ -820,6 +967,9 @@ func (a *App) runOpen(cmd *cobra.Command, query, pathFlag, targetFlag string, ag
 	}()
 
 	cfg := a.Config()
+	if len(agents) > 0 && agents[0] && query != "" {
+		return fmt.Errorf("--agents cannot be combined with a query; run without a query to open the agents view")
+	}
 	// Use synchronous resolution when direct path, '.', test overrides cascade,
 	// when fzf is explicitly configured, or when a CLI query was supplied.
 	if cmd.Flags().Changed("path") || query == "." || a.selectorBuilder != nil || cfg.General.Selector == config.SelectorFzf || query != "" {
@@ -887,7 +1037,7 @@ func (a *App) runOpen(cmd *cobra.Command, query, pathFlag, targetFlag string, ag
 	}
 
 	// Interactive startup with no query: enter Bubble Tea immediately with streaming producers!
-	layout := layoutFromConfigWithIntegrations(cfg.TUI, cfg.General.SourceOrder, cfg.Integrations, cfg.Sources)
+	layout := a.pickerLayout(cfg.General.SourceOrder, nil)
 	layout.StatusDialer = a.resolveStatusDialer()
 	layout.PinToggler = a.pinToggler()
 	layout.AckClearer = a.ackClearer()
@@ -895,8 +1045,9 @@ func (a *App) runOpen(cmd *cobra.Command, query, pathFlag, targetFlag string, ag
 		fmt.Fprintf(errOut, "warning: pin storage unavailable: %v\n", err)
 	}
 
-	producers := a.buildStreamingProducers(cmd.Context())
-	if len(agents) > 0 && agents[0] {
+	wantAgents := len(agents) > 0 && agents[0]
+	producers := a.buildStreamingProducers(cmd.Context(), wantAgents)
+	if wantAgents {
 		layout.InitialScope = tui.ScopeAgents
 	}
 	cand, action, chosenTarget, currentPane, ok, selErr := a.runAsyncTUI(cmd.Context(), producers, query, layout)

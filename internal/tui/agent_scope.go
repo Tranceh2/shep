@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -9,13 +10,35 @@ import (
 	"github.com/tranceh2/shep/internal/source"
 )
 
-// FilterScope describes the active top-level filter scope in the picker.
+// FilterScope preserves the historical all/agents initial-view API. Configured
+// tabs use Model.ActiveTab for their exact identifier.
 type FilterScope int
 
 const (
 	ScopeAll FilterScope = iota
 	ScopeAgents
 )
+
+// TabKind selects how a top-level tab obtains its candidate rows.
+type TabKind string
+
+const (
+	TabAll         TabKind = "all"
+	TabAgents      TabKind = "agents"
+	TabSource      TabKind = "source"
+	TabIntegration TabKind = "integration"
+	TabGroup       TabKind = "group"
+)
+
+// TabDefinition describes one configured tab. Group loaders are invoked only
+// when that tab is activated; source tabs reuse the current candidate snapshot.
+type TabDefinition struct {
+	ID          string
+	Kind        TabKind
+	Label       string
+	SourceOrder []string
+	Load        func(context.Context, *source.Snapshot) ([]source.Candidate, error)
+}
 
 type scopeDefinition struct {
 	ID          FilterScope
@@ -56,12 +79,125 @@ var scopeRegistry = []scopeDefinition{
 		Placeholder: "filter agents…",
 		FooterLabel: "agents",
 		EmptyState: func(m Model) []string {
+			if len(m.layout.Tabs) > 0 && !(len(m.layout.Tabs) == 2 && m.layout.Tabs[0].ID == "all" && m.layout.Tabs[1].ID == "agents") {
+				return []string{"No active agents detected", "tab switch to " + m.adjacentTab(1).ID}
+			}
 			return []string{
 				"No active agents detected",
 				"tab switch to all workspaces",
 			}
 		},
 	},
+}
+
+func scopeForTab(id string) FilterScope {
+	if id == "agents" {
+		return ScopeAgents
+	}
+	return ScopeAll
+}
+
+func (m Model) tabs() []TabDefinition {
+	if len(m.layout.Tabs) == 0 {
+		return []TabDefinition{{ID: "all", Kind: TabAll}, {ID: "agents", Kind: TabAgents}}
+	}
+	return m.layout.Tabs
+}
+
+// ActiveTab is the identifier of the currently displayed view.
+func (m Model) ActiveTab() string {
+	if m.activeTab != "" {
+		return m.activeTab
+	}
+	if m.scope == ScopeAgents {
+		return "agents"
+	}
+	return m.tabs()[0].ID
+}
+
+func (m Model) activeDefinition() TabDefinition {
+	for _, tab := range m.tabs() {
+		if tab.ID == m.ActiveTab() {
+			return tab
+		}
+	}
+	if m.ActiveTab() == "agents" {
+		return TabDefinition{ID: "agents", Kind: TabAgents}
+	}
+	return m.tabs()[0]
+}
+
+func (m Model) adjacentTab(delta int) TabDefinition {
+	tabs := m.tabs()
+	for i, tab := range tabs {
+		if tab.ID == m.ActiveTab() {
+			return tabs[(i+delta+len(tabs))%len(tabs)]
+		}
+	}
+	if delta < 0 {
+		return tabs[len(tabs)-1]
+	}
+	return tabs[0]
+}
+
+func (m Model) groupNeedsSnapshot() bool {
+	return m.groupUsesSnapshot(m.activeDefinition())
+}
+
+func (m Model) groupUsesSnapshot(tab TabDefinition) bool {
+	for _, name := range tab.SourceOrder {
+		if name == config.SourceHerdr || name == config.SourceAgents {
+			return true
+		}
+	}
+	return false
+}
+
+func (m Model) tabPresentation() scopeDefinition {
+	tab := m.activeDefinition()
+	switch tab.Kind {
+	case TabAgents:
+		return scopeDefinitionFor(ScopeAgents)
+	case TabAll:
+		def := scopeDefinitionFor(ScopeAll)
+		if len(m.layout.Tabs) > 0 {
+			def.EmptyState = func(m Model) []string {
+				if m.loadingCandidates && len(m.allTabCandidates()) == 0 {
+					return []string{"No workspaces yet", "Sources are still loading…"}
+				}
+				if len(m.allTabCandidates()) == 0 {
+					return []string{"No candidates available"}
+				}
+				return []string{"No workspaces yet"}
+			}
+		}
+		return def
+	default:
+		kind := "source"
+		if tab.Kind == TabIntegration {
+			kind = "integration"
+		}
+		if tab.Kind == TabGroup {
+			kind = "group"
+		}
+		return scopeDefinition{Name: tab.ID, Placeholder: "filter " + kind + "…", FooterLabel: tab.ID,
+			EmptyState: func(m Model) []string {
+				if tab.Kind == TabGroup && m.groupNeedsSnapshot() && m.snapshotUnavailable != nil {
+					return []string{"Group candidates unavailable", "Herdr snapshot unavailable: " + m.snapshotUnavailable.Error()}
+				}
+				if m.groupLoading[tab.ID] {
+					return []string{"Loading " + kind + " candidates…"}
+				}
+				if err := m.groupErrors[tab.ID]; err != nil {
+					return []string{"Group candidates unavailable", err.Error()}
+				}
+				if m.loadingCandidates && tab.Load == nil {
+					return []string{"Sources are still loading…"}
+				}
+				return []string{"No " + kind + " candidates available"}
+			},
+		}
+	}
 }
 
 func scopeDefinitionFor(scope FilterScope) scopeDefinition {

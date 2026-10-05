@@ -148,6 +148,8 @@ type Layout struct {
 	// order matches the configured provider order instead of a hardcoded
 	// literal. Empty falls back to rows.go's defaultSourceOrder.
 	SourceOrder []string
+	// Tabs is the ordered visible tab list; empty preserves all/agents.
+	Tabs []TabDefinition
 	// Icons selects the fallback tier (IconsUnicode/IconsASCII) for the
 	// picker's own semantic icons — see icons.go's resolveIconSet and
 	// Model.icons(). Empty defaults to IconsUnicode, byte-identical to
@@ -226,14 +228,20 @@ type Model struct {
 	// state.
 	mode string
 
-	selected       source.Candidate
-	hasSelected    bool
-	selectedAction RowAction
-	cancelled      bool
-	scope          FilterScope
-	layout         Layout
-	theme          Theme
-	styles         styleSet
+	selected            source.Candidate
+	hasSelected         bool
+	selectedAction      RowAction
+	cancelled           bool
+	scope               FilterScope
+	activeTab           string
+	groupCandidates     map[string][]source.Candidate
+	groupLoading        map[string]bool
+	groupErrors         map[string]error
+	groupGeneration     int
+	snapshotUnavailable error
+	layout              Layout
+	theme               Theme
+	styles              styleSet
 
 	// currentPane is the Herdr pane shep is running inside, queried once by
 	// the caller and threaded in via WithCurrentPane. nil means "no current
@@ -369,6 +377,32 @@ type SourceResultMsg struct {
 // as a tea.Cmd during streaming startup.
 type SourceProducer func(ctx context.Context) SourceResultMsg
 
+type groupResultMsg struct {
+	id         string
+	generation int
+	candidates []source.Candidate
+	err        error
+}
+
+// activateGroup schedules a lazy group or tab-only provider once per tab.
+func (m *Model) activateGroup() tea.Cmd {
+	tab := m.activeDefinition()
+	if tab.Load == nil || m.groupLoading[tab.ID] {
+		return nil
+	}
+	if _, loaded := m.groupCandidates[tab.ID]; loaded {
+		return nil
+	}
+	m.groupLoading[tab.ID] = true
+	snapshot := m.startupSnapshot
+	generation := m.groupGeneration
+	ctx := m.renderCtx
+	return func() tea.Msg {
+		candidates, err := tab.Load(ctx, snapshot)
+		return groupResultMsg{id: tab.ID, generation: generation, candidates: candidates, err: err}
+	}
+}
+
 type liveObservation struct {
 	status string
 	seq    int
@@ -492,6 +526,9 @@ func newModelWithLayout(candidates []source.Candidate, renderer preview.Renderer
 		sourceOrder:        layout.SourceOrder,
 		rankingSnapshot:    snapshot,
 		scope:              layout.InitialScope,
+		groupCandidates:    make(map[string][]source.Candidate),
+		groupLoading:       make(map[string]bool),
+		groupErrors:        make(map[string]error),
 		spinner:            spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(styles.previewLoadingStyle)),
 		// mode starts "" (unknown/not yet sized): View treats "" the same
 		// as modeWide (side-by-side, using the same width<=0 fallback
@@ -501,6 +538,12 @@ func newModelWithLayout(candidates []source.Candidate, renderer preview.Renderer
 		// headless/test context" behavior.
 	}
 	copy(m.candidates, candidates)
+	if layout.InitialScope == ScopeAgents {
+		m.activeTab = "agents"
+	} else {
+		m.activeTab = m.tabs()[0].ID
+		m.scope = scopeForTab(m.activeTab)
+	}
 	m.applyFilter()
 	m.refreshPreviewLoadingFlag()
 	return m
@@ -521,12 +564,18 @@ func (m Model) SelectedAction() RowAction { return m.selectedAction }
 // (esc/ctrl+c/ctrl+g).
 func (m Model) Cancelled() bool { return m.cancelled }
 
-// Scope returns the active filter scope (ScopeAll or ScopeAgents).
+// Scope returns the legacy all/agents view category. ActiveTab identifies
+// the exact configured source, integration or group tab.
 func (m Model) Scope() FilterScope { return m.scope }
 
 // WithScope returns a copy of the model with the given filter scope activated.
 func (m Model) WithScope(s FilterScope) Model {
 	m.scope = s
+	if s == ScopeAgents {
+		m.activeTab = "agents"
+	} else {
+		m.activeTab = "all"
+	}
 	m.cursor = 0
 	m.cursorTouched = false
 	return m
@@ -592,6 +641,11 @@ func (m Model) WithSnapshotRefresh(driver SnapshotDriver, snapshot source.Snapsh
 			}
 		}
 	}
+	for _, tab := range m.tabs() {
+		if tab.Kind == TabSource && tab.ID == config.SourceHerdr {
+			m.snapshotSources[config.SourceHerdr] = true
+		}
+	}
 	m.tree = NewTreeExpanderFromSnapshot(snapshot)
 	if pane, ok := source.ResolveFocusedPane(snapshot); ok {
 		copy := *pane
@@ -614,7 +668,19 @@ func (m Model) Init() tea.Cmd {
 	for i, producer := range m.producers {
 		cmds = append(cmds, m.makeProducerCmd(i, producer))
 	}
+	cmds = append(cmds, m.maybeLoadGroup())
 	return tea.Batch(cmds...)
+}
+
+func (m *Model) maybeLoadGroup() tea.Cmd {
+	// A snapshot-backed group waits for the shared Herdr generation before
+	// collecting; otherwise its registry would ask the driver for a second one.
+	if m.groupNeedsSnapshot() {
+		if m.snapshotUnavailable != nil || (m.loadingCandidates && m.startupSnapshot == nil) {
+			return nil
+		}
+	}
+	return m.activateGroup()
 }
 
 func (m Model) makeProducerCmd(idx int, p SourceProducer) tea.Cmd {
@@ -640,6 +706,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.degradeFocusIfPreviewUnavailable()
 	case SourceResultMsg:
 		m, cmd = m.handleSourceResult(msg)
+	case groupResultMsg:
+		for _, tab := range m.tabs() {
+			if tab.ID == msg.id && m.groupUsesSnapshot(tab) && msg.generation != m.groupGeneration {
+				return m, nil
+			}
+		}
+		m.groupLoading[msg.id] = false
+		m.groupCandidates[msg.id] = m.projectLiveAgentStatuses(msg.candidates)
+		m.groupErrors[msg.id] = msg.err
+		if m.ActiveTab() == msg.id {
+			cmd = tea.Batch(m.applyFilter(), m.syncPreviewAfterSelectionChange())
+		}
 	case paneStatusMsg:
 		m, cmd = m.handlePaneStatus(msg)
 	case previewResponseMsg:
@@ -711,6 +789,7 @@ func (m Model) handleSourceResult(msg SourceResultMsg) (Model, tea.Cmd) {
 		m.tree = msg.Tree
 	}
 	if msg.Snapshot != nil {
+		m.snapshotUnavailable = nil
 		m.startupSnapshot = msg.Snapshot
 		m.lastSnapshotAt = m.now()
 		m.rankingSnapshot = m.rankingSnapshot.WithFilteredWorkspaceMRU(msg.Snapshot.Workspaces)
@@ -744,7 +823,7 @@ func (m Model) handleSourceResult(msg SourceResultMsg) (Model, tea.Cmd) {
 				grouped[src] = append(grouped[src], c)
 			}
 			for src, cands := range grouped {
-				m.candidatesBySource[src] = cands
+				m.candidatesBySource[src] = m.projectLiveAgentStatuses(cands)
 				hasCandidateChanges = true
 			}
 		}
@@ -754,7 +833,14 @@ func (m Model) handleSourceResult(msg SourceResultMsg) (Model, tea.Cmd) {
 		m.rebuildCandidatesFromSources()
 	}
 
+	if msg.Source == config.SourceHerdr && msg.Snapshot == nil && m.startupSnapshot == nil {
+		m.snapshotUnavailable = msg.Err
+		if m.snapshotUnavailable == nil {
+			m.snapshotUnavailable = errors.New("Herdr is unavailable")
+		}
+	}
 	filterCmd := m.applyFilter()
+	groupCmd := m.maybeLoadGroup()
 	m.refreshPreviewLoadingFlag()
 	previewCmd := m.syncPreviewAfterSelectionChange()
 
@@ -766,7 +852,7 @@ func (m Model) handleSourceResult(msg SourceResultMsg) (Model, tea.Cmd) {
 		}
 	}
 
-	return m, tea.Batch(filterCmd, previewCmd, m.maybeStartSpinner())
+	return m, tea.Batch(filterCmd, groupCmd, previewCmd, m.maybeStartSpinner())
 }
 
 func (m *Model) rebuildCandidatesFromSources() {
@@ -812,6 +898,34 @@ func waitForStatusCmd(ctx context.Context, events <-chan StatusEvent) tea.Cmd {
 	}
 }
 
+// projectLiveAgentStatuses overlays observed status onto newly arrived source
+// results without changing their provider-owned metadata maps.
+func (m Model) projectLiveAgentStatuses(candidates []source.Candidate) []source.Candidate {
+	var projected []source.Candidate
+	for i, c := range candidates {
+		if c.Source != config.SourceAgents || c.Meta["pane_id"] == "" {
+			continue
+		}
+		obs, ok := m.liveStatuses[c.Meta["pane_id"]]
+		if !ok || obs.status == "" {
+			continue
+		}
+		if projected == nil {
+			projected = append([]source.Candidate(nil), candidates...)
+		}
+		meta := make(map[string]string, len(c.Meta))
+		for key, value := range c.Meta {
+			meta[key] = value
+		}
+		meta["agent_status"] = obs.status
+		projected[i].Meta = meta
+	}
+	if projected != nil {
+		return projected
+	}
+	return candidates
+}
+
 func (m Model) handlePaneStatus(msg paneStatusMsg) (Model, tea.Cmd) {
 	if msg.PaneID == "" {
 		return m, waitForStatusCmd(m.renderCtx, m.liveStatusEvents)
@@ -843,13 +957,63 @@ func (m Model) handlePaneStatus(msg paneStatusMsg) (Model, tea.Cmd) {
 		}
 	}
 
-	if m.scope == ScopeAgents {
-		cmd := m.applyFilter()
-		return m, tea.Batch(cmd, clearCmd, waitForStatusCmd(m.renderCtx, m.liveStatusEvents))
+	// Candidate metadata maps may alias provider results or other model copies.
+	// Replace only matching owned entries before rebuilding the active view.
+	updateAgents := func(candidates []source.Candidate) []source.Candidate {
+		var updated []source.Candidate
+		for i, c := range candidates {
+			if c.Source != config.SourceAgents || c.Meta["pane_id"] != msg.PaneID {
+				continue
+			}
+			if updated == nil {
+				updated = append([]source.Candidate(nil), candidates...)
+			}
+			meta := make(map[string]string, len(c.Meta))
+			for key, value := range c.Meta {
+				meta[key] = value
+			}
+			meta["agent_status"] = status
+			updated[i].Meta = meta
+		}
+		if updated != nil {
+			return updated
+		}
+		return candidates
+	}
+	m.candidates = updateAgents(m.candidates)
+	m.baseCandidates = updateAgents(m.baseCandidates)
+	for name, candidates := range m.candidatesBySource {
+		m.candidatesBySource[name] = updateAgents(candidates)
+	}
+	for name, candidates := range m.groupCandidates {
+		m.groupCandidates[name] = updateAgents(candidates)
+	}
+	row, selected := m.currentRow()
+	selectedAgent := selected && row.Candidate.Source == config.SourceAgents && row.Candidate.Meta["pane_id"] == msg.PaneID
+	hasAgentRow := false
+	for _, visible := range m.rows {
+		if visible.Candidate.Source == config.SourceAgents && visible.Candidate.Meta["pane_id"] == msg.PaneID {
+			hasAgentRow = true
+			break
+		}
+	}
+	activeKind := m.activeDefinition().Kind
+	if activeKind == TabAgents || activeKind == TabGroup || activeKind == TabSource || hasAgentRow {
+		filterCmd := m.applyFilter()
+		var previewCmd tea.Cmd
+		if selectedAgent {
+			previewCmd = m.syncPreviewAfterSelectionChange()
+		}
+		return m, tea.Batch(filterCmd, previewCmd, clearCmd, waitForStatusCmd(m.renderCtx, m.liveStatusEvents))
 	}
 	for i := range m.rows {
-		if m.rows[i].Kind == RowPane && m.rows[i].Candidate.Meta != nil && m.rows[i].Candidate.Meta["pane_id"] == msg.PaneID {
-			m.rows[i].Candidate.Meta["agent_status"] = status
+		if m.rows[i].Kind == RowPane && m.rows[i].Candidate.Meta["pane_id"] == msg.PaneID {
+			meta := make(map[string]string, len(m.rows[i].Candidate.Meta))
+			for key, value := range m.rows[i].Candidate.Meta {
+				meta[key] = value
+			}
+			meta["agent_status"] = status
+			m.rows[i].Candidate.Meta = meta
 		}
 	}
 	return m, tea.Batch(clearCmd, waitForStatusCmd(m.renderCtx, m.liveStatusEvents))
@@ -953,6 +1117,9 @@ func (m Model) handleSnapshotResponse(msg snapshotResponseMsg) (Model, tea.Cmd) 
 			}
 		}
 		m.baseCandidates = spliceHerdrCandidates(m.baseCandidates, replacement)
+		if _, loaded := m.groupCandidates[config.SourceHerdr]; loaded {
+			m.groupCandidates[config.SourceHerdr] = replacement
+		}
 		if m.candidatesBySource != nil {
 			m.candidatesBySource[config.SourceHerdr] = replacement
 		}
@@ -961,6 +1128,15 @@ func (m Model) handleSnapshotResponse(msg snapshotResponseMsg) (Model, tea.Cmd) 
 	m.tree = NewTreeExpanderFromSnapshot(msg.snapshot)
 	snapshotCopy := msg.snapshot
 	m.startupSnapshot = &snapshotCopy
+	m.snapshotUnavailable = nil
+	m.groupGeneration++
+	for _, tab := range m.tabs() {
+		if tab.Kind == TabGroup && m.groupUsesSnapshot(tab) {
+			delete(m.groupCandidates, tab.ID)
+			delete(m.groupErrors, tab.ID)
+			delete(m.groupLoading, tab.ID)
+		}
+	}
 	if len(m.liveStatuses) > 0 {
 		for paneID, obs := range m.liveStatuses {
 			if obs.seq <= m.snapshotRequestSeq {
@@ -1035,8 +1211,9 @@ func (m Model) handleSnapshotResponse(msg snapshotResponseMsg) (Model, tea.Cmd) 
 	m.previewSections = nil
 	m.previewErr = ""
 	filterCmd := m.applyFilter()
+	groupCmd := m.maybeLoadGroup()
 	_, previewCmd := m.dispatchPreviewForRow(m.previewSeq)
-	cmds := append(clearCmds, filterCmd, previewCmd, m.maybeStartSpinner())
+	cmds := append(clearCmds, filterCmd, groupCmd, previewCmd, m.maybeStartSpinner())
 	return m, tea.Batch(cmds...)
 }
 

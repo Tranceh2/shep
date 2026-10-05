@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
@@ -30,6 +31,24 @@ func newRenderTestModel(themeName string, focus Focus) Model {
 // keeps the tests robust against a future profile-forcing helper).
 func renderRowLineText(s string) string {
 	return stripNonSGRANSI(s)
+}
+
+func TestRenderHeader_LongTabsKeepsActiveVisibleAndBounded(t *testing.T) {
+	tabs := []TabDefinition{{ID: "all", Kind: TabAll}}
+	for i := 0; i < 8; i++ {
+		tabs = append(tabs, TabDefinition{ID: "group" + string(rune('a'+i)), Kind: TabGroup, Label: "Engineering Operations Very Long Group " + string(rune('a'+i))})
+	}
+	m := NewModelWithLayout(nil, nil, Layout{Tabs: tabs})
+	m.activeTab = "groupg"
+	header := m.renderHeader(100)
+	for _, line := range strings.Split(header, "\n") {
+		if width := lipgloss.Width(line); width > 100 {
+			t.Fatalf("header line width = %d, want <= 100: %q", width, line)
+		}
+	}
+	if !strings.Contains(header, "● Engineering Operations Very Long Group g") {
+		t.Fatalf("active tab missing from header: %q", header)
+	}
 }
 
 // TestRenderRowLine_SelectedDescendantUsesCursorMarker proves the two-cell

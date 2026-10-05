@@ -1598,7 +1598,7 @@ func TestOpenLayoutToggle_ConfigUnchangedAfterCtrlL(t *testing.T) {
 		t.Fatalf("setup: expected ctrl+l to flip Model's orientation to auto, got %+v", mm.Layout())
 	}
 	// ...the original config.TUIConfig value stays completely unchanged.
-	if cfg.TUI != originalTUI {
+	if !reflect.DeepEqual(cfg.TUI, originalTUI) {
 		t.Errorf("cfg.TUI mutated by ctrl+l toggle: got %+v, want unchanged %+v", cfg.TUI, originalTUI)
 	}
 }
@@ -2858,6 +2858,228 @@ func TestSelectorFactory_StatusDialerWiredWhenSocketPresent(t *testing.T) {
 			t.Fatal("expected injected dialer, got nil")
 		}
 	})
+}
+
+func TestOpen_AmbiguousQueryTabOnlySourcesAndGroup(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "team-project"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "team-project", ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.Ranking.Enabled = false
+	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
+	cfg.TUI.Tabs = []string{"all", "projects", "review", "team"}
+	cfg.Sources.Projects.Markers = []string{".git"}
+	cfg.Sources.Projects.Roots = []string{root}
+	cfg.Workspaces = []config.WorkspaceConfig{
+		{Name: "team one", Path: filepath.Join(root, "one")},
+		{Name: "team two", Path: filepath.Join(root, "two")},
+		{ID: "team", Name: "Team", Type: config.WorkspaceTypeGroup, Path: root, SourceOrder: []string{config.SourceProjects}},
+	}
+	cfg.Integrations = []config.IntegrationConfig{{Name: "review", Command: []string{"echo", `[{"label":"team review","path":"/review"}]`}}}
+	app := New()
+	app.cfg = cfg
+	all := []source.Candidate{{Source: config.SourceWorkspaces, Label: "team one", Path: filepath.Join(root, "one")}, {Source: config.SourceWorkspaces, Label: "team two", Path: filepath.Join(root, "two")}}
+	layout := app.pickerLayout(cfg.General.SourceOrder, all)
+	if len(layout.Tabs) != 4 || layout.Tabs[1].Load == nil || layout.Tabs[2].Load == nil || layout.Tabs[3].Load == nil {
+		t.Fatalf("ambiguous picker tabs = %+v", layout.Tabs)
+	}
+	m := tui.NewModelWithLayout(all, nil, layout)
+	if got := m.ActiveTab(); got != "all" {
+		t.Fatalf("default tab = %q, want all", got)
+	}
+	for _, tab := range layout.Tabs[1:] {
+		rows, err := tab.Load(context.Background(), nil)
+		if err != nil {
+			t.Fatalf("load %s: %v", tab.ID, err)
+		}
+		if len(rows) != 1 || rows[0].Source == config.SourceWorkspaces || rows[0].Label == "" {
+			t.Errorf("tab %s candidates = %+v", tab.ID, rows)
+		}
+	}
+	if !reflect.DeepEqual(cfg.General.SourceOrder, []string{config.SourceWorkspaces}) {
+		t.Fatalf("tab loading mutated all source order: %v", cfg.General.SourceOrder)
+	}
+}
+
+func TestOpen_AmbiguousQueryPreservesDirectResolution(t *testing.T) {
+	cfg, root := seedCfg(t, "team")
+	cfg.Ranking.Enabled = false
+	cfg.TUI.Tabs = []string{"all", "projects"}
+	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
+	app := New()
+	app.cfg = cfg
+	var out, errOut bytes.Buffer
+	cmd := app.openCmd()
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{"team"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("direct query: %v, stderr = %q", err, errOut.String())
+	}
+	if !strings.Contains(out.String(), filepath.Join(root, "team")) {
+		t.Fatalf("direct match output = %q", out.String())
+	}
+}
+
+func TestOpen_AgentsWithQueryRejected(t *testing.T) {
+	app := New()
+	cfg := config.Defaults()
+	cfg.Ranking.Enabled = false
+	app.cfg = cfg
+	var errOut bytes.Buffer
+	cmd := app.openCmd()
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{"--agents", "team"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(errOut.String(), "--agents") {
+		t.Fatalf("--agents with query: err = %v, stderr = %q", err, errOut.String())
+	}
+}
+
+func TestOpen_ConfiguredTabsAndHiddenAgents(t *testing.T) {
+	app := New()
+	cfg := config.Defaults()
+	cfg.TUI.Tabs = []string{"projects", "review", "team"}
+	cfg.Integrations = []config.IntegrationConfig{{Name: "review"}}
+	cfg.Workspaces = []config.WorkspaceConfig{{ID: "team", Name: "Team", Type: config.WorkspaceTypeGroup, Path: t.TempDir(), SourceOrder: []string{config.SourceProjects}}}
+	app.cfg = cfg
+	app.probes = config.Probes{Herdr: true}
+	app.herdrDriver = &openDriver{detect: true, snapshot: source.Snapshot{Panes: []source.Pane{{ID: "p1", Agent: "opencode"}}}}
+	app.herdrDriverInjected = true
+	var captured tui.Layout
+	var capturedProducers []tui.SourceProducer
+	app.asyncTUIRun = func(_ context.Context, producers []tui.SourceProducer, _ string, layout tui.Layout) (source.Candidate, tui.RowAction, string, *source.Pane, bool, error) {
+		capturedProducers = producers
+		captured = layout
+		return source.Candidate{}, tui.RowActionOpen, "", nil, false, tui.ErrCancelled
+	}
+	cmd := app.openCmd()
+	cmd.SetArgs([]string{"--agents"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if captured.InitialScope != tui.ScopeAgents {
+		t.Errorf("initial scope = %v", captured.InitialScope)
+	}
+	foundSnapshot := false
+	for _, producer := range capturedProducers {
+		msg := producer(context.Background())
+		for _, name := range msg.SnapshotSources {
+			if name == config.SourceAgents {
+				foundSnapshot = true
+			}
+		}
+	}
+	if !foundSnapshot {
+		t.Error("--agents did not schedule the agents snapshot provider")
+	}
+	if len(captured.Tabs) != 3 || captured.Tabs[1].Kind != tui.TabIntegration || captured.Tabs[2].Kind != tui.TabGroup || captured.Tabs[2].Load == nil {
+		t.Fatalf("configured tabs = %+v", captured.Tabs)
+	}
+}
+
+func TestOpen_VisibleAgentsTabUsesSingleSnapshotWithoutEnablingAll(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Ranking.Enabled = false
+	cfg.General.SourceOrder = []string{config.SourceProjects}
+	cfg.TUI.Tabs = []string{"all", "agents"}
+	app := New()
+	app.cfg = cfg
+	app.probes = config.Probes{Herdr: true}
+	driver := &openDriver{detect: true, snapshot: source.Snapshot{Panes: []source.Pane{{ID: "p1", Agent: "opencode"}}}}
+	app.herdrDriver = driver
+	app.herdrDriverInjected = true
+	producers := app.buildStreamingProducers(context.Background())
+	agents := 0
+	for _, producer := range producers {
+		msg := producer(context.Background())
+		for _, c := range msg.Candidates {
+			if c.Source == config.SourceAgents {
+				agents++
+			}
+		}
+	}
+	if agents != 1 || driver.snapshotCalls != 1 {
+		t.Fatalf("agents = %d, snapshots = %d; want one of each", agents, driver.snapshotCalls)
+	}
+}
+
+func TestOpen_GroupTabHerdrUsesSharedSnapshotOutsideAll(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Ranking.Enabled = false
+	cfg.General.SourceOrder = []string{config.SourceProjects}
+	cfg.TUI.Tabs = []string{"team"}
+	cfg.Workspaces = []config.WorkspaceConfig{{ID: "team", Name: "Team", Type: config.WorkspaceTypeGroup, Path: t.TempDir(), SourceOrder: []string{config.SourceHerdr}}}
+	app := New()
+	app.cfg = cfg
+	app.probes = config.Probes{Herdr: true}
+	driver := &openDriver{detect: true, snapshot: source.Snapshot{Workspaces: []source.Workspace{{ID: "w1", Label: "one"}}}}
+	app.herdrDriver = driver
+	app.herdrDriverInjected = true
+	app.asyncTUIRun = func(ctx context.Context, producers []tui.SourceProducer, _ string, layout tui.Layout) (source.Candidate, tui.RowAction, string, *source.Pane, bool, error) {
+		var snapshot *source.Snapshot
+		for _, producer := range producers {
+			msg := producer(ctx)
+			if msg.Snapshot != nil {
+				snapshot = msg.Snapshot
+			}
+		}
+		if snapshot == nil {
+			t.Fatal("group tab did not request shared snapshot")
+		}
+		_, err := layout.Tabs[0].Load(ctx, snapshot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if driver.snapshotCalls != 1 {
+			t.Fatalf("snapshot calls = %d, want 1", driver.snapshotCalls)
+		}
+		return source.Candidate{}, tui.RowActionOpen, "", nil, false, tui.ErrCancelled
+	}
+	if err := app.openCmd().Execute(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOpen_GroupTabScopedCandidates(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "project"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "project", ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.Sources.Projects.Markers = []string{".git"}
+	cfg.Ranking.Enabled = false
+	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
+	cfg.TUI.Tabs = []string{"team"}
+	cfg.Workspaces = []config.WorkspaceConfig{{ID: "team", Name: "Team", Type: config.WorkspaceTypeGroup, Path: root, SourceOrder: []string{config.SourceProjects}, Template: "default"}}
+	app := New()
+	app.cfg = cfg
+	app.asyncTUIRun = func(ctx context.Context, producers []tui.SourceProducer, query string, layout tui.Layout) (source.Candidate, tui.RowAction, string, *source.Pane, bool, error) {
+		if len(layout.Tabs) != 1 || layout.Tabs[0].Load == nil {
+			t.Fatalf("group tab = %+v", layout.Tabs)
+		}
+		candidates, err := layout.Tabs[0].Load(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(candidates) != 1 || candidates[0].Path != filepath.Join(root, "project") {
+			t.Fatalf("scoped candidates = %+v", candidates)
+		}
+		if candidates[0].Meta["parent_template"] != "default" {
+			t.Errorf("group template = %+v", candidates[0].Meta)
+		}
+		return source.Candidate{}, tui.RowActionOpen, "", nil, false, tui.ErrCancelled
+	}
+	cmd := app.openCmd()
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestOpen_AgentsFlagSetsInitialScope(t *testing.T) {

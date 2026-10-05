@@ -12,6 +12,458 @@ import (
 	"github.com/tranceh2/shep/internal/source"
 )
 
+func TestConfiguredTabs_FilterAndNavigation(t *testing.T) {
+	candidates := []source.Candidate{
+		{Source: config.SourceProjects, Path: "/p", Label: "project"},
+		{Source: "review", Path: "/r", Label: "review item"},
+	}
+	m := NewModelWithLayout(candidates, nil, Layout{Tabs: []TabDefinition{
+		{ID: "review", Kind: TabIntegration},
+		{ID: "projects", Kind: TabSource},
+		{ID: "all", Kind: TabAll},
+	}})
+	if got := m.ActiveTab(); got != "review" {
+		t.Fatalf("initial tab = %q", got)
+	}
+	if len(m.rows) != 1 || m.rows[0].Candidate.Label != "review item" {
+		t.Fatalf("integration rows = %+v", m.rows)
+	}
+	if !strings.Contains(m.footerHints(), "projects") {
+		t.Errorf("footer = %q", m.footerHints())
+	}
+	next, _ := m.cycleScopeForward()
+	m = next.(Model)
+	if m.ActiveTab() != "projects" || len(m.rows) != 1 || m.rows[0].Candidate.Label != "project" {
+		t.Fatalf("projects tab = %q, rows = %+v", m.ActiveTab(), m.rows)
+	}
+	next, _ = m.cycleScopeBackward()
+	m = next.(Model)
+	if m.ActiveTab() != "review" {
+		t.Errorf("backward tab = %q", m.ActiveTab())
+	}
+}
+
+func TestConfiguredTabs_SingleAndHiddenAgents(t *testing.T) {
+	m := NewModelWithLayout(nil, nil, Layout{Tabs: []TabDefinition{{ID: "projects", Kind: TabSource}}, InitialScope: ScopeAgents})
+	if m.ActiveTab() != "agents" {
+		t.Fatalf("explicit agents tab = %q", m.ActiveTab())
+	}
+	next, _ := m.cycleScopeForward()
+	m = next.(Model)
+	if m.ActiveTab() != "projects" {
+		t.Fatalf("forward from hidden agents = %q", m.ActiveTab())
+	}
+	next, _ = m.cycleScopeForward()
+	m = next.(Model)
+	if m.ActiveTab() != "projects" {
+		t.Errorf("single tab wrap = %q", m.ActiveTab())
+	}
+}
+
+func TestConfiguredTabs_InitialGroupSingleFlightWithProducer(t *testing.T) {
+	calls := 0
+	m := NewModelWithProducers([]SourceProducer{func(context.Context) SourceResultMsg {
+		return SourceResultMsg{Source: config.SourceProjects}
+	}}, "", nil, context.Background(), Layout{Tabs: []TabDefinition{{
+		ID: "team", Kind: TabGroup, SourceOrder: []string{config.SourceProjects},
+		Load: func(context.Context, *source.Snapshot) ([]source.Candidate, error) {
+			calls++
+			return []source.Candidate{{Source: config.SourceProjects, Path: "/team", Label: "team"}}, nil
+		},
+	}}})
+
+	// Execute the initial group command, but hold its result until after the
+	// unrelated producer has completed and the model has processed its result.
+	initial := m.Init()
+	if initial == nil {
+		t.Fatal("expected startup commands")
+	}
+	batch, ok := initial().(tea.BatchMsg)
+	if !ok {
+		t.Fatal("expected startup batch")
+	}
+	var producerMsg SourceResultMsg
+	producerFound := false
+	var pending []groupResultMsg
+	for _, child := range batch {
+		switch value := child().(type) {
+		case SourceResultMsg:
+			producerFound = true
+			producerMsg = value
+		case groupResultMsg:
+			pending = append(pending, value)
+		}
+	}
+	if !producerFound || producerMsg.Source != config.SourceProjects {
+		t.Fatalf("startup producer result = %+v, found = %v", producerMsg, producerFound)
+	}
+	if calls != 1 || len(pending) != 1 {
+		t.Fatalf("initial collection calls = %d, results = %d; want one in-flight collection", calls, len(pending))
+	}
+	m, cmd := update(t, m, producerMsg)
+	if cmd != nil {
+		var deliver func(tea.Msg)
+		deliver = func(msg tea.Msg) {
+			switch value := msg.(type) {
+			case tea.BatchMsg:
+				for _, child := range value {
+					deliver(child())
+				}
+			case groupResultMsg:
+				pending = append(pending, value)
+			}
+		}
+		deliver(cmd())
+	}
+	if calls != 1 || len(pending) != 1 {
+		t.Fatalf("before first group result: calls = %d, results = %d; want one", calls, len(pending))
+	}
+	m, _ = update(t, m, pending[0])
+	if len(m.rows) != 1 || m.rows[0].Candidate.Label != "team" {
+		t.Fatalf("initial group rows = %+v", m.rows)
+	}
+}
+
+func TestConfiguredTabs_QueryTabOnlyProviderPreservesAll(t *testing.T) {
+	calls := 0
+	layout := Layout{SourceOrder: []string{config.SourceWorkspaces}, Tabs: []TabDefinition{
+		{ID: "all", Kind: TabAll},
+		{ID: "review", Kind: TabIntegration, Load: func(context.Context, *source.Snapshot) ([]source.Candidate, error) {
+			calls++
+			return []source.Candidate{{Source: "review", Path: "/review", Label: "team review"}}, nil
+		}},
+	}}
+	m := newModelWithLayout([]source.Candidate{
+		{Source: config.SourceWorkspaces, Path: "/one", Label: "team one"},
+		{Source: config.SourceWorkspaces, Path: "/two", Label: "team two"},
+	}, nil, context.Background(), layout)
+	m.query = "team"
+	m.applyFilter()
+	if len(m.rows) != 2 || calls != 0 {
+		t.Fatalf("all rows = %+v, lazy calls = %d", m.rows, calls)
+	}
+	next, cmd := m.cycleScopeForward()
+	m = next.(Model)
+	if cmd == nil || calls != 0 {
+		t.Fatalf("provider not lazy: calls = %d, cmd = %v", calls, cmd)
+	}
+	var deliver func(tea.Msg)
+	deliver = func(msg tea.Msg) {
+		switch value := msg.(type) {
+		case tea.BatchMsg:
+			for _, child := range value {
+				deliver(child())
+			}
+		case groupResultMsg:
+			m, _ = update(t, m, value)
+		}
+	}
+	deliver(cmd())
+	if calls != 1 || len(m.rows) != 1 || m.rows[0].Candidate.Source != "review" {
+		t.Fatalf("review rows = %+v, calls = %d", m.rows, calls)
+	}
+	next, _ = m.cycleScopeBackward()
+	m = next.(Model)
+	if len(m.rows) != 2 || m.rows[0].Candidate.Source != config.SourceWorkspaces {
+		t.Fatalf("all gained tab-only candidates: %+v", m.rows)
+	}
+}
+
+func TestConfiguredTabs_GroupLoadsLazilyOnce(t *testing.T) {
+	calls := 0
+	m := NewModelWithLayout([]source.Candidate{{Source: config.SourceProjects, Path: "/outside", Label: "outside"}}, nil, Layout{Tabs: []TabDefinition{
+		{ID: "all", Kind: TabAll},
+		{ID: "team", Kind: TabGroup, SourceOrder: []string{config.SourceProjects}, Load: func(_ context.Context, _ *source.Snapshot) ([]source.Candidate, error) {
+			calls++
+			return []source.Candidate{{Source: config.SourceProjects, Path: "/team", Label: "team project"}}, nil
+		}},
+	}})
+	if calls != 0 {
+		t.Fatal("group loaded before activation")
+	}
+	next, cmd := m.cycleScopeForward()
+	m = next.(Model)
+	if cmd == nil || calls != 0 {
+		t.Fatalf("group load should be scheduled, calls = %d", calls)
+	}
+	// Bubble Tea batches the load command with the filter and preview commands.
+	var deliver func(tea.Msg)
+	deliver = func(msg tea.Msg) {
+		switch value := msg.(type) {
+		case tea.BatchMsg:
+			for _, child := range value {
+				deliver(child())
+			}
+		case groupResultMsg:
+			m, _ = update(t, m, value)
+		}
+	}
+	deliver(cmd())
+	if calls != 1 || len(m.rows) != 1 || m.rows[0].Candidate.Label != "team project" {
+		t.Fatalf("group rows = %+v, loads = %d", m.rows, calls)
+	}
+	next, _ = m.cycleScopeBackward()
+	m = next.(Model)
+	next, cmd = m.cycleScopeForward()
+	m = next.(Model)
+	if calls != 1 || m.groupLoading["team"] {
+		t.Errorf("group reloaded: %d", calls)
+	}
+	_ = cmd
+}
+
+func TestConfiguredTabs_EmptyStates(t *testing.T) {
+	cases := []struct {
+		name string
+		kind TabKind
+		want string
+	}{
+		{name: "integration", kind: TabIntegration, want: "No integration candidates available"},
+		{name: "group", kind: TabGroup, want: "No group candidates available"},
+		{name: "source", kind: TabSource, want: "No source candidates available"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewModelWithLayout(nil, nil, Layout{Tabs: []TabDefinition{{ID: tc.name, Kind: tc.kind}}})
+			if got := m.emptyStateLines(); len(got) == 0 || got[0] != tc.want {
+				t.Fatalf("empty state = %v, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestConfiguredTabs_GroupReusesLoadedSnapshot(t *testing.T) {
+	snapshot := &source.Snapshot{Workspaces: []source.Workspace{{ID: "w1", CWD: "/team"}}}
+	var got *source.Snapshot
+	m := NewModelWithProducers([]SourceProducer{func(context.Context) SourceResultMsg {
+		return SourceResultMsg{Source: config.SourceHerdr, Snapshot: snapshot}
+	}}, "", nil, context.Background(), Layout{Tabs: []TabDefinition{{ID: "team", Kind: TabGroup, SourceOrder: []string{config.SourceHerdr}, Load: func(_ context.Context, s *source.Snapshot) ([]source.Candidate, error) {
+		got = s
+		return nil, nil
+	}}}})
+	m, cmd := update(t, m, SourceResultMsg{Source: config.SourceHerdr, Snapshot: snapshot, producerID: 0})
+	if cmd == nil {
+		t.Fatal("group collection not scheduled after snapshot")
+	}
+	var deliver func(tea.Msg)
+	deliver = func(msg tea.Msg) {
+		switch value := msg.(type) {
+		case tea.BatchMsg:
+			for _, child := range value {
+				deliver(child())
+			}
+		case groupResultMsg:
+			m, _ = update(t, m, value)
+		}
+	}
+	deliver(cmd())
+	if got == nil || len(got.Workspaces) != 1 {
+		t.Fatalf("group snapshot = %+v", got)
+	}
+}
+
+func TestConfiguredTabs_GroupRefreshRecollectsCurrentGeneration(t *testing.T) {
+	calls := 0
+	m := NewModelWithLayout(nil, nil, Layout{Tabs: []TabDefinition{
+		{ID: "all", Kind: TabAll},
+		{ID: "team", Kind: TabGroup, SourceOrder: []string{config.SourceHerdr}, Load: func(_ context.Context, snap *source.Snapshot) ([]source.Candidate, error) {
+			calls++
+			return []source.Candidate{{Source: config.SourceHerdr, Label: snap.Workspaces[0].Label, Meta: map[string]string{"workspace_id": snap.Workspaces[0].ID}}}, nil
+		}},
+	}})
+	m, _ = update(t, m, SourceResultMsg{Source: config.SourceHerdr, Snapshot: &source.Snapshot{Workspaces: []source.Workspace{{ID: "old", Label: "old"}}}})
+	next, cmd := m.cycleScopeForward()
+	m = next.(Model)
+	var deliver func(tea.Msg)
+	deliver = func(msg tea.Msg) {
+		switch value := msg.(type) {
+		case tea.BatchMsg:
+			for _, child := range value {
+				deliver(child())
+			}
+		case groupResultMsg:
+			m, _ = update(t, m, value)
+		}
+	}
+	deliver(cmd())
+	if calls != 1 || len(m.rows) != 1 || m.rows[0].Candidate.Label != "old" {
+		t.Fatalf("initial group rows = %+v, loads = %d", m.rows, calls)
+	}
+	m, cmd = update(t, m, snapshotResponseMsg{seq: m.snapshotSeq, snapshot: source.Snapshot{Workspaces: []source.Workspace{{ID: "new", Label: "new"}}}})
+	if cmd == nil || !m.groupLoading["team"] {
+		t.Fatal("group not scheduled after snapshot refresh")
+	}
+	deliver(cmd())
+	if calls != 2 || len(m.rows) != 1 || m.rows[0].Candidate.Label != "new" || m.cursor >= len(m.rows) {
+		t.Fatalf("refreshed rows = %+v, cursor = %d, loads = %d", m.rows, m.cursor, calls)
+	}
+	next, _ = m.cycleScopeBackward()
+	m = next.(Model)
+	next, _ = m.cycleScopeForward()
+	m = next.(Model)
+	if calls != 2 || m.groupLoading["team"] {
+		t.Fatalf("unchanged generation loaded again: %d", calls)
+	}
+}
+
+func TestConfiguredTabs_GroupIgnoresOldInflightGeneration(t *testing.T) {
+	m := NewModelWithLayout(nil, nil, Layout{Tabs: []TabDefinition{{ID: "team", Kind: TabGroup, SourceOrder: []string{config.SourceHerdr}, Load: func(_ context.Context, snap *source.Snapshot) ([]source.Candidate, error) {
+		return []source.Candidate{{Source: config.SourceHerdr, Label: snap.Workspaces[0].Label}}, nil
+	}}}})
+	m.startupSnapshot = &source.Snapshot{Workspaces: []source.Workspace{{ID: "old", Label: "old"}}}
+	old := m.maybeLoadGroup()
+	m, cmd := update(t, m, snapshotResponseMsg{seq: m.snapshotSeq, snapshot: source.Snapshot{Workspaces: []source.Workspace{{ID: "new", Label: "new"}}}})
+	if old == nil || cmd == nil {
+		t.Fatal("expected old and new collection commands")
+	}
+	m, _ = update(t, m, old())
+	if len(m.rows) != 0 {
+		t.Fatalf("old snapshot result became visible: %+v", m.rows)
+	}
+	var deliver func(tea.Msg)
+	deliver = func(msg tea.Msg) {
+		switch value := msg.(type) {
+		case tea.BatchMsg:
+			for _, child := range value {
+				deliver(child())
+			}
+		case groupResultMsg:
+			m, _ = update(t, m, value)
+		}
+	}
+	deliver(cmd())
+	if len(m.rows) != 1 || m.rows[0].Candidate.Label != "new" {
+		t.Fatalf("current group rows = %+v", m.rows)
+	}
+}
+
+func TestConfiguredTabs_GroupFailureDoesNotRetrySnapshot(t *testing.T) {
+	calls := 0
+	m := NewModelWithProducers([]SourceProducer{func(context.Context) SourceResultMsg { return SourceResultMsg{Source: config.SourceHerdr} }}, "", nil, context.Background(), Layout{Tabs: []TabDefinition{{ID: "team", Kind: TabGroup, SourceOrder: []string{config.SourceHerdr}, Load: func(_ context.Context, _ *source.Snapshot) ([]source.Candidate, error) {
+		calls++
+		return nil, nil
+	}}}})
+	m, cmd := update(t, m, SourceResultMsg{Source: config.SourceHerdr, Err: context.DeadlineExceeded, producerID: 0})
+	if cmd != nil {
+		// A batch can include other effects; group loading must stay disabled.
+		_ = cmd
+	}
+	if m.groupLoading["team"] || calls != 0 {
+		t.Fatalf("group started after snapshot failure: loading=%v calls=%d", m.groupLoading["team"], calls)
+	}
+	if lines := m.emptyStateLines(); len(lines) < 2 || !strings.Contains(lines[1], "deadline") {
+		t.Fatalf("group failure state = %v", lines)
+	}
+}
+
+func TestConfiguredTabs_GroupOrderAndSelection(t *testing.T) {
+	m := NewModelWithLayout(nil, nil, Layout{Tabs: []TabDefinition{{ID: "team", Kind: TabGroup, SourceOrder: []string{config.SourceProjects, config.SourceZoxide}}}})
+	m, _ = update(t, m, groupResultMsg{id: "team", candidates: []source.Candidate{
+		{Source: config.SourceZoxide, Path: "/z", Label: "zoxide"},
+		{Source: config.SourceProjects, Path: "/p", Label: "project"},
+	}})
+	if len(m.rows) != 2 || m.rows[0].Candidate.Source != config.SourceProjects {
+		t.Fatalf("group source order = %+v", m.rows)
+	}
+	m, _ = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	selected, ok := m.Selected()
+	if !ok || selected.Path != "/p" {
+		t.Fatalf("selected = %+v, ok = %v", selected, ok)
+	}
+}
+
+func TestConfiguredTabs_SourceUsesUndeduplicatedProviderRows(t *testing.T) {
+	m := NewModelWithProducers(nil, "", nil, context.Background(), Layout{SourceOrder: []string{config.SourceProjects}, Tabs: []TabDefinition{
+		{ID: "all", Kind: TabAll}, {ID: "review", Kind: TabIntegration},
+	}})
+	m, _ = update(t, m, SourceResultMsg{Source: config.SourceProjects, Candidates: []source.Candidate{{Path: "/same", Label: "project", Source: config.SourceProjects}}})
+	m, _ = update(t, m, SourceResultMsg{Source: "review", Candidates: []source.Candidate{{Path: "/same", Label: "pull request", Source: "review"}}})
+	if len(m.rows) != 1 || m.rows[0].Candidate.Source != config.SourceProjects {
+		t.Fatalf("all rows = %+v", m.rows)
+	}
+	next, _ := m.cycleScopeForward()
+	m = next.(Model)
+	if len(m.rows) != 1 || m.rows[0].Candidate.Label != "pull request" {
+		t.Fatalf("integration rows = %+v", m.rows)
+	}
+}
+
+func TestConfiguredTabs_AllKeepsEnabledRowOnPathCollision(t *testing.T) {
+	m := NewModelWithProducers(nil, "", nil, context.Background(), Layout{SourceOrder: []string{config.SourceProjects}, Tabs: []TabDefinition{
+		{ID: "all", Kind: TabAll}, {ID: "review", Kind: TabIntegration},
+	}})
+	m, _ = update(t, m, SourceResultMsg{Source: config.SourceProjects, Candidates: []source.Candidate{{Path: "/same", NormalizedPath: "/same", Label: "project", Source: config.SourceProjects}}})
+	m, _ = update(t, m, SourceResultMsg{Source: "review", Candidates: []source.Candidate{{Path: "/same", NormalizedPath: "/same", Label: "pull request", Source: "review"}}})
+	if len(m.rows) != 1 || m.rows[0].Candidate.Label != "project" {
+		t.Fatalf("all collision rows = %+v", m.rows)
+	}
+	next, _ := m.cycleScopeForward()
+	m = next.(Model)
+	if len(m.rows) != 1 || m.rows[0].Candidate.Label != "pull request" {
+		t.Fatalf("integration collision rows = %+v", m.rows)
+	}
+}
+
+func TestConfiguredTabs_GroupAgentLiveStatus(t *testing.T) {
+	candidate := source.Candidate{
+		Source: config.SourceAgents, Path: "/team", Label: "agent session",
+		Meta: map[string]string{"pane_id": "p1", "tab_id": "t1", "agent_status": "working", "kind": "agent"},
+	}
+	m := NewModelWithLayout(nil, nil, Layout{Icons: IconsASCII, Tabs: []TabDefinition{{ID: "team", Kind: TabGroup, SourceOrder: []string{config.SourceAgents}}}})
+	m, _ = update(t, m, groupResultMsg{id: "team", candidates: []source.Candidate{candidate}})
+	if len(m.rows) != 1 || m.rows[0].Action != RowActionFocusTab {
+		t.Fatalf("group agent row/action = %+v", m.rows)
+	}
+	before, _ := m.rowDisplayText(m.rows[0])
+	if !strings.Contains(before, "agent session") || !strings.Contains(before, m.icons().StatusWorking) {
+		t.Fatalf("initial group agent row = %q", before)
+	}
+	m, _ = update(t, m, paneStatusMsg{PaneID: "p1", Status: "blocked"})
+	row := m.rows[0]
+	after, _ := m.rowDisplayText(row)
+	if row.Candidate.Meta["agent_status"] != "blocked" || !strings.HasPrefix(after, m.icons().StatusBlocked+" ") || strings.HasPrefix(after, m.icons().StatusWorking+" ") {
+		t.Fatalf("updated group agent row = %q, candidate = %+v", after, row.Candidate)
+	}
+	if candidate.Meta["agent_status"] != "working" {
+		t.Fatalf("original candidate metadata mutated: %+v", candidate.Meta)
+	}
+	if m.groupCandidates["team"][0].Meta["agent_status"] != "blocked" {
+		t.Fatalf("owned group candidate not updated: %+v", m.groupCandidates["team"])
+	}
+	if m.previewSeq == 0 {
+		t.Fatal("selected agent preview was not invalidated on status change")
+	}
+}
+
+func TestConfiguredTabs_GroupLateResultKeepsLiveAgentStatus(t *testing.T) {
+	m := NewModelWithLayout(nil, nil, Layout{Tabs: []TabDefinition{{ID: "team", Kind: TabGroup, SourceOrder: []string{config.SourceAgents}}}})
+	m, _ = update(t, m, paneStatusMsg{PaneID: "p1", Status: "blocked"})
+	original := source.Candidate{Source: config.SourceAgents, Label: "agent", Meta: map[string]string{"pane_id": "p1", "agent_status": "working"}}
+	m, _ = update(t, m, groupResultMsg{id: "team", candidates: []source.Candidate{original}})
+	if len(m.rows) != 1 || m.rows[0].Candidate.Meta["agent_status"] != "blocked" {
+		t.Fatalf("late group rows = %+v", m.rows)
+	}
+	if original.Meta["agent_status"] != "working" {
+		t.Fatal("late group result metadata mutated")
+	}
+}
+
+func TestConfiguredTabs_SourceAgentLiveStatus(t *testing.T) {
+	candidate := source.Candidate{Source: config.SourceAgents, Path: "/team", Label: "agent", Meta: map[string]string{"pane_id": "p1", "agent_status": "idle"}}
+	m := NewModelWithLayout([]source.Candidate{candidate}, nil, Layout{Icons: IconsASCII, Tabs: []TabDefinition{{ID: config.SourceAgents, Kind: TabSource}}})
+	if len(m.rows) != 1 || m.rows[0].Action != RowActionFocusTab {
+		t.Fatalf("source agent rows = %+v", m.rows)
+	}
+	m, _ = update(t, m, paneStatusMsg{PaneID: "p1", Status: "done"})
+	label, _ := m.rowDisplayText(m.rows[0])
+	if !strings.HasPrefix(label, "* ") || m.rows[0].Candidate.Meta["agent_status"] != "done" {
+		t.Fatalf("source agent status row = %q, %+v", label, m.rows[0])
+	}
+	if candidate.Meta["agent_status"] != "idle" {
+		t.Fatal("original source candidate metadata mutated")
+	}
+}
+
 func TestAgentScope_OrderingUrgencyAndMRU(t *testing.T) {
 	t.Parallel()
 

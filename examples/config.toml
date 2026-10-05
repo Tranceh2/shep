@@ -31,6 +31,10 @@ template = "default"
 # 35/65 is the shipped default split; layout is left unset so the picker
 # decides automatically (do NOT set layout = "landscape" if you want that).
 [tui]
+# Ordered top tabs. Default: ["all", "agents"]. A source tab does not enable
+# that source in "all"; integrations and groups need matching declarations.
+tabs = ["all", "agents"]
+# tabs = ["all", "projects", "pull-requests", "project-group", "agents"]
 list_width = "35%"
 preview_width = "65%"
 theme = "mocha"
@@ -81,6 +85,7 @@ close_on_exit = true
 
 [[workspaces]]
 name = "projects"
+id = "project-group" # stable tab reference; required only when used in [tui].tabs
 type = "group"
 path = "~/projects"
 source_order = ["projects", "zoxide"]
@@ -126,6 +131,12 @@ root = "opencode"
   id = "opencode"
   command = "opencode"
   close_on_exit = true
+
+# To activate the custom tabs shown in [tui].tabs above, declare an
+# integration that emits Shep candidates and a group with id = "project-group".
+# [[integrations]]
+# name = "pull-requests"
+# command = ["my-pr-list", "--json"]
 
 # --- Wildcards: apply a template/preview to paths matching a glob ---
 

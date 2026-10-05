@@ -6,6 +6,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/ranking"
+	"github.com/tranceh2/shep/internal/resolver"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -16,17 +17,55 @@ import (
 func (m *Model) applyFilter() tea.Cmd {
 	queryChanged := m.query != m.lastAppliedQuery
 	prevID := m.currentRowID()
-	if m.scope == ScopeAgents {
+	tab := m.activeDefinition()
+	if tab.Kind == TabAgents {
 		m.rows = m.buildAgentRows()
 	} else {
+		candidates := m.baseFlatCandidates()
+		order := m.resolvedSourceOrder()
+		if tab.Kind == TabAll && len(m.layout.Tabs) > 0 {
+			candidates = m.allTabCandidates()
+		}
+		if tab.Kind == TabGroup {
+			candidates = m.groupCandidates[tab.ID]
+			if len(tab.SourceOrder) > 0 {
+				order = tab.SourceOrder
+			}
+		} else if tab.Kind == TabSource || tab.Kind == TabIntegration {
+			// Streaming producers retain undeduplicated provider results; a
+			// synchronous tab-only source instead uses its lazy result.
+			if tab.Load != nil {
+				candidates = m.groupCandidates[tab.ID]
+			} else if rows, ok := m.candidatesBySource[tab.ID]; ok {
+				candidates = rows
+			}
+			filtered := make([]source.Candidate, 0)
+			for _, c := range candidates {
+				if c.Source == tab.ID {
+					filtered = append(filtered, c)
+				}
+			}
+			candidates = filtered
+		}
+		if tab.Kind == TabSource || tab.Kind == TabIntegration {
+			order = []string{tab.ID}
+		}
+
 		m.rows = buildRows(rowBuildInput{
-			candidates:         ranking.SortBySourceOrder(m.baseFlatCandidates(), m.query, m.resolvedSourceOrder(), m.rankingSnapshot),
+			candidates:         ranking.SortBySourceOrder(candidates, m.query, order, m.rankingSnapshot),
 			query:              m.query,
-			children:           m.fetchAllChildren(),
+			children:           m.fetchChildrenFor(candidates),
 			expandedWorkspaces: m.expandedWorkspaces,
-			sourceOrder:        m.sourceOrder,
+			sourceOrder:        order,
 			rankingSnapshot:    m.rankingSnapshot,
 		})
+		// Agents in a group/source tab are flat provider rows, not tree panes.
+		// Keep their focus action and status rendering consistent with Agents.
+		for i := range m.rows {
+			if m.rows[i].Kind == RowCandidate && m.rows[i].Candidate.Source == config.SourceAgents {
+				m.rows[i].Action = RowActionFocusTab
+			}
+		}
 	}
 	m.lastAppliedQuery = m.query
 	if queryChanged {
@@ -70,7 +109,26 @@ func (m *Model) baseFlatCandidates() []source.Candidate {
 	return m.candidates
 }
 
-// fetchAllChildren returns, keyed by workspace_id, the synthesized tab/pane
+// allTabCandidates deduplicates only enabled sources. An independently
+// requested tab must not make its provider visible in all or suppress an
+// enabled provider's candidate with the same path.
+func (m *Model) allTabCandidates() []source.Candidate {
+	if m.candidatesBySource == nil {
+		return m.baseFlatCandidates()
+	}
+	var enabled []source.Candidate
+	order := m.sourceOrder
+	if len(order) == 0 {
+		order = m.resolvedSourceOrder()
+	}
+	for _, name := range order {
+		enabled = append(enabled, m.candidatesBySource[name]...)
+	}
+	return resolver.Dedup(enabled)
+}
+
+// fetchAllChildren keeps the legacy all-candidate helper for direct callers.
+// fetchChildrenFor returns, keyed by workspace_id, the synthesized tab/pane
 // tree for every SourceHerdr candidate that needs one THIS filter pass:
 // only when the query is non-empty (a descendant might match) or the
 // workspace was manually expanded (progressive disclosure at an empty
@@ -81,11 +139,15 @@ func (m *Model) baseFlatCandidates() []source.Candidate {
 // workspace absent from the map — buildRows degrades to zero children for
 // it, never a crash.
 func (m *Model) fetchAllChildren() map[string]workspaceChildren {
+	return m.fetchChildrenFor(m.baseFlatCandidates())
+}
+
+func (m *Model) fetchChildrenFor(candidates []source.Candidate) map[string]workspaceChildren {
 	if m.tree == nil {
 		return nil
 	}
 	out := make(map[string]workspaceChildren)
-	for _, cand := range m.baseFlatCandidates() {
+	for _, cand := range candidates {
 		if cand.Source != config.SourceHerdr {
 			continue
 		}

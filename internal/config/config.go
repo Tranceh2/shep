@@ -193,9 +193,10 @@ type DefaultsConfig struct {
 // distinct mode now (it forces side-by-side wide mode). The stacked "portrait"
 // layout was removed and is rejected at validation.
 type TUIConfig struct {
-	ListWidth    string `toml:"list_width,omitempty"`
-	PreviewWidth string `toml:"preview_width,omitempty"`
-	Layout       string `toml:"layout,omitempty"`
+	Tabs         []string `toml:"tabs,omitempty"`
+	ListWidth    string   `toml:"list_width,omitempty"`
+	PreviewWidth string   `toml:"preview_width,omitempty"`
+	Layout       string   `toml:"layout,omitempty"`
 	// Theme names the picker's semantic color theme: one of "mocha",
 	// "macchiato", "frappe", "latte", "plain" (no color, textual markers
 	// only), or "inherit" (defers to host Herdr theme). Empty or "inherit"
@@ -366,6 +367,8 @@ type WorkspaceSourcesConfig struct {
 // from its SourceOrder and typed Sources settings.
 type WorkspaceConfig struct {
 	Name string `toml:"name"`
+	// ID is a stable, unique tab reference for a group workspace.
+	ID string `toml:"id,omitempty"`
 	// Path is the project (or group root) path. A leading "~/" is expanded
 	// to the user's home directory by the source provider.
 	Path string `toml:"path,omitempty"`
@@ -796,6 +799,9 @@ func normalizeIntegrations(integrations []IntegrationConfig, preview PreviewConf
 // that side and leaves the other to the renderer's own split. Only a config
 // that names neither receives the built-in 35/65 pair.
 func normalizeTUI(t *TUIConfig) {
+	if len(t.Tabs) == 0 {
+		t.Tabs = []string{"all", "agents"}
+	}
 	if t.ListWidth == "" && t.PreviewWidth == "" {
 		t.ListWidth = defaultTUIListWidth
 		t.PreviewWidth = defaultTUIPreviewWidth
@@ -962,6 +968,9 @@ func validate(cfg *Config) error {
 		return err
 	}
 	if err := validateTUI(cfg.TUI); err != nil {
+		return err
+	}
+	if err := validateTabs(cfg); err != nil {
 		return err
 	}
 	return nil
@@ -1141,8 +1150,8 @@ func validateIntegrations(integrations []IntegrationConfig) error {
 		if name == "" {
 			return fmt.Errorf("integrations[%d]: name is required", i)
 		}
-		if validSourceNames[name] {
-			return fmt.Errorf("integrations[%d] (%q): name collides with built-in source", i, name)
+		if validSourceNames[name] || name == "all" {
+			return fmt.Errorf("integrations[%d] (%q): name collides with built-in source or tab", i, name)
 		}
 		if _, ok := seen[name]; ok {
 			return fmt.Errorf("integrations[%d] (%q): duplicate name", i, name)
@@ -1552,6 +1561,53 @@ func validateTUI(t TUIConfig) error {
 		default:
 			return fmt.Errorf("tui.icons: %q must be one of %s, %s",
 				t.Icons, TUIIconsUnicode, TUIIconsASCII)
+		}
+	}
+	return nil
+}
+
+// validateTabs resolves only stable group IDs; names and paths can be shared
+// across workspace entries and cannot unambiguously identify a tab.
+func validateTabs(cfg *Config) error {
+	known := map[string]string{"all": "scope", "agents": "scope"}
+	for _, name := range []string{SourceHerdr, SourceWorkspaces, SourceZoxide, SourceProjects, SourceSessions} {
+		known[name] = "source"
+	}
+	for _, integration := range cfg.Integrations {
+		if integration.Name == "all" || integration.Name == "agents" {
+			return fmt.Errorf("integrations name %q: collides with built-in tab scope", integration.Name)
+		}
+		known[integration.Name] = "integration"
+	}
+	for i, ws := range cfg.Workspaces {
+		if ws.ID == "" {
+			continue
+		}
+		if strings.TrimSpace(ws.ID) != ws.ID {
+			return fmt.Errorf("workspaces[%d].id %q: must not have surrounding whitespace", i, ws.ID)
+		}
+		if prev, exists := known[ws.ID]; exists {
+			return fmt.Errorf("workspaces[%d].id %q: ambiguous reference (already declared as %s)", i, ws.ID, prev)
+		}
+		kind := "workspace"
+		if ws.Type == WorkspaceTypeGroup {
+			kind = "group"
+		}
+		known[ws.ID] = kind
+	}
+	seen := make(map[string]bool, len(cfg.TUI.Tabs))
+	for _, tab := range cfg.TUI.Tabs {
+		if seen[tab] {
+			return fmt.Errorf("tui.tabs: duplicate tab %q", tab)
+		}
+		seen[tab] = true
+		kind := known[tab]
+		switch kind {
+		case "scope", "source", "integration", "group":
+		case "workspace":
+			return fmt.Errorf("tui.tabs: %q references a non-group workspace; set type = %q", tab, WorkspaceTypeGroup)
+		default:
+			return fmt.Errorf("tui.tabs: unknown tab %q (use all, agents, a built-in source, declared integration or group workspace id)", tab)
 		}
 	}
 	return nil

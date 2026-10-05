@@ -119,7 +119,7 @@ func (m Model) emptyStateLines() []string {
 			"esc clear query",
 		}
 	}
-	def := scopeDefinitionFor(m.scope)
+	def := m.tabPresentation()
 	if def.EmptyState != nil {
 		return def.EmptyState(m)
 	}
@@ -139,7 +139,7 @@ func (m Model) headerLineCount() int {
 // one source, loading variants while producers stream, "N candidates"
 // unfiltered.
 func (m Model) headerCountText() string {
-	if m.scope == ScopeAgents {
+	if m.activeDefinition().Kind == TabAgents {
 		n := len(m.rows)
 		counts := m.AgentCounts()
 		if m.query != "" {
@@ -151,6 +151,25 @@ func (m Model) headerCountText() string {
 		return strconv.Itoa(n) + " agents"
 	}
 	n := len(m.baseFlatCandidates())
+	if m.activeDefinition().Kind == TabAll && len(m.layout.Tabs) > 0 {
+		n = len(m.allTabCandidates())
+	}
+	if m.activeDefinition().Kind != TabAll {
+		if m.activeDefinition().Kind == TabGroup {
+			n = len(m.groupCandidates[m.ActiveTab()])
+		} else {
+			n = 0
+			if cands, ok := m.candidatesBySource[m.ActiveTab()]; ok {
+				n = len(cands)
+			} else {
+				for _, c := range m.baseFlatCandidates() {
+					if c.Source == m.ActiveTab() {
+						n++
+					}
+				}
+			}
+		}
+	}
 	switch {
 	case m.loadingCandidates && n == 0:
 		return "loading…"
@@ -196,7 +215,7 @@ func (m Model) renderHeader(width int) string {
 	if m.query != "" {
 		query = m.styles.queryStyle.Render(m.query)
 	} else {
-		placeholder := scopeDefinitionFor(m.scope).Placeholder
+		placeholder := m.tabPresentation().Placeholder
 		if placeholder == "" {
 			placeholder = "type to filter…"
 		}
@@ -215,30 +234,82 @@ func (m Model) renderHeader(width int) string {
 		return lipgloss.NewStyle().Width(width).Render(rightPadToWidth(search, count, width))
 	}
 
-	brand := m.styles.keycapStyle.Render("SHEP") + "  " + m.renderScopeTabs()
+	brandPrefix := m.styles.keycapStyle.Render("SHEP") + "  "
+	brand := brandPrefix + m.renderScopeTabs()
+	if lipgloss.Width(brand)+1+lipgloss.Width(count) > width {
+		brand = brandPrefix + m.renderBoundedScopeTabs(width-lipgloss.Width(brandPrefix)-1-lipgloss.Width(count))
+		if lipgloss.Width(brand)+1+lipgloss.Width(count) > width {
+			count = ""
+			brand = brandPrefix + m.renderBoundedScopeTabs(width-lipgloss.Width(brandPrefix))
+		}
+	}
 	top := rightPadToWidth(brand, count, width)
 	return lipgloss.NewStyle().Width(width).Render(top) + "\n" +
 		lipgloss.NewStyle().Width(width).Render(rightPadToWidth(search, "", width))
 }
 
 func (m Model) renderScopeTabs() string {
+	return strings.Join(m.renderedScopeTabs(), "   ")
+}
+
+// renderBoundedScopeTabs keeps the selected tab readable even when the full
+// tab strip cannot fit. Neighbors are added in configured order while space
+// remains; labels are truncated only when a single tab exceeds the budget.
+func (m Model) renderBoundedScopeTabs(budget int) string {
+	if budget <= 0 {
+		return ""
+	}
+	tabs := m.renderedScopeTabs()
+	active := 0
+	for i, tab := range m.tabs() {
+		if tab.ID == m.ActiveTab() {
+			active = i
+			break
+		}
+	}
+	selected := truncateToWidth(tabs[active], budget)
+	used := lipgloss.Width(selected)
+	for i := active - 1; i >= 0; i-- {
+		if used+3+lipgloss.Width(tabs[i]) > budget {
+			break
+		}
+		selected = tabs[i] + "   " + selected
+		used += 3 + lipgloss.Width(tabs[i])
+	}
+	for i := active + 1; i < len(tabs); i++ {
+		if used+3+lipgloss.Width(tabs[i]) > budget {
+			break
+		}
+		selected += "   " + tabs[i]
+		used += 3 + lipgloss.Width(tabs[i])
+	}
+	return selected
+}
+
+func (m Model) renderedScopeTabs() []string {
 	counts := m.AgentCounts()
 	var tabs []string
-	for _, def := range scopeRegistry {
-		isActive := m.scope == def.ID
-		label := def.Label(m)
+	for _, tab := range m.tabs() {
+		isActive := m.ActiveTab() == tab.ID
+		label := tab.Label
+		if label == "" {
+			label = tab.ID
+		}
+		if tab.Kind == TabAgents {
+			label = scopeDefinitionFor(ScopeAgents).Label(m)
+		}
 		if isActive {
 			label = "● " + label
 		}
 		var rendered string
 		if isActive {
-			if def.ID == ScopeAgents && counts.Blocked > 0 {
+			if tab.Kind == TabAgents && counts.Blocked > 0 {
 				rendered = m.styles.statusBlockedStyle.Render(label)
 			} else {
 				rendered = m.styles.keycapStyle.Render(label)
 			}
 		} else {
-			if def.ID == ScopeAgents && counts.Blocked > 0 {
+			if tab.Kind == TabAgents && counts.Blocked > 0 {
 				rendered = m.styles.statusBlockedStyle.Render(label)
 			} else {
 				rendered = m.styles.mutedStyle.Render(label)
@@ -246,7 +317,7 @@ func (m Model) renderScopeTabs() string {
 		}
 		tabs = append(tabs, rendered)
 	}
-	return strings.Join(tabs, "   ")
+	return tabs
 }
 
 // sourceCount is one source's visible top-level match count, used by
@@ -273,7 +344,14 @@ func (m Model) visibleSourceCounts() []sourceCount {
 		}
 	}
 	var out []sourceCount
-	for _, src := range m.resolvedSourceOrder() {
+	order := m.resolvedSourceOrder()
+	if tab := m.activeDefinition(); tab.Kind == TabGroup && len(tab.SourceOrder) > 0 {
+		order = tab.SourceOrder
+	}
+	if tab := m.activeDefinition(); tab.Kind == TabSource || tab.Kind == TabIntegration {
+		order = []string{tab.ID}
+	}
+	for _, src := range order {
 		if n := counts[src]; n > 0 {
 			out = append(out, sourceCount{source: src, count: n})
 		}
@@ -834,7 +912,7 @@ func (m Model) renderRowLabel(row Row) string {
 func (m Model) rowPrimaryText(row Row) (primary string, prefixRunes int) {
 	c := row.Candidate
 
-	if row.Kind == RowPane {
+	if row.Kind == RowPane || (row.Kind == RowCandidate && c.Source == config.SourceAgents) {
 		prefix := m.kindPrefix(row)
 		if icon := m.agentStatusIcon(c.Meta["agent_status"]); icon != "" {
 			prefix += icon + " "
@@ -1235,11 +1313,10 @@ func (m Model) footerHints() string {
 	if row, ok := m.currentRow(); ok {
 		caps = append(caps, keycap{keyBindingEnter.footerChord, rowActionDescriptor(row).FooterLabel})
 	}
-	nextScope := m.scope.Next()
-	nextDef := scopeDefinitionFor(nextScope)
-	tabLabel := nextDef.FooterLabel
+	nextTab := m.adjacentTab(1)
+	tabLabel := nextTab.Label
 	if tabLabel == "" {
-		tabLabel = nextDef.Name
+		tabLabel = nextTab.ID
 	}
 	caps = append(caps, keycap{keyBindingTab.footerChord, tabLabel})
 	if row, ok := m.currentRow(); ok && m.layout.PinToggler != nil {

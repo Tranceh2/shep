@@ -277,7 +277,7 @@ the full recovery and refusal taxonomy.
 | `Home` / `End`, `g` / `G` | List | Jump to top / bottom of the list |
 | `PageUp` / `PageDown` | List | Scroll page up / down |
 | `Left` / `Right` | List | Collapse / expand grouped workspaces or projects |
-| `Tab` / `Shift+Tab` | Global | Cycle filter scope: `all` (workspaces) ↔ `agents` (AI tasks) |
+| `Tab` / `Shift+Tab` | Global | Cycle configured top tabs in order (defaults to `all` ↔ `agents`) |
 | `Enter` | List | Open selected workspace (or focus the tab containing the agent) |
 | `Ctrl+T` | Inside Herdr | Open selected entry as a new tab in current workspace |
 | `Ctrl+P` | Inside Herdr | Open selected entry as a split pane in current workspace |
@@ -385,6 +385,10 @@ template = "default"
 
 ```toml
 [tui]
+# Ordered top tabs; omitted or [] defaults to ["all", "agents"].
+# Built-in source tabs: herdr, workspaces, zoxide, projects, sessions.
+# Integration tabs use their declared name; group tabs use [[workspaces]].id.
+tabs = ["all", "agents"]
 # Layout orientation:
 # - "landscape": Forces side-by-side split (list on left, preview on right).
 # - omit or "": Responsive auto (side-by-side on wide terminals, list-only on narrow).
@@ -402,11 +406,36 @@ theme = "mocha"
 # - "ascii": 7-bit plain ASCII fallback (for basic terminals or remote SSH)
 icons = "unicode"
 
-# Default filter scope when opening the picker: "all" or "agents"
-initial_scope = "all"
 ```
 
 ---
+
+Tabs can be reordered or reduced to one entry. `all` runs only providers in
+`[general].source_order`; a source or integration tab listed only in `[tui].tabs`
+loads that provider without adding its rows to `all`. Group tabs evaluate their
+root and `source_order` only when selected, sharing the Herdr snapshot where
+available. Duplicate, unknown, ambiguous and non-group tab references fail
+configuration validation. `shep open --agents` opens the Agents view even if
+`agents` is not among the visible tabs; the next Tab returns to the configured cycle.
+
+For example, add the following entries to the same config to expose an
+integration and a group shortcut:
+
+```toml
+[tui]
+tabs = ["all", "pull-requests", "team-projects", "agents"]
+
+[[integrations]]
+name = "pull-requests"
+command = ["my-pr-list", "--json"] # emits Shep integration candidates
+
+[[workspaces]]
+id = "team-projects" # unique, stable tab reference (not name or path)
+name = "Team projects"
+type = "group"
+path = "~/projects/team"
+source_order = ["projects", "zoxide"]
+```
 
 ### `[sources.<name>]` — Source Provider Presentation
 
