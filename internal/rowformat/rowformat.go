@@ -25,7 +25,7 @@ var FuncMap = template.FuncMap{}
 
 // Parse validates format using the shared template function map.
 func Parse(format string) (*template.Template, error) {
-	return template.New("rowformat").Funcs(FuncMap).Parse(format)
+	return template.New("rowformat").Funcs(FuncMap).Option("missingkey=zero").Parse(format)
 }
 
 // Render evaluates format with data using the shared template function map.

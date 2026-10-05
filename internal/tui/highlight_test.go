@@ -5,8 +5,49 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
 )
+
+func TestAgentPresentation_RightTruncationAndHighlight(t *testing.T) {
+	m := newRenderTestModel(ThemeMocha, FocusList)
+	m.query = "sec"
+	row := Row{Kind: RowCandidate, Match: MatchDirect, MatchedIndexes: []int{0, 1, 2}, Candidate: source.Candidate{
+		Source: config.SourceAgents, Icon: "X ", Label: "security scan long title", Meta: map[string]string{"agent_status": "idle"},
+	}}
+	parts := m.rowLineParts(row)
+	if !parts[0].rendered {
+		t.Fatal("agent match did not enable highlighting")
+	}
+	prefix := "X  " + m.agentStatusIcon("idle") + " "
+	width := len([]rune(prefix)) + 11 + cursorPrefixWidth
+	for _, cursor := range []bool{false, true} {
+		got := renderRowLineText(m.renderRowLine(row, cursor, width))
+		if !strings.Contains(got, prefix+"security s…") {
+			t.Errorf("cursor=%v rendered %q; want prefix and beginning with trailing ellipsis", cursor, got)
+		}
+	}
+	row.Kind = RowPane // the agents tab derives pane rows from the snapshot
+	paneParts := m.rowLineParts(row)
+	if !paneParts[0].rendered {
+		t.Fatal("agents tab pane match did not enable highlighting")
+	}
+	if got := renderRowLineText(m.renderRowLine(row, true, width)); !strings.Contains(got, prefix+"security s…") {
+		t.Errorf("truncated agents tab cursor row = %q", got)
+	}
+	accent := m.styles.queryStyle.Render("s")
+	if got := parts[0].renderHighlighted(width-cursorPrefixWidth, lipgloss.Style{}, false); !strings.Contains(got, accent) {
+		t.Errorf("truncated highlighted row %q lost accented match %q", got, accent)
+	}
+	if got := truncateFromRightPreservingPrefix(prefix+"security scan", len([]rune(prefix)), 2); got != prefix {
+		t.Errorf("extremely narrow agent prefix = %q, want %q", got, prefix)
+	}
+	other := Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceProjects, Icon: "X ", Label: "security scan long title"}}
+	got := renderRowLineText(m.renderRowLine(other, false, width))
+	if !strings.Contains(got, "X  …") || !strings.HasSuffix(strings.TrimSpace(got), "title") {
+		t.Errorf("non-agent left truncation = %q", got)
+	}
+}
 
 func TestHighlight_EmptyMatchedIndexesUsesBaseStyle(t *testing.T) {
 	t.Parallel()

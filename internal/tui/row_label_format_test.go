@@ -89,6 +89,76 @@ func TestRowPrimaryText_ConfiguredLabelFormats(t *testing.T) {
 	}
 }
 
+func TestAgentPresentation_IconAndPrefixInTabs(t *testing.T) {
+	m := newRenderTestModel(ThemeMocha, FocusList)
+	icon := "X "
+	for _, tt := range []struct {
+		name string
+		kind RowKind
+	}{
+		{"agents tab", RowPane},
+		{"group or source tab", RowCandidate},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			row := Row{Kind: tt.kind, Candidate: source.Candidate{
+				Source: config.SourceAgents, Label: "security scan", Icon: icon,
+				Meta: map[string]string{"agent_status": "blocked"},
+			}}
+			primary, prefixRunes := m.rowPrimaryText(row)
+			wantPrefix := icon + " " + m.agentStatusIcon("blocked") + " "
+			if primary != wantPrefix+"security scan" || prefixRunes != len([]rune(wantPrefix)) {
+				t.Fatalf("primary = %q, prefixRunes = %d; want %q, %d", primary, prefixRunes, wantPrefix+"security scan", len([]rune(wantPrefix)))
+			}
+			row.Candidate.Icon = ""
+			primary, prefixRunes = m.rowPrimaryText(row)
+			wantPrefix = m.agentStatusIcon("blocked") + " "
+			if primary != wantPrefix+"security scan" || prefixRunes != len([]rune(wantPrefix)) {
+				t.Fatalf("empty icon: primary = %q, prefixRunes = %d", primary, prefixRunes)
+			}
+		})
+	}
+}
+
+func TestAgentPresentation_AgentsTabUsesConfiguredIcon(t *testing.T) {
+	m := newRenderTestModel(ThemeMocha, FocusList)
+	m.layout.AgentSourceIcon = "X "
+	m.startupSnapshot = &source.Snapshot{Panes: []source.Pane{{ID: "p1", Agent: "pi", AgentStatus: "idle", TerminalTitle: "title"}}}
+	rows := m.buildAgentRows()
+	if len(rows) != 1 {
+		t.Fatalf("agent rows = %d, want 1", len(rows))
+	}
+	got := renderRowLineText(m.renderRowLine(rows[0], false, 40))
+	if !strings.Contains(got, "X  "+m.agentStatusIcon("idle")+" title") {
+		t.Errorf("agents tab rendered %q, want icon before status and title", got)
+	}
+}
+
+func TestRowLabelFormat_MetaForAllRowKinds(t *testing.T) {
+	m := newRenderTestModel(ThemeMocha, FocusList)
+	m.layout.LabelFormats = LabelFormats{
+		Agents: "{{.Label}} {{.Meta.workspace_label}}/{{.Meta.agent}}/{{.Meta.absent}}",
+		Tab:    "{{.Label}} {{.Meta.tab_label}}/{{.Meta.absent}}",
+		Pane:   "{{.Label}} {{.Meta.agent_status}}/{{.Meta.absent}}",
+	}
+	for _, tt := range []struct {
+		row  Row
+		want string
+	}{
+		{Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceAgents, Label: "task", Meta: map[string]string{"workspace_label": "home", "agent": "pi"}}}, "task home/pi/"},
+		{Row{Kind: RowTab, Candidate: source.Candidate{Label: "tab", Meta: map[string]string{"tab_label": "ops"}}}, "tab ops/"},
+		{Row{Kind: RowPane, Depth: 2, Candidate: source.Candidate{Label: "task", Meta: map[string]string{"agent_status": "idle"}}}, "task idle/"},
+	} {
+		if got := m.renderRowLabel(tt.row); got != tt.want {
+			t.Errorf("kind %d label = %q, want %q", tt.row.Kind, got, tt.want)
+		}
+	}
+	m.layout.LabelFormats.Agents = "{{.Label}}"
+	row := Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceAgents, Label: "task", Meta: map[string]string{"agent": "pi"}}}
+	if got := m.renderRowLabel(row); got != "task" {
+		t.Errorf("existing template = %q, want task", got)
+	}
+}
+
 func TestRowPrimaryText_SourceIconIsRendered(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)

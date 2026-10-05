@@ -15,8 +15,8 @@ version = 2
 
 [general]
 # source_order lists the enabled built-in sources and their merge/display order.
-# Built-ins are herdr, sessions (opt-in), workspaces, zoxide, and projects.
-# Valid names: herdr, sessions, workspaces, zoxide, projects, plus any name
+# Built-ins are herdr, sessions (opt-in), agents (opt-in), workspaces, zoxide, and projects.
+# Valid names: herdr, sessions, agents, workspaces, zoxide, projects, plus any name
 # declared in [[sources.custom]] below. Unknown names fail fast.
 source_order = ["herdr", "workspaces", "zoxide", "projects"]
 # selector picks the interactive picker for "shep open" after the direct
@@ -97,11 +97,23 @@ max_lines = 50
 command = "git -C {{.Path}} log -n 3"
 
 # [sources.<name>] configures the presentation of a built-in source. Only
-# herdr, workspaces, zoxide and projects are recognised. The preview lists
+# herdr, sessions, agents, workspaces, zoxide and projects are recognised. The preview lists
 # below are the exact shipped defaults for each source.
 [sources.herdr]
 icon = "󰳆 "
 preview = ["workspace", "active_pane", "agent_status"]
+
+# [sources.agents] applies to the agents tab and agents in source/group tabs.
+# The default title-only label is {{.Label}}; the status marker is separate.
+# label_format also supports .Meta.workspace_label, .Meta.workspace_id,
+# .Meta.tab_label, .Meta.tab_id, .Meta.pane_id, .Meta.agent,
+# .Meta.agent_status, .Meta.terminal_title, and .Meta.kind. Missing keys
+# render empty. Herdr itself shortens terminal_title; Shep cannot recover
+# any text Herdr omits.
+[sources.agents]
+icon = " "
+label_format = "{{.Label}}"
+# preview = ["identity", "git"] # unset uses [preview].default; [] shows only identity
 
 [sources.workspaces]
 icon = " "

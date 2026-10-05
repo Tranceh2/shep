@@ -54,6 +54,17 @@ max_lines = 50
 icon = "󰳆 "
 preview = ["workspace", "active_pane", "agent_status"]
 
+# Agent titles come from Herdr; Herdr may already shorten terminal_title.
+# label_format can use .Meta.workspace_label, .Meta.workspace_id,
+# .Meta.tab_label, .Meta.tab_id, .Meta.pane_id, .Meta.agent,
+# .Meta.agent_status, .Meta.terminal_title, and .Meta.kind.
+# Missing metadata keys render empty. The default row is title-only; the
+# status glyph is drawn separately from this source icon.
+[sources.agents]
+icon = " "
+label_format = "{{.Label}}"
+# preview = ["identity", "git"] # unset uses [preview].default; [] shows only identity
+
 [sources.workspaces]
 icon = " "
 preview = ["identity", "dir"]

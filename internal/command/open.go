@@ -349,6 +349,7 @@ func layoutFromConfigWithCustomSources(t config.TUIConfig, sources []string, cus
 	layout.LabelFormats.Zoxide = s.Zoxide.LabelFormat
 	layout.LabelFormats.Projects = s.Projects.LabelFormat
 	layout.LabelFormats.Agents = s.Agents.LabelFormat
+	layout.AgentSourceIcon = s.Agents.Icon
 	layout.LabelFormats.Tab = s.Herdr.TabLabelFormat
 	layout.LabelFormats.Pane = s.Herdr.PaneLabelFormat
 	return layout
@@ -736,7 +737,7 @@ type snapshotProducerOptions struct {
 	agents   bool
 }
 
-func (a *App) buildSnapshotProducer(herdrIcon, sessionsIcon, agentsIcon string, opts snapshotProducerOptions) tui.SourceProducer {
+func (a *App) buildSnapshotProducer(herdrIcon, sessionsIcon, agentSourceIcon string, opts snapshotProducerOptions) tui.SourceProducer {
 	cfg := a.Config()
 	driver := a.Driver()
 	return func(ctx context.Context) tui.SourceResultMsg {
@@ -791,8 +792,8 @@ func (a *App) buildSnapshotProducer(herdrIcon, sessionsIcon, agentsIcon string, 
 			rawAgents := source.AgentCandidates(snapshot)
 			for _, c := range rawAgents {
 				clone := c.Clone()
-				if agentsIcon != "" {
-					clone.Icon = agentsIcon
+				if agentSourceIcon != "" {
+					clone.Icon = agentSourceIcon
 				}
 				cands = append(cands, clone)
 			}
@@ -816,7 +817,6 @@ func (a *App) buildSnapshotProducer(herdrIcon, sessionsIcon, agentsIcon string, 
 			Snapshot:            &snapshot,
 			RendererForSnapshot: a.buildPreviewRendererForSnapshot,
 			HerdrIcon:           cfg.Sources.Herdr.Icon,
-			AgentsIcon:          cfg.Sources.Agents.Icon,
 			SnapshotSources:     snapshotSources,
 			Renderer:            renderer,
 			CurrentPane:         currentPane,

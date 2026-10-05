@@ -428,13 +428,14 @@ type rowPart struct {
 	// fixedPrefixRunes is the codepoint count of this part's leading
 	// structural prefix — kindPrefix's tree glyph/indent/active-marker slot and
 	// the row's own icon (source icon, agent-status icon, or tab number) —
-	// never the row's actual label/path text. Left truncation (truncateFromLeftPreservingPrefix,
-	// rowPart.renderHighlighted) must never cut into this prefix, so a
+	// never the row's actual label/path text. Truncation must not cut into
+	// this prefix, so a
 	// row's icon always survives even when its label/path is severely
 	// truncated (TRL bug: a long zoxide/project path used to eat the row's
 	// own icon before touching a single label character). Zero for parts
 	// with no protected prefix, e.g. the secondary part.
 	fixedPrefixRunes int
+	truncateRight    bool
 }
 
 // renderRowLine renders one row with a stable two-cell marker gutter. The
@@ -465,8 +466,9 @@ func (m Model) rowLineParts(row Row) []rowPart {
 	secondary := m.rowSecondaryText(row)
 	primaryText := primary
 	fixedPrefixRunes := prefixRunes
-	primaryPart := rowPart{text: primaryText, style: style, fixedPrefixRunes: fixedPrefixRunes}
-	if row.Kind == RowCandidate && row.Match == MatchDirect && len(row.MatchedIndexes) > 0 {
+	truncateRight := row.Candidate.Source == config.SourceAgents
+	primaryPart := rowPart{text: primaryText, style: style, fixedPrefixRunes: fixedPrefixRunes, truncateRight: truncateRight}
+	if (row.Kind == RowCandidate || row.Candidate.Source == config.SourceAgents) && row.Match == MatchDirect && len(row.MatchedIndexes) > 0 {
 		if rawText, highlighted, ok := m.highlightedRowRunes(row, fixedPrefixRunes, primaryText); ok {
 			primaryPart = rowPart{
 				style:            style,
@@ -475,6 +477,7 @@ func (m Model) rowLineParts(row Row) []rowPart {
 				highlighted:      highlighted,
 				highlightStyle:   m.styles.queryStyle,
 				fixedPrefixRunes: fixedPrefixRunes,
+				truncateRight:    truncateRight,
 			}
 		}
 	}
@@ -539,7 +542,7 @@ func (m Model) renderUnselectedFromParts(parts []rowPart, width int) string {
 		if p.rendered {
 			return gutter + lipgloss.NewStyle().Width(contentW).Render(p.renderHighlighted(contentW, lipgloss.Style{}, false))
 		}
-		return gutter + p.style.Width(contentW).Render(truncateFromLeftPreservingPrefix(p.text, p.fixedPrefixRunes, contentW))
+		return gutter + p.style.Width(contentW).Render(p.truncatedText(contentW))
 	}
 	return gutter + m.composeMultiPartRow(parts, contentW, lipgloss.Style{}, false)
 }
@@ -577,19 +580,24 @@ func (m Model) renderSelectedFromParts(parts []rowPart, width int) string {
 			content := p.renderHighlighted(contentW, surfaceStyle, true)
 			return gutter + applySurface(lipgloss.NewStyle(), surfaceStyle).Width(contentW).Render(content)
 		}
-		styled := applySurface(p.style, surfaceStyle).Width(contentW).Render(truncateFromLeftPreservingPrefix(p.text, p.fixedPrefixRunes, contentW))
+		styled := applySurface(p.style, surfaceStyle).Width(contentW).Render(p.truncatedText(contentW))
 		return gutter + styled
 	}
 	styled := m.composeMultiPartRow(parts, contentW, surfaceStyle, true)
 	return gutter + styled
 }
 
+func (p rowPart) truncatedText(maxW int) string {
+	if p.truncateRight {
+		return truncateFromRightPreservingPrefix(p.text, p.fixedPrefixRunes, maxW)
+	}
+	return truncateFromLeftPreservingPrefix(p.text, p.fixedPrefixRunes, maxW)
+}
+
 // renderHighlighted renders a highlighted (p.rendered) part's raw runes with
-// per-rune base/highlight styling, protecting p.fixedPrefixRunes from left
-// truncation: only the label content AFTER that prefix is ever shortened,
-// and the ellipsis lands immediately after the prefix — never inside it
-// (TRL bug: the old whole-string truncateFromLeftToWidth call ate the
-// marker/icon prefix before a single label rune). When hasSurface is true,
+// per-rune base/highlight styling, protecting p.fixedPrefixRunes from
+// truncation: only the label AFTER that prefix is shortened. Agent rows
+// truncate from the right; other rows retain their left truncation. When hasSurface is true,
 // surface is merged into every rune's own style (the cursor row's selection
 // tint); per-rune lipgloss renders reset terminal state between runes, so an
 // outer surface alone would be lost after the first one.
@@ -610,40 +618,52 @@ func (p rowPart) renderHighlighted(maxW int, surface lipgloss.Style, hasSurface 
 		return s
 	}
 
-	build := func(startIdx int, ellipsis bool) string {
+	build := func(startIdx, endIdx int, ellipsis bool) string {
 		var b strings.Builder
 		b.WriteString(styleFor(p.style).Render(prefixText))
-		if ellipsis {
+		if ellipsis && !p.truncateRight {
 			b.WriteString(styleFor(p.style).Render("…"))
 		}
-		for i := startIdx; i < len(contentRunes); i++ {
+		for i := startIdx; i < endIdx; i++ {
 			style := p.style
 			if contentHighlighted[i] {
 				style = p.highlightStyle
 			}
 			b.WriteString(styleFor(style).Render(string(contentRunes[i])))
 		}
+		if ellipsis && p.truncateRight {
+			b.WriteString(styleFor(p.style).Render("…"))
+		}
 		return b.String()
 	}
 
 	if maxW <= 0 {
-		return build(0, false)
+		return build(0, len(contentRunes), false)
 	}
 	budget := maxW - ansi.StringWidth(prefixText)
 	if budget < 1 {
-		// Not enough room even for the fixed prefix: degrade to rendering
-		// everything rather than producing an empty/garbled row.
-		return build(0, false)
+		if p.truncateRight {
+			return styleFor(p.style).Render(prefixText)
+		}
+		// Preserve the historical behavior for non-agent rows.
+		return build(0, len(contentRunes), false)
 	}
 
 	contentText := string(contentRunes)
+	if p.truncateRight {
+		truncated := truncateToWidth(contentText, budget)
+		if truncated == contentText {
+			return build(0, len(contentRunes), false)
+		}
+		return build(0, len([]rune(strings.TrimSuffix(truncated, "…"))), true)
+	}
 	truncatedContent := truncateFromLeftToWidth(contentText, budget)
 	if truncatedContent == contentText {
-		return build(0, false)
+		return build(0, len(contentRunes), false)
 	}
 	survivingRunes := []rune(strings.TrimPrefix(truncatedContent, "…"))
 	startIdx := len(contentRunes) - len(survivingRunes)
-	return build(startIdx, true)
+	return build(startIdx, len(contentRunes), true)
 }
 
 // composeMultiPartRow renders a multi-part row (primary + secondary) at the
@@ -666,7 +686,7 @@ func (m Model) composeMultiPartRow(parts []rowPart, width int, surface lipgloss.
 
 	primaryW := lipgloss.Width(primary.text)
 	if primaryW >= width {
-		return pStyle.Width(width).Render(truncateFromLeftPreservingPrefix(primary.text, primary.fixedPrefixRunes, width))
+		return pStyle.Width(width).Render(primary.truncatedText(width))
 	}
 
 	secondaryW := lipgloss.Width(secondary.text)
@@ -887,8 +907,9 @@ func (m Model) renderRowLabel(row Row) string {
 		Label:       label,
 		TabNumber:   c.Meta["tab_number"],
 		AgentStatus: c.Meta["agent_status"],
+		Meta:        c.Meta,
 		// Icon intentionally stays unset: c.Icon belongs to rowPrimaryText's
-		// fixed prefix, which left truncation must never consume.
+		// fixed prefix, which truncation must never consume.
 	})
 	if err != nil || text == "" {
 		return c.Path
@@ -899,12 +920,12 @@ func (m Model) renderRowLabel(row Row) string {
 // rowPrimaryText builds a row's primary display text, split into the
 // structural prefix (kindPrefix's tree glyph/ancestor-column/indent/active-
 // marker slot, plus the row's own icon — a source icon for a RowCandidate, a
-// dedicated tab icon for a RowTab, or an agent-status icon for a RowPane) and
+// dedicated tab icon for a RowTab, or a source icon and agent-status icon for an agent row) and
 // prefixRunes, the codepoint length of that leading prefix ALONE — everything
 // before the row's actual label/path text begins. renderRowLine's truncation
 // path (see truncateFromLeftPreservingPrefix, rowPart.renderHighlighted) must
 // never cut into that prefix, so a row's icon always survives even when its
-// label/path is severely left-truncated.
+// label/path is severely truncated.
 //
 // All row bodies render through their resolved source template. A RowTab first
 // passes tabLabelPortion(c) as its Context.Label so the existing number/label
@@ -914,6 +935,9 @@ func (m Model) rowPrimaryText(row Row) (primary string, prefixRunes int) {
 
 	if row.Kind == RowPane || (row.Kind == RowCandidate && c.Source == config.SourceAgents) {
 		prefix := m.kindPrefix(row)
+		if c.Source == config.SourceAgents && c.Icon != "" {
+			prefix += c.Icon + " "
+		}
 		if icon := m.agentStatusIcon(c.Meta["agent_status"]); icon != "" {
 			prefix += icon + " "
 		}
@@ -1077,6 +1101,21 @@ func truncateFromLeftPreservingPrefix(s string, prefixRunes, maxW int) string {
 		return truncateFromLeftToWidth(s, maxW)
 	}
 	return prefix + truncateFromLeftToWidth(rest, budget)
+}
+
+// truncateFromRightPreservingPrefix keeps the structural prefix intact while
+// truncating only the agent title from the right.
+func truncateFromRightPreservingPrefix(s string, prefixRunes, maxW int) string {
+	runes := []rune(s)
+	if prefixRunes > len(runes) {
+		prefixRunes = len(runes)
+	}
+	prefix := string(runes[:prefixRunes])
+	budget := maxW - ansi.StringWidth(prefix)
+	if budget < 1 {
+		return prefix // cannot fit even the structural prefix; keep it intact
+	}
+	return prefix + truncateToWidth(string(runes[prefixRunes:]), budget)
 }
 
 // renderPreviewTopBorder builds the preview pane's top edge separately so the

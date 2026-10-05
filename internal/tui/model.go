@@ -155,6 +155,9 @@ type Layout struct {
 	// Model.icons(). Empty defaults to IconsUnicode, byte-identical to
 	// the picker's pre-Phase-8 hardcoded glyphs.
 	Icons string
+	// AgentSourceIcon is the configured source icon for candidates derived from
+	// Herdr snapshots in the agents tab and on snapshot refresh.
+	AgentSourceIcon string
 	// LabelFormats carries the loaded, per-source row label templates into the
 	// session-only Model, following the same Layout-carried configuration pattern
 	// as Icons and SourceOrder.
@@ -254,7 +257,6 @@ type Model struct {
 	snapshotDriver      SnapshotDriver
 	rendererForSnapshot SnapshotRendererFactory
 	herdrIcon           string
-	agentsIcon          string
 	// snapshotSources records which candidate sources the active snapshot
 	// generation feeds (see SourceResultMsg.SnapshotSources); the periodic
 	// refresh re-derives exactly those source slices.
@@ -360,7 +362,6 @@ type SourceResultMsg struct {
 	Snapshot            *source.Snapshot
 	RendererForSnapshot SnapshotRendererFactory
 	HerdrIcon           string
-	AgentsIcon          string
 	// SnapshotSources names the candidate sources this message's Snapshot
 	// generation feeds (config.SourceHerdr, config.SourceAgents): rows of
 	// those sources are re-derived from every later snapshot refresh instead
@@ -772,9 +773,6 @@ func (m Model) handleSourceResult(msg SourceResultMsg) (Model, tea.Cmd) {
 	if msg.HerdrIcon != "" {
 		m.herdrIcon = msg.HerdrIcon
 	}
-	if msg.AgentsIcon != "" {
-		m.agentsIcon = msg.AgentsIcon
-	}
 	if len(msg.SnapshotSources) > 0 {
 		if m.snapshotSources == nil {
 			m.snapshotSources = make(map[string]bool, len(msg.SnapshotSources))
@@ -1162,10 +1160,8 @@ func (m Model) handleSnapshotResponse(msg snapshotResponseMsg) (Model, tea.Cmd) 
 		}
 		m.snapshotSources[config.SourceAgents] = true
 		agentReplacement := source.AgentCandidates(snapshotWithLiveStatuses(msg.snapshot, m.liveStatuses))
-		if m.agentsIcon != "" {
-			for i := range agentReplacement {
-				agentReplacement[i].Icon = m.agentsIcon
-			}
+		for i := range agentReplacement {
+			agentReplacement[i].Icon = m.layout.AgentSourceIcon
 		}
 		m.baseCandidates = spliceSourceCandidates(m.baseCandidates, agentReplacement, config.SourceAgents, "pane_id")
 		m.candidates = m.baseCandidates

@@ -69,6 +69,18 @@ func TestRender(t *testing.T) {
 			data:   data,
 		},
 		{
+			name:   "metadata dot field and absent string key",
+			format: "{{.Label}} {{.Meta.agent}}/{{.Meta.missing}}",
+			want:   "shep pi/",
+			data:   rowformat.Context{Label: "shep", Meta: map[string]string{"agent": "pi"}},
+		},
+		{
+			name:   "nil metadata string key",
+			format: "{{.Label}}/{{.Meta.missing}}",
+			want:   "shep/",
+			data:   data,
+		},
+		{
 			name:   "metadata index field",
 			format: `{{ index .Meta "context" }}`,
 			want:   "cluster prod west",

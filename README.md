@@ -445,7 +445,7 @@ source_order = ["projects", "zoxide"]
 
 ### `[sources.<name>]` — Source Provider Presentation
 
-Customize icons and label formats per source. Templates support `{{.Label}}`, `{{.Path}}`, and metadata fields.
+Customize icons and label formats per source. Templates support `{{.Label}}`, `{{.Path}}`, and `{{.Meta.<key>}}` for candidate metadata; missing string keys render empty. Agents expose `workspace_label`, `workspace_id`, `tab_label`, `tab_id`, `pane_id`, `agent`, `agent_status`, `terminal_title`, and `kind` through `.Meta`. Herdr itself shortens `terminal_title`; Shep cannot display more than Herdr provides. The default agents label is title-only (`{{.Label}}`); the status marker remains separate from the configured source icon.
 
 ```toml
 [sources.herdr]
@@ -458,6 +458,11 @@ pane_label_format = "{{.Label}}"
 # Opt-in source for local Herdr sessions (must be added to [general].source_order to activate)
 icon = " "
 label_format = "{{.Label}}"
+
+[sources.agents]
+icon = " "
+label_format = "{{.Label}}"
+# preview = ["identity", "git"] # unset uses [preview].default; [] shows only identity
 
 [sources.workspaces]
 icon = " "

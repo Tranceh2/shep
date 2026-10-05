@@ -322,7 +322,11 @@ func (m Model) currentPaneID() string {
 // collectAgentCandidates collects flat candidate representations of active Herdr agents.
 func (m Model) collectAgentCandidates() []source.Candidate {
 	snap := m.snapshotForAgents()
-	return source.AgentCandidates(snap)
+	candidates := source.AgentCandidates(snap)
+	for i := range candidates {
+		candidates[i].Icon = m.layout.AgentSourceIcon
+	}
+	return candidates
 }
 
 func (m *Model) buildAgentRows() []Row {
