@@ -415,8 +415,14 @@ Tabs can be reordered or reduced to one entry. `all` runs only providers in
 loads that provider without adding its rows to `all`. Group tabs evaluate their
 root and `source_order` only when selected, sharing the Herdr snapshot where
 available. Duplicate, unknown, ambiguous and non-group tab references fail
-configuration validation. `shep open --agents` opens the Agents view even if
-`agents` is not among the visible tabs; the next Tab returns to the configured cycle.
+configuration validation. `shep open --view <id> [query]` always opens the built-in
+picker, even for one candidate or when fzf is configured. Valid ids are `all`,
+`agents`, a built-in source, a declared custom source, or a group workspace id.
+The optional query filters inside that view. `--view` conflicts with `--path`
+and the `.` query. If the view is absent from `[tui].tabs`, it is appended as a
+temporary active tab so Tab can reach it again; it does not enable its source
+inside `all`. For example, `shep open --view agents` works with hidden agents,
+and `shep open --view team-projects rust` searches only that group.
 
 For example, add the following entries to the same config to expose a
 custom source and a group shortcut:

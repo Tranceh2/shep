@@ -125,6 +125,26 @@ func TestConfiguredTabs_InitialGroupSingleFlightWithProducer(t *testing.T) {
 	}
 }
 
+func TestExplicitHiddenViewFiltersQueryWithoutJoiningAll(t *testing.T) {
+	layout := Layout{SourceOrder: []string{config.SourceWorkspaces}, Tabs: []TabDefinition{{ID: "all", Kind: TabAll}, {ID: "projects", Kind: TabSource}}, InitialTab: "projects"}
+	m := NewModelWithProducers(nil, "needle", nil, context.Background(), layout)
+	if m.ActiveTab() != "projects" {
+		t.Fatalf("initial tab = %q", m.ActiveTab())
+	}
+	m, _ = m.handleSourceResult(SourceResultMsg{Source: config.SourceProjects, Candidates: []source.Candidate{
+		{Source: config.SourceProjects, Label: "needle", Path: "/needle"},
+		{Source: config.SourceProjects, Label: "other", Path: "/other"},
+	}})
+	if len(m.rows) != 1 || m.rows[0].Candidate.Label != "needle" {
+		t.Fatalf("filtered rows = %+v", m.rows)
+	}
+	m.activeTab = "all"
+	m.applyFilter()
+	if len(m.rows) != 0 {
+		t.Fatalf("hidden view leaked into all: %+v", m.rows)
+	}
+}
+
 func TestConfiguredTabs_QueryTabOnlyProviderPreservesAll(t *testing.T) {
 	calls := 0
 	layout := Layout{SourceOrder: []string{config.SourceWorkspaces}, Tabs: []TabDefinition{

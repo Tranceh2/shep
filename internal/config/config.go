@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -1565,18 +1566,67 @@ func validateTUI(t TUIConfig) error {
 	return nil
 }
 
+// ViewKinds builds the shared namespace for configured tabs and explicit views.
+// Duplicate declarations remain visible so the resolver can reject ambiguity.
+func ViewKinds(cfg *Config) map[string][]string {
+	known := map[string][]string{"all": {"scope"}, "agents": {"scope"}}
+	for _, name := range []string{SourceHerdr, SourceWorkspaces, SourceZoxide, SourceProjects, SourceSessions} {
+		known[name] = append(known[name], "source")
+	}
+	for _, customSource := range cfg.Sources.Custom {
+		known[customSource.Name] = append(known[customSource.Name], "custom source")
+	}
+	for _, ws := range cfg.Workspaces {
+		if ws.ID == "" {
+			continue
+		}
+		kind := "workspace"
+		if ws.Type == WorkspaceTypeGroup {
+			kind = "group"
+		}
+		known[ws.ID] = append(known[ws.ID], kind)
+	}
+	return known
+}
+
+// ResolveView checks an explicit view against the same namespace as tui.tabs.
+func ResolveView(cfg *Config, id string) (string, error) {
+	known := ViewKinds(cfg)
+	ids := make([]string, 0, len(known))
+	for name, kinds := range known {
+		if len(kinds) == 1 && kinds[0] != "workspace" {
+			ids = append(ids, name)
+		}
+	}
+	slices.Sort(ids)
+	kinds := known[id]
+	if len(kinds) > 1 {
+		return "", fmt.Errorf("ambiguous --view %q (%s)", id, strings.Join(kinds, ", "))
+	}
+	if len(kinds) == 1 && kinds[0] == "workspace" {
+		return "", fmt.Errorf("invalid --view %q: non-group workspace (valid ids: %s)", id, strings.Join(ids, ", "))
+	}
+	if len(kinds) == 0 {
+		return "", fmt.Errorf("unknown --view %q (valid ids: %s)", id, strings.Join(ids, ", "))
+	}
+	return kinds[0], nil
+}
+
 // validateTabs resolves only stable group IDs; names and paths can be shared
 // across workspace entries and cannot unambiguously identify a tab.
 func validateTabs(cfg *Config) error {
-	known := map[string]string{"all": "scope", "agents": "scope"}
-	for _, name := range []string{SourceHerdr, SourceWorkspaces, SourceZoxide, SourceProjects, SourceSessions} {
-		known[name] = "source"
-	}
+	known := ViewKinds(cfg)
 	for _, customSource := range cfg.Sources.Custom {
 		if customSource.Name == "all" || customSource.Name == "agents" {
 			return fmt.Errorf("sources.custom name %q: collides with built-in tab scope", customSource.Name)
 		}
-		known[customSource.Name] = "custom source"
+	}
+	seenIDs := map[string]string{"all": "scope", "agents": "scope"}
+	for _, name := range []string{SourceHerdr, SourceWorkspaces, SourceZoxide, SourceProjects, SourceSessions} {
+		seenIDs[name] = "source"
+	}
+	for _, customSource := range cfg.Sources.Custom {
+		seenIDs[customSource.Name] = "custom source"
 	}
 	for i, ws := range cfg.Workspaces {
 		if ws.ID == "" {
@@ -1585,14 +1635,10 @@ func validateTabs(cfg *Config) error {
 		if strings.TrimSpace(ws.ID) != ws.ID {
 			return fmt.Errorf("workspaces[%d].id %q: must not have surrounding whitespace", i, ws.ID)
 		}
-		if prev, exists := known[ws.ID]; exists {
+		if prev, exists := seenIDs[ws.ID]; exists {
 			return fmt.Errorf("workspaces[%d].id %q: ambiguous reference (already declared as %s)", i, ws.ID, prev)
 		}
-		kind := "workspace"
-		if ws.Type == WorkspaceTypeGroup {
-			kind = "group"
-		}
-		known[ws.ID] = kind
+		seenIDs[ws.ID] = known[ws.ID][0]
 	}
 	seen := make(map[string]bool, len(cfg.TUI.Tabs))
 	for _, tab := range cfg.TUI.Tabs {
@@ -1600,11 +1646,13 @@ func validateTabs(cfg *Config) error {
 			return fmt.Errorf("tui.tabs: duplicate tab %q", tab)
 		}
 		seen[tab] = true
-		kind := known[tab]
-		switch kind {
-		case "scope", "source", "custom source", "group":
-		case "workspace":
+		_, err := ResolveView(cfg, tab)
+		switch {
+		case err == nil:
+		case len(known[tab]) == 1 && known[tab][0] == "workspace":
 			return fmt.Errorf("tui.tabs: %q references a non-group workspace; set type = %q", tab, WorkspaceTypeGroup)
+		case len(known[tab]) > 1:
+			return fmt.Errorf("tui.tabs: %w", err)
 		default:
 			return fmt.Errorf("tui.tabs: unknown tab %q (use all, agents, a built-in source, declared custom source or group workspace id)", tab)
 		}

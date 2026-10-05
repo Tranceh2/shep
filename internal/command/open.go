@@ -44,7 +44,7 @@ type asyncTUIRunFunc func(ctx context.Context, producers []tui.SourceProducer, q
 func (a *App) openCmd() *cobra.Command {
 	var pathFlag string
 	var targetFlag string
-	var agentsFlag bool
+	var viewFlag string
 	cmd := &cobra.Command{
 		Use:   "open [query]",
 		Short: "Open a project with Herdr (or print its path when Herdr is absent)",
@@ -63,7 +63,12 @@ workspace (default) creates/focuses a standalone Herdr workspace; tab opens it
 as a new tab in the Herdr workspace shep is running inside; pane splits it into
 a new pane beside the current one. tab and pane require shep to be running
 inside a Herdr pane and support command-type workspace entries, zoxide, and
-projects (already-open herdr workspaces, templates, and groups are rejected).`,
+projects (already-open herdr workspaces, templates, and groups are rejected).
+
+--view selects all, agents, a built-in or custom source, or a group id. It
+always opens the built-in picker, even for a single match, ignoring fzf and
+exact-match selection. A query filters only that view. Hidden views become a
+temporary active tab alongside the configured tabs; they do not join all.`,
 		Args: cobra.MaximumNArgs(1),
 		// PreRunE (not PersistentPreRunE) so the root's inherited
 		// PersistentPreRunE still loads config + probes first; this hook then
@@ -82,15 +87,15 @@ projects (already-open herdr workspaces, templates, and groups are rejected).`,
 			if len(args) == 1 {
 				query = args[0]
 			}
-			return a.runOpen(cmd, query, pathFlag, targetFlag, agentsFlag)
+			return a.runOpenWithView(cmd, query, pathFlag, targetFlag, viewFlag)
 		},
 	}
 	cmd.Flags().StringVar(&pathFlag, "path", "",
 		"open the given absolute path directly, bypassing query resolution (used by the Television cable)")
 	cmd.Flags().StringVar(&targetFlag, "target", "workspace",
 		"where to open an entry: workspace (default), tab, or pane")
-	cmd.Flags().BoolVar(&agentsFlag, "agents", false,
-		"open directly in the active agents filter scope")
+	cmd.Flags().StringVar(&viewFlag, "view", "",
+		"open a view in the built-in picker (all, agents, source name, or group id)")
 	return cmd
 }
 
@@ -353,7 +358,10 @@ func layoutFromConfigWithCustomSources(t config.TUIConfig, sources []string, cus
 // streaming startup and the synchronous ambiguous-query picker. Tab-only
 // providers are loaded on activation, never added to general.source_order.
 func (a *App) pickerLayout(order []string, matches []source.Candidate) tui.Layout {
-	cfg := a.Config()
+	return a.pickerLayoutForConfig(a.Config(), order, matches)
+}
+
+func (a *App) pickerLayoutForConfig(cfg *config.Config, order []string, matches []source.Candidate) tui.Layout {
 	layout := layoutFromConfigWithCustomSources(cfg.TUI, order, cfg.Sources.Custom, cfg.Sources)
 	registry := a.withStartupSnapshot(source.NewRegistry(cfg, a.Probes(), a.Driver()))
 	providers := make(map[string]source.Provider)
@@ -846,7 +854,11 @@ func (a *App) buildRankingProducer() tui.SourceProducer {
 	}
 }
 
-func (a *App) buildStreamingProducers(cmdCtx context.Context, explicitAgents ...bool) []tui.SourceProducer {
+func (a *App) buildStreamingProducers(cmdCtx context.Context) []tui.SourceProducer {
+	return a.streamingProducersForView(cmdCtx, "")
+}
+
+func (a *App) streamingProducersForView(cmdCtx context.Context, view string) []tui.SourceProducer {
 	cfg := a.Config()
 	probes := a.Probes()
 	registry := source.NewRegistry(cfg, probes, a.Driver())
@@ -860,30 +872,49 @@ func (a *App) buildStreamingProducers(cmdCtx context.Context, explicitAgents ...
 	var standaloneSessions source.Provider
 	enabled := registry.Enabled()
 	requested := make(map[string]bool)
-	if len(explicitAgents) > 0 && explicitAgents[0] {
-		requested[config.SourceAgents] = true
-	}
-	for _, tab := range cfg.TUI.Tabs {
-		if tab == "all" {
-			continue
-		}
-		isGroup := false
-		for _, ws := range cfg.Workspaces {
-			if ws.ID == tab && ws.Type == config.WorkspaceTypeGroup {
-				isGroup = true
-				order := effectiveGroupSourceOrder(cfg, ws, true, nil)
-				for _, name := range order {
-					if name == config.SourceHerdr || name == config.SourceAgents {
-						requested[config.SourceHerdr] = true
-						break
+	if view != "" {
+		if view == "agents" {
+			requested[config.SourceAgents] = true
+		} else if kind, _ := config.ResolveView(cfg, view); kind == "group" {
+			for _, ws := range cfg.Workspaces {
+				if ws.ID == view {
+					for _, name := range effectiveGroupSourceOrder(cfg, ws, true, nil) {
+						if name == config.SourceHerdr || name == config.SourceAgents {
+							requested[config.SourceHerdr] = true
+						}
 					}
+					break
 				}
-				break
+			}
+		} else {
+			requested[view] = true
+		}
+	} else {
+		for _, tab := range cfg.TUI.Tabs {
+			if tab == "all" {
+				continue
+			}
+			isGroup := false
+			for _, ws := range cfg.Workspaces {
+				if ws.ID == tab && ws.Type == config.WorkspaceTypeGroup {
+					isGroup = true
+					order := effectiveGroupSourceOrder(cfg, ws, true, nil)
+					for _, name := range order {
+						if name == config.SourceHerdr || name == config.SourceAgents {
+							requested[config.SourceHerdr] = true
+							break
+						}
+					}
+					break
+				}
+			}
+			if !isGroup {
+				requested[tab] = true
 			}
 		}
-		if !isGroup {
-			requested[tab] = true
-		}
+	}
+	if view != "" && view != "all" {
+		enabled = nil
 	}
 	for _, p := range registry.Providers() {
 		if !requested[p.Name()] {
@@ -946,7 +977,11 @@ func (a *App) buildStreamingProducers(cmdCtx context.Context, explicitAgents ...
 // runOpen is the pipeline so tests can call it directly against a fresh App.
 // target is the resolved --target value ("workspace", "tab", or "pane"); for
 // the interactive TUI path, the model can override it via App.chosenTarget.
-func (a *App) runOpen(cmd *cobra.Command, query, pathFlag, targetFlag string, agents ...bool) error {
+func (a *App) runOpen(cmd *cobra.Command, query, pathFlag, targetFlag string) error {
+	return a.runOpenWithView(cmd, query, pathFlag, targetFlag, "")
+}
+
+func (a *App) runOpenWithView(cmd *cobra.Command, query, pathFlag, targetFlag, view string) error {
 	out := cmd.OutOrStdout()
 	errOut := cmd.ErrOrStderr()
 	a.chosenTarget = ""
@@ -967,12 +1002,20 @@ func (a *App) runOpen(cmd *cobra.Command, query, pathFlag, targetFlag string, ag
 	}()
 
 	cfg := a.Config()
-	if len(agents) > 0 && agents[0] && query != "" {
-		return fmt.Errorf("--agents cannot be combined with a query; run without a query to open the agents view")
+	if cmd.Flags().Changed("view") && view == "" {
+		return fmt.Errorf("--view requires a non-empty id")
+	}
+	if view != "" {
+		if cmd.Flags().Changed("path") || query == "." {
+			return fmt.Errorf("--view conflicts with --path or query '.'")
+		}
+		if _, err := config.ResolveView(cfg, view); err != nil {
+			return err
+		}
 	}
 	// Use synchronous resolution when direct path, '.', test overrides cascade,
 	// when fzf is explicitly configured, or when a CLI query was supplied.
-	if cmd.Flags().Changed("path") || query == "." || a.selectorBuilder != nil || cfg.General.Selector == config.SelectorFzf || query != "" {
+	if view == "" && (cmd.Flags().Changed("path") || query == "." || a.selectorBuilder != nil || cfg.General.Selector == config.SelectorFzf || query != "") {
 		if cfg.Ranking.Enabled {
 			openRanking := a.rankingOpen
 			if openRanking == nil {
@@ -1038,6 +1081,23 @@ func (a *App) runOpen(cmd *cobra.Command, query, pathFlag, targetFlag string, ag
 
 	// Interactive startup with no query: enter Bubble Tea immediately with streaming producers!
 	layout := a.pickerLayout(cfg.General.SourceOrder, nil)
+	if view != "" {
+		found := false
+		for _, tab := range layout.Tabs {
+			if tab.ID == view {
+				found = true
+				break
+			}
+		}
+		if !found {
+			// Append a temporary tab so keyboard navigation never loses the view.
+			cfgCopy := *cfg
+			cfgCopy.TUI.Tabs = []string{view}
+			viewLayout := a.pickerLayoutForConfig(&cfgCopy, cfg.General.SourceOrder, nil)
+			layout.Tabs = append(layout.Tabs, viewLayout.Tabs[0])
+		}
+		layout.InitialTab = view
+	}
 	layout.StatusDialer = a.resolveStatusDialer()
 	layout.PinToggler = a.pinToggler()
 	layout.AckClearer = a.ackClearer()
@@ -1045,11 +1105,7 @@ func (a *App) runOpen(cmd *cobra.Command, query, pathFlag, targetFlag string, ag
 		fmt.Fprintf(errOut, "warning: pin storage unavailable: %v\n", err)
 	}
 
-	wantAgents := len(agents) > 0 && agents[0]
-	producers := a.buildStreamingProducers(cmd.Context(), wantAgents)
-	if wantAgents {
-		layout.InitialScope = tui.ScopeAgents
-	}
+	producers := a.streamingProducersForView(cmd.Context(), view)
 	cand, action, chosenTarget, currentPane, ok, selErr := a.runAsyncTUI(cmd.Context(), producers, query, layout)
 	if selErr != nil {
 		if errors.Is(selErr, tui.ErrCancelled) {

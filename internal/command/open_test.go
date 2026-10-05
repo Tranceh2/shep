@@ -2925,17 +2925,56 @@ func TestOpen_AmbiguousQueryPreservesDirectResolution(t *testing.T) {
 	}
 }
 
-func TestOpen_AgentsWithQueryRejected(t *testing.T) {
-	app := New()
+func TestOpen_ViewValidation(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Ranking.Enabled = false
+	cfg.TUI.Tabs = []string{"all"}
+	cfg.Sources.Custom = []config.CustomSourceConfig{{Name: "review"}}
+	cfg.Workspaces = []config.WorkspaceConfig{{ID: "team", Type: config.WorkspaceTypeGroup, Path: t.TempDir()}}
+	for _, id := range []string{"all", "agents", "herdr", "sessions", "workspaces", "zoxide", "projects", "review", "team"} {
+		t.Run(id, func(t *testing.T) {
+			app := New()
+			app.cfg = cfg
+			app.asyncTUIRun = func(_ context.Context, _ []tui.SourceProducer, _ string, layout tui.Layout) (source.Candidate, tui.RowAction, string, *source.Pane, bool, error) {
+				model := tui.NewModelWithLayout(nil, nil, layout)
+				if model.ActiveTab() != id {
+					t.Errorf("active view = %q, want %q", model.ActiveTab(), id)
+				}
+				return source.Candidate{}, tui.RowActionOpen, "", nil, false, tui.ErrCancelled
+			}
+			cmd := app.openCmd()
+			cmd.SetArgs([]string{"--view", id})
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	app := New()
 	app.cfg = cfg
-	var errOut bytes.Buffer
 	cmd := app.openCmd()
-	cmd.SetErr(&errOut)
-	cmd.SetArgs([]string{"--agents", "team"})
-	if err := cmd.Execute(); err == nil || !strings.Contains(errOut.String(), "--agents") {
-		t.Fatalf("--agents with query: err = %v, stderr = %q", err, errOut.String())
+	cmd.SetArgs([]string{"--view", "missing"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "missing") || !strings.Contains(err.Error(), "team") {
+		t.Fatalf("unknown view error = %v", err)
+	}
+	cmd = app.openCmd()
+	cmd.SetArgs([]string{"--view", "agents", "--path", "/tmp"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "--path") {
+		t.Fatalf("path conflict = %v", err)
+	}
+	cmd = app.openCmd()
+	cmd.SetArgs([]string{"--view", "agents", "."})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "conflict") {
+		t.Fatalf("dot conflict = %v", err)
+	}
+	cmd = app.openCmd()
+	cmd.SetArgs([]string{"--view", ""})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "non-empty") {
+		t.Fatalf("empty view error = %v", err)
+	}
+	cmd = app.openCmd()
+	cmd.SetArgs([]string{"--agents"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "unknown flag") {
+		t.Fatalf("removed flag = %v", err)
 	}
 }
 
@@ -2957,12 +2996,12 @@ func TestOpen_ConfiguredTabsAndHiddenAgents(t *testing.T) {
 		return source.Candidate{}, tui.RowActionOpen, "", nil, false, tui.ErrCancelled
 	}
 	cmd := app.openCmd()
-	cmd.SetArgs([]string{"--agents"})
+	cmd.SetArgs([]string{"--view", "agents"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if captured.InitialScope != tui.ScopeAgents {
-		t.Errorf("initial scope = %v", captured.InitialScope)
+	if captured.InitialTab != "agents" {
+		t.Errorf("initial tab = %q", captured.InitialTab)
 	}
 	foundSnapshot := false
 	for _, producer := range capturedProducers {
@@ -2974,10 +3013,128 @@ func TestOpen_ConfiguredTabsAndHiddenAgents(t *testing.T) {
 		}
 	}
 	if !foundSnapshot {
-		t.Error("--agents did not schedule the agents snapshot provider")
+		t.Error("agents view did not schedule the agents snapshot provider")
 	}
-	if len(captured.Tabs) != 3 || captured.Tabs[1].Kind != tui.TabCustomSource || captured.Tabs[2].Kind != tui.TabGroup || captured.Tabs[2].Load == nil {
+	if len(captured.Tabs) != 4 || captured.Tabs[1].Kind != tui.TabCustomSource || captured.Tabs[2].Kind != tui.TabGroup || captured.Tabs[2].Load == nil || captured.Tabs[3].ID != "agents" {
 		t.Fatalf("configured tabs = %+v", captured.Tabs)
+	}
+}
+
+func TestOpen_ViewPickerIgnoresFzfAndDirectWithQuery(t *testing.T) {
+	cfg, _ := seedCfg(t, "team")
+	cfg.Ranking.Enabled = false
+	cfg.General.Selector = config.SelectorFzf
+	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
+	cfg.TUI.Tabs = []string{"all"}
+	app := New()
+	app.cfg = cfg
+	called := false
+	app.asyncTUIRun = func(ctx context.Context, producers []tui.SourceProducer, query string, layout tui.Layout) (source.Candidate, tui.RowAction, string, *source.Pane, bool, error) {
+		called = true
+		if query != "team" || layout.InitialTab != "workspaces" {
+			t.Fatalf("query = %q, view = %q", query, layout.InitialTab)
+		}
+		var candidates []source.Candidate
+		for _, producer := range producers {
+			msg := producer(ctx)
+			if msg.Source == config.SourceWorkspaces {
+				candidates = append(candidates, msg.Candidates...)
+			} else if msg.Source != "ranking" {
+				t.Errorf("unrelated producer %q", msg.Source)
+			}
+		}
+		if len(candidates) != 1 {
+			t.Fatalf("want one candidate, got %+v", candidates)
+		}
+		return source.Candidate{}, tui.RowActionOpen, "", nil, false, tui.ErrCancelled
+	}
+	cmd := app.openCmd()
+	cmd.SetArgs([]string{"--view", "workspaces", "team"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("built-in picker not called for sole exact match")
+	}
+}
+
+func TestOpen_ViewGroupOnlyLoadsScopedSources(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	if err := os.Mkdir(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(project, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.Ranking.Enabled = false
+	cfg.General.SourceOrder = []string{"unrelated"}
+	cfg.General.Selector = config.SelectorFzf
+	cfg.TUI.Tabs = []string{"all"}
+	cfg.Sources.Projects.Markers = []string{".git"}
+	cfg.Sources.Custom = []config.CustomSourceConfig{{Name: "unrelated", Command: []string{"false"}}}
+	cfg.Workspaces = []config.WorkspaceConfig{{ID: "team", Type: config.WorkspaceTypeGroup, Path: root, SourceOrder: []string{config.SourceProjects}}}
+	app := New()
+	app.cfg = cfg
+	app.asyncTUIRun = func(ctx context.Context, producers []tui.SourceProducer, query string, layout tui.Layout) (source.Candidate, tui.RowAction, string, *source.Pane, bool, error) {
+		if query != "project" || layout.InitialTab != "team" || len(layout.Tabs) != 2 || layout.Tabs[1].Load == nil {
+			t.Fatalf("query %q, layout %+v", query, layout)
+		}
+		for _, producer := range producers {
+			msg := producer(ctx)
+			if msg.Source == "unrelated" {
+				t.Error("unrelated external command scheduled")
+			}
+		}
+		rows, err := layout.Tabs[1].Load(ctx, nil)
+		if err != nil || len(rows) != 1 || rows[0].Path != project {
+			t.Fatalf("group rows = %+v, error = %v", rows, err)
+		}
+		return source.Candidate{}, tui.RowActionOpen, "", nil, false, tui.ErrCancelled
+	}
+	cmd := app.openCmd()
+	cmd.SetArgs([]string{"--view", "team", "project"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOpen_ViewBypassesSynchronousSelectorOverride(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Ranking.Enabled = false
+	cfg.General.Selector = config.SelectorFzf
+	app := New()
+	app.cfg = cfg
+	app.selectorBuilder = func() *selector.Cascade {
+		t.Fatal("synchronous cascade was invoked for an explicit view")
+		return nil
+	}
+	called := false
+	app.asyncTUIRun = func(_ context.Context, _ []tui.SourceProducer, query string, layout tui.Layout) (source.Candidate, tui.RowAction, string, *source.Pane, bool, error) {
+		called = true
+		if query != "find" || layout.InitialTab != "agents" {
+			t.Errorf("query = %q, initial view = %q", query, layout.InitialTab)
+		}
+		return source.Candidate{}, tui.RowActionOpen, "", nil, false, tui.ErrCancelled
+	}
+	cmd := app.openCmd()
+	cmd.SetArgs([]string{"--view", "agents", "find"})
+	if err := cmd.Execute(); err != nil || !called {
+		t.Fatalf("async picker called = %v, error = %v", called, err)
+	}
+}
+
+func TestOpen_ViewAmbiguousID(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Sources.Custom = []config.CustomSourceConfig{{Name: "team"}}
+	cfg.Workspaces = []config.WorkspaceConfig{{ID: "team", Type: config.WorkspaceTypeGroup}}
+	app := New()
+	app.cfg = cfg
+	cmd := app.openCmd()
+	cmd.SetArgs([]string{"--view", "team"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("ambiguous view error = %v", err)
 	}
 }
 
@@ -3082,7 +3239,7 @@ func TestOpen_GroupTabScopedCandidates(t *testing.T) {
 	}
 }
 
-func TestOpen_AgentsFlagSetsInitialScope(t *testing.T) {
+func TestOpen_ViewAgentsSetsInitialTab(t *testing.T) {
 	t.Parallel()
 	var capturedLayout tui.Layout
 	app := New()
@@ -3092,12 +3249,12 @@ func TestOpen_AgentsFlagSetsInitialScope(t *testing.T) {
 	}
 
 	cmd := app.openCmd()
-	cmd.SetArgs([]string{"--agents"})
+	cmd.SetArgs([]string{"--view", "agents"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if capturedLayout.InitialScope != tui.ScopeAgents {
-		t.Errorf("captured InitialScope = %v, want ScopeAgents", capturedLayout.InitialScope)
+	if capturedLayout.InitialTab != "agents" {
+		t.Errorf("captured InitialTab = %q, want agents", capturedLayout.InitialTab)
 	}
 }

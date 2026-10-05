@@ -164,6 +164,7 @@ type Layout struct {
 	PinToggler      PinToggler
 	AckClearer      AckClearer
 	InitialScope    FilterScope
+	InitialTab      string
 }
 
 // Orientation values for Layout.Orientation. The empty string means "auto":
@@ -538,7 +539,10 @@ func newModelWithLayout(candidates []source.Candidate, renderer preview.Renderer
 		// headless/test context" behavior.
 	}
 	copy(m.candidates, candidates)
-	if layout.InitialScope == ScopeAgents {
+	if layout.InitialTab != "" {
+		m.activeTab = layout.InitialTab
+		m.scope = scopeForTab(m.activeTab)
+	} else if layout.InitialScope == ScopeAgents {
 		m.activeTab = "agents"
 	} else {
 		m.activeTab = m.tabs()[0].ID
