@@ -337,11 +337,13 @@ func (m *Model) buildAgentRows() []Row {
 		score          int
 		indexes        []int
 		isCurrent      bool
+		isPrior        bool
 		paneRecentRank int
 		mruRank        int
 	}
 
 	currentID := m.currentPaneID()
+	priorID := m.priorAgentPaneID(candidates, currentID)
 
 	var matched []scoredAgent
 	for _, c := range candidates {
@@ -376,6 +378,7 @@ func (m *Model) buildAgentRows() []Row {
 			score:          score,
 			indexes:        indexes,
 			isCurrent:      isCurrent,
+			isPrior:        paneID == priorID,
 			paneRecentRank: paneRecentRank,
 			mruRank:        mruRank,
 		})
@@ -383,14 +386,31 @@ func (m *Model) buildAgentRows() []Row {
 
 	sort.SliceStable(matched, func(i, j int) bool {
 		left, right := matched[i], matched[j]
-		if left.tier != right.tier {
-			return left.tier < right.tier
+		leftNew, rightNew := left.tier == 1, right.tier == 1
+		if leftNew != rightNew {
+			return leftNew
 		}
-		if m.query != "" && left.score != right.score {
-			return left.score > right.score
-		}
-		if left.isCurrent != right.isCurrent {
-			return !left.isCurrent
+		if leftNew {
+			if m.query != "" && left.score != right.score {
+				return left.score > right.score
+			}
+			if left.isCurrent != right.isCurrent {
+				return !left.isCurrent
+			}
+		} else {
+			if left.isPrior != right.isPrior {
+				return left.isPrior
+			}
+			if left.isCurrent != right.isCurrent {
+				return !left.isCurrent
+			}
+			// Working agents precede acknowledged attention and idle agents.
+			if left.tier != right.tier {
+				return left.tier < right.tier
+			}
+			if m.query != "" && left.score != right.score {
+				return left.score > right.score
+			}
 		}
 		if left.paneRecentRank != right.paneRecentRank {
 			return left.paneRecentRank < right.paneRecentRank
@@ -420,6 +440,46 @@ func (m *Model) buildAgentRows() []Row {
 	}
 
 	return rows
+}
+
+// priorAgentPaneID promotes only the sole agent in the immediately preceding
+// workspace. Herdr workspace MRU does not record which pane was focused.
+func (m Model) priorAgentPaneID(candidates []source.Candidate, currentID string) string {
+	byWorkspace := make(map[string][]string)
+	currentWorkspace := ""
+	for _, c := range candidates {
+		paneID, workspaceID := c.Meta["pane_id"], c.Meta["workspace_id"]
+		if paneID == currentID {
+			currentWorkspace = workspaceID
+		}
+		if paneID != "" && workspaceID != "" {
+			byWorkspace[workspaceID] = append(byWorkspace[workspaceID], paneID)
+		}
+	}
+	if currentWorkspace == "" {
+		for _, p := range m.allSnapshotPanes() {
+			if p.ID == currentID {
+				currentWorkspace = p.WorkspaceID
+				break
+			}
+		}
+	}
+	if currentWorkspace == "" {
+		return ""
+	}
+	mru := m.rankingSnapshot.WorkspaceMRU()
+	// Require the current workspace at the head: otherwise the MRU cannot
+	// establish which entry immediately preceded the current focus.
+	if len(mru) < 2 || mru[0] != currentWorkspace {
+		return ""
+	}
+	panes := byWorkspace[mru[1]]
+	if len(panes) == 1 && panes[0] != currentID {
+		return panes[0]
+	}
+	// A shell-only workspace stops the walk. Multiple agents are ambiguous:
+	// a Shep selection could predate a later Herdr-only visit to this workspace.
+	return ""
 }
 
 func agentAttentionTier(status string, isAcked bool) int {

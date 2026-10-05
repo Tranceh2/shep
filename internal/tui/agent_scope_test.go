@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1153,6 +1154,107 @@ func TestAgentScope_CurrentPaneLastAndPreviousFirst(t *testing.T) {
 		if gotID != wantID {
 			t.Errorf("row[%d] = %q, want %q", i, gotID, wantID)
 		}
+	}
+}
+
+// Agent rows use workspace focus history only when the immediate preceding
+// workspace contains exactly one agent; pane-selection history is not Herdr focus.
+func TestAgentScope_PriorToggleAndFallback(t *testing.T) {
+	panes := []source.Pane{
+		{ID: "a", WorkspaceID: "wa", TabID: "ta", Agent: "pi", AgentStatus: "idle", TerminalTitle: "deploy"},
+		{ID: "b", WorkspaceID: "wb", TabID: "tb", Agent: "pi", AgentStatus: "idle", TerminalTitle: "deploy"},
+		{ID: "worker", WorkspaceID: "wc", TabID: "tc", Agent: "pi", AgentStatus: "working", TerminalTitle: "deploy"},
+	}
+	cases := []struct {
+		name    string
+		current string
+		mru     []string
+		recent  []string
+		status  string
+		ack     bool
+		query   string
+		want    []string
+	}{
+		{name: "A to B promotes idle A", current: "b", mru: []string{"wb", "wa", "wc"}, want: []string{"a", "worker", "b"}},
+		{name: "B to A promotes idle B", current: "a", mru: []string{"wa", "wb", "wc"}, want: []string{"b", "worker", "a"}},
+		{name: "new attention beats previous", current: "b", mru: []string{"wb", "wa", "wc"}, status: "blocked", want: []string{"worker", "a", "b"}},
+		{name: "acknowledged attention is not new", current: "b", mru: []string{"wb", "wa", "wc"}, status: "blocked", ack: true, want: []string{"a", "worker", "b"}},
+		{name: "current new attention is first", current: "b", mru: []string{"wb", "wa", "wc"}, status: "current-done", want: []string{"b", "a", "worker"}},
+		{name: "no history working then idle current last", current: "b", want: []string{"worker", "a", "b"}},
+		{name: "pane history without workspace history only ranks within tier", current: "b", recent: []string{"herdr:pane:a"}, want: []string{"worker", "a", "b"}},
+		{name: "workspace MRU without current cannot prove predecessor", current: "b", mru: []string{"wa", "wc"}, want: []string{"worker", "a", "b"}},
+		{name: "shell-only immediate predecessor does not promote older agent", current: "b", mru: []string{"wb", "shell", "wa", "wc"}, want: []string{"worker", "a", "b"}},
+		{name: "shell-only predecessor ignores older Shep pane selection", current: "b", mru: []string{"wb", "shell", "wa", "wc"}, recent: []string{"herdr:pane:a"}, want: []string{"worker", "a", "b"}},
+		{name: "current pane absent from agent rows", current: "shell", mru: []string{"wb", "wa", "wc"}, want: []string{"worker", "b", "a"}},
+		{name: "query score breaks ties after attention and prior", current: "b", mru: []string{"wb", "wa", "wc"}, query: "deploy", want: []string{"a", "worker", "b"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			snap := source.Snapshot{
+				Workspaces: []source.Workspace{{ID: "wa"}, {ID: "wb"}, {ID: "wc"}, {ID: "shell"}},
+				Tabs:       []source.Tab{{ID: "ta", WorkspaceID: "wa"}, {ID: "tb", WorkspaceID: "wb"}, {ID: "tc", WorkspaceID: "wc"}, {ID: "ts", WorkspaceID: "shell"}},
+				Panes:      append(append([]source.Pane(nil), panes...), source.Pane{ID: "shell-pane", WorkspaceID: "shell", TabID: "ts"}), FocusedPaneID: tc.current,
+			}
+			if tc.status == "current-done" {
+				snap.Panes[1].AgentStatus = "done"
+			} else if tc.status != "" {
+				snap.Panes[2].AgentStatus = tc.status
+			}
+			rs := ranking.Snapshot{}.WithWorkspaceMRU(tc.mru).WithRecent(tc.recent)
+			if tc.ack {
+				rs = rs.WithAcknowledgement("worker", tc.status)
+			}
+			m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(snap), Layout{})
+			m.startupSnapshot = &snap
+			m.rankingSnapshot = rs
+			m = m.WithScope(ScopeAgents)
+			m.query = tc.query
+			m.applyFilter()
+			var got []string
+			for _, row := range m.rows {
+				got = append(got, row.Candidate.Meta["pane_id"])
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("rows = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAgentScope_AmbiguousPriorWorkspace(t *testing.T) {
+	base := source.Snapshot{
+		Workspaces: []source.Workspace{{ID: "current"}, {ID: "prior"}, {ID: "other"}},
+		Panes: []source.Pane{
+			{ID: "current", WorkspaceID: "current", TabID: "t0", Agent: "pi", AgentStatus: "idle"},
+			{ID: "z_idle", WorkspaceID: "prior", TabID: "t1", Agent: "pi", AgentStatus: "idle"},
+			{ID: "a_idle", WorkspaceID: "prior", TabID: "t2", Agent: "pi", AgentStatus: "idle"},
+			{ID: "worker", WorkspaceID: "other", TabID: "t3", Agent: "pi", AgentStatus: "working"},
+		}, FocusedPaneID: "current",
+	}
+	for _, tc := range []struct {
+		name   string
+		recent []string
+		want   []string
+	}{
+		{name: "tab focus does not identify pane", want: []string{"worker", "a_idle", "z_idle", "current"}},
+		{name: "stale pane selection does not identify prior", recent: []string{"herdr:pane:z_idle"}, want: []string{"worker", "z_idle", "a_idle", "current"}},
+		{name: "unrelated pane selection cannot identify prior", recent: []string{"herdr:pane:worker"}, want: []string{"worker", "a_idle", "z_idle", "current"}},
+		{name: "older prior pane selection not decisive", recent: []string{"herdr:pane:worker", "herdr:pane:z_idle"}, want: []string{"worker", "z_idle", "a_idle", "current"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(base), Layout{})
+			m.startupSnapshot = &base
+			m.rankingSnapshot = ranking.Snapshot{}.WithWorkspaceMRU([]string{"current", "prior", "other"}).WithRecent(tc.recent)
+			m = m.WithScope(ScopeAgents)
+			m.applyFilter()
+			var got []string
+			for _, row := range m.rows {
+				got = append(got, row.Candidate.Meta["pane_id"])
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("rows = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
