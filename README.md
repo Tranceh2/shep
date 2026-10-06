@@ -406,9 +406,20 @@ theme = "mocha"
 # - "ascii": 7-bit plain ASCII fallback (for basic terminals or remote SSH)
 icons = "unicode"
 
+# Optional per-kind confirmation for ctrl+x; absent or [] closes immediately.
+# Allowed kinds: workspace, tab, pane (any subset, no duplicates).
+confirm_close = ["workspace", "tab"]
+
 ```
 
 ---
+
+In the picker, `ctrl+x` closes the selected **open Herdr** item: an agent or
+pane closes its pane, a tab closes its tab, and a Herdr workspace closes its
+workspace. Projects, sessions, custom sources, and other non-open entries are
+not closed. With `confirm_close`, the listed kinds ask in the footer; `y`
+confirms and any other key, including Esc, cancels. Workspace group-close
+errors are shown rather than closing linked workspaces automatically.
 
 Tabs can be reordered or reduced to one entry. `all` runs only providers in
 `[general].source_order`; a source or custom source tab listed only in `[tui].tabs`

@@ -22,6 +22,48 @@ import (
 	"github.com/tranceh2/shep/internal/tui"
 )
 
+type closeRunner struct {
+	argv [][]string
+	err  error
+}
+
+func (r *closeRunner) Run(_ context.Context, _ string, args ...string) ([]byte, error) {
+	r.argv = append(r.argv, append([]string(nil), args...))
+	return nil, r.err
+}
+
+func TestPickerLayoutWiresCloseAndConfirmation(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.TUI.ConfirmClose = []string{"workspace", "tab"}
+	app := New()
+	app.cfg = cfg
+	runner := &closeRunner{}
+	app.herdrDriver = herdr.New("herdr", herdr.WithRunner(runner))
+	app.probes = config.Probes{Herdr: true}
+	layout := app.pickerLayout(cfg.General.SourceOrder, nil)
+	if !reflect.DeepEqual(layout.ConfirmClose, cfg.TUI.ConfirmClose) {
+		t.Fatalf("confirmation=%v", layout.ConfirmClose)
+	}
+	closer := app.herdrCloser()
+	if closer == nil {
+		t.Fatal("no closer")
+	}
+	for _, tc := range []struct{ kind, id string }{{"pane", "p1"}, {"tab", "t1"}, {"workspace", "w1"}} {
+		if result := closer(context.Background(), tc.kind, tc.id); result.Err != nil {
+			t.Fatal(result.Err)
+		}
+	}
+	for i, kind := range []string{"pane", "tab", "workspace"} {
+		if !reflect.DeepEqual(runner.argv[i], []string{kind, "close", []string{"p1", "t1", "w1"}[i]}) {
+			t.Fatalf("argv=%v", runner.argv[i])
+		}
+	}
+	app.probes = config.Probes{}
+	if app.herdrCloser() != nil {
+		t.Fatal("Herdr unavailable but closer wired")
+	}
+}
+
 // fakePreviewRenderer is a minimal preview.Renderer stub for command-package
 // tests that only need a non-nil renderer identity, not real render output.
 type fakePreviewRenderer struct{}

@@ -531,6 +531,49 @@ func (d *Driver) FocusTab(ctx context.Context, tabID string) error {
 	return nil
 }
 
+// ClosePane closes one open Herdr pane by id.
+func (d *Driver) ClosePane(ctx context.Context, paneID string) error {
+	if paneID == "" {
+		return errors.New("herdr pane close: empty pane id")
+	}
+	if _, err := d.run.Run(ctx, d.binary, "pane", "close", paneID); err != nil {
+		return fmt.Errorf("herdr pane close %s: %w", paneID, closeError(err))
+	}
+	return nil
+}
+
+// CloseTab closes one open Herdr tab by id.
+func (d *Driver) CloseTab(ctx context.Context, tabID string) error {
+	if tabID == "" {
+		return errors.New("herdr tab close: empty tab id")
+	}
+	if _, err := d.run.Run(ctx, d.binary, "tab", "close", tabID); err != nil {
+		return fmt.Errorf("herdr tab close %s: %w", tabID, closeError(err))
+	}
+	return nil
+}
+
+// CloseWorkspace closes only the selected workspace, never its linked group.
+func (d *Driver) CloseWorkspace(ctx context.Context, workspaceID string) error {
+	if workspaceID == "" {
+		return errors.New("herdr workspace close: empty workspace id")
+	}
+	if _, err := d.run.Run(ctx, d.binary, "workspace", "close", workspaceID); err != nil {
+		return fmt.Errorf("herdr workspace close %s: %w", workspaceID, closeError(err))
+	}
+	return nil
+}
+
+// closeError includes Herdr's stderr from exec.ExitError, including the
+// workspace_group_close_required code, while preserving the original error.
+func closeError(err error) error {
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && len(exit.Stderr) > 0 {
+		return fmt.Errorf("%s: %w", strings.TrimSpace(string(exit.Stderr)), err)
+	}
+	return err
+}
+
 // rawPaneToPane converts the JSON envelope's rawPane into the exported
 // source.Pane. Kept unexported and local because it is only needed by the
 // pane-producing methods of this driver; the templates/command layers consume

@@ -1,8 +1,12 @@
 package tui
 
 import (
+	"fmt"
+	"slices"
+
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/ranking"
 	"github.com/tranceh2/shep/internal/source"
 )
@@ -62,6 +66,18 @@ func scrollViewport(vp *viewport.Model, key string) bool {
 // all three are List-only actions, no-ops from FocusPreview (see
 // handlePreviewFocusedKey).
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.closeConfirm != nil {
+		target := *m.closeConfirm
+		m.closeConfirm = nil
+		if msg.String() == "y" {
+			return m.startClose(target)
+		}
+		m.closeStatus = "close cancelled"
+		return m, nil
+	}
+	if !m.closePending {
+		m.closeStatus = ""
+	}
 	if m.focus == FocusHelp {
 		return m.handleHelpFocusedKey(msg)
 	}
@@ -92,6 +108,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.selectWithTarget("tab")
 	case "ctrl+p":
 		return m.selectWithTarget("pane")
+	case keyChordClose:
+		return m.closeSelectedRow()
 	case "ctrl+f":
 		if m.layout.PinToggler != nil {
 			return m.togglePin()
@@ -126,13 +144,6 @@ func (m Model) handleHelpFocusedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handlePreviewFocusedKey routes scroll keys to the viewport while the
-// preview pane owns focus. ctrl+u and backspace both return focus to the
-// list, mutating the query (clear vs. delete-last) in the same step. Any
-// other printable rune does the same before extending the query — the
-// non-negotiable "printable rune returns to list and searches" contract.
-// enter/ctrl+l/left/right are List-only actions (selection, layout cycle,
-// expand/collapse) and are explicit no-ops here.
 func (m Model) togglePin() (tea.Model, tea.Cmd) {
 	row, ok := m.currentRow()
 	if !ok {
@@ -167,6 +178,13 @@ func (m Model) togglePin() (tea.Model, tea.Cmd) {
 	}
 }
 
+// handlePreviewFocusedKey routes scroll keys to the viewport while the
+// preview pane owns focus. ctrl+u and backspace both return focus to the
+// list, mutating the query (clear vs. delete-last) in the same step. Any
+// other printable rune does the same before extending the query — the
+// non-negotiable "printable rune returns to list and searches" contract.
+// enter/ctrl+l/left/right are List-only actions (selection, layout cycle,
+// expand/collapse) and are explicit no-ops here.
 func (m Model) handlePreviewFocusedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "down", "ctrl+j", "ctrl+k", "pgup", "pgdown", "home", "end":
@@ -360,4 +378,51 @@ func (m *Model) collapseCurrent() tea.Cmd {
 	}
 	delete(m.expandedWorkspaces, wsID)
 	return m.applyFilter()
+}
+
+// closeSelectedRow resolves the displayed row before starting any side effect.
+func (m Model) closeSelectedRow() (tea.Model, tea.Cmd) {
+	if m.closePending {
+		return m, nil
+	}
+	row, ok := m.currentRow()
+	if !ok {
+		m.closeStatus = "not an open Herdr item"
+		return m, nil
+	}
+	target := closeTarget{label: row.Candidate.Label}
+	switch {
+	case row.Kind == RowPane && (row.Candidate.Source == config.SourceHerdr || row.Candidate.Source == config.SourceAgents),
+		row.Kind == RowCandidate && row.Candidate.Source == config.SourceAgents:
+		target.kind, target.id = "pane", row.Candidate.Meta["pane_id"]
+	case row.Kind == RowTab && row.Candidate.Source == config.SourceHerdr:
+		target.kind, target.id = "tab", row.Candidate.Meta["tab_id"]
+	case row.Kind == RowCandidate && row.Candidate.Source == config.SourceHerdr:
+		target.kind, target.id = "workspace", row.Candidate.Meta["workspace_id"]
+	}
+	if target.id == "" {
+		m.closeStatus = "not an open Herdr item"
+		return m, nil
+	}
+	if m.layout.Closer == nil {
+		m.closeStatus = "Herdr close unavailable"
+		return m, nil
+	}
+	if slices.Contains(m.layout.ConfirmClose, target.kind) {
+		m.closeConfirm = &target
+		m.closeStatus = fmt.Sprintf("close %s %q? y/n", target.kind, target.label)
+		return m, nil
+	}
+	return m.startClose(target)
+}
+
+func (m Model) startClose(target closeTarget) (tea.Model, tea.Cmd) {
+	m.closePending = true
+	m.closeStatus = "closing " + target.kind + "..."
+	closer, ctx := m.layout.Closer, m.renderCtx
+	return m, func() tea.Msg {
+		result := closer(ctx, target.kind, target.id)
+		result.Kind, result.ID = target.kind, target.id
+		return result
+	}
 }

@@ -69,6 +69,20 @@ type PinToggleResultMsg struct {
 	Err       error
 }
 
+// CloseResultMsg is the typed completion of an open Herdr item close.
+type CloseResultMsg struct {
+	Kind string
+	ID   string
+	Err  error
+}
+
+// Closer executes an argv-based close outside the TUI update loop.
+type Closer func(context.Context, string, string) CloseResultMsg
+
+type closeTarget struct {
+	kind, id, label string
+}
+
 // AckClearer is the narrow command boundary used by the TUI to invalidate
 // stale persisted acknowledgements when a status transition is observed.
 type AckClearer func(context.Context, string)
@@ -162,6 +176,8 @@ type Layout struct {
 	RankingSnapshot ranking.Snapshot
 	StatusDialer    StatusDialer
 	PinToggler      PinToggler
+	Closer          Closer
+	ConfirmClose    []string
 	AckClearer      AckClearer
 	InitialScope    FilterScope
 	InitialTab      string
@@ -267,9 +283,13 @@ type Model struct {
 	chosenTarget string
 	// pinPending prevents overlapping toggles for the same visible action and
 	// pinStatus is the truthful, short feedback shown in the footer.
-	pinPending bool
-	pinKey     string
-	pinStatus  string
+	pinPending          bool
+	pinKey              string
+	pinStatus           string
+	closePending        bool
+	closeRefreshPending bool
+	closeConfirm        *closeTarget
+	closeStatus         string
 
 	// renderer produces the preview pane content asynchronously for a
 	// RowCandidate row. nil degrades to a built-in label/path/source
@@ -735,6 +755,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m, cmd = m.handleSnapshotResponse(msg)
 	case PinToggleResultMsg:
 		m, cmd = m.handlePinToggleResult(msg)
+	case CloseResultMsg:
+		if m.closePending {
+			m.closePending = false
+			if msg.Err != nil {
+				m.closeStatus = "close failed: " + msg.Err.Error()
+			} else {
+				m.closeStatus = "closed " + msg.Kind
+				// Reuse the TTL-gated snapshot owner; expire it only after a successful
+				// close so a fresh snapshot cannot leave the closed row visible.
+				if m.snapshotDriver != nil {
+					m.closeRefreshPending = true
+					if !m.snapshotRefreshing {
+						m.lastSnapshotAt = m.now().Add(-snapshotTTL)
+						cmd = m.maybeRefreshSnapshot()
+						if cmd != nil {
+							m.closeRefreshPending = false
+						}
+					}
+				}
+			}
+		}
 	case spinner.TickMsg:
 		m, cmd = m.handleSpinnerTick(msg)
 	case tea.KeyMsg:
@@ -1110,6 +1151,13 @@ func (m Model) handleSnapshotResponse(msg snapshotResponseMsg) (Model, tea.Cmd) 
 		return m, nil
 	}
 	m.snapshotRefreshing = false
+	if m.closeRefreshPending {
+		// A refresh that was already in flight when close completed can still
+		// contain the open row. Request a new generation through the same owner.
+		m.closeRefreshPending = false
+		m.lastSnapshotAt = m.now().Add(-snapshotTTL)
+		return m, m.maybeRefreshSnapshot()
+	}
 	if msg.err != nil {
 		m.lastSnapshotAt = m.now()
 		m.previewErr = "snapshot refresh failed"

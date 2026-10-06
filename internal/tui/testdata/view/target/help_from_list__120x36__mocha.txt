@@ -17,6 +17,7 @@
 │ Herdr                                                                                                                │
 │   ctrl+t                    open in a new tab of the current workspace (list or preview focus)                       │
 │   ctrl+p                    open in a new pane of the current workspace (list or preview focus)                      │
+│   ctrl+x                    close the highlighted open Herdr pane, tab, or workspace (y/n if configured)             │
 │                                                                                                                      │
 │ Layout                                                                                                               │
 │   ctrl+l                    toggle layout: auto / landscape (list focus only)                                        │
@@ -29,7 +30,6 @@
 │                                                                                                                      │
 │ Session                                                                                                              │
 │   esc, ctrl+c, ctrl+g       cancel the picker                                                                        │
-│                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

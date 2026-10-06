@@ -1308,6 +1308,10 @@ func (m Model) renderFooterHintsOnly(hints string) string {
 // and secondary action labels. The same keyBinding values feed the help
 // overlay, so user-facing key notation cannot drift between surfaces.
 func (m Model) footerHints() string {
+	// A confirmation or close error must not be truncated behind keycaps.
+	if m.closeStatus != "" {
+		return m.closeStatus
+	}
 	narrow := m.width >= 0 && m.width < footerNarrowKeycapWidth
 	type keycap struct{ key, label string }
 	caps := []keycap{}
@@ -1343,6 +1347,9 @@ func (m Model) footerHints() string {
 				keycap{keyBindingCtrlP.footerChord, keyBindingCtrlP.footerLabel},
 			)
 		}
+	}
+	if _, ok := m.currentRow(); ok && m.layout.Closer != nil {
+		caps = append(caps, keycap{keyBindingClose.footerChord, keyBindingClose.footerLabel})
 	}
 	caps = append(caps,
 		keycap{keyBindingHelp.footerChord, keyBindingHelp.footerLabel},

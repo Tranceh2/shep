@@ -12,6 +12,34 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
+func TestLoadConfirmClose(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  []string
+		err   string
+	}{
+		{"", nil, ""}, {`confirm_close = []`, nil, ""},
+		{`confirm_close = ["workspace", "tab", "pane"]`, []string{"workspace", "tab", "pane"}, ""},
+		{`confirm_close = ["tab", "tab"]`, nil, "duplicate"},
+		{`confirm_close = ["other"]`, nil, "tui.confirm_close"},
+	} {
+		path := filepath.Join(t.TempDir(), "config.toml")
+		if err := os.WriteFile(path, []byte("version = 2\n[tui]\n"+tc.value+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(path)
+		if tc.err != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.err) {
+				t.Fatalf("%q: error=%v", tc.value, err)
+			}
+			continue
+		}
+		if err != nil || (len(cfg.TUI.ConfirmClose) != 0 || len(tc.want) != 0) && !reflect.DeepEqual(cfg.TUI.ConfirmClose, tc.want) {
+			t.Fatalf("%q: config=%+v error=%v", tc.value, cfg, err)
+		}
+	}
+}
+
 // TestDefaults_PathAgnostic ensures Defaults() produces no hardcoded absolute
 // user paths and ships with every built-in source enabled.
 func TestDefaults_EnableRanking(t *testing.T) {

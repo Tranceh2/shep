@@ -29,6 +29,7 @@ const (
 	keyChordCtrlP     = "ctrl+p"
 	keyChordCtrlL     = "ctrl+l"
 	keyChordPin       = "ctrl+f"
+	keyChordClose     = "ctrl+x"
 	keyChordEsc       = "esc"
 	keyChordQuestion  = "?"
 	keyChordCtrlC     = "ctrl+c"
@@ -78,6 +79,10 @@ var (
 		chord: keyChordPin, help: "pin/unpin the highlighted top-level candidate",
 		footerChord: keyChordPin, footerLabel: "pin",
 	}
+	keyBindingClose = keyBinding{
+		chord: keyChordClose, help: "close the highlighted open Herdr pane, tab, or workspace (y/n if configured)",
+		footerChord: keyChordClose, footerLabel: "close",
+	}
 	keyBindingHelp = keyBinding{
 		chord: keyChordQuestion + ", " + keyChordEsc, help: "close help and return to what you were doing",
 		footerChord: keyChordQuestion, footerLabel: "help",
@@ -118,7 +123,7 @@ var keyMap = []keySection{
 	},
 	{
 		heading:  "Herdr",
-		bindings: []keyBinding{keyBindingCtrlT, keyBindingCtrlP},
+		bindings: []keyBinding{keyBindingCtrlT, keyBindingCtrlP, keyBindingClose},
 	},
 	{
 		heading: "Layout",

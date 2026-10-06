@@ -153,6 +153,7 @@ func (a *App) selectorFactory(matches []source.Candidate) *selector.Cascade {
 		layout.RankingSnapshot = a.rankingSnapshot(matches)
 		layout.StatusDialer = a.resolveStatusDialer()
 		layout.PinToggler = a.pinToggler()
+		layout.Closer = a.herdrCloser()
 		layout.AckClearer = a.ackClearer()
 		return snapshotCascadeFor(cfg.General.Selector, a.buildPreviewRendererForSnapshot(*a.startupSnapshot), a.currentPane, a.setChosenTarget, a.setChosenAction, *a.startupSnapshot, a.Driver(), a.buildPreviewRendererForSnapshot, snapshotIconsFor(source.NewRegistry(cfg, a.Probes(), a.Driver())), matches, layout)
 	}
@@ -160,6 +161,7 @@ func (a *App) selectorFactory(matches []source.Candidate) *selector.Cascade {
 	layout.RankingSnapshot = a.rankingSnapshot(matches)
 	layout.StatusDialer = a.resolveStatusDialer()
 	layout.PinToggler = a.pinToggler()
+	layout.Closer = a.herdrCloser()
 	layout.AckClearer = a.ackClearer()
 	return cascadeFor(cfg.General.Selector, a.buildPreviewRenderer(), a.currentPane, a.setChosenTarget, a.setChosenAction, a.buildTreeExpander(), matches, layout)
 }
@@ -168,6 +170,36 @@ func (a *App) rankingSnapshot(_ []source.Candidate) ranking.Snapshot {
 	a.rankingMu.Lock()
 	defer a.rankingMu.Unlock()
 	return a.rankingData
+}
+
+// herdrCloser shares the active driver with snapshot collection. A missing
+// Herdr binary leaves the TUI action unavailable rather than attempting it.
+func (a *App) herdrCloser() tui.Closer {
+	if !a.Probes().Herdr {
+		return nil
+	}
+	driver, ok := a.Driver().(interface {
+		ClosePane(context.Context, string) error
+		CloseTab(context.Context, string) error
+		CloseWorkspace(context.Context, string) error
+	})
+	if !ok {
+		return nil
+	}
+	return func(ctx context.Context, kind, id string) tui.CloseResultMsg {
+		var err error
+		switch kind {
+		case "pane":
+			err = driver.ClosePane(ctx, id)
+		case "tab":
+			err = driver.CloseTab(ctx, id)
+		case "workspace":
+			err = driver.CloseWorkspace(ctx, id)
+		default:
+			err = fmt.Errorf("not an open Herdr item: %s", kind)
+		}
+		return tui.CloseResultMsg{Kind: kind, ID: id, Err: err}
+	}
 }
 
 func (a *App) pinToggler() tui.PinToggler {
@@ -254,6 +286,7 @@ func (a *App) selectorFactoryForOrder(order []string, matches []source.Candidate
 		layout.RankingSnapshot = a.rankingSnapshot(matches)
 		layout.StatusDialer = a.resolveStatusDialer()
 		layout.PinToggler = a.pinToggler()
+		layout.Closer = a.herdrCloser()
 		layout.AckClearer = a.ackClearer()
 		return snapshotCascadeFor(cfg.General.Selector, a.buildPreviewRendererForSnapshot(*a.startupSnapshot), a.currentPane, a.setChosenTarget, a.setChosenAction, *a.startupSnapshot, a.Driver(), a.buildPreviewRendererForSnapshot, snapshotIconsFor(source.NewRegistry(cfg, a.Probes(), a.Driver())), matches, layout)
 	}
@@ -261,6 +294,7 @@ func (a *App) selectorFactoryForOrder(order []string, matches []source.Candidate
 	layout.RankingSnapshot = a.rankingSnapshot(matches)
 	layout.StatusDialer = a.resolveStatusDialer()
 	layout.PinToggler = a.pinToggler()
+	layout.Closer = a.herdrCloser()
 	layout.AckClearer = a.ackClearer()
 	return cascadeFor(cfg.General.Selector, a.buildPreviewRenderer(), a.currentPane, a.setChosenTarget, a.setChosenAction, a.buildTreeExpander(), matches, layout)
 }
@@ -372,6 +406,7 @@ func (a *App) pickerLayout(order []string, matches []source.Candidate) tui.Layou
 
 func (a *App) pickerLayoutForConfig(cfg *config.Config, order []string, matches []source.Candidate) tui.Layout {
 	layout := layoutFromConfigWithCustomSources(cfg.TUI, order, cfg.Sources.Custom, cfg.Sources)
+	layout.ConfirmClose = append([]string(nil), cfg.TUI.ConfirmClose...)
 	registry := a.withStartupSnapshot(source.NewRegistry(cfg, a.Probes(), a.Driver()))
 	providers := make(map[string]source.Provider)
 	for _, provider := range registry.Providers() {
@@ -1106,6 +1141,7 @@ func (a *App) runOpenWithView(cmd *cobra.Command, query, pathFlag, targetFlag, v
 	}
 	layout.StatusDialer = a.resolveStatusDialer()
 	layout.PinToggler = a.pinToggler()
+	layout.Closer = a.herdrCloser()
 	layout.AckClearer = a.ackClearer()
 	if err := a.openRankingForPins(cmd.Context()); err != nil {
 		fmt.Fprintf(errOut, "warning: pin storage unavailable: %v\n", err)

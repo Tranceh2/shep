@@ -39,6 +39,9 @@ list_width = "35%"
 preview_width = "65%"
 theme = "mocha"
 icons = "unicode"
+# ctrl+x closes an open Herdr pane, tab, or workspace; opt into a footer y/n
+# confirmation per kind. Omitted or [] means close immediately.
+# confirm_close = ["workspace", "tab"]
 
 # [preview] intentionally has no "default" key here. Each source below
 # declares its own preview list, which is exactly what shep ships without

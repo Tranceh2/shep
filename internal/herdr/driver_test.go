@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -110,6 +111,42 @@ func TestDriverRenamePane_WrapsFailureWithPaneAndLabel(t *testing.T) {
 	err := New("herdr", WithRunner(runner)).RenamePane(context.Background(), "w1:p1", &label)
 	if err == nil || !strings.Contains(err.Error(), "w1:p1") || !strings.Contains(err.Error(), label) {
 		t.Fatalf("RenamePane error = %v, want pane and label context", err)
+	}
+}
+
+func TestDriverClose_ExposesHerdrStderr(t *testing.T) {
+	runner := &fakeRunner{script: []fakeCall{{match: "herdr workspace close w1", err: &exec.ExitError{Stderr: []byte("workspace_group_close_required")}}}}
+	err := New("herdr", WithRunner(runner)).CloseWorkspace(context.Background(), "w1")
+	if err == nil || !strings.Contains(err.Error(), "workspace_group_close_required") {
+		t.Fatalf("workspace close error = %v", err)
+	}
+}
+
+func TestDriverClose_ArgvGuardsAndErrors(t *testing.T) {
+	for _, tc := range []struct {
+		kind  string
+		close func(*Driver, string) error
+	}{
+		{"pane", func(d *Driver, id string) error { return d.ClosePane(context.Background(), id) }},
+		{"tab", func(d *Driver, id string) error { return d.CloseTab(context.Background(), id) }},
+		{"workspace", func(d *Driver, id string) error { return d.CloseWorkspace(context.Background(), id) }},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			runner := &fakeRunner{script: []fakeCall{{match: "herdr " + tc.kind + " close id;echo unsafe"}, {match: "herdr " + tc.kind + " close id", err: errors.New("workspace_group_close_required")}}}
+			d := New("herdr", WithRunner(runner))
+			if err := tc.close(d, ""); err == nil || !strings.Contains(err.Error(), "empty "+tc.kind+" id") || len(runner.argv) != 0 {
+				t.Fatalf("empty id: err=%v argv=%v", err, runner.argv)
+			}
+			if err := tc.close(d, "id;echo unsafe"); err != nil {
+				t.Fatal(err)
+			}
+			if want := []string{"herdr", tc.kind, "close", "id;echo unsafe"}; !reflect.DeepEqual(runner.argv[0], want) {
+				t.Fatalf("argv=%v, want %v", runner.argv[0], want)
+			}
+			if err := tc.close(d, "id"); err == nil || !strings.Contains(err.Error(), "workspace_group_close_required") || !strings.Contains(err.Error(), tc.kind+" close id") {
+				t.Fatalf("close failure=%v", err)
+			}
+		})
 	}
 }
 

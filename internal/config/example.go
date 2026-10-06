@@ -68,6 +68,10 @@ theme = "mocha"
 # "unicode". Does not affect [sources.<name>].icon below, which is your own
 # configured string rendered verbatim.
 icons = "unicode"
+# ctrl+x closes the selected open Herdr pane, tab, or workspace immediately.
+# Optionally require y in the footer for any subset of these kinds; every
+# other key cancels. Omitted or [] means no confirmation.
+# confirm_close = ["workspace", "tab"]
 
 # [preview] configures the workspace preview shown in the "shep open" selector
 # and the "shep preview" command. Built-in sections (identity, path/label/

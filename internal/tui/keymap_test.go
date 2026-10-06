@@ -140,6 +140,7 @@ func TestHelpBodyText_MatchesApprovedContent(t *testing.T) {
 		m.styles.helpHeadingStyle.Render("Herdr"),
 		"  ctrl+t                    open in a new tab of the current workspace (list or preview focus)",
 		"  ctrl+p                    open in a new pane of the current workspace (list or preview focus)",
+		"  ctrl+x                    close the highlighted open Herdr pane, tab, or workspace (y/n if configured)",
 		"",
 		m.styles.helpHeadingStyle.Render("Layout"),
 		"  ctrl+l                    toggle layout: auto / landscape (list focus only)",

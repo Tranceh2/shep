@@ -191,7 +191,10 @@ type DefaultsConfig struct {
 // distinct mode now (it forces side-by-side wide mode). The stacked "portrait"
 // layout was removed and is rejected at validation.
 type TUIConfig struct {
-	Tabs         []string `toml:"tabs,omitempty"`
+	Tabs []string `toml:"tabs,omitempty"`
+	// ConfirmClose opts into a footer confirmation for selected open Herdr kinds.
+	// Empty or absent closes immediately.
+	ConfirmClose []string `toml:"confirm_close,omitempty"`
 	ListWidth    string   `toml:"list_width,omitempty"`
 	PreviewWidth string   `toml:"preview_width,omitempty"`
 	Layout       string   `toml:"layout,omitempty"`
@@ -1535,6 +1538,16 @@ func ValidatePreviewNames(names []string, commands map[string]PreviewCommand) er
 // overflow the rendered layout. Load normalizes omitted fields before this
 // check, so the built-in 35/65 split is authoritative for partial configs.
 func validateTUI(t TUIConfig) error {
+	seenClose := make(map[string]bool, len(t.ConfirmClose))
+	for _, kind := range t.ConfirmClose {
+		if kind != "workspace" && kind != "tab" && kind != "pane" {
+			return fmt.Errorf("tui.confirm_close: invalid kind %q (valid: workspace, tab, pane)", kind)
+		}
+		if seenClose[kind] {
+			return fmt.Errorf("tui.confirm_close: duplicate kind %q", kind)
+		}
+		seenClose[kind] = true
+	}
 	if err := validateWidthField("tui.list_width", t.ListWidth); err != nil {
 		return err
 	}
