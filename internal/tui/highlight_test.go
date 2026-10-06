@@ -9,7 +9,7 @@ import (
 	"github.com/tranceh2/shep/internal/source"
 )
 
-func TestAgentPresentation_RightTruncationAndHighlight(t *testing.T) {
+func TestAgentPresentation_SharedLeftTruncationAndHighlight(t *testing.T) {
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	m.query = "sec"
 	row := Row{Kind: RowCandidate, Match: MatchDirect, MatchedIndexes: []int{0, 1, 2}, Candidate: source.Candidate{
@@ -23,8 +23,8 @@ func TestAgentPresentation_RightTruncationAndHighlight(t *testing.T) {
 	width := len([]rune(prefix)) + 11 + cursorPrefixWidth
 	for _, cursor := range []bool{false, true} {
 		got := renderRowLineText(m.renderRowLine(row, cursor, width))
-		if !strings.Contains(got, prefix+"security s…") {
-			t.Errorf("cursor=%v rendered %q; want prefix and beginning with trailing ellipsis", cursor, got)
+		if !strings.Contains(got, prefix+"…long title") {
+			t.Errorf("cursor=%v rendered %q; want prefix and label ending with leading ellipsis", cursor, got)
 		}
 	}
 	row.Kind = RowPane // the agents tab derives pane rows from the snapshot
@@ -32,20 +32,27 @@ func TestAgentPresentation_RightTruncationAndHighlight(t *testing.T) {
 	if !paneParts[0].rendered {
 		t.Fatal("agents tab pane match did not enable highlighting")
 	}
-	if got := renderRowLineText(m.renderRowLine(row, true, width)); !strings.Contains(got, prefix+"security s…") {
+	if got := renderRowLineText(m.renderRowLine(row, true, width)); !strings.Contains(got, prefix+"…long title") {
 		t.Errorf("truncated agents tab cursor row = %q", got)
 	}
-	accent := m.styles.queryStyle.Render("s")
+	// A match discarded by left truncation cannot retain its accent; a
+	// surviving match in the title suffix must still be accented.
+	m.query = "title"
+	row.MatchedIndexes = []int{19, 20, 21, 22, 23}
+	parts = m.rowLineParts(Row{Kind: RowCandidate, Match: row.Match, MatchedIndexes: row.MatchedIndexes, Candidate: row.Candidate})
+	accent := m.styles.queryStyle.Render("t")
 	if got := parts[0].renderHighlighted(width-cursorPrefixWidth, lipgloss.Style{}, false); !strings.Contains(got, accent) {
-		t.Errorf("truncated highlighted row %q lost accented match %q", got, accent)
+		t.Errorf("truncated highlighted row %q lost surviving accented match %q", got, accent)
 	}
-	if got := truncateFromRightPreservingPrefix(prefix+"security scan", len([]rune(prefix)), 2); got != prefix {
-		t.Errorf("extremely narrow agent prefix = %q, want %q", got, prefix)
-	}
+	// Identical prefixes isolate the truncation algorithm from status styling.
 	other := Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceProjects, Icon: "X ", Label: "security scan long title"}}
-	got := renderRowLineText(m.renderRowLine(other, false, width))
-	if !strings.Contains(got, "X  …") || !strings.HasSuffix(strings.TrimSpace(got), "title") {
-		t.Errorf("non-agent left truncation = %q", got)
+	agent := Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceAgents, Icon: "X ", Label: other.Candidate.Label}}
+	for _, cursor := range []bool{false, true} {
+		got := renderRowLineText(m.renderRowLine(agent, cursor, width))
+		want := renderRowLineText(m.renderRowLine(other, cursor, width))
+		if got != want || !strings.Contains(got, "X  …") || !strings.HasSuffix(strings.TrimSpace(got), "title") {
+			t.Errorf("cursor=%v agent row = %q, other row = %q; want equal left truncation", cursor, got, want)
+		}
 	}
 }
 

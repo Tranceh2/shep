@@ -69,7 +69,7 @@ func newSnapshotModel(driver *scriptedSnapshotDriver, initial source.Snapshot, h
 	m := NewModelWithTree(base, snapshotRenderer{text: "initial"}, NewTreeExpanderFromSnapshot(initial), Layout{})
 	return m.WithSnapshotRefresh(driver, initial, func(snapshot source.Snapshot) preview.Renderer {
 		return snapshotRenderer{text: snapshot.Panes[0].AgentStatus}
-	}, herdrIcon)
+	}, map[string]string{config.SourceHerdr: herdrIcon})
 }
 
 func newEmptySnapshotModel(driver *scriptedSnapshotDriver, herdrIcon string) Model {
@@ -79,7 +79,7 @@ func newEmptySnapshotModel(driver *scriptedSnapshotDriver, herdrIcon string) Mod
 		{Label: "command", Path: "/command", Source: config.SourceWorkspaces},
 	}
 	return NewModelWithTree(base, snapshotRenderer{text: "initial"}, NewTreeExpanderFromSnapshot(initial), Layout{}).
-		WithSnapshotRefresh(driver, initial, nil, herdrIcon)
+		WithSnapshotRefresh(driver, initial, nil, map[string]string{config.SourceHerdr: herdrIcon})
 }
 
 func applySnapshotRefresh(t *testing.T, m Model) Model {
@@ -101,7 +101,7 @@ func TestSnapshotRefresh_AgentsOnlyLayoutDoesNotIntroduceHerdr(t *testing.T) {
 	driver := &scriptedSnapshotDriver{responses: []snapshotDriverResponse{{snapshot: replacement}}}
 	m := NewModelWithTree(source.AgentCandidates(initial), nil, NewTreeExpanderFromSnapshot(initial),
 		Layout{SourceOrder: []string{config.SourceAgents}}).
-		WithSnapshotRefresh(driver, initial, nil, "")
+		WithSnapshotRefresh(driver, initial, nil, nil)
 	m = applySnapshotRefresh(t, m)
 	if len(m.baseCandidates) != 1 || m.baseCandidates[0].Source != config.SourceAgents || m.baseCandidates[0].Meta["pane_id"] != "w2:p1" {
 		t.Fatalf("agents-only refresh candidates = %+v, want only new agent", m.baseCandidates)
@@ -114,7 +114,7 @@ func TestSnapshotRefresh_ExplicitNonSnapshotSourceKeepsHerdrAbsent(t *testing.T)
 	driver := &scriptedSnapshotDriver{responses: []snapshotDriverResponse{{snapshot: replacement}}}
 	m := NewModelWithTree([]source.Candidate{{Source: config.SourceProjects, Path: "/project"}}, nil,
 		NewTreeExpanderFromSnapshot(initial), Layout{SourceOrder: []string{config.SourceProjects}}).
-		WithSnapshotRefresh(driver, initial, nil, "")
+		WithSnapshotRefresh(driver, initial, nil, nil)
 	m = applySnapshotRefresh(t, m)
 	if len(m.baseCandidates) != 1 || m.baseCandidates[0].Source != config.SourceProjects {
 		t.Fatalf("non-snapshot refresh candidates = %+v, want only projects", m.baseCandidates)

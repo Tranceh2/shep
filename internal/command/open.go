@@ -134,6 +134,15 @@ func (a *App) resolveStatusDialer() tui.StatusDialer {
 	return tui.NewUnixStatusDialer(socketPath)
 }
 
+// snapshotIconsFor uses one registry lookup path for both synchronous and
+// streaming snapshot-derived rows.
+func snapshotIconsFor(registry *source.Registry) map[string]string {
+	return map[string]string{
+		config.SourceHerdr:  registry.IconFor(config.SourceHerdr),
+		config.SourceAgents: registry.IconFor(config.SourceAgents),
+	}
+}
+
 func (a *App) selectorFactory(matches []source.Candidate) *selector.Cascade {
 	if a.selectorBuilder != nil {
 		return a.selectorBuilder()
@@ -145,7 +154,7 @@ func (a *App) selectorFactory(matches []source.Candidate) *selector.Cascade {
 		layout.StatusDialer = a.resolveStatusDialer()
 		layout.PinToggler = a.pinToggler()
 		layout.AckClearer = a.ackClearer()
-		return snapshotCascadeFor(cfg.General.Selector, a.buildPreviewRendererForSnapshot(*a.startupSnapshot), a.currentPane, a.setChosenTarget, a.setChosenAction, *a.startupSnapshot, a.Driver(), a.buildPreviewRendererForSnapshot, cfg.Sources.Herdr.Icon, matches, layout)
+		return snapshotCascadeFor(cfg.General.Selector, a.buildPreviewRendererForSnapshot(*a.startupSnapshot), a.currentPane, a.setChosenTarget, a.setChosenAction, *a.startupSnapshot, a.Driver(), a.buildPreviewRendererForSnapshot, snapshotIconsFor(source.NewRegistry(cfg, a.Probes(), a.Driver())), matches, layout)
 	}
 	layout := a.pickerLayout(cfg.General.SourceOrder, matches)
 	layout.RankingSnapshot = a.rankingSnapshot(matches)
@@ -246,7 +255,7 @@ func (a *App) selectorFactoryForOrder(order []string, matches []source.Candidate
 		layout.StatusDialer = a.resolveStatusDialer()
 		layout.PinToggler = a.pinToggler()
 		layout.AckClearer = a.ackClearer()
-		return snapshotCascadeFor(cfg.General.Selector, a.buildPreviewRendererForSnapshot(*a.startupSnapshot), a.currentPane, a.setChosenTarget, a.setChosenAction, *a.startupSnapshot, a.Driver(), a.buildPreviewRendererForSnapshot, cfg.Sources.Herdr.Icon, matches, layout)
+		return snapshotCascadeFor(cfg.General.Selector, a.buildPreviewRendererForSnapshot(*a.startupSnapshot), a.currentPane, a.setChosenTarget, a.setChosenAction, *a.startupSnapshot, a.Driver(), a.buildPreviewRendererForSnapshot, snapshotIconsFor(source.NewRegistry(cfg, a.Probes(), a.Driver())), matches, layout)
 	}
 	layout := a.pickerLayout(order, matches)
 	layout.RankingSnapshot = a.rankingSnapshot(matches)
@@ -349,7 +358,6 @@ func layoutFromConfigWithCustomSources(t config.TUIConfig, sources []string, cus
 	layout.LabelFormats.Zoxide = s.Zoxide.LabelFormat
 	layout.LabelFormats.Projects = s.Projects.LabelFormat
 	layout.LabelFormats.Agents = s.Agents.LabelFormat
-	layout.AgentSourceIcon = s.Agents.Icon
 	layout.LabelFormats.Tab = s.Herdr.TabLabelFormat
 	layout.LabelFormats.Pane = s.Herdr.PaneLabelFormat
 	return layout
@@ -650,7 +658,7 @@ type snapshotTUISelector struct {
 	snapshot            source.Snapshot
 	driver              source.HerdrDriver
 	rendererForSnapshot tui.SnapshotRendererFactory
-	herdrIcon           string
+	snapshotIcons       map[string]string
 	onTarget            func(string)
 	onAction            func(tui.RowAction)
 }
@@ -661,7 +669,7 @@ func (s snapshotTUISelector) Select(ctx context.Context, candidates []source.Can
 	if len(candidates) == 0 {
 		return source.Candidate{}, false, nil
 	}
-	cand, action, target, ok, err := tui.RunWithSnapshot(ctx, candidates, query, s.renderer, s.snapshot, s.driver, s.rendererForSnapshot, s.herdrIcon, s.currentPane, s.layout)
+	cand, action, target, ok, err := tui.RunWithSnapshot(ctx, candidates, query, s.renderer, s.snapshot, s.driver, s.rendererForSnapshot, s.snapshotIcons, s.currentPane, s.layout)
 	if ok {
 		if s.onTarget != nil {
 			s.onTarget(target)
@@ -673,7 +681,7 @@ func (s snapshotTUISelector) Select(ctx context.Context, candidates []source.Can
 	return cand, ok, err
 }
 
-func snapshotCascadeFor(sel string, renderer preview.Renderer, currentPane *source.Pane, onTarget func(string), onAction func(tui.RowAction), snapshot source.Snapshot, driver source.HerdrDriver, rendererForSnapshot tui.SnapshotRendererFactory, herdrIcon string, matches []source.Candidate, layout tui.Layout) *selector.Cascade {
+func snapshotCascadeFor(sel string, renderer preview.Renderer, currentPane *source.Pane, onTarget func(string), onAction func(tui.RowAction), snapshot source.Snapshot, driver source.HerdrDriver, rendererForSnapshot tui.SnapshotRendererFactory, snapshotIcons map[string]string, matches []source.Candidate, layout tui.Layout) *selector.Cascade {
 	direct := selector.Direct{}
 	picker := snapshotTUISelector{
 		name:                "tui",
@@ -683,7 +691,7 @@ func snapshotCascadeFor(sel string, renderer preview.Renderer, currentPane *sour
 		snapshot:            snapshot,
 		driver:              driver,
 		rendererForSnapshot: rendererForSnapshot,
-		herdrIcon:           herdrIcon,
+		snapshotIcons:       snapshotIcons,
 		onTarget:            onTarget,
 		onAction:            onAction,
 	}
@@ -737,8 +745,7 @@ type snapshotProducerOptions struct {
 	agents   bool
 }
 
-func (a *App) buildSnapshotProducer(herdrIcon, sessionsIcon, agentSourceIcon string, opts snapshotProducerOptions) tui.SourceProducer {
-	cfg := a.Config()
+func (a *App) buildSnapshotProducer(snapshotIcons map[string]string, sessionsIcon string, opts snapshotProducerOptions) tui.SourceProducer {
 	driver := a.Driver()
 	return func(ctx context.Context) tui.SourceResultMsg {
 		if driver == nil || !driver.Detect(ctx) {
@@ -761,8 +768,8 @@ func (a *App) buildSnapshotProducer(herdrIcon, sessionsIcon, agentSourceIcon str
 			rawHerdr := source.HerdrCandidates(snapshot)
 			for _, c := range rawHerdr {
 				clone := c.Clone()
-				if herdrIcon != "" {
-					clone.Icon = herdrIcon
+				if icon := snapshotIcons[config.SourceHerdr]; icon != "" {
+					clone.Icon = icon
 				}
 				cands = append(cands, clone)
 			}
@@ -792,8 +799,8 @@ func (a *App) buildSnapshotProducer(herdrIcon, sessionsIcon, agentSourceIcon str
 			rawAgents := source.AgentCandidates(snapshot)
 			for _, c := range rawAgents {
 				clone := c.Clone()
-				if agentSourceIcon != "" {
-					clone.Icon = agentSourceIcon
+				if icon := snapshotIcons[config.SourceAgents]; icon != "" {
+					clone.Icon = icon
 				}
 				cands = append(cands, clone)
 			}
@@ -816,7 +823,7 @@ func (a *App) buildSnapshotProducer(herdrIcon, sessionsIcon, agentSourceIcon str
 			SnapshotDriver:      driver,
 			Snapshot:            &snapshot,
 			RendererForSnapshot: a.buildPreviewRendererForSnapshot,
-			HerdrIcon:           cfg.Sources.Herdr.Icon,
+			SnapshotIcons:       snapshotIcons,
 			SnapshotSources:     snapshotSources,
 			Renderer:            renderer,
 			CurrentPane:         currentPane,
@@ -950,9 +957,8 @@ func (a *App) streamingProducersForView(cmdCtx context.Context, view string) []t
 
 	if includeHerdr || includeAgents {
 		producers = append(producers, a.buildSnapshotProducer(
-			registry.IconFor(config.SourceHerdr),
+			snapshotIconsFor(registry),
 			registry.IconFor(config.SourceSessions),
-			registry.IconFor(config.SourceAgents),
 			snapshotProducerOptions{
 				herdr: includeHerdr,
 				// sessions ride the snapshot generation only alongside herdr

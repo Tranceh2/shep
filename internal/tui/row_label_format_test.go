@@ -121,7 +121,7 @@ func TestAgentPresentation_IconAndPrefixInTabs(t *testing.T) {
 
 func TestAgentPresentation_AgentsTabUsesConfiguredIcon(t *testing.T) {
 	m := newRenderTestModel(ThemeMocha, FocusList)
-	m.layout.AgentSourceIcon = "X "
+	m.snapshotIcons = map[string]string{config.SourceAgents: "X "}
 	m.startupSnapshot = &source.Snapshot{Panes: []source.Pane{{ID: "p1", Agent: "pi", AgentStatus: "idle", TerminalTitle: "title"}}}
 	rows := m.buildAgentRows()
 	if len(rows) != 1 {

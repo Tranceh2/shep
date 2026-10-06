@@ -2978,6 +2978,58 @@ func TestOpen_ViewValidation(t *testing.T) {
 	}
 }
 
+func TestOpen_AgentIconViaRegistryInViewAndGroup(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Ranking.Enabled = false
+	cfg.Sources.Agents.Icon = "X "
+	cfg.General.SourceOrder = []string{config.SourceAgents}
+	cfg.TUI.Tabs = []string{"all", "agents", "team"}
+	cfg.Workspaces = []config.WorkspaceConfig{{ID: "team", Name: "Team", Type: config.WorkspaceTypeGroup, Path: t.TempDir(), SourceOrder: []string{config.SourceAgents}}}
+	snapshot := source.Snapshot{
+		Workspaces: []source.Workspace{{ID: "w1", Label: "Team", CWD: cfg.Workspaces[0].Path}},
+		Tabs:       []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "work"}},
+		Panes:      []source.Pane{{ID: "p1", WorkspaceID: "w1", TabID: "t1", Agent: "pi", AgentStatus: "idle", CWD: cfg.Workspaces[0].Path}},
+	}
+	app := New(WithHerdrDriver(&openDriver{detect: true, snapshot: snapshot}))
+	app.cfg = cfg
+	app.probes = config.Probes{Herdr: true}
+
+	for _, view := range []string{"", "agents", "team"} {
+		t.Run("view="+view, func(t *testing.T) {
+			var found bool
+			for _, producer := range app.streamingProducersForView(context.Background(), view) {
+				msg := producer(context.Background())
+				if msg.Snapshot == nil {
+					continue
+				}
+				if got := msg.SnapshotIcons[config.SourceAgents]; got != "X " {
+					t.Errorf("snapshot agents icon = %q, want X space", got)
+				}
+				for _, candidate := range msg.Candidates {
+					if candidate.Source == config.SourceAgents {
+						found = true
+						if candidate.Icon != "X " {
+							t.Errorf("agent candidate icon = %q, want X space", candidate.Icon)
+						}
+					}
+				}
+			}
+			if !found && view != "team" {
+				t.Fatal("agents source was absent from the shared snapshot producer")
+			}
+		})
+	}
+
+	layout := app.pickerLayout(cfg.General.SourceOrder, nil)
+	if layout.Tabs[2].Kind != tui.TabGroup || layout.Tabs[2].Load == nil {
+		t.Fatalf("group tab has no loader: %+v", layout.Tabs[2])
+	}
+	group, err := layout.Tabs[2].Load(context.Background(), &snapshot)
+	if err != nil || len(group) != 1 || group[0].Source != config.SourceAgents || group[0].Icon != "X " {
+		t.Fatalf("group agent rows = %+v, error = %v; want configured icon", group, err)
+	}
+}
+
 func TestOpen_ConfiguredTabsAndHiddenAgents(t *testing.T) {
 	app := New()
 	cfg := config.Defaults()

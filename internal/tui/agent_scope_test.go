@@ -1641,7 +1641,7 @@ func TestAgentScope_SourceRowFormattingUsesAgentsLabelFormat(t *testing.T) {
 func TestAgentScope_SnapshotRefreshFillsEmptyAgentsSliceAndKeepsIcon(t *testing.T) {
 	t.Parallel()
 
-	const agentSourceIcon = "🤖 "
+	const sourceIcon = "🤖 "
 	snap1 := agentsRefreshFixture(
 		source.Pane{ID: "w1:p0", WorkspaceID: "w1", TabID: "w1:t1", CWD: "/srv/ws1/plain"},
 	)
@@ -1657,11 +1657,12 @@ func TestAgentScope_SnapshotRefreshFillsEmptyAgentsSliceAndKeepsIcon(t *testing.
 			Snapshot:        &snap1,
 			SnapshotDriver:  driver,
 			SnapshotSources: []string{config.SourceAgents},
+			SnapshotIcons:   map[string]string{config.SourceAgents: sourceIcon},
 			Tree:            NewTreeExpanderFromSnapshot(snap1),
 		}
 	}
 
-	m := NewModelWithProducers([]SourceProducer{prodAgents}, "", nil, context.Background(), Layout{SourceOrder: []string{config.SourceAgents}, AgentSourceIcon: agentSourceIcon})
+	m := NewModelWithProducers([]SourceProducer{prodAgents}, "", nil, context.Background(), Layout{SourceOrder: []string{config.SourceAgents}})
 	msg := prodAgents(context.Background())
 	msg.producerID = 0
 	next, _ := m.Update(msg)
@@ -1691,18 +1692,23 @@ func TestAgentScope_SnapshotRefreshFillsEmptyAgentsSliceAndKeepsIcon(t *testing.
 	if row.Meta["pane_id"] != "w1:p9" {
 		t.Errorf("agents row pane_id = %q, want w1:p9", row.Meta["pane_id"])
 	}
-	if row.Icon != agentSourceIcon {
-		t.Errorf("agents row icon = %q, want %q", row.Icon, agentSourceIcon)
+	if row.Icon != sourceIcon {
+		t.Errorf("agents row icon = %q, want %q", row.Icon, sourceIcon)
 	}
-	if got := renderRowLineText(m.renderRowLine(Row{Kind: RowCandidate, Candidate: *row}, false, 50)); !strings.Contains(got, agentSourceIcon+" "+m.agentStatusIcon("working")) {
+	if got := renderRowLineText(m.renderRowLine(Row{Kind: RowCandidate, Candidate: *row}, false, 50)); !strings.Contains(got, sourceIcon+" "+m.agentStatusIcon("working")) {
 		t.Errorf("refreshed agent row = %q, want source icon before status", got)
 	}
 	m.activeTab = "agents"
 	m.applyFilter()
-	if len(m.rows) == 0 || m.rows[0].Candidate.Icon != agentSourceIcon {
+	if len(m.rows) == 0 || m.rows[0].Candidate.Icon != sourceIcon {
 		t.Fatalf("agents view row did not retain source icon after refresh: %+v", m.rows)
 	}
-	if got := renderRowLineText(m.renderRowLine(m.rows[0], false, 50)); !strings.Contains(got, agentSourceIcon+" "+m.agentStatusIcon("working")) {
+	if got := renderRowLineText(m.renderRowLine(m.rows[0], false, 50)); !strings.Contains(got, sourceIcon+" "+m.agentStatusIcon("working")) {
 		t.Errorf("agents view row after refresh = %q, want source icon before status", got)
+	}
+	m.activeTab = "all"
+	m.applyFilter()
+	if len(m.rows) != 1 || m.rows[0].Candidate.Icon != sourceIcon {
+		t.Fatalf("all view after refresh = %+v, want configured icon", m.rows)
 	}
 }

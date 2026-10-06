@@ -324,7 +324,7 @@ func (m Model) collectAgentCandidates() []source.Candidate {
 	snap := m.snapshotForAgents()
 	candidates := source.AgentCandidates(snap)
 	for i := range candidates {
-		candidates[i].Icon = m.layout.AgentSourceIcon
+		candidates[i].Icon = m.snapshotIcons[config.SourceAgents]
 	}
 	return candidates
 }

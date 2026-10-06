@@ -536,7 +536,7 @@ func goldenScenarios() []goldenScenario {
 				m := NewModelWithTree(
 					[]source.Candidate{herdrCandidate("backend", "/srv/backend", "w1")},
 					nil, treeFromFake(driver), Layout{Theme: ThemeMocha},
-				).WithSnapshotRefresh(driver, snapshot, nil, "")
+				).WithSnapshotRefresh(driver, snapshot, nil, nil)
 				m, _ = update(t, m, sizeMsg(120, 36))
 				m.expandedWorkspaces["w1"] = true
 				m.applyFilter()
