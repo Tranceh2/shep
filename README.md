@@ -272,21 +272,20 @@ the full recovery and refusal taxonomy.
 
 | Key | Context | Action |
 |---|---|---|
-| `Up` / `Down`, `j` / `k` | List | Move selection cursor up / down |
-| `Ctrl+N` / `Ctrl+P` | List | Alternative cursor navigation |
-| `Home` / `End`, `g` / `G` | List | Jump to top / bottom of the list |
-| `PageUp` / `PageDown` | List | Scroll page up / down |
-| `Left` / `Right` | List | Collapse / expand grouped workspaces or projects |
-| `Tab` / `Shift+Tab` | Global | Cycle configured top tabs in order (defaults to `all` ↔ `agents`) |
-| `Enter` | List | Open selected workspace (or focus the tab containing the agent) |
+| `Up` / `Down`, `Ctrl+K` / `Ctrl+J` | List | Move selection cursor up / down one row |
+| `Ctrl+U` / `Ctrl+D` | List | Move selection cursor up / down half the visible list rows (at least one) |
+| `PageUp` / `PageDown` | List | Scroll the preview viewport up / down one page without moving the list cursor |
+| `Left` / `Right` | List | Collapse / expand a workspace's tabs and panes |
+| `Tab` / `Shift+Tab` | Global (except help) | Cycle configured top tabs in order (defaults to `all` ↔ `agents`) |
+| `Enter` | List | Open the highlighted row |
 | `Ctrl+T` | Inside Herdr | Open selected entry as a new tab in current workspace |
 | `Ctrl+P` | Inside Herdr | Open selected entry as a split pane in current workspace |
-| `Ctrl+F` | List | Toggle persistent pin status on the selected candidate |
-| `Alt+Up` / `Alt+Down` | Global | Scroll preview pane up / down |
-| `Alt+j` / `Alt+k` | Global | Alternative preview scroll keys |
-| `Ctrl+L` | Global | Toggle layout mode (side-by-side vs responsive auto) |
-| `?` | Global | Toggle full in-app help overlay |
-| `Esc` | Global | Clear search query; quit if query is already empty |
+| `Ctrl+F` | List | Toggle persistent pin status on the selected top-level candidate, when pinning is configured |
+| `Ctrl+X` | List | Close the highlighted open Herdr pane, tab, or workspace (with confirmation if configured) |
+| `Ctrl+L` | List | Cycle layout override between auto and landscape |
+| `Backspace` | List | Delete the last query character |
+| `?` | List | Open the in-app help overlay (`?` / `Esc` closes it) |
+| `Esc` | List | Clear search query; quit if query is already empty |
 | `Ctrl+C` / `Ctrl+G` | Global | Cancel and exit |
 
 ---

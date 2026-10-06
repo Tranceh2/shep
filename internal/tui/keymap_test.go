@@ -124,11 +124,11 @@ func TestHelpBodyText_MatchesApprovedContent(t *testing.T) {
 	want := strings.Join([]string{
 		m.styles.helpHeadingStyle.Render("Navigation"),
 		"  up/down, ctrl+j/ctrl+k    move the cursor",
+		"  ctrl+d/ctrl+u             move half a page",
 		"  left/right                collapse/expand a workspace's tabs/panes",
 		"  enter                     open the highlighted row",
 		"  ctrl+f                    pin/unpin the highlighted top-level candidate",
 		"  tab / shift+tab           switch between all and agents filter",
-		"  ctrl+u                    clear the query",
 		"  backspace                 delete the last query character",
 		"",
 		m.styles.helpHeadingStyle.Render("Preview (while focused)"),

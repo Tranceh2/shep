@@ -252,26 +252,19 @@ func (m Model) handleListFocusedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "down", "ctrl+j":
-		m.cursorTouched = true
-		if len(m.rows) > 0 && m.cursor < len(m.rows)-1 {
-			m.cursor++
-		}
-		return m, m.syncPreviewAfterSelectionChange()
+		return m.moveListCursor(1)
 	case "up", "ctrl+k":
-		m.cursorTouched = true
-		if m.cursor > 0 {
-			m.cursor--
-		}
-		return m, m.syncPreviewAfterSelectionChange()
+		return m.moveListCursor(-1)
+	case "ctrl+d":
+		return m.moveListCursor(max(1, m.geometry().ListInnerRows/2))
+	case "ctrl+u":
+		return m.moveListCursor(-max(1, m.geometry().ListInnerRows/2))
 	case "right":
 		m.cursorTouched = true
 		return m, tea.Batch(m.expandCurrent(), m.syncPreviewAfterSelectionChange())
 	case "left":
 		m.cursorTouched = true
 		return m, tea.Batch(m.collapseCurrent(), m.syncPreviewAfterSelectionChange())
-	case "ctrl+u":
-		m.query = ""
-		return m, tea.Batch(m.applyFilter(), m.syncPreviewAfterSelectionChange())
 	case "backspace":
 		if len(m.query) > 0 {
 			m.query = m.query[:len(m.query)-1]
@@ -285,6 +278,16 @@ func (m Model) handleListFocusedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.syncPreviewAfterSelectionChange()
 	}
+}
+
+// moveListCursor shares the row navigation side effects for single-step and
+// half-page movement. The cursor always stays inside the available rows.
+func (m Model) moveListCursor(delta int) (tea.Model, tea.Cmd) {
+	m.cursorTouched = true
+	if len(m.rows) > 0 {
+		m.cursor = max(0, min(len(m.rows)-1, m.cursor+delta))
+	}
+	return m, m.syncPreviewAfterSelectionChange()
 }
 
 // handleEnter selects the highlighted candidate/tab/pane row and quits. A

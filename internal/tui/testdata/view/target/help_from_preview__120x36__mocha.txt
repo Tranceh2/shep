@@ -1,11 +1,11 @@
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ Navigation                                                                                                           │
 │   up/down, ctrl+j/ctrl+k    move the cursor                                                                          │
+│   ctrl+d/ctrl+u             move half a page                                                                         │
 │   left/right                collapse/expand a workspace's tabs/panes                                                 │
 │   enter                     open the highlighted row                                                                 │
 │   ctrl+f                    pin/unpin the highlighted top-level candidate                                            │
 │   tab / shift+tab           switch between all and agents filter                                                     │
-│   ctrl+u                    clear the query                                                                          │
 │   backspace                 delete the last query character                                                          │
 │                                                                                                                      │
 │ Preview (while focused)                                                                                              │

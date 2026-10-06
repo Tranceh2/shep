@@ -20,7 +20,7 @@ const (
 	keyChordEnter     = "enter"
 	keyChordTab       = "tab"
 	keyChordShiftTab  = "shift+tab"
-	keyChordCtrlU     = "ctrl+u"
+	keyChordHalfPage  = "ctrl+d/ctrl+u"
 	keyChordBackspace = "backspace"
 	keyChordPgUpDown  = "pgup/pgdown"
 	keyChordHomeEnd   = "home/end"
@@ -104,11 +104,11 @@ var keyMap = []keySection{
 		heading: "Navigation",
 		bindings: []keyBinding{
 			{chord: keyChordUpDown, help: "move the cursor"},
+			{chord: keyChordHalfPage, help: "move half a page"},
 			{chord: keyChordLeftRight, help: "collapse/expand a workspace's tabs/panes"},
 			keyBindingEnter,
 			keyBindingPin,
 			keyBindingTab,
-			{chord: keyChordCtrlU, help: "clear the query"},
 			{chord: keyChordBackspace, help: "delete the last query character"},
 		},
 	},

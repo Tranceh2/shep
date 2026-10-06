@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -49,6 +50,8 @@ func key(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyCtrlL}
 	case "ctrl+u":
 		return tea.KeyMsg{Type: tea.KeyCtrlU}
+	case "ctrl+d":
+		return tea.KeyMsg{Type: tea.KeyCtrlD}
 	case "ctrl+j":
 		return tea.KeyMsg{Type: tea.KeyCtrlJ}
 	case "ctrl+k":
@@ -69,6 +72,68 @@ func key(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")}
 	default:
 		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+	}
+}
+
+// TestListHalfPageKeys moves by half the visible list rows, including at
+// zero-height and at both boundaries, without editing the active query.
+func TestListHalfPageKeys(t *testing.T) {
+	for _, visible := range []int{0, 1, 2, 3, 10} {
+		for _, tc := range []struct {
+			name, chord string
+			start, want int
+		}{
+			{"down", "ctrl+d", 2, min(11, 2+max(1, visible/2))},
+			{"up", "ctrl+u", 9, max(0, 9-max(1, visible/2))},
+			{"down clamp", "ctrl+d", 11, 11},
+			{"up clamp", "ctrl+u", 0, 0},
+		} {
+			t.Run(tc.name+"/rows="+strconv.Itoa(visible), func(t *testing.T) {
+				m := NewModel(nil, nil)
+				m, _ = update(t, m, sizeMsg(120, visible+5))
+				if got := m.geometry().ListInnerRows; got != visible {
+					t.Fatalf("ListInnerRows = %d, want %d", got, visible)
+				}
+				m.rows = make([]Row, 12)
+				m.cursor = tc.start
+				m.query = "keep"
+				m.previewText = "stale"
+				seq := m.previewSeq
+				m, _ = update(t, m, key(tc.chord))
+				if m.cursor != tc.want || !m.cursorTouched {
+					t.Errorf("%s: cursor = %d touched = %v; want %d, true", tc.chord, m.cursor, m.cursorTouched, tc.want)
+				}
+				if m.query != "keep" || len(m.rows) != 12 {
+					t.Errorf("%s changed query or filtered rows: query=%q rows=%d", tc.chord, m.query, len(m.rows))
+				}
+				if m.previewSeq != seq+1 || m.previewText != "" {
+					t.Errorf("%s failed preview sync: seq=%d (previous %d), text=%q", tc.chord, m.previewSeq, seq, m.previewText)
+				}
+			})
+		}
+	}
+	for _, chord := range []string{"ctrl+d", "ctrl+u"} {
+		t.Run(chord+"/empty", func(t *testing.T) {
+			m := NewModel(nil, nil)
+			m, _ = update(t, m, sizeMsg(120, 5))
+			m, _ = update(t, m, key(chord))
+			if m.cursor != 0 || !m.cursorTouched {
+				t.Errorf("empty %s: cursor=%d touched=%v", chord, m.cursor, m.cursorTouched)
+			}
+		})
+	}
+}
+
+func TestEscStillClearsQueryAfterHalfPageNavigation(t *testing.T) {
+	m := NewModel([]source.Candidate{zoxideCandidate("alpha", "/alpha")}, nil)
+	m, _ = update(t, m, key("a"))
+	m, _ = update(t, m, key("ctrl+u"))
+	if m.query != "a" {
+		t.Fatalf("ctrl+u query = %q, want a", m.query)
+	}
+	m, _ = update(t, m, key("esc"))
+	if m.query != "" || m.cancelled {
+		t.Errorf("esc: query=%q cancelled=%v, want cleared without quit", m.query, m.cancelled)
 	}
 }
 
