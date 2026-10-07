@@ -1724,7 +1724,7 @@ func TestExampleTOML_MatchesCanonicalModel(t *testing.T) {
 	got := ExampleTOML()
 	for _, want := range []string{
 		"\nversion = 3\n", "[general]", "source_order = [", "[defaults]",
-		"template = ", "[tui]", `# list_width = "35%"`, `# preview_width = "65%"`, `# layout = "landscape"`, "[preview]",
+		"template = ", "[tui]", `# tabs = ["all", "agents"]`, `# list_width = "35%"`, `# preview_width = "65%"`, `# layout = "landscape"`, "[preview]",
 		"[preview.commands.", "# title = ", "[sources.herdr]", "[sources.herdr.tab]", "[sources.herdr.pane]",
 		"[sources.sessions]", "[sources.agents]", "[sources.projects]",
 		"markers = ", "[templates.default]", "[templates.k8s]", "[[sources.custom]]",

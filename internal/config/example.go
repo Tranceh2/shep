@@ -97,6 +97,10 @@ template = "default"
 # from terminal width); ctrl+l toggles session-only auto/landscape while the
 # picker is open.
 [tui]
+# tabs lists the views cycled with tab / shift+tab, in order: all, agents, a
+# built-in source name, a [[sources.custom]] name, or a group workspace id. A
+# source tab does not add that source to "all" (see general.source_order).
+# tabs = ["all", "agents"]
 # The defaults below are what shep uses with nothing set: a 35% list and a
 # 65% preview, side by side on wide terminals and list-only on narrow ones.
 # list_width = "35%"
