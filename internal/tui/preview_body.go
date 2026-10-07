@@ -26,11 +26,14 @@ import (
 // heading.
 //
 // The body is composed as ready-to-print lines, each sanitized and fitted to
-// the column width, so a frame only copies them. Heavy text — the pane
-// capture, command output — is fitted once and reused across compositions
-// (see fitCache): a spinner frame recomposes only what draws the spinner
-// (the meta line, the Tabs section, the loading line) and joins the cached
-// heavy lines.
+// the column width, so a frame only copies them. The short texts the TUI
+// lays out itself — labels, terminal titles, Meta values, the path — are
+// made plain first (see plainText), so none of them can carry a line break
+// or a cursor-moving control into the line it is placed on. Heavy text — the
+// pane capture, command output — is fitted once and reused across
+// compositions (see fitCache): a spinner frame recomposes only what draws the
+// spinner (the meta line, the Tabs section, the loading line) and joins the
+// cached heavy lines.
 
 // minCaptureLines is the fewest capture lines the "Active pane" section
 // keeps even when the sections above it fill the column (the viewport
@@ -78,7 +81,8 @@ type previewBlock struct {
 // nothing when no row is highlighted (the list's empty state says why).
 // Every line passes through sanitizePaneCapture — the single containment
 // boundary for pane captures, command output and Herdr-reported labels
-// alike — so no escape sequence other than SGR ever reaches the screen.
+// alike — so no escape sequence other than SGR, and no control character,
+// ever reaches the screen.
 func (m Model) composePreview(width, height int, prev []fittedText) previewComposition {
 	row, ok := m.currentRow()
 	if !ok || width <= 0 {
@@ -201,7 +205,7 @@ func (m Model) previewHead(row Row, width int) previewBlock {
 // previewLocation renders the row's path, home-abbreviated and kept from
 // its end when it does not fit; "" for a row without a path.
 func (m Model) previewLocation(row Row, width int) string {
-	path := abbreviateHome(row.Candidate.Path, m.homeDir)
+	path := abbreviateHome(plainText(row.Candidate.Path), m.homeDir)
 	if path == "" {
 		return ""
 	}
@@ -232,14 +236,14 @@ func (m Model) previewMeta(row Row, width int) (meta string, spins bool) {
 	switch {
 	case c.Source == config.SourceAgents || row.Kind == RowPane:
 		status = c.Meta["agent_status"]
-		if agent := c.Meta["agent"]; agent != "" {
+		if agent := plainText(c.Meta["agent"]); agent != "" {
 			parts = append(parts, m.styles.mutedStyle.Render(agent))
 		}
 		if place := m.placement(c, true); place != "" {
 			parts = append(parts, place)
 		}
 	case row.Kind == RowTab:
-		if n := c.Meta["tab_number"]; n != "" {
+		if n := plainText(c.Meta["tab_number"]); n != "" {
 			parts = append(parts, m.styles.mutedStyle.Render("tab "+n))
 		}
 		if panes := m.tabPanes(c.Meta["workspace_id"], c.Meta["tab_id"]); panes > 0 {
@@ -274,12 +278,12 @@ func (m Model) previewMeta(row Row, width int) (meta string, spins bool) {
 // placement renders where a tab or pane lives: "in <workspace> › <tab>".
 // withTab adds the tab (a pane's), when it has a label.
 func (m Model) placement(c source.Candidate, withTab bool) string {
-	ws := abbreviateHome(c.Meta["workspace_label"], m.homeDir)
+	ws := abbreviateHome(plainText(c.Meta["workspace_label"]), m.homeDir)
 	if ws == "" {
 		return ""
 	}
 	place := "in " + ws
-	if tab := c.Meta["tab_label"]; withTab && tab != "" {
+	if tab := plainText(c.Meta["tab_label"]); withTab && tab != "" {
 		place += " " + m.icons().Group + " " + tab
 	}
 	return m.styles.mutedStyle.Render(place)
@@ -316,9 +320,9 @@ func (m Model) directoryMeta(c source.Candidate) []string {
 					branch = b
 				}
 			}
-			parts = append(parts, muted.Render(on)+m.styles.queryStyle.Render(branch))
+			parts = append(parts, muted.Render(on)+m.styles.queryStyle.Render(plainText(branch)))
 			if head := c.Meta["head"]; c.Meta["is_worktree"] == "true" && head != "" {
-				parts = append(parts, muted.Render(head[:min(7, len(head))]))
+				parts = append(parts, muted.Render(plainText(head[:min(7, len(head))])))
 			}
 			if dirty == 0 {
 				parts = append(parts, m.styles.statusIdleStyle.Render("clean"))
@@ -328,7 +332,7 @@ func (m Model) directoryMeta(c source.Candidate) []string {
 		}
 	}
 	if c.Source == config.SourceWorkspaces {
-		if t := c.Meta["template"]; t != "" {
+		if t := plainText(c.Meta["template"]); t != "" {
 			parts = append(parts, muted.Render("template "+t))
 		}
 		if c.Meta["group"] == "true" {
@@ -489,6 +493,7 @@ func (m Model) tabsSection(c source.Candidate, s preview.Section, width int, cac
 	}
 	set := m.icons()
 	numbers := make([]string, len(tree.Tabs))
+	labels := make([]string, len(tree.Tabs))
 	numW, labelW := 0, 0
 	for i, tab := range tree.Tabs {
 		n := tab.Number
@@ -497,7 +502,8 @@ func (m Model) tabsSection(c source.Candidate, s preview.Section, width int, cac
 		}
 		numbers[i] = strconv.Itoa(n)
 		numW = max(numW, len(numbers[i]))
-		labelW = max(labelW, min(tabLabelMaxCells, ansi.StringWidth(tab.Label)))
+		labels[i] = plainText(tab.Label)
+		labelW = max(labelW, min(tabLabelMaxCells, ansi.StringWidth(labels[i])))
 	}
 	active := c.Meta["active_tab_id"]
 	sep := m.styles.mutedStyle.Render(" " + set.HintSeparator + " ")
@@ -512,7 +518,7 @@ func (m Model) tabsSection(c source.Candidate, s preview.Section, width int, cac
 		b.WriteString(strings.Repeat(" ", numW-len(numbers[i])))
 		b.WriteString(number.Render(numbers[i]))
 		b.WriteString("  ")
-		b.WriteString(label.Render(fitWidth(truncateToWidth(tab.Label, labelW), labelW)))
+		b.WriteString(label.Render(fitWidth(truncateToWidth(labels[i], labelW), labelW)))
 		panes := 0
 		for _, p := range tree.Panes {
 			if p.TabID != tab.ID {
@@ -527,7 +533,7 @@ func (m Model) tabsSection(c source.Candidate, s preview.Section, width int, cac
 				b.WriteString(statusGlyph(&set, m.spinner, p.AgentStatus, m.styles.statusStyle(p.AgentStatus)) + " ")
 				animated = animated || (p.AgentStatus == "working" && set.StatusWorking == "")
 			}
-			b.WriteString(m.styles.mutedStyle.Render(p.Agent))
+			b.WriteString(m.styles.mutedStyle.Render(plainText(p.Agent)))
 		}
 		if panes > 1 {
 			b.WriteString(sep + m.styles.mutedStyle.Render(plural(panes, "pane")))

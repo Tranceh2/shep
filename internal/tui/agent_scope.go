@@ -177,13 +177,13 @@ func (m Model) tabPresentation() scopeDefinition {
 		return scopeDefinition{Name: tab.ID, Placeholder: "Search " + tabName(tab), FooterLabel: tab.ID,
 			EmptyState: func(m Model) []string {
 				if tab.Kind == TabGroup && m.groupNeedsSnapshot() && m.snapshotUnavailable != nil {
-					return []string{"Group candidates unavailable", "Herdr snapshot unavailable: " + m.snapshotUnavailable.Error()}
+					return []string{"Group candidates unavailable", "Herdr snapshot unavailable: " + plainText(m.snapshotUnavailable.Error())}
 				}
 				if m.groupLoading[tab.ID] {
 					return []string{"Loading " + kind + " candidates…"}
 				}
 				if err := m.groupErrors[tab.ID]; err != nil {
-					return []string{"Group candidates unavailable", err.Error()}
+					return []string{"Group candidates unavailable", plainText(err.Error())}
 				}
 				if m.loadingCandidates && tab.Load == nil {
 					return []string{"Sources are still loading…"}

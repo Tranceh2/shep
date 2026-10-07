@@ -95,7 +95,10 @@ const (
 // the icon and its role, the label split filename-first with its highlight
 // masks, and the accessories — with cell widths precomputed. What changes
 // without a row rebuild (the spinner frame, selection, the column width) is
-// resolved at render time.
+// resolved at render time. Every text it holds that came from outside shep
+// (a label, a terminal title, a Meta value, a custom source's icon) has been
+// through plainText, here, once per build: a control character or escape
+// sequence in it would move the terminal's cursor mid-frame.
 type rowView struct {
 	indent, tree string // the tree prefix (see treePrefix)
 	icon         string
@@ -122,6 +125,8 @@ type rowView struct {
 	descendant bool
 
 	accessories []accessory
+	// kind names what the row is in the preview title (see rowKindLabel).
+	kind string
 }
 
 // buildRowView builds row's display model.
@@ -136,14 +141,15 @@ func (m Model) buildRowView(row Row) rowView {
 	case row.Kind == RowTab:
 		v.icon, v.iconRole = set.TabIcon, iconRoleTab
 	case agent:
-		v.icon, v.iconRole = c.Icon, iconRoleAgents
+		v.icon, v.iconRole = plainText(c.Icon), iconRoleAgents
 		v.status = c.Meta["agent_status"]
 	case row.Kind == RowPane:
 		v.status = c.Meta["agent_status"]
 	case c.Meta["is_worktree"] == "true":
 		v.icon, v.iconRole = worktreeIcon, iconRoleProjects
 	default:
-		v.icon, v.iconRole = c.Icon, sourceIconRole(c.Source)
+		// A custom source's icon comes from its command's JSON.
+		v.icon, v.iconRole = plainText(c.Icon), sourceIconRole(c.Source)
 	}
 	v.statusGlyph = hasStatusGlyph(v.status)
 	v.fixedW = ansi.StringWidth(v.indent) + ansi.StringWidth(v.tree)
@@ -173,6 +179,7 @@ func (m Model) buildRowView(row Row) rowView {
 	v.primaryW = ansi.StringWidth(v.primary)
 	v.secondaryW = ansi.StringWidth(v.secondary)
 	v.accessories = m.rowAccessories(row, set)
+	v.kind = plainText(rowKindLabel(row))
 	return v
 }
 
@@ -300,7 +307,7 @@ func (m Model) rowAccessories(row Row, set IconSet) []accessory {
 		out = append(out, accessory{text: text, role: role, width: w, shrink: shrink})
 	}
 	if c.Source == config.SourceAgents {
-		if label := agentWorkspaceLabel(c.Meta["workspace_label"]); label != "" {
+		if label := agentWorkspaceLabel(plainText(c.Meta["workspace_label"])); label != "" {
 			add(label, accessoryMuted, true)
 		}
 		return out
@@ -311,15 +318,17 @@ func (m Model) rowAccessories(row Row, set IconSet) []accessory {
 	switch row.Kind {
 	case RowPane:
 		// A pane titled after its agent ("opencode") would repeat the name.
-		if agent := c.Meta["agent"]; agent != "" && !strings.Contains(strings.ToLower(c.Label), strings.ToLower(agent)) {
+		if agent := plainText(c.Meta["agent"]); agent != "" && !strings.Contains(strings.ToLower(c.Label), strings.ToLower(agent)) {
 			add(agent, accessoryMuted, false)
 		}
 		return out
 	case RowTab:
 		return out
 	}
-	if c.Meta["is_worktree"] == "true" && c.Meta["branch"] != "" {
-		add(c.Meta["branch"], accessoryMuted, false)
+	if c.Meta["is_worktree"] == "true" {
+		if branch := plainText(c.Meta["branch"]); branch != "" {
+			add(branch, accessoryMuted, false)
+		}
 	}
 	if c.Source == config.SourceSessions {
 		add(sessionState(c, set), accessoryMuted, false)

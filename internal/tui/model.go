@@ -946,10 +946,12 @@ func (m Model) handleSourceResult(msg SourceResultMsg) (Model, tea.Cmd) {
 	m.refreshPreviewLoadingFlag()
 	previewCmd := m.syncPreviewAfterSelectionChange()
 
+	// A source's error text (a command's output) is shown in the preview,
+	// so it is kept plain (see plainText).
 	if msg.Err != nil && len(m.baseFlatCandidates()) == 0 {
-		m.previewErr = msg.Err.Error()
+		m.previewErr = plainText(msg.Err.Error())
 	} else if len(m.baseFlatCandidates()) > 0 {
-		if msg.Err == nil || m.previewErr == msg.Err.Error() {
+		if msg.Err == nil || m.previewErr == plainText(msg.Err.Error()) {
 			m.previewErr = ""
 		}
 	}

@@ -224,3 +224,149 @@ func TestSanitizePaneCapture_AdversarialOverlappingOpeners(t *testing.T) {
 		t.Errorf("sanitizePaneCapture(%q) = %q, must not contain any surviving DCS opener", in, got)
 	}
 }
+
+// --- Bare control characters (live bug: CRLF captures blanked list rows) ---
+
+// TestSanitizePaneCapture_ControlCharacters proves every bare C0 control,
+// DEL and C1 control is contained like the cursor-moving CSI sequences
+// above: "\r\n" becomes "\n", a bare "\r" and every other control is
+// dropped, and an invalid UTF-8 byte becomes U+FFFD. `herdr pane read`
+// returns CRLF lines; a line's trailing "\r" sent the terminal's cursor back
+// to column 0, where the preview's padding blanked the list column.
+func TestSanitizePaneCapture_ControlCharacters(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, in, want string
+	}{
+		{"CRLF becomes LF", "PASS foo\r\nFAIL bar\r\n", "PASS foo\nFAIL bar\n"},
+		{"CRLF before an SGR reset", "\x1b[32mPASS\x1b[0m foo\r\n\x1b[m", "\x1b[32mPASS\x1b[0m foo\n\x1b[m"},
+		{"bare CR dropped", "progress 10%\rprogress 99%", "progress 10%progress 99%"},
+		{"trailing CR dropped", "unconfigured\r", "unconfigured"},
+		{"backspace dropped", "typo\b\bfixed", "typofixed"},
+		{"NUL, BEL, VT, FF and other C0 dropped", "a\x00b\x07c\x0bd\x0ce\x01f\x1fg", "abcdefg"},
+		{"DEL dropped", "a\x7fb", "ab"},
+		{"C1 CSI dropped", "before\u009b2Jafter", "before2Jafter"},
+		{"C1 OSC dropped", "a\u009d0;title\x07b", "a0;titleb"},
+		{"every C1 code point dropped", "a\u0080\u0085\u008d\u009fb", "ab"},
+		{"invalid byte becomes U+FFFD", "bad \xff byte", "bad � byte"},
+		{"raw 8-bit CSI byte becomes U+FFFD", "\x9b2J", "�2J"},
+		{"truncated rune becomes U+FFFD per byte", "box \xe2\x94", "box ��"},
+		{"valid U+FFFD and U+00A0 kept", "� ok", "� ok"},
+		{"controls inside an OSC go with it", "a\x1b]0;x\ry\bz\x07b", "ab"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := sanitizePaneCapture(tt.in); got != tt.want {
+				t.Errorf("sanitizePaneCapture(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSanitizePaneCapture_TabExpansion proves a tab becomes the spaces up
+// to the next multiple of 8 of the line's visible column: SGR and dropped
+// sequences add no cells, a wide rune adds two, and a new line starts at
+// column 0.
+func TestSanitizePaneCapture_TabExpansion(t *testing.T) {
+	t.Parallel()
+	sp := strings.Repeat(" ", 8)
+	tests := []struct {
+		name, in, want string
+	}{
+		{"at line start", "\tx", sp + "x"},
+		{"mid stop", "ab\tc", "ab" + sp[:6] + "c"},
+		{"at a stop", "abcdefgh\ti", "abcdefgh" + sp + "i"},
+		{"two tabs", "a\tb\tc", "a" + sp[:7] + "b" + sp[:7] + "c"},
+		{"consecutive tabs", "a\t\tb", "a" + sp[:7] + sp + "b"},
+		{"column resets per line", "abc\n\tx\nabcde\ty", "abc\n" + sp + "x\nabcde" + sp[:3] + "y"},
+		{"after CRLF", "abc\r\n\tx", "abc\n" + sp + "x"},
+		{"after a kept SGR", "\x1b[31mab\x1b[0m\tc", "\x1b[31mab\x1b[0m" + sp[:6] + "c"},
+		{"after a dropped CSI", "ab\x1b[2J\tc", "ab" + sp[:6] + "c"},
+		{"after a dropped OSC", "ab\x1b]0;long title\x07\tc", "ab" + sp[:6] + "c"},
+		{"after a dropped control", "ab\r\b\tc", "ab" + sp[:6] + "c"},
+		{"after a wide rune", "日\tx", "日" + sp[:6] + "x"},
+		{"after wide runes filling a stop", "日本語中\tx", "日本語中" + sp + "x"},
+		{"after a box-drawing rune", "│\tx", "│" + sp[:7] + "x"},
+		{"after an invalid byte", "\xff\tx", "�" + sp[:7] + "x"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := sanitizePaneCapture(tt.in); got != tt.want {
+				t.Errorf("sanitizePaneCapture(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSanitizePaneCapture_CleanInputNotCopied proves input that needs no
+// change is returned as is: the common capture costs no copy.
+func TestSanitizePaneCapture_CleanInputNotCopied(t *testing.T) {
+	in := "┌────────┐\n│ pane 1 │\n└────────┘\n\n日本語 emoji 🎉"
+	if allocs := testing.AllocsPerRun(100, func() { _ = sanitizePaneCapture(in) }); allocs != 0 {
+		t.Errorf("sanitizePaneCapture(clean) allocates %.0f times, want 0", allocs)
+	}
+}
+
+// --- plainText: labels, titles and Meta values shown on one row ---
+
+// TestPlainText proves plainText removes every escape sequence (SGR too) and
+// control character from a short display string: "\r", "\n" and "\t"
+// separate words, a whitespace run holding one becomes a single space (none
+// at either end), runs of plain spaces stay, other C0, DEL and C1 controls
+// are dropped and invalid UTF-8 becomes U+FFFD.
+func TestPlainText(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, in, want string
+	}{
+		{"plain ASCII unchanged", "api-gateway", "api-gateway"},
+		{"wide and multi-byte runes unchanged", "日本語 café 🎉 │", "日本語 café 🎉 │"},
+		{"plain double spaces kept", "two  spaces", "two  spaces"},
+		{"empty", "", ""},
+		{"CR becomes a space", "Fix\rparser", "Fix parser"},
+		{"LF becomes a space", "Fix\nparser", "Fix parser"},
+		{"tab becomes a space", "PR\t42", "PR 42"},
+		{"CRLF becomes one space", "a\r\nb", "a b"},
+		{"separator run with spaces collapses", "a \t \r\n  b", "a b"},
+		{"separators at the ends trimmed", "\t\r\nfoo bar\r\n", "foo bar"},
+		{"spaces before a trailing separator trimmed", "foo  \n", "foo"},
+		{"only separators", "\r\n\t", ""},
+		{"SGR removed", "\x1b[31mred\x1b[0m alert", "red alert"},
+		{"cursor CSI removed", "x\x1b[2J\x1b[Hy", "xy"},
+		{"OSC removed", "ti\x1b]0;evil\x07tle", "title"},
+		{"OSC 52 removed", "a\x1b]52;c;cGF5bG9hZA==\x1b\\b", "ab"},
+		{"unterminated OSC fails closed", "ok\x1b]52;c;cGF5", "ok"},
+		{"unrecognized escape fails closed", "a\x1b7b", "a"},
+		{"lone ESC at the end dropped", "a\x1b", "a"},
+		{"other C0 dropped without a space", "a\x00b\x07c\bd", "abcd"},
+		{"DEL dropped", "a\x7fb", "ab"},
+		{"C1 dropped", "a\u009b2J\u0085b", "a2Jb"},
+		{"invalid UTF-8 becomes U+FFFD", "bad\xffbyte", "bad�byte"},
+		{"BEL and tab in a custom label", "PR\t42\x07 fix", "PR 42 fix"},
+		{"CR and erase in a terminal title", "Fix\r\x1b[2Jparser", "Fix parser"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := plainText(tt.in)
+			if got != tt.want {
+				t.Errorf("plainText(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+			if !isPlainText(got) {
+				t.Errorf("plainText(%q) = %q, still not plain", tt.in, got)
+			}
+		})
+	}
+}
+
+// TestPlainText_CleanInputNotCopied proves a string that is already plain —
+// nearly every label — is returned as is, so a row view build pays a scan,
+// not an allocation, for it.
+func TestPlainText_CleanInputNotCopied(t *testing.T) {
+	in := "~/allsafe/ECORP/whiterose-db 日本語"
+	if allocs := testing.AllocsPerRun(100, func() { _ = plainText(in) }); allocs != 0 {
+		t.Errorf("plainText(clean) allocates %.0f times, want 0", allocs)
+	}
+}

@@ -315,7 +315,10 @@ func (m Model) rowLabelFormat(row Row) string {
 // direct/programmatic Candidate construction, since config.Load enforces
 // non-empty names/labels for every source that ships a label-only default).
 // Config.Load rejects unparsable formats, but the TUI must never show a
-// silently blank row or crash when called directly.
+// silently blank row or crash when called directly. The result is what the
+// row displays, so it is plain text (see plainText): the label, the Meta
+// values a template interpolates and the path all come from outside shep.
+// Matching never reads it — filtering scores the raw candidate data.
 func (m Model) renderRowLabel(row Row) string {
 	c := row.Candidate
 	label := c.Label
@@ -333,8 +336,9 @@ func (m Model) renderRowLabel(row Row) string {
 		// Icon intentionally stays unset: c.Icon belongs to the row's fixed
 		// prefix (see buildRowView), which truncation must never consume.
 	})
+	text = plainText(text)
 	if err != nil || text == "" {
-		return c.Path
+		return plainText(c.Path)
 	}
 	return text
 }

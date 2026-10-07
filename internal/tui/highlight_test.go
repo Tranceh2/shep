@@ -146,6 +146,44 @@ func TestHighlight_FilenameFirstMapsAcrossParentAndName(t *testing.T) {
 	}
 }
 
+// TestHighlight_ControlCharLabelMasksDisplayedRunes proves a label carrying
+// control characters or escape sequences still matches on its raw text
+// (filtering reads the candidate data, unchanged) but is shown plain, with
+// its highlight scored on the displayed runes: the mask is exactly as long
+// as the shown text and marks the matched word, never a shifted one.
+func TestHighlight_ControlCharLabelMasksDisplayedRunes(t *testing.T) {
+	t.Parallel()
+	m := newRenderTestModel(ThemeMocha, FocusList)
+	m.layout.LabelFormats = LabelFormats{CustomSources: map[string]string{"prs": "{{.Label}}"}}
+	for _, tc := range []struct {
+		name, query   string
+		cand          source.Candidate
+		shown, marked string
+	}{
+		{"custom label with a tab and BEL", "fix", source.Candidate{Source: "prs", Label: "PR\t42\x07 fix"}, "PR 42 fix", "fix"},
+		{"agent title with CR and an erase", "parser", source.Candidate{Source: config.SourceAgents, Label: "Fix\r\x1b[2Jparser"}, "Fix parser", "parser"},
+		{"label colored by its source", "alert", source.Candidate{Source: "prs", Label: "\x1b[31mred\x1b[0m alert"}, "red alert", "alert"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m.query = tc.query
+			rows := buildRows(rowBuildInput{query: tc.query, candidates: []source.Candidate{tc.cand}, ranked: true})
+			if len(rows) != 1 || rows[0].Match != MatchDirect {
+				t.Fatalf("setup: query %q must keep a direct row for %q, got %+v", tc.query, tc.cand.Label, rows)
+			}
+			v := m.buildRowView(rows[0])
+			if v.primary != tc.shown {
+				t.Fatalf("shown label = %q, want %q", v.primary, tc.shown)
+			}
+			if len(v.primaryHL) != len([]rune(v.primary)) {
+				t.Fatalf("mask covers %d runes, the shown label has %d", len(v.primaryHL), len([]rune(v.primary)))
+			}
+			if got := maskedRunes(v.primary, v.primaryHL); got != tc.marked {
+				t.Errorf("highlighted %q of %q, want %q", got, v.primary, tc.marked)
+			}
+		})
+	}
+}
+
 // TestWriteRuns_OneRenderPerStyleRun proves highlighted text renders as
 // style runs — one Render per run of equally styled runes, never one per
 // rune — and keeps the visible text unchanged. Not t.Parallel: it swaps

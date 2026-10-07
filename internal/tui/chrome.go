@@ -350,12 +350,12 @@ func (m Model) renderPreviewTitle(width int) string {
 	v := m.cursorRowView()
 	name := v.primary
 	if name == "" {
-		name = row.Candidate.Label
+		name = plainText(row.Candidate.Label)
 	}
 	if name == "" {
-		name = abbreviateHome(row.Candidate.Path, m.homeDir)
+		name = abbreviateHome(plainText(row.Candidate.Path), m.homeDir)
 	}
-	kind := rowKindLabel(row)
+	kind := v.kind
 	nameW, kindW := ansi.StringWidth(name), ansi.StringWidth(kind)
 	if kind == "" || nameW+1+kindW > width {
 		return fitWidth(m.renderTitleName(truncateTitle(name, width), v.lead), width)
@@ -374,7 +374,7 @@ func (m Model) renderTitleName(name, lead string) string {
 
 // rowKindLabel names what a row is, for the preview title: the Herdr
 // object, the directory source, an agent's program, or a custom source's
-// own name.
+// own name. buildRowView stores it, made plain, as rowView.kind.
 func rowKindLabel(row Row) string {
 	c := row.Candidate
 	switch {
@@ -612,9 +612,19 @@ type footerStatus struct {
 	tone statusTone
 }
 
-func infoStatus(text string) footerStatus    { return footerStatus{text: text, tone: toneInfo} }
-func successStatus(text string) footerStatus { return footerStatus{text: text, tone: toneSuccess} }
-func errorStatus(text string) footerStatus   { return footerStatus{text: text, tone: toneError} }
+// A footer message can carry an error's text (a failed Herdr command's
+// output), so each is made plain once, when it is set (see plainText).
+func infoStatus(text string) footerStatus {
+	return footerStatus{text: plainText(text), tone: toneInfo}
+}
+
+func successStatus(text string) footerStatus {
+	return footerStatus{text: plainText(text), tone: toneSuccess}
+}
+
+func errorStatus(text string) footerStatus {
+	return footerStatus{text: plainText(text), tone: toneError}
+}
 
 // renderStatus styles a footer message by its tone.
 func (m Model) renderStatus(s footerStatus) string {
