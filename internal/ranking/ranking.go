@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/fuzzy"
@@ -146,6 +148,9 @@ func (s Snapshot) WithClearedAcknowledgement(paneID string) Snapshot {
 
 // IsPinned reports whether candidate's stable resource or identity key is pinned.
 func (s Snapshot) IsPinned(candidate source.Candidate) bool {
+	if len(s.pins) == 0 {
+		return false // nothing pinned: skip hashing the candidate's key
+	}
 	key := PinKey(candidate)
 	if key == "" {
 		return false
@@ -203,6 +208,11 @@ type scored struct {
 	usage      float64
 	sourceRank int
 	order      int
+	// The empty-query keys, computed once per candidate rather than on every
+	// comparison (Identity hashes path candidates).
+	current   bool
+	mruRank   int
+	recentIdx int
 }
 
 const (
@@ -409,7 +419,7 @@ func sortCandidates(candidates []source.Candidate, query string, snapshot Snapsh
 		if query != "" {
 			textual = classifyText(query, candidate)
 		}
-		scoredCandidates = append(scoredCandidates, scored{
+		item := scored{
 			candidate:  candidate.Clone(),
 			textual:    textual,
 			openAction: isOpenAction(candidate),
@@ -417,30 +427,31 @@ func sortCandidates(candidates []source.Candidate, query string, snapshot Snapsh
 			usage:      snapshot.usageFor(candidate),
 			sourceRank: rank(candidate),
 			order:      index,
-		})
+		}
+		if query == "" {
+			identity := Identity(candidate)
+			item.current = identity == snapshot.currentExact
+			item.mruRank = snapshot.WorkspaceMRURank(candidate)
+			item.recentIdx = snapshot.recentRank(identity)
+		}
+		scoredCandidates = append(scoredCandidates, item)
 
 	}
 	sort.SliceStable(scoredCandidates, func(i, j int) bool {
 		left, right := scoredCandidates[i], scoredCandidates[j]
 		if query == "" {
-			leftCurrent := Identity(left.candidate) == snapshot.currentExact
-			rightCurrent := Identity(right.candidate) == snapshot.currentExact
 			if left.pinned != right.pinned {
 				return left.pinned
 			}
-			if leftCurrent != rightCurrent {
-				return !leftCurrent
+			if left.current != right.current {
+				return !left.current
 			}
-			if !leftCurrent && !rightCurrent {
-				leftMRU := snapshot.WorkspaceMRURank(left.candidate)
-				rightMRU := snapshot.WorkspaceMRURank(right.candidate)
-				if leftMRU != rightMRU {
-					return leftMRU < rightMRU
+			if !left.current && !right.current {
+				if left.mruRank != right.mruRank {
+					return left.mruRank < right.mruRank
 				}
-				leftRecent := snapshot.recentRank(Identity(left.candidate))
-				rightRecent := snapshot.recentRank(Identity(right.candidate))
-				if leftRecent != rightRecent {
-					return leftRecent < rightRecent
+				if left.recentIdx != right.recentIdx {
+					return left.recentIdx < right.recentIdx
 				}
 			}
 			if left.usage != right.usage {
@@ -546,17 +557,50 @@ func textScore(query, value string) int {
 	return score
 }
 
+// ContainsWordOrPrefix reports whether query, ignoring case, prefixes one of
+// label's words (runs between ' ', '-', '_', '/' and '.'). It compares
+// rune by rune through unicode.ToLower — exactly what lowering both strings
+// with strings.ToLower and testing strings.HasPrefix on each word does —
+// without allocating: it runs for every candidate on every keystroke.
 func ContainsWordOrPrefix(query, label string) bool {
-	query = strings.ToLower(query)
-	label = strings.ToLower(label)
-	for _, word := range strings.FieldsFunc(label, func(r rune) bool {
-		return r == ' ' || r == '-' || r == '_' || r == '/' || r == '.'
-	}) {
-		if strings.HasPrefix(word, query) {
+	for start := 0; start < len(label); {
+		r, size := utf8.DecodeRuneInString(label[start:])
+		if isWordBreak(r) {
+			start += size
+			continue
+		}
+		end := start
+		for end < len(label) {
+			r, size := utf8.DecodeRuneInString(label[end:])
+			if isWordBreak(r) {
+				break
+			}
+			end += size
+		}
+		if hasLowerPrefix(label[start:end], query) {
 			return true
 		}
+		start = end
 	}
 	return false
+}
+
+// isWordBreak reports the runes ContainsWordOrPrefix splits words at.
+func isWordBreak(r rune) bool {
+	return r == ' ' || r == '-' || r == '_' || r == '/' || r == '.'
+}
+
+// hasLowerPrefix reports whether prefix, lowered rune by rune, is a prefix of
+// word, lowered the same way.
+func hasLowerPrefix(word, prefix string) bool {
+	for _, p := range prefix {
+		w, size := utf8.DecodeRuneInString(word)
+		if word == "" || unicode.ToLower(w) != unicode.ToLower(p) {
+			return false
+		}
+		word = word[size:]
+	}
+	return true
 }
 
 func isOpenAction(candidate source.Candidate) bool {
@@ -605,6 +649,9 @@ func (s Snapshot) RecentRank(candidate source.Candidate) int {
 }
 
 func (s Snapshot) usageFor(candidate source.Candidate) float64 {
+	if len(s.exact) == 0 && len(s.resource) == 0 {
+		return 0 // no recorded usage: skip hashing the candidate's keys
+	}
 	now := s.capturedAt
 	if now.IsZero() {
 		now = time.Now()

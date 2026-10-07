@@ -2,8 +2,8 @@
 package fuzzy
 
 import (
-	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Bonus and penalty constants are jhawthorn/fzy's bonus.h ratios, int-scaled
@@ -22,11 +22,31 @@ const (
 const minimumScore = -1 << 30
 
 // Match reports whether query is a Unicode-codepoint subsequence of haystack
-// under simple case folding. It compares each rune with strings.EqualFold, so
+// under simple case folding. It compares runes as strings.EqualFold does, so
 // it follows Go's Unicode case-folding semantics without NFC/NFD normalization.
 // An empty query always matches.
 func Match(query, haystack string) bool {
-	return isSubsequence([]rune(query), []rune(haystack))
+	return isSubsequenceString(query, haystack)
+}
+
+// isSubsequenceString is isSubsequence over the strings themselves: ranging
+// over a string decodes the same runes a []rune conversion yields (invalid
+// bytes as U+FFFD), without allocating either slice.
+func isSubsequenceString(query, haystack string) bool {
+	if query == "" {
+		return true
+	}
+	want, size := utf8.DecodeRuneInString(query)
+	for _, r := range haystack {
+		if sameFold(want, r) {
+			query = query[size:]
+			if query == "" {
+				return true
+			}
+			want, size = utf8.DecodeRuneInString(query)
+		}
+	}
+	return false
 }
 
 // Score computes the fzy-style affine-gap score for query in haystack and the
@@ -34,116 +54,134 @@ func Match(query, haystack string) bool {
 // non-subsequence queries return (0, nil). Callers that pass "Label Path" as
 // haystack can receive indexes in Path; those positions may have no rendered
 // Label rune to highlight.
+//
+// Every cell of the dynamic program reads only the previous needle row at
+// the previous haystack column, so one row per score matrix suffices: the
+// value about to be overwritten is carried to the next column as its
+// diagonal. The traceback needs every cell's two direction flags, kept in a
+// bit set. A query is scored against every candidate on every keystroke, so
+// this keeps the scorer's memory linear in the haystack length.
 func Score(query, haystack string) (score int, matchedIndexes []int) {
-	needle := []rune(query)
-	haystackRunes := []rune(haystack)
-	if len(needle) == 0 || !isSubsequence(needle, haystackRunes) {
+	if query == "" || !isSubsequenceString(query, haystack) {
 		return 0, nil
 	}
-
-	bonuses := matchBonuses(haystackRunes)
-	dScores := makeScoreMatrix(len(needle), len(haystackRunes))
-	mScores := makeScoreMatrix(len(needle), len(haystackRunes))
-	mFromD := makeBoolMatrix(len(needle), len(haystackRunes))
-	dFromD := makeBoolMatrix(len(needle), len(haystackRunes))
+	needle := []rune(query)
+	n, m := len(needle), utf8.RuneCountInString(haystack)
+	rows := make([]int, 3*m)
+	bonuses := fillBonuses(rows[:m], haystack)
+	dRow, mRow := rows[m:2*m], rows[2*m:]
+	dirs := newDirections(n, m)
 
 	for needleIndex, needleRune := range needle {
 		gapPenalty := PenaltyGapInner
-		if needleIndex == len(needle)-1 {
+		if needleIndex == n-1 {
 			gapPenalty = PenaltyGapTrailing
 		}
 
 		previousScore := minimumScore
-		for haystackIndex, haystackRune := range haystackRunes {
+		diagD, diagM := minimumScore, minimumScore
+		haystackIndex := -1
+		for _, haystackRune := range haystack {
+			haystackIndex++ // rune index: ranging over the string yields byte offsets
+			upD, upM := dRow[haystackIndex], mRow[haystackIndex]
 			dScore := minimumScore
 			if sameFold(needleRune, haystackRune) {
 				if needleIndex == 0 {
 					dScore = haystackIndex*PenaltyGapLeading + bonuses[haystackIndex]
 				} else if haystackIndex > 0 {
-					fromM := addPenalty(mScores[needleIndex-1][haystackIndex-1], bonuses[haystackIndex])
-					fromD := addPenalty(dScores[needleIndex-1][haystackIndex-1], BonusConsecutive)
+					fromM := addPenalty(diagM, bonuses[haystackIndex])
+					fromD := addPenalty(diagD, BonusConsecutive)
 					if fromD >= fromM {
 						dScore = fromD
-						dFromD[needleIndex][haystackIndex] = true
+						dirs.set(dirs.dFromD(needleIndex, haystackIndex))
 					} else {
 						dScore = fromM
 					}
 				}
 			}
 
-			dScores[needleIndex][haystackIndex] = dScore
+			dRow[haystackIndex] = dScore
 			gapScore := addPenalty(previousScore, gapPenalty)
 			if dScore >= gapScore {
-				mScores[needleIndex][haystackIndex] = dScore
-				mFromD[needleIndex][haystackIndex] = true
+				mRow[haystackIndex] = dScore
+				dirs.set(dirs.mFromD(needleIndex, haystackIndex))
 			} else {
-				mScores[needleIndex][haystackIndex] = gapScore
+				mRow[haystackIndex] = gapScore
 			}
-			previousScore = mScores[needleIndex][haystackIndex]
+			previousScore = mRow[haystackIndex]
+			diagD, diagM = upD, upM
 		}
 	}
 
-	return mScores[len(needle)-1][len(haystackRunes)-1], traceback(mFromD, dFromD, len(needle), len(haystackRunes))
+	return mRow[m-1], traceback(dirs, n, m)
 }
 
-func isSubsequence(query, haystack []rune) bool {
-	if len(query) == 0 {
+// directions holds the dynamic program's two direction flags per cell —
+// whether M took its value from D, and whether D extended a consecutive
+// run — as bits, row-major over the needle.
+type directions struct {
+	bits    []uint64
+	columns int
+	plane   int // bit offset of the dFromD plane
+}
+
+func newDirections(rows, columns int) directions {
+	plane := rows * columns
+	return directions{bits: make([]uint64, (2*plane+63)/64), columns: columns, plane: plane}
+}
+
+func (d directions) mFromD(row, column int) int { return row*d.columns + column }
+func (d directions) dFromD(row, column int) int { return d.plane + row*d.columns + column }
+func (d directions) set(bit int)                { d.bits[bit/64] |= 1 << (bit % 64) }
+func (d directions) get(bit int) bool           { return d.bits[bit/64]&(1<<(bit%64)) != 0 }
+
+// sameFold reports whether a and b are equal under simple Unicode case
+// folding: exactly strings.EqualFold(string(a), string(b)) for the valid
+// runes a []rune conversion yields, without building two strings per
+// comparison (the scorer's innermost loop).
+func sameFold(a, b rune) bool {
+	if a == b {
 		return true
 	}
-
-	queryIndex := 0
-	for _, haystackRune := range haystack {
-		if sameFold(query[queryIndex], haystackRune) {
-			queryIndex++
-			if queryIndex == len(query) {
-				return true
-			}
-		}
+	if a < b {
+		a, b = b, a
 	}
-	return false
+	if a < utf8.RuneSelf {
+		return 'A' <= b && b <= 'Z' && a == b+'a'-'A'
+	}
+	r := unicode.SimpleFold(b)
+	for r != b && r < a {
+		r = unicode.SimpleFold(r)
+	}
+	return r == a
 }
 
-func sameFold(a, b rune) bool {
-	return strings.EqualFold(string(a), string(b))
-}
-
-func matchBonuses(haystack []rune) []int {
-	bonuses := make([]int, len(haystack))
-	for index, current := range haystack {
+// fillBonuses writes the match bonus of each haystack rune (by rune index)
+// into bonuses, which holds one cell per rune, and returns it. Ranging over
+// the string decodes the runes a []rune conversion would (invalid bytes as
+// U+FFFD) without allocating one.
+func fillBonuses(bonuses []int, haystack string) []int {
+	index, previous := 0, rune(0)
+	for _, current := range haystack {
 		switch {
 		case index == 0:
 			bonuses[index] = BonusWord
-		case haystack[index-1] == '/':
+		case previous == '/':
 			bonuses[index] = BonusSlash
-		case isWordSeparator(haystack[index-1]):
+		case isWordSeparator(previous):
 			bonuses[index] = BonusWord
-		case haystack[index-1] == '.':
+		case previous == '.':
 			bonuses[index] = BonusDot
-		case unicode.IsLower(haystack[index-1]) && unicode.IsUpper(current):
+		case unicode.IsLower(previous) && unicode.IsUpper(current):
 			bonuses[index] = BonusCamelCase
 		}
+		index, previous = index+1, current
 	}
 	return bonuses
 }
 
 func isWordSeparator(r rune) bool {
 	return r == '-' || r == '_' || r == ' '
-}
-
-func makeScoreMatrix(rows, columns int) [][]int {
-	matrix := make([][]int, rows)
-	for row := range matrix {
-		matrix[row] = make([]int, columns)
-	}
-	return matrix
-}
-
-func makeBoolMatrix(rows, columns int) [][]bool {
-	matrix := make([][]bool, rows)
-	for row := range matrix {
-		matrix[row] = make([]bool, columns)
-	}
-	return matrix
 }
 
 func addPenalty(score, penalty int) int {
@@ -153,7 +191,9 @@ func addPenalty(score, penalty int) int {
 	return score + penalty
 }
 
-func traceback(mFromD, dFromD [][]bool, needleLength, haystackLength int) []int {
+// traceback walks the direction flags back from the last cell to recover
+// the optimal match path.
+func traceback(dirs directions, needleLength, haystackLength int) []int {
 	matchedIndexes := make([]int, needleLength)
 	needleIndex := needleLength - 1
 	haystackIndex := haystackLength - 1
@@ -161,7 +201,7 @@ func traceback(mFromD, dFromD [][]bool, needleLength, haystackLength int) []int 
 
 	for {
 		if inMatchMatrix {
-			if !mFromD[needleIndex][haystackIndex] {
+			if !dirs.get(dirs.mFromD(needleIndex, haystackIndex)) {
 				haystackIndex--
 				continue
 			}
@@ -172,7 +212,7 @@ func traceback(mFromD, dFromD [][]bool, needleLength, haystackLength int) []int 
 			return matchedIndexes
 		}
 
-		inMatchMatrix = !dFromD[needleIndex][haystackIndex]
+		inMatchMatrix = !dirs.get(dirs.dFromD(needleIndex, haystackIndex))
 		needleIndex--
 		haystackIndex--
 	}
