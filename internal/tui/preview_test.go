@@ -57,7 +57,7 @@ func TestPreview_RowTabDispatch(t *testing.T) {
 				Tabs:       driver.tabs,
 				Panes:      tt.panes,
 			}
-			m := NewModel(nil, nil).WithSnapshotRefresh(driver, snapshot, nil, nil)
+			m := NewModel(nil, nil).WithSnapshotRefresh(driver, snapshot, nil)
 			m.renderCtx = context.Background()
 			m.rows = []Row{{
 				Kind: RowTab,

@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/tranceh2/shep/internal/config"
+	"github.com/tranceh2/shep/internal/effective"
 	"github.com/tranceh2/shep/internal/history"
 	"github.com/tranceh2/shep/internal/pathutil"
 	"github.com/tranceh2/shep/internal/preview"
@@ -134,15 +135,6 @@ func (a *App) resolveStatusDialer() tui.StatusDialer {
 	return tui.NewUnixStatusDialer(socketPath)
 }
 
-// snapshotIconsFor uses one registry lookup path for both synchronous and
-// streaming snapshot-derived rows.
-func snapshotIconsFor(registry *source.Registry) map[string]string {
-	return map[string]string{
-		config.SourceHerdr:  registry.IconFor(config.SourceHerdr),
-		config.SourceAgents: registry.IconFor(config.SourceAgents),
-	}
-}
-
 func (a *App) selectorFactory(matches []source.Candidate) *selector.Cascade {
 	if a.selectorBuilder != nil {
 		return a.selectorBuilder()
@@ -155,7 +147,7 @@ func (a *App) selectorFactory(matches []source.Candidate) *selector.Cascade {
 		layout.PinToggler = a.pinToggler()
 		layout.Closer = a.herdrCloser()
 		layout.AckClearer = a.ackClearer()
-		return snapshotCascadeFor(cfg.General.Selector, a.buildPreviewRendererForSnapshot(*a.startupSnapshot), a.currentPane, a.setChosenTarget, a.setChosenAction, *a.startupSnapshot, a.Driver(), a.buildPreviewRendererForSnapshot, snapshotIconsFor(source.NewRegistry(cfg, a.Probes(), a.Driver())), matches, layout)
+		return snapshotCascadeFor(cfg.General.Selector, a.buildPreviewRendererForSnapshot(*a.startupSnapshot), a.currentPane, a.setChosenTarget, a.setChosenAction, *a.startupSnapshot, a.Driver(), a.buildPreviewRendererForSnapshot, matches, layout)
 	}
 	layout := a.pickerLayout(cfg.General.SourceOrder, matches)
 	layout.RankingSnapshot = a.rankingSnapshot(matches)
@@ -288,7 +280,7 @@ func (a *App) selectorFactoryForOrder(order []string, matches []source.Candidate
 		layout.PinToggler = a.pinToggler()
 		layout.Closer = a.herdrCloser()
 		layout.AckClearer = a.ackClearer()
-		return snapshotCascadeFor(cfg.General.Selector, a.buildPreviewRendererForSnapshot(*a.startupSnapshot), a.currentPane, a.setChosenTarget, a.setChosenAction, *a.startupSnapshot, a.Driver(), a.buildPreviewRendererForSnapshot, snapshotIconsFor(source.NewRegistry(cfg, a.Probes(), a.Driver())), matches, layout)
+		return snapshotCascadeFor(cfg.General.Selector, a.buildPreviewRendererForSnapshot(*a.startupSnapshot), a.currentPane, a.setChosenTarget, a.setChosenAction, *a.startupSnapshot, a.Driver(), a.buildPreviewRendererForSnapshot, matches, layout)
 	}
 	layout := a.pickerLayout(order, matches)
 	layout.RankingSnapshot = a.rankingSnapshot(matches)
@@ -379,6 +371,9 @@ func (a *App) pickerLayoutForConfig(cfg *config.Config, order []string, matches 
 	layout.ConfirmClose = append([]string(nil), cfg.TUI.ConfirmClose...)
 	layout.Templates = a.templateEngine()
 	layout.Theme = a.selectedTheme(cfg)
+	settings := a.settings()
+	layout.IconColors = settings.IconColors()
+	layout.Resolve = settings.Attach
 	registry := a.withStartupSnapshot(source.NewRegistry(cfg, a.Probes(), a.Driver()))
 	providers := make(map[string]source.Provider)
 	for _, provider := range registry.Providers() {
@@ -417,6 +412,7 @@ func (a *App) pickerLayoutForConfig(cfg *config.Config, order []string, matches 
 						}
 					}
 				}
+				settings.Attach(candidates)
 				return candidates, err
 			}
 			break
@@ -444,23 +440,19 @@ func (a *App) pickerLayoutForConfig(cfg *config.Config, order []string, matches 
 			} else {
 				rows, err = provider.List(ctx)
 			}
-			icon := registry.IconFor(provider.Name())
 			out := make([]source.Candidate, 0, len(rows))
 			for _, row := range rows {
-				copy := row.Clone()
-				if icon != "" {
-					copy.Icon = icon
-				}
-				out = append(out, copy)
+				out = append(out, row.Clone())
 			}
+			settings.Attach(out)
 			return out, err
 		}
 	}
 	return layout
 }
 
-// buildPreviewRenderer wires the production preview.Renderer from the loaded
-// config and binary probes so the TUI's preview pane and the `shep preview`
+// buildPreviewRenderer wires the production preview.Renderer from the settings
+// resolver and binary probes so the TUI's preview pane and the `shep preview`
 // command share identical rendering behaviour. A CommandRunner is always
 // constructed (it powers both the "dir" built-in and any declared
 // preview.commands); the active Herdr driver (if any) supplies only live pane
@@ -469,7 +461,6 @@ func (a *App) buildPreviewRenderer() preview.Renderer {
 	if a.startupSnapshot != nil {
 		return a.buildPreviewRendererForSnapshot(*a.startupSnapshot)
 	}
-	cfg := a.Config()
 	var git preview.GitProvider
 	if a.Probes().Git {
 		git = preview.NewGitProvider()
@@ -479,11 +470,10 @@ func (a *App) buildPreviewRenderer() preview.Renderer {
 	if driver := a.Driver(); driver != nil {
 		opts = append(opts, preview.WithPaneReader(driver))
 	}
-	return preview.NewRenderer(cfg, a.templateEngine(), a.Probes(), git, runner, opts...)
+	return preview.NewRenderer(a.settings(), a.templateEngine(), a.Probes(), git, runner, opts...)
 }
 
 func (a *App) buildPreviewRendererForSnapshot(snapshot source.Snapshot) preview.Renderer {
-	cfg := a.Config()
 	var git preview.GitProvider
 	if a.Probes().Git {
 		git = preview.NewGitProvider()
@@ -493,7 +483,7 @@ func (a *App) buildPreviewRendererForSnapshot(snapshot source.Snapshot) preview.
 	if driver := a.Driver(); driver != nil {
 		opts = append(opts, preview.WithPaneReader(driver))
 	}
-	return preview.NewRenderer(cfg, a.templateEngine(), a.Probes(), git, runner, opts...)
+	return preview.NewRenderer(a.settings(), a.templateEngine(), a.Probes(), git, runner, opts...)
 }
 
 // cascadeFor builds the selector cascade for a [general].selector value.
@@ -665,7 +655,6 @@ type snapshotTUISelector struct {
 	snapshot            source.Snapshot
 	driver              source.HerdrDriver
 	rendererForSnapshot tui.SnapshotRendererFactory
-	snapshotIcons       map[string]string
 	onTarget            func(string)
 	onAction            func(tui.RowAction)
 }
@@ -676,7 +665,7 @@ func (s snapshotTUISelector) Select(ctx context.Context, candidates []source.Can
 	if len(candidates) == 0 {
 		return source.Candidate{}, false, nil
 	}
-	cand, action, target, ok, err := tui.RunWithSnapshot(ctx, candidates, query, s.renderer, s.snapshot, s.driver, s.rendererForSnapshot, s.snapshotIcons, s.currentPane, s.layout)
+	cand, action, target, ok, err := tui.RunWithSnapshot(ctx, candidates, query, s.renderer, s.snapshot, s.driver, s.rendererForSnapshot, s.currentPane, s.layout)
 	if ok {
 		if s.onTarget != nil {
 			s.onTarget(target)
@@ -688,7 +677,7 @@ func (s snapshotTUISelector) Select(ctx context.Context, candidates []source.Can
 	return cand, ok, err
 }
 
-func snapshotCascadeFor(sel string, renderer preview.Renderer, currentPane *source.Pane, onTarget func(string), onAction func(tui.RowAction), snapshot source.Snapshot, driver source.HerdrDriver, rendererForSnapshot tui.SnapshotRendererFactory, snapshotIcons map[string]string, matches []source.Candidate, layout tui.Layout) *selector.Cascade {
+func snapshotCascadeFor(sel string, renderer preview.Renderer, currentPane *source.Pane, onTarget func(string), onAction func(tui.RowAction), snapshot source.Snapshot, driver source.HerdrDriver, rendererForSnapshot tui.SnapshotRendererFactory, matches []source.Candidate, layout tui.Layout) *selector.Cascade {
 	direct := selector.Direct{}
 	picker := snapshotTUISelector{
 		name:                "tui",
@@ -698,7 +687,6 @@ func snapshotCascadeFor(sel string, renderer preview.Renderer, currentPane *sour
 		snapshot:            snapshot,
 		driver:              driver,
 		rendererForSnapshot: rendererForSnapshot,
-		snapshotIcons:       snapshotIcons,
 		onTarget:            onTarget,
 		onAction:            onAction,
 	}
@@ -721,17 +709,17 @@ func (a *App) runAsyncTUI(ctx context.Context, producers []tui.SourceProducer, q
 	return tui.RunWithProducers(ctx, producers, query, nil, layout)
 }
 
-func (a *App) buildProviderProducer(p source.Provider, icon string) tui.SourceProducer {
+// buildProviderProducer streams one provider's candidates, resolved (see
+// App.settings) in the producer's own goroutine.
+func (a *App) buildProviderProducer(p source.Provider) tui.SourceProducer {
+	settings := a.settings()
 	return func(ctx context.Context) tui.SourceResultMsg {
 		raw, err := p.List(ctx)
 		cands := make([]source.Candidate, 0, len(raw))
 		for _, c := range raw {
-			clone := c.Clone()
-			if icon != "" {
-				clone.Icon = icon
-			}
-			cands = append(cands, clone)
+			cands = append(cands, c.Clone())
 		}
+		settings.Attach(cands)
 		return tui.SourceResultMsg{
 			Source:     p.Name(),
 			Candidates: cands,
@@ -752,8 +740,12 @@ type snapshotProducerOptions struct {
 	agents   bool
 }
 
-func (a *App) buildSnapshotProducer(snapshotIcons map[string]string, sessionsIcon string, opts snapshotProducerOptions) tui.SourceProducer {
+// buildSnapshotProducer streams the families of the shared Herdr generation,
+// resolved (see App.settings) in the producer's own goroutine, together with
+// the presentations of the generation's agent panes for the agents view.
+func (a *App) buildSnapshotProducer(opts snapshotProducerOptions) tui.SourceProducer {
 	driver := a.Driver()
+	settings := a.settings()
 	return func(ctx context.Context) tui.SourceResultMsg {
 		if driver == nil || !driver.Detect(ctx) {
 			return tui.SourceResultMsg{Source: config.SourceHerdr}
@@ -772,14 +764,7 @@ func (a *App) buildSnapshotProducer(snapshotIcons map[string]string, sessionsIco
 		var snapshotSources []string
 
 		if opts.herdr {
-			rawHerdr := source.HerdrCandidates(snapshot)
-			for _, c := range rawHerdr {
-				clone := c.Clone()
-				if icon := snapshotIcons[config.SourceHerdr]; icon != "" {
-					clone.Icon = icon
-				}
-				cands = append(cands, clone)
-			}
+			cands = append(cands, source.HerdrCandidates(snapshot)...)
 			snapshotSources = append(snapshotSources, config.SourceHerdr)
 		}
 
@@ -788,29 +773,20 @@ func (a *App) buildSnapshotProducer(snapshotIcons map[string]string, sessionsIco
 			sessions, sErr := driver.ListSessions(sessCtx)
 			sCancel()
 			if sErr == nil {
-				rawSessions := source.SessionCandidates(sessions, os.Getenv)
-				for _, c := range rawSessions {
-					clone := c.Clone()
-					if sessionsIcon != "" {
-						clone.Icon = sessionsIcon
-					}
-					cands = append(cands, clone)
-				}
+				cands = append(cands, source.SessionCandidates(sessions, os.Getenv)...)
 			}
 		}
+		settings.Attach(cands)
 
+		// The agents view draws the generation's agent panes whether or not
+		// the agents source is enabled.
+		agents := source.AgentCandidates(snapshot)
+		settings.Attach(agents)
 		if opts.agents {
 			// Agent rows keep their own source identity so the model files
 			// them under SourceAgents even though they arrive on this shared
 			// message.
-			rawAgents := source.AgentCandidates(snapshot)
-			for _, c := range rawAgents {
-				clone := c.Clone()
-				if icon := snapshotIcons[config.SourceAgents]; icon != "" {
-					clone.Icon = icon
-				}
-				cands = append(cands, clone)
-			}
+			cands = append(cands, agents...)
 			snapshotSources = append(snapshotSources, config.SourceAgents)
 		}
 
@@ -830,7 +806,7 @@ func (a *App) buildSnapshotProducer(snapshotIcons map[string]string, sessionsIco
 			SnapshotDriver:      driver,
 			Snapshot:            &snapshot,
 			RendererForSnapshot: a.buildPreviewRendererForSnapshot,
-			SnapshotIcons:       snapshotIcons,
+			AgentPresentations:  tui.AgentPresentations(agents),
 			SnapshotSources:     snapshotSources,
 			Renderer:            renderer,
 			CurrentPane:         currentPane,
@@ -958,14 +934,12 @@ func (a *App) streamingProducersForView(cmdCtx context.Context, view string) []t
 			// share the same generic producer builder (see
 			// App.buildProviderProducer): they all just call p.List(ctx) and
 			// stream the result through tui.SourceResultMsg.Err on failure.
-			producers = append(producers, a.buildProviderProducer(p, registry.IconFor(p.Name())))
+			producers = append(producers, a.buildProviderProducer(p))
 		}
 	}
 
 	if includeHerdr || includeAgents {
 		producers = append(producers, a.buildSnapshotProducer(
-			snapshotIconsFor(registry),
-			registry.IconFor(config.SourceSessions),
 			snapshotProducerOptions{
 				herdr: includeHerdr,
 				// sessions ride the snapshot generation only alongside herdr
@@ -977,7 +951,7 @@ func (a *App) streamingProducersForView(cmdCtx context.Context, view string) []t
 		))
 	}
 	if standaloneSessions != nil && !includeHerdr {
-		producers = append(producers, a.buildProviderProducer(standaloneSessions, registry.IconFor(config.SourceSessions)))
+		producers = append(producers, a.buildProviderProducer(standaloneSessions))
 	}
 
 	if cfg.Ranking.Enabled {
@@ -1149,7 +1123,7 @@ func (a *App) runOpenWithView(cmd *cobra.Command, query, pathFlag, targetFlag, v
 
 	if cand.Meta["group"] == "true" {
 		groupSources := splitNonEmpty(cand.Meta["group_sources"], ",")
-		groupWorkspace, hasWorkspace := workspaceConfigForCandidate(cfg.Workspaces, cand)
+		groupWorkspace, hasWorkspace := a.settings().Workspace(cand)
 		nestedTemplate := cand.Meta["group_template"]
 		var nested *source.Registry
 		nestedOrder := effectiveGroupSourceOrder(cfg, groupWorkspace, hasWorkspace, groupSources)
@@ -1318,6 +1292,8 @@ func (a *App) resolveFromRegistry(cmd *cobra.Command, registry *source.Registry,
 		// when there are zero matches as well.
 		fmt.Fprintf(errOut, "warning: a source failed: %v\n", err)
 	}
+	// The matches are what a picker draws.
+	a.settings().Attach(matches)
 
 	var pick source.Candidate
 	switch len(matches) {
@@ -1362,7 +1338,7 @@ func (a *App) resolveFromRegistry(cmd *cobra.Command, registry *source.Registry,
 
 	if pick.Meta["group"] == "true" {
 		groupSources := splitNonEmpty(pick.Meta["group_sources"], ",")
-		groupWorkspace, hasWorkspace := workspaceConfigForCandidate(a.Config().Workspaces, pick)
+		groupWorkspace, hasWorkspace := a.settings().Workspace(pick)
 		nestedTemplate := pick.Meta["group_template"]
 		if nestedTemplate == "" {
 			nestedTemplate = parentTemplate
@@ -1387,83 +1363,6 @@ func (a *App) resolveFromRegistry(cmd *cobra.Command, registry *source.Registry,
 		pick.Meta["parent_template"] = parentTemplate
 	}
 	return pick, true, nil
-}
-
-func workspaceConfigForCandidate(workspaces []config.WorkspaceConfig, cand source.Candidate) (config.WorkspaceConfig, bool) {
-	candPath := cand.Path
-	if cand.NormalizedPath != "" {
-		candPath = cand.NormalizedPath
-	}
-	isGroup := cand.Meta != nil && cand.Meta["group"] == "true"
-	candName := cand.Label
-	if cand.Meta != nil && cand.Meta["workspace_name"] != "" {
-		candName = cand.Meta["workspace_name"]
-	}
-	candEntryID := ""
-	if cand.Meta != nil {
-		candEntryID = cand.Meta["entry_id"]
-	}
-
-	// Tier 1: Path matches + Type matches (if group) + (Name matches OR EntryID matches)
-	for _, ws := range workspaces {
-		if !workspacePathMatches(ws.Path, candPath) {
-			continue
-		}
-		if isGroup && ws.Type != config.WorkspaceTypeGroup {
-			continue
-		}
-		if (candName != "" && ws.Name == candName) || (candEntryID != "" && source.WorkspaceEntryIdentity(ws.Path, ws) == candEntryID) {
-			return ws, true
-		}
-	}
-
-	// Tier 2: Path matches + Type matches (if group)
-	if isGroup {
-		for _, ws := range workspaces {
-			if ws.Type == config.WorkspaceTypeGroup && workspacePathMatches(ws.Path, candPath) {
-				return ws, true
-			}
-		}
-	}
-
-	// Tier 3: Path matches + (Name matches OR EntryID matches)
-	for _, ws := range workspaces {
-		if !workspacePathMatches(ws.Path, candPath) {
-			continue
-		}
-		if (candName != "" && ws.Name == candName) || (candEntryID != "" && source.WorkspaceEntryIdentity(ws.Path, ws) == candEntryID) {
-			return ws, true
-		}
-	}
-
-	// Tier 4: Fallback to first path match
-	for _, ws := range workspaces {
-		if workspacePathMatches(ws.Path, candPath) {
-			return ws, true
-		}
-	}
-
-	return config.WorkspaceConfig{}, false
-}
-
-func workspacePathMatches(wsPath, candPath string) bool {
-	resolved := wsPath
-	if expanded, err := pathutil.ExpandTilde(resolved); err == nil {
-		resolved = expanded
-	}
-	if resolved == candPath {
-		return true
-	}
-	if canonical, err := pathutil.Normalize(resolved); err == nil && canonical != "" {
-		candNorm := candPath
-		if cn, err := pathutil.Normalize(candPath); err == nil && cn != "" {
-			candNorm = cn
-		}
-		if canonical == candNorm {
-			return true
-		}
-	}
-	return false
 }
 
 // effectiveGroupSourceOrder returns the single source order used for both
@@ -1661,32 +1560,24 @@ func (a *App) launchChildTab(ctx context.Context, driver source.HerdrDriver, can
 	return launchOutcomeCompleted, nil
 }
 
+// workspaceLaunchRequest names the workspace a candidate creates: an open
+// Herdr workspace is focused, not created; a configured workspace or a custom
+// row is named by its own label; anything else by its resolved
+// workspace_name format (see internal/effective), rendered against its data.
 func (a *App) workspaceLaunchRequest(cand source.Candidate) (source.WorkspaceLaunchRequest, error) {
-	cfg := a.Config()
 	if cand.Source == config.SourceHerdr {
 		return source.WorkspaceLaunchRequest{Candidate: cand}, nil
 	}
 	if cand.Source == config.SourceWorkspaces || cand.Meta["custom_source"] == "true" {
 		return source.WorkspaceLaunchRequest{Candidate: cand, WorkspaceName: workspacename.Name(cand.Label)}, nil
 	}
-	normalized := cand.NormalizedPath
-	if normalized == "" {
-		var err error
-		normalized, err = resolver.Normalize(cand.Path)
-		if err != nil {
-			return source.WorkspaceLaunchRequest{}, fmt.Errorf("workspace name: normalize path: %w", err)
-		}
-	}
-	format := ""
-	if wildcard, ok := config.FirstMatchingWildcard(cfg.Wildcards, normalized); ok {
-		format = wildcard.WorkspaceName
-	}
-	if format == "" {
-		format = cfg.General.WorkspaceName
+	settings := a.settings().For(cand)
+	if settings.NormalizedPath == "" {
+		return source.WorkspaceLaunchRequest{}, errors.New("workspace name: the candidate has no path")
 	}
 	data := source.TemplateData(cand)
-	data.NormalizedPath = normalized
-	name, err := workspacename.Render(a.templateEngine(), "workspace name", format, data)
+	data.NormalizedPath = settings.NormalizedPath
+	name, err := workspacename.Render(a.templateEngine(), "workspace name", settings.WorkspaceName, data)
 	if err != nil {
 		return source.WorkspaceLaunchRequest{}, err
 	}
@@ -1713,7 +1604,7 @@ func (a *App) launchWorkspace(ctx context.Context, driver source.HerdrDriver, ca
 	}
 
 	if res.Action == source.HerdrActionCreated {
-		tpl := resolveTemplate(cand, a.Config())
+		tpl := resolveTemplate(a.settings().For(cand), a.Config())
 		target := templates.Target{
 			WorkspaceID: res.WorkspaceID,
 			RootTabID:   res.RootTabID,
@@ -1853,73 +1744,18 @@ func candidateFromPath(p string) (source.Candidate, error) {
 	return cand, nil
 }
 
-// resolveTemplate resolves the template applied to a freshly created
-// workspace, per the documented precedence:
-//  1. exact [[workspaces]] entry with explicit template (Meta["template"])
-//  2. exact [[workspaces]] entry with explicit command (Meta["command"])
-//  3. first matching [[wildcards]] entry's template
-//  4. template inherited from parent group picker (Meta["parent_template"])
-//  5. [defaults].template
-//
-// An unresolved name (should not happen post-validation) or no match at any
-// tier yields an empty TemplateConfig{} (a plain shell), never a crash.
-func resolveTemplate(cand source.Candidate, cfg *config.Config) config.TemplateConfig {
-	if cfg == nil {
-		return config.TemplateConfig{}
+// resolveTemplate returns what a freshly created workspace runs for its
+// resolved settings (see internal/effective for the precedence): their
+// command as a one-pane template honouring close_on_exit, else their named
+// template, else nothing (a plain shell).
+func resolveTemplate(settings effective.Settings, cfg *config.Config) config.TemplateConfig {
+	if settings.Command != "" {
+		return config.TemplateConfig{Command: settings.Command, CloseOnExit: settings.CloseOnExit}
 	}
-	if name := cand.Meta["template"]; name != "" {
-		if t, ok := cfg.Templates[name]; ok {
-			return t
-		}
-	}
-	if cmd := cand.Meta["command"]; cmd != "" {
-		tpl := config.TemplateConfig{Command: cmd}
-		// Forward close_on_exit from the workspace Meta into the synthetic
-		// template so the simple-Command Apply branch honors it. The only
-		// writer (workspacesProvider.List) emits the literal "true", so this
-		// is a strict equality contract — not strconv.ParseBool — to keep a
-		// future provider from silently flipping close-on-exit on via "1"/"T".
-		tpl.CloseOnExit = cand.Meta["close_on_exit"] == "true"
-		return tpl
-	}
-	if name := matchWildcardTemplate(cand, cfg); name != "" {
-		if t, ok := cfg.Templates[name]; ok {
-			return t
-		}
-	}
-	if name := cand.Meta["parent_template"]; name != "" {
-		if t, ok := cfg.Templates[name]; ok {
-			return t
-		}
-	}
-	if cfg.Defaults.Template != "" {
-		if t, ok := cfg.Templates[cfg.Defaults.Template]; ok {
-			return t
-		}
+	if t, ok := cfg.Templates[settings.Template]; ok && settings.Template != "" {
+		return t
 	}
 	return config.TemplateConfig{}
-}
-
-// matchWildcardTemplate returns the template name for the first
-// [[wildcards]] entry whose pattern matches the candidate's normalised path
-// or base name, scanned in declaration order. A nil/empty config, no match,
-// or a match whose own template is unset all yield "" so the caller falls
-// through to the next precedence tier.
-func matchWildcardTemplate(cand source.Candidate, cfg *config.Config) string {
-	if cfg == nil || len(cfg.Wildcards) == 0 {
-		return ""
-	}
-	np := cand.NormalizedPath
-	if np == "" {
-		np = cand.Path
-	}
-	base := filepath.Base(np)
-	for _, w := range cfg.Wildcards {
-		if config.MatchWildcard(w.Pattern, np) || config.MatchWildcard(w.Pattern, base) {
-			return w.Template
-		}
-	}
-	return ""
 }
 
 // printCandidates writes the candidate list to stdout so the user can see what

@@ -300,8 +300,10 @@ command = "k9s"
 #   command = "opencode"
 #   close_on_exit = true
 
-# [[wildcards]] binds a glob pattern to a workspace name, template and/or
-# preview override. Rules are scanned in declaration order; first match wins.
+# [[wildcards]] binds a glob pattern to a workspace name, template, preview
+# and/or row presentation (icon, label_format, ...) override. Rules are
+# scanned in declaration order: each setting comes from the first matching
+# rule that sets it.
 # [[wildcards]]
 # pattern = "~/projects/kubernetes/**"
 # workspace_name = '✈️ {{ printf "%s/%s" (.Path | dir | base) (.Path | base) }}'

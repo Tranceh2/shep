@@ -204,6 +204,12 @@ func TestLoad_RejectsInvalidPresentation(t *testing.T) {
 		{"tab icon color", "[sources.herdr.tab]\nicon_color = \"#12\"\n", "sources.herdr.tab.icon_color: invalid color"},
 		{"custom marker", "[[sources.custom]]\nname = \"prs\"\ncommand = [\"gh\"]\nmarker_format = \"{{ .Nope }}\"\n", "sources.custom[0].marker_format: "},
 		{"custom icon color", "[[sources.custom]]\nname = \"prs\"\ncommand = [\"gh\"]\nicon_color = \"nope\"\n", "sources.custom[0].icon_color: "},
+		{"wildcard label", "[[wildcards]]\npattern = \"**\"\nlabel_format = \"{{ .Nope }}\"\n", "wildcards[0].label_format: "},
+		// A wildcard may apply to any directory-like row, so a template
+		// that fails for one of those kinds is rejected.
+		{"wildcard icon for every kind", "[[wildcards]]\npattern = \"**\"\nicon = \"{{ slice .Branch 0 3 }}\"\n", "wildcards[0].icon: "},
+		{"workspace marker", "[[workspaces]]\nname = \"api\"\npath = \"/api\"\nmarker_format = \"{{ if }}\"\n", "workspaces[0].marker_format: "},
+		{"workspace icon color", "[[workspaces]]\nname = \"api\"\npath = \"/api\"\nicon_color = \"nope\"\n", "workspaces[0].icon_color: "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -331,5 +337,35 @@ func TestLoad_RejectsInvalidThemes(t *testing.T) {
 				t.Fatalf("Load error = %v, want it to contain %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// TestLoad_OverridePresentations proves [[workspaces]] and [[wildcards]]
+// entries carry the presentation keys, an unset key staying distinct from an
+// explicit empty one.
+func TestLoad_OverridePresentations(t *testing.T) {
+	t.Parallel()
+	cfg, err := loadDoc(t, `
+[[workspaces]]
+name = "api"
+path = "/srv/api"
+icon = "A "
+icon_color = "peach"
+marker_format = ""
+
+[[wildcards]]
+pattern = "~/work/**"
+label_format = "{{ .Label | name }}"
+detail_format = "{{ muted .Branch }}"
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, w := cfg.Workspaces[0].Presentation, cfg.Wildcards[0].Presentation
+	if got := []string{deref(ws.Icon), deref(ws.IconColor), deref(ws.LabelFormat), deref(ws.DetailFormat), deref(ws.MarkerFormat)}; !reflect.DeepEqual(got, []string{"A ", "peach", "<nil>", "<nil>", ""}) {
+		t.Errorf("workspace presentation = %q", got)
+	}
+	if got := []string{deref(w.Icon), deref(w.LabelFormat), deref(w.DetailFormat)}; !reflect.DeepEqual(got, []string{"<nil>", "{{ .Label | name }}", "{{ muted .Branch }}"}) {
+		t.Errorf("wildcard presentation = %q", got)
 	}
 }

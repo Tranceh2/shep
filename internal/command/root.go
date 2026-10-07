@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 	"github.com/tranceh2/shep/internal/config"
+	"github.com/tranceh2/shep/internal/effective"
 	"github.com/tranceh2/shep/internal/herdr"
 	"github.com/tranceh2/shep/internal/ranking"
 	"github.com/tranceh2/shep/internal/selector"
@@ -122,6 +123,11 @@ type App struct {
 	// templateEngine from the user's home directory.
 	templates     *tmpl.Engine
 	templatesOnce sync.Once
+	// resolver is the one effective.Resolver for resolverCfg (the loaded
+	// configuration; nil for the defaults), built on first use by settings.
+	resolver    *effective.Resolver
+	resolverCfg *config.Config
+	resolverMu  sync.Mutex
 	// pickerTheme is the picker's color theme, selected once by
 	// selectedTheme. themeGetenv reads NO_COLOR, SHEP_THEME and the location
 	// of Herdr's configuration for it (nil: os.Getenv); darkBackground
@@ -156,6 +162,21 @@ func (a *App) templateEngine() *tmpl.Engine {
 		a.templates = tmpl.New(home)
 	})
 	return a.templates
+}
+
+// settings returns the resolver every per-candidate setting comes from:
+// row presentations attached by the producers, preview sections, the
+// template and workspace name of a launch. It is built once per loaded
+// configuration and reads the filesystem, so it runs in the command layer
+// and in the picker's background commands, never in its Update or View.
+func (a *App) settings() *effective.Resolver {
+	a.resolverMu.Lock()
+	defer a.resolverMu.Unlock()
+	if a.resolver == nil || a.resolverCfg != a.cfg {
+		a.resolver = effective.New(a.Config())
+		a.resolverCfg = a.cfg
+	}
+	return a.resolver
 }
 
 // selectedTheme selects the picker's color theme once per process with

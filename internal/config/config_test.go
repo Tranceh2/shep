@@ -2246,63 +2246,6 @@ func TestLoad_RejectsUnknownAndLegacyKeys(t *testing.T) {
 	}
 }
 
-// TestMatchWildcard covers tilde expansion, "**" recursive segment matching
-// (the documented "~/projects/kubernetes/**" pattern), plain single-segment
-// globbing, and a malformed pattern degrading to "no match" rather than a
-// crash.
-func TestMatchWildcard(t *testing.T) {
-	t.Parallel()
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip("no resolvable home directory")
-	}
-	cases := []struct {
-		name    string
-		pattern string
-		path    string
-		want    bool
-	}{
-		{
-			name:    "double star matches direct child",
-			pattern: "~/projects/kubernetes/**",
-			path:    filepath.Join(home, "projects", "kubernetes", "myrepo"),
-			want:    true,
-		},
-		{
-			name:    "double star matches deeply nested descendant",
-			pattern: "~/projects/kubernetes/**",
-			path:    filepath.Join(home, "projects", "kubernetes", "myrepo", "sub", "dir"),
-			want:    true,
-		},
-		{
-			name:    "double star does not match sibling directory",
-			pattern: "~/projects/kubernetes/**",
-			path:    filepath.Join(home, "projects", "other", "myrepo"),
-			want:    false,
-		},
-		{
-			name:    "plain glob matches basename",
-			pattern: "*.go",
-			path:    "main.go",
-			want:    true,
-		},
-		{
-			name:    "malformed pattern is no match, not an error",
-			pattern: "[",
-			path:    "/p/foo",
-			want:    false,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			if got := MatchWildcard(tc.pattern, tc.path); got != tc.want {
-				t.Errorf("MatchWildcard(%q, %q) = %v, want %v", tc.pattern, tc.path, got, tc.want)
-			}
-		})
-	}
-}
-
 // TestLoad_RejectsTUIWidthSumOverflow confirms list_width + preview_width
 // configured as percentages that sum past 100% fails Load fast rather than
 // letting the picker render an overflowing layout.
@@ -3193,7 +3136,7 @@ root = "main"
 	}
 }
 
-func TestLoad_WorkspaceNameFieldsAndOrderedWildcardSelector(t *testing.T) {
+func TestLoad_WorkspaceNameFields(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.toml")
 	const doc = `[general]
@@ -3223,12 +3166,6 @@ path = "/srv/services/platform-api"
 	}
 	if got, want := cfg.Wildcards[0].WorkspaceName, "first"; got != want {
 		t.Errorf("wildcards[0].workspace_name = %q, want %q", got, want)
-	}
-	if got, ok := FirstMatchingWildcard(cfg.Wildcards, "/srv/services/platform-api"); !ok || got.WorkspaceName != "first" {
-		t.Fatalf("first wildcard = (%+v, %v), want first match", got, ok)
-	}
-	if got, ok := FirstMatchingWildcard(cfg.Wildcards, "/srv/other"); ok || got.WorkspaceName != "" {
-		t.Fatalf("unmatched wildcard = (%+v, %v), want no match", got, ok)
 	}
 }
 

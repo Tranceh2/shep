@@ -15,6 +15,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tranceh2/shep/internal/config"
+	"github.com/tranceh2/shep/internal/effective"
 	"github.com/tranceh2/shep/internal/herdr"
 	"github.com/tranceh2/shep/internal/preview"
 	"github.com/tranceh2/shep/internal/selector"
@@ -862,9 +863,11 @@ func TestOpen_PathFlagMissingFailsCleanly(t *testing.T) {
 	}
 }
 
-// TestResolveTemplate_Precedence exercises the full precedence chain: exact
-// workspace template > exact workspace command > first matching wildcard's
-// template > parent group template > defaults.template > empty.
+// TestResolveTemplate_Precedence exercises the template a freshly created
+// workspace gets, end to end through the settings resolver: the candidate's
+// own template > its own command (close_on_exit forwarded, strictly "true")
+// > the template of the group it was picked through > the first matching
+// wildcard's template > defaults.template.
 func TestResolveTemplate_Precedence(t *testing.T) {
 	t.Parallel()
 	cfg := &config.Config{
@@ -877,14 +880,17 @@ func TestResolveTemplate_Precedence(t *testing.T) {
 		Wildcards: []config.WildcardConfig{{Pattern: "foo", Template: "wc-tpl"}},
 		Defaults:  config.DefaultsConfig{Template: "def-tpl"},
 	}
+	settings := effective.New(cfg)
+	resolve := func(cand source.Candidate) config.TemplateConfig {
+		return resolveTemplate(settings.For(cand), cfg)
+	}
 	base := source.Candidate{Path: "/projects/foo", NormalizedPath: "/projects/foo"}
 
 	t.Run("workspace template wins", func(t *testing.T) {
 		t.Parallel()
 		cand := base
 		cand.Meta = map[string]string{"template": "ws-tpl", "parent_template": "parent-tpl"}
-		got := resolveTemplate(cand, cfg)
-		if got.Command != "ws" {
+		if got := resolve(cand); got.Command != "ws" {
 			t.Errorf("got %+v want ws-tpl", got)
 		}
 	})
@@ -893,8 +899,7 @@ func TestResolveTemplate_Precedence(t *testing.T) {
 		t.Parallel()
 		cand := base
 		cand.Meta = map[string]string{"command": "adhoc"}
-		got := resolveTemplate(cand, cfg)
-		if got.Command != "adhoc" || len(got.Tabs) != 0 {
+		if got := resolve(cand); got.Command != "adhoc" || len(got.Tabs) != 0 {
 			t.Errorf("got %+v want ad-hoc command template", got)
 		}
 	})
@@ -903,8 +908,7 @@ func TestResolveTemplate_Precedence(t *testing.T) {
 		t.Parallel()
 		cand := base
 		cand.Meta = map[string]string{"command": "nvim", "close_on_exit": "true"}
-		got := resolveTemplate(cand, cfg)
-		if got.Command != "nvim" || !got.CloseOnExit {
+		if got := resolve(cand); got.Command != "nvim" || !got.CloseOnExit {
 			t.Errorf("got %+v want {Command: nvim, CloseOnExit: true}", got)
 		}
 	})
@@ -913,8 +917,7 @@ func TestResolveTemplate_Precedence(t *testing.T) {
 		t.Parallel()
 		cand := base
 		cand.Meta = map[string]string{"command": "nvim", "close_on_exit": "false"}
-		got := resolveTemplate(cand, cfg)
-		if got.Command != "nvim" || got.CloseOnExit {
+		if got := resolve(cand); got.Command != "nvim" || got.CloseOnExit {
 			t.Errorf("got %+v want {Command: nvim, CloseOnExit: false}", got)
 		}
 	})
@@ -922,83 +925,48 @@ func TestResolveTemplate_Precedence(t *testing.T) {
 	t.Run("workspace command close_on_exit strict true only rejects 1/T", func(t *testing.T) {
 		t.Parallel()
 		cand := base
-		// The only writer (workspacesProvider.List) emits the literal "true";
-		// resolveTemplate must treat any other value (here "1", which
-		// strconv.ParseBool would otherwise accept) as false so a future
+		// The writers (workspacesProvider.List, custom rows) emit the
+		// literal "true"; any other value (here "1", which
+		// strconv.ParseBool would otherwise accept) is false so a future
 		// provider writing "1" cannot silently flip close-on-exit on.
 		cand.Meta = map[string]string{"command": "nvim", "close_on_exit": "1"}
-		got := resolveTemplate(cand, cfg)
-		if got.Command != "nvim" || got.CloseOnExit {
+		if got := resolve(cand); got.Command != "nvim" || got.CloseOnExit {
 			t.Errorf("got %+v want {Command: nvim, CloseOnExit: false} (strict == %q contract)", got, "true")
 		}
 	})
 
-	t.Run("wildcard wins over parent and defaults", func(t *testing.T) {
+	t.Run("parent group template wins over wildcard", func(t *testing.T) {
 		t.Parallel()
 		cand := base
 		cand.Meta = map[string]string{"parent_template": "parent-tpl"}
-		got := resolveTemplate(cand, cfg)
-		if got.Command != "wc" {
-			t.Errorf("got %+v want wc-tpl", got)
+		if got := resolve(cand); got.Command != "parent" {
+			t.Errorf("got %+v want parent-tpl", got)
 		}
 	})
 
-	t.Run("parent group template wins over defaults", func(t *testing.T) {
+	t.Run("wildcard wins over defaults", func(t *testing.T) {
 		t.Parallel()
-		cand := source.Candidate{Path: "/other/bar", NormalizedPath: "/other/bar"}
-		cand.Meta = map[string]string{"parent_template": "parent-tpl"}
-		got := resolveTemplate(cand, cfg)
-		if got.Command != "parent" {
-			t.Errorf("got %+v want parent-tpl", got)
+		if got := resolve(base); got.Command != "wc" {
+			t.Errorf("got %+v want wc-tpl", got)
 		}
 	})
 
 	t.Run("defaults.template is the final fallback", func(t *testing.T) {
 		t.Parallel()
 		cand := source.Candidate{Path: "/other/bar", NormalizedPath: "/other/bar"}
-		got := resolveTemplate(cand, cfg)
-		if got.Command != "def" {
+		if got := resolve(cand); got.Command != "def" {
 			t.Errorf("got %+v want def-tpl", got)
 		}
 	})
 
-	t.Run("no config yields empty template", func(t *testing.T) {
+	t.Run("nothing resolved yields a plain shell", func(t *testing.T) {
 		t.Parallel()
-		got := resolveTemplate(source.Candidate{Path: "/x"}, nil)
+		empty := &config.Config{}
+		got := resolveTemplate(effective.New(empty).For(source.Candidate{Path: "/x"}), empty)
 		if got.Command != "" || len(got.Tabs) != 0 {
 			t.Errorf("got %+v want empty", got)
 		}
 	})
-}
-
-// TestMatchWildcardTemplate_MalformedPatternNoMatch confirms a bad glob in
-// the config is treated as "no match" (never crashes open).
-func TestMatchWildcardTemplate_MalformedPatternNoMatch(t *testing.T) {
-	t.Parallel()
-	cand := source.Candidate{Path: "/p/foo", NormalizedPath: "/p/foo"}
-	cfg := &config.Config{Wildcards: []config.WildcardConfig{{Pattern: "[", Template: "boom"}}}
-	if got := matchWildcardTemplate(cand, cfg); got != "" {
-		t.Errorf("malformed pattern: got %q, want empty", got)
-	}
-}
-
-// TestMatchWildcardTemplate_DoubleStarMatchesDescendant confirms the
-// documented "~/projects/kubernetes/**" pattern resolves against a nested
-// candidate path, matching runtime behaviour to the documented example.
-func TestMatchWildcardTemplate_DoubleStarMatchesDescendant(t *testing.T) {
-	t.Parallel()
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip("no resolvable home directory")
-	}
-	nested := filepath.Join(home, "projects", "kubernetes", "myrepo")
-	cand := source.Candidate{Path: nested, NormalizedPath: nested}
-	cfg := &config.Config{Wildcards: []config.WildcardConfig{
-		{Pattern: "~/projects/kubernetes/**", Template: "k8s"},
-	}}
-	if got := matchWildcardTemplate(cand, cfg); got != "k8s" {
-		t.Errorf("got %q, want k8s for a descendant of the documented pattern", got)
-	}
 }
 
 // runOpenTemplate wires an openDriver with a HerdrActionCreated response and
@@ -3020,7 +2988,12 @@ func TestOpen_ViewValidation(t *testing.T) {
 	}
 }
 
-func TestOpen_AgentIconViaRegistryInViewAndGroup(t *testing.T) {
+// TestOpen_AgentPresentationResolvedInViewAndGroup proves every way agent
+// rows reach the picker — the shared snapshot producer (with the agents
+// view's per-pane presentations) and a group tab's loader — carries the
+// configured [sources.agents] presentation resolved in the producer, while
+// the candidate keeps its provider's own (empty) icon.
+func TestOpen_AgentPresentationResolvedInViewAndGroup(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Ranking.Enabled = false
 	cfg.Sources.Agents.Icon = strPtr("X ")
@@ -3044,14 +3017,14 @@ func TestOpen_AgentIconViaRegistryInViewAndGroup(t *testing.T) {
 				if msg.Snapshot == nil {
 					continue
 				}
-				if got := msg.SnapshotIcons[config.SourceAgents]; got != "X " {
-					t.Errorf("snapshot agents icon = %q, want X space", got)
+				if got := msg.AgentPresentations["p1"]; got == nil || got.Icon != "X " {
+					t.Errorf("agents view presentation of p1 = %+v, want icon X space", got)
 				}
 				for _, candidate := range msg.Candidates {
 					if candidate.Source == config.SourceAgents {
 						found = true
-						if candidate.Icon != "X " {
-							t.Errorf("agent candidate icon = %q, want X space", candidate.Icon)
+						if candidate.Icon != "" || candidate.Presentation == nil || candidate.Presentation.Icon != "X " {
+							t.Errorf("agent candidate icon = %q, presentation = %+v; want no stamped icon and the resolved X space", candidate.Icon, candidate.Presentation)
 						}
 					}
 				}
@@ -3067,8 +3040,8 @@ func TestOpen_AgentIconViaRegistryInViewAndGroup(t *testing.T) {
 		t.Fatalf("group tab has no loader: %+v", layout.Tabs[2])
 	}
 	group, err := layout.Tabs[2].Load(context.Background(), &snapshot)
-	if err != nil || len(group) != 1 || group[0].Source != config.SourceAgents || group[0].Icon != "X " {
-		t.Fatalf("group agent rows = %+v, error = %v; want configured icon", group, err)
+	if err != nil || len(group) != 1 || group[0].Source != config.SourceAgents || group[0].Presentation == nil || group[0].Presentation.Icon != "X " {
+		t.Fatalf("group agent rows = %+v, error = %v; want the resolved configured icon", group, err)
 	}
 }
 
@@ -3330,6 +3303,40 @@ func TestOpen_GroupTabScopedCandidates(t *testing.T) {
 	cmd := app.openCmd()
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestOpen_GroupTabCandidatesResolveTheGroupTemplate proves a group tab's
+// loader resolves its candidates: they carry their presentation, and the
+// group's template (Meta parent_template, the candidate's own data) wins
+// over a wildcard template matching the same directory.
+func TestOpen_GroupTabCandidatesResolveTheGroupTemplate(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(filepath.Join(project, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.Sources.Projects.Markers = []string{".git"}
+	cfg.Ranking.Enabled = false
+	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
+	cfg.TUI.Tabs = []string{"team"}
+	cfg.Templates["grp"] = config.TemplateConfig{Command: "grp"}
+	cfg.Templates["wild"] = config.TemplateConfig{Command: "wild"}
+	cfg.Wildcards = []config.WildcardConfig{{Pattern: project, Template: "wild", Presentation: config.Presentation{Icon: strPtr("W ")}}}
+	cfg.Workspaces = []config.WorkspaceConfig{{ID: "team", Name: "Team", Type: config.WorkspaceTypeGroup, Path: root, SourceOrder: []string{config.SourceProjects}, Template: "grp"}}
+	app := New()
+	app.cfg = cfg
+	layout := app.pickerLayout(cfg.General.SourceOrder, nil)
+	candidates, err := layout.Tabs[0].Load(context.Background(), nil)
+	if err != nil || len(candidates) != 1 {
+		t.Fatalf("group candidates = %+v, %v", candidates, err)
+	}
+	if p := candidates[0].Presentation; p == nil || p.Icon != "W " {
+		t.Errorf("group candidate presentation = %+v, want the wildcard's icon", p)
+	}
+	if got := resolveTemplate(app.settings().For(candidates[0]), cfg); got.Command != "grp" {
+		t.Errorf("group candidate template = %+v, want the group's over the wildcard's", got)
 	}
 }
 

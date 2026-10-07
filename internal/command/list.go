@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/tranceh2/shep/internal/resolver"
 	"github.com/tranceh2/shep/internal/source"
+	"github.com/tranceh2/shep/internal/tmpl"
 )
 
 // format is the output rendering mode for `shep list`.
@@ -86,6 +87,7 @@ func (a *App) runList(cmd *cobra.Command, f format) error {
 
 	candidates, collectErr := registry.Collect(cmd.Context())
 	deduped := resolver.Dedup(candidates)
+	a.listIcons(deduped)
 	// Stable presentation order: by label then path, deterministic across runs.
 	sort.Slice(deduped, func(i, j int) bool {
 		if deduped[i].Label != deduped[j].Label {
@@ -103,6 +105,37 @@ func (a *App) runList(cmd *cobra.Command, f format) error {
 	}
 
 	return render(out, deduped, f)
+}
+
+// listIcons replaces each candidate's Icon with the text its resolved icon
+// template renders (the icon the picker draws, without styling or live
+// markers), which is what the TSV and JSON icon fields carry. A template that
+// fails for a candidate leaves its icon empty.
+func (a *App) listIcons(cands []source.Candidate) {
+	settings := a.settings()
+	engine := a.templateEngine()
+	for i := range cands {
+		cands[i].Icon = iconText(engine, settings.Presentation(cands[i]).Icon, source.TemplateData(cands[i]))
+	}
+}
+
+// iconText renders an icon template to plain text: styled text is kept,
+// live markers (a status glyph, the pin...) are dropped.
+func iconText(engine *tmpl.Engine, format string, data tmpl.Data) string {
+	out, err := engine.Render(format, data)
+	if err != nil {
+		return ""
+	}
+	if !tmpl.HasMarkup(out) {
+		return out
+	}
+	var b strings.Builder
+	for _, seg := range tmpl.Segments(out) {
+		if seg.Live == tmpl.LiveNone {
+			b.WriteString(seg.Text)
+		}
+	}
+	return b.String()
 }
 
 // render writes candidates in the chosen format. Splitting it from runList
@@ -151,8 +184,9 @@ func renderTSV(out io.Writer, cands []source.Candidate) error {
 		//
 		// NormalizedPath, Label and Icon are sanitized (sanitizeTSVField)
 		// before being written: Label comes from workspace/pane/directory
-		// names and Icon is raw user-configured TOML ([sources.<name>].icon),
-		// neither of which is guaranteed free of embedded tabs or newlines.
+		// names and Icon is the rendered icon template (configuration and
+		// provider data), neither of which is guaranteed free of embedded
+		// tabs or newlines.
 		// An unsanitized delimiter would silently shift or split every
 		// subsequent field for that line for any TSV consumer, Television's
 		// {split:\t:N} included — this is the column order both this

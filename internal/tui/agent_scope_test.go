@@ -316,7 +316,7 @@ func TestConfiguredTabs_GroupRefreshRecollectsCurrentGeneration(t *testing.T) {
 	if calls != 1 || len(m.rows) != 1 || m.rows[0].Candidate.Label != "old" {
 		t.Fatalf("initial group rows = %+v, loads = %d", m.rows, calls)
 	}
-	m, cmd = update(t, m, snapshotResponseMsg{seq: m.snapshotSeq, snapshot: source.Snapshot{Workspaces: []source.Workspace{{ID: "new", Label: "new"}}}})
+	m, cmd = update(t, m, resolvedGeneration(m.snapshotSeq, source.Snapshot{Workspaces: []source.Workspace{{ID: "new", Label: "new"}}}, nil))
 	if cmd == nil || !m.groupLoading["team"] {
 		t.Fatal("group not scheduled after snapshot refresh")
 	}
@@ -339,7 +339,7 @@ func TestConfiguredTabs_GroupIgnoresOldInflightGeneration(t *testing.T) {
 	}}}})
 	m.startupSnapshot = &source.Snapshot{Workspaces: []source.Workspace{{ID: "old", Label: "old"}}}
 	old := m.maybeLoadGroup()
-	m, cmd := update(t, m, snapshotResponseMsg{seq: m.snapshotSeq, snapshot: source.Snapshot{Workspaces: []source.Workspace{{ID: "new", Label: "new"}}}})
+	m, cmd := update(t, m, resolvedGeneration(m.snapshotSeq, source.Snapshot{Workspaces: []source.Workspace{{ID: "new", Label: "new"}}}, nil))
 	if old == nil || cmd == nil {
 		t.Fatal("expected old and new collection commands")
 	}
@@ -1646,12 +1646,20 @@ func TestAgentScope_SourceRowFormattingUsesAgentsLabelFormat(t *testing.T) {
 // the declaration-driven ownership: a source_order that enables agents while
 // the startup generation holds no agent panes must still gain agents rows as
 // panes appear later (SnapshotSources, not row presence, owns the slice), and
-// the configured agents icon survives every re-derivation. The same message
-// shape must not import herdr rows into the agents-only view.
+// the resolved agents presentation (here its icon) survives every
+// re-derivation, in the all view and the agents view. The same message shape
+// must not import herdr rows into the agents-only view.
 func TestAgentScope_SnapshotRefreshFillsEmptyAgentsSliceAndKeepsIcon(t *testing.T) {
 	t.Parallel()
 
 	const sourceIcon = "🤖 "
+	resolved := config.DefaultPresentations("").Agents
+	resolve := func(candidates []source.Candidate) {
+		p := &source.Presentation{Icon: sourceIcon, IconColor: resolved.IconColor, Label: resolved.Label, Detail: resolved.Detail, Marker: resolved.Marker}
+		for i := range candidates {
+			candidates[i].Presentation = p
+		}
+	}
 	snap1 := agentsRefreshFixture(
 		source.Pane{ID: "w1:p0", WorkspaceID: "w1", TabID: "w1:t1", CWD: "/srv/ws1/plain"},
 	)
@@ -1661,21 +1669,20 @@ func TestAgentScope_SnapshotRefreshFillsEmptyAgentsSliceAndKeepsIcon(t *testing.
 	driver := &scriptedSnapshotDriver{responses: []snapshotDriverResponse{{snapshot: snap2}}}
 
 	prodAgents := func(ctx context.Context) SourceResultMsg {
+		agents := source.AgentCandidates(snap1)
+		resolve(agents)
 		return SourceResultMsg{
-			Source:          config.SourceAgents,
-			Candidates:      source.AgentCandidates(snap1),
-			Snapshot:        &snap1,
-			SnapshotDriver:  driver,
-			SnapshotSources: []string{config.SourceAgents},
-			SnapshotIcons:   map[string]string{config.SourceAgents: sourceIcon},
-			Tree:            NewTreeExpanderFromSnapshot(snap1),
+			Source:             config.SourceAgents,
+			Candidates:         agents,
+			Snapshot:           &snap1,
+			SnapshotDriver:     driver,
+			SnapshotSources:    []string{config.SourceAgents},
+			AgentPresentations: AgentPresentations(agents),
+			Tree:               NewTreeExpanderFromSnapshot(snap1),
 		}
 	}
 
-	// The agents rows draw the icon the producer stamped on them.
-	presentation := config.DefaultPresentations("")
-	presentation.Agents.Icon = "{{ .Icon }}"
-	m := NewModelWithProducers([]SourceProducer{prodAgents}, "", nil, context.Background(), Layout{SourceOrder: []string{config.SourceAgents}, Presentation: &presentation})
+	m := NewModelWithProducers([]SourceProducer{prodAgents}, "", nil, context.Background(), Layout{SourceOrder: []string{config.SourceAgents}, Resolve: resolve})
 	msg := prodAgents(context.Background())
 	msg.producerID = 0
 	next, _ := m.Update(msg)
@@ -1705,24 +1712,24 @@ func TestAgentScope_SnapshotRefreshFillsEmptyAgentsSliceAndKeepsIcon(t *testing.
 	if row.Meta["pane_id"] != "w1:p9" {
 		t.Errorf("agents row pane_id = %q, want w1:p9", row.Meta["pane_id"])
 	}
-	if row.Icon != sourceIcon {
-		t.Errorf("agents row icon = %q, want %q", row.Icon, sourceIcon)
+	if row.Presentation == nil || row.Presentation.Icon != sourceIcon {
+		t.Errorf("agents row presentation = %+v, want icon %q", row.Presentation, sourceIcon)
 	}
 	if got := renderRowLineText(m.renderRowLine(Row{Kind: RowCandidate, Candidate: *row}, false, 50)); !strings.Contains(got, sourceIcon+" "+m.agentStatusIcon("working")) {
 		t.Errorf("refreshed agent row = %q, want source icon before status", got)
 	}
 	m.activeTab = "agents"
 	m.applyFilter()
-	if len(m.rows) == 0 || m.rows[0].Candidate.Icon != sourceIcon {
-		t.Fatalf("agents view row did not retain source icon after refresh: %+v", m.rows)
+	if len(m.rows) == 0 || m.rows[0].Candidate.Presentation == nil || m.rows[0].Candidate.Presentation.Icon != sourceIcon {
+		t.Fatalf("agents view row did not retain the resolved icon after refresh: %+v", m.rows)
 	}
 	if got := renderRowLineText(m.renderRowLine(m.rows[0], false, 50)); !strings.Contains(got, sourceIcon+" "+m.agentStatusIcon("working")) {
 		t.Errorf("agents view row after refresh = %q, want source icon before status", got)
 	}
 	m.activeTab = "all"
 	m.applyFilter()
-	if len(m.rows) != 1 || m.rows[0].Candidate.Icon != sourceIcon {
-		t.Fatalf("all view after refresh = %+v, want configured icon", m.rows)
+	if len(m.rows) != 1 || m.rows[0].Candidate.Presentation == nil || m.rows[0].Candidate.Presentation.Icon != sourceIcon {
+		t.Fatalf("all view after refresh = %+v, want the resolved icon", m.rows)
 	}
 }
 
@@ -1819,7 +1826,7 @@ func TestAllTab_StoredSetMatchesAFreshDedup(t *testing.T) {
 		refreshed.Workspaces = append(slices.Clone(snap.Workspaces), source.Workspace{ID: "w2", Label: "web"})
 		refreshed.Tabs = append(slices.Clone(snap.Tabs), source.Tab{ID: "w2:t1", WorkspaceID: "w2", Label: "shell", Number: 1, PaneCount: 1})
 		refreshed.Panes = append(slices.Clone(snap.Panes), source.Pane{ID: "p2", WorkspaceID: "w2", TabID: "w2:t1", CWD: m.candidatesBySource[config.SourceZoxide][1].Path, Agent: "codex", AgentStatus: "idle"})
-		m, _ = update(t, m, snapshotResponseMsg{seq: m.snapshotSeq, snapshot: refreshed})
+		m, _ = update(t, m, resolvedGeneration(m.snapshotSeq, refreshed, nil))
 		check("a snapshot refresh")
 		if !slices.ContainsFunc(m.allTab, func(c source.Candidate) bool { return c.Meta["workspace_id"] == "w2" }) {
 			t.Errorf("order %v: the refreshed workspace is missing from all", order)

@@ -42,27 +42,25 @@ type rowFormat struct {
 	icon int
 }
 
-// rowFormats is the prepared presentation of every kind of row, built once
-// per Model from Layout.Presentation. It is immutable once built and shared.
+// rowFormats is the prepared presentation of every kind of row a candidate's
+// own resolved presentation does not cover — Herdr tab and pane rows nested
+// under a workspace, and candidates that carry none (built directly rather
+// than by the command layer's producers) — plus the index of every icon color
+// a row can name. Built once per Model from Layout.Presentation and
+// Layout.IconColors, it is immutable once built and shared.
 type rowFormats struct {
 	herdr, tab, pane, sessions, workspaces, zoxide, projects, agents, other rowFormat
 	custom                                                                  map[string]*rowFormat
-	// iconRefs are the distinct icon color references, in first-use order.
-	iconRefs []string
+	// iconRefs are the distinct icon color references, in first-use order;
+	// iconIndex maps each to its position.
+	iconRefs  []string
+	iconIndex map[string]int
 }
 
-func newRowFormats(p config.Presentations) *rowFormats {
-	f := &rowFormats{}
-	index := make(map[string]int)
+func newRowFormats(p config.Presentations, iconColors []string) *rowFormats {
+	f := &rowFormats{iconIndex: make(map[string]int)}
 	prepare := func(rp config.RowPresentation) rowFormat {
-		i, ok := index[rp.IconColor]
-		if !ok {
-			i = len(f.iconRefs)
-			index[rp.IconColor] = i
-			f.iconRefs = append(f.iconRefs, rp.IconColor)
-		}
-		parts := [numParts]string{rp.Icon, rp.Label, rp.Detail, rp.Marker}
-		return rowFormat{parts: parts, joined: strings.Join(parts[:], tmpl.PartSeparator), icon: i}
+		return f.prepare(rp.Icon, rp.Label, rp.Detail, rp.Marker, f.addIconRef(rp.IconColor))
 	}
 	f.herdr = prepare(p.Herdr)
 	f.tab = prepare(p.HerdrTab)
@@ -80,27 +78,68 @@ func newRowFormats(p config.Presentations) *rowFormats {
 			f.custom[name] = &prepared
 		}
 	}
+	for _, ref := range iconColors {
+		f.addIconRef(ref)
+	}
 	return f
 }
 
+// addIconRef registers an icon color reference and returns its index.
+func (f *rowFormats) addIconRef(ref string) int {
+	i, ok := f.iconIndex[ref]
+	if !ok {
+		i = len(f.iconRefs)
+		f.iconIndex[ref] = i
+		f.iconRefs = append(f.iconRefs, ref)
+	}
+	return i
+}
+
+func (f *rowFormats) prepare(icon, label, detail, marker string, iconStyle int) rowFormat {
+	parts := [numParts]string{icon, label, detail, marker}
+	return rowFormat{parts: parts, joined: strings.Join(parts[:], tmpl.PartSeparator), icon: iconStyle}
+}
+
 // rowFormat selects row's presentation: Herdr tab and pane rows nested under
-// a workspace have their own; flat pane rows of the agents view (and pane
-// rows tagged as agents) draw as agents; every other row draws as its source,
-// a [[sources.custom]] provider by name, and anything else (a direct --path
-// candidate) with the custom defaults.
-func (m Model) rowFormat(row Row) *rowFormat {
+// a workspace have their own; any other row draws with its candidate's
+// resolved presentation. A candidate that carries none draws as its source —
+// flat pane rows of the agents view (and pane rows tagged as agents) as
+// agents, a [[sources.custom]] provider by name, anything else (a direct
+// --path candidate) with the defaults for rows of no source.
+func (m Model) rowFormat(row Row) rowFormat {
 	f := m.formats
 	c := row.Candidate
+	agent := false
 	switch row.Kind {
 	case RowTab:
-		return &f.tab
+		return f.tab
 	case RowPane:
-		if row.Depth == 0 || c.Meta["kind"] == "agent" {
-			return &f.agents
+		if row.Depth > 0 && c.Meta["kind"] != "agent" {
+			return f.pane
 		}
-		return &f.pane
+		agent = true
 	}
-	switch c.Source {
+	fallback := f.sourceFormat(c.Source, agent)
+	p := c.Presentation
+	if p == nil {
+		return *fallback
+	}
+	// A color no presentation was prepared with (a candidate resolved
+	// against another configuration) keeps its source's icon color.
+	icon, ok := f.iconIndex[p.IconColor]
+	if !ok {
+		icon = fallback.icon
+	}
+	return f.prepare(p.Icon, p.Label, p.Detail, p.Marker, icon)
+}
+
+// sourceFormat is the prepared presentation of a source's rows (agent: a
+// pane row drawn as an agent).
+func (f *rowFormats) sourceFormat(name string, agent bool) *rowFormat {
+	if agent {
+		return &f.agents
+	}
+	switch name {
 	case config.SourceHerdr:
 		return &f.herdr
 	case config.SourceSessions:
@@ -114,7 +153,7 @@ func (m Model) rowFormat(row Row) *rowFormat {
 	case config.SourceAgents:
 		return &f.agents
 	}
-	if custom, ok := f.custom[c.Source]; ok {
+	if custom, ok := f.custom[name]; ok {
 		return custom
 	}
 	return &f.other

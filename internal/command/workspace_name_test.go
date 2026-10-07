@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/tranceh2/shep/internal/config"
+	"github.com/tranceh2/shep/internal/effective"
 	"github.com/tranceh2/shep/internal/preview"
 	"github.com/tranceh2/shep/internal/resolver"
 	"github.com/tranceh2/shep/internal/source"
@@ -228,7 +229,7 @@ func TestWorkspaceNameIsSeparateFromPresentationAcrossRuntimeBoundaries(t *testi
 		t.Fatalf("dedup changed candidate identity/presentation: %+v", deduped)
 	}
 
-	renderer := preview.NewRenderer(configWithPreviewIdentity(), app.templateEngine(), config.Probes{}, nil, nil)
+	renderer := preview.NewRenderer(effective.New(configWithPreviewIdentity()), app.templateEngine(), config.Probes{}, nil, nil)
 	previewResult, err := renderer.Render(context.Background(), cand)
 	if err != nil {
 		t.Fatalf("preview Render: %v", err)

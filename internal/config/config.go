@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
-	"github.com/tranceh2/shep/internal/pathutil"
 	"github.com/tranceh2/shep/internal/tmpl"
 	"github.com/tranceh2/shep/internal/workspacename"
 )
@@ -367,17 +366,23 @@ type WorkspaceConfig struct {
 	CloseOnExit bool     `toml:"close_on_exit,omitempty"`
 	Aliases     []string `toml:"aliases,omitempty"`
 	Preview     []string `toml:"preview,omitempty"`
+	// Presentation draws this entry's own row (see internal/effective for
+	// the precedence). Of an entry's settings only Preview also applies to
+	// the other candidates in its directory.
+	Presentation
 }
 
 // WildcardConfig is one entry in the [[wildcards]] list: a glob pattern with
-// optional workspace-name, template, and preview overrides. The list is scanned
-// in declaration order; the first pattern matching the candidate's normalised
-// path or base name wins.
+// optional workspace-name, template, preview and presentation overrides for
+// the candidates whose path (or base name) it matches. The list is scanned in
+// declaration order separately for every setting: the first matching pattern
+// that defines a setting provides it (see internal/effective).
 type WildcardConfig struct {
 	Pattern       string   `toml:"pattern"`
 	Template      string   `toml:"template,omitempty"`
 	WorkspaceName string   `toml:"workspace_name,omitempty"`
 	Preview       []string `toml:"preview,omitempty"`
+	Presentation
 }
 
 // Duration wraps time.Duration so TOML string values ("150ms", "5s") parse
@@ -861,6 +866,9 @@ func validate(cfg *Config) error {
 		return err
 	}
 	if err := validateWildcards(cfg.Wildcards, cfg.Templates); err != nil {
+		return err
+	}
+	if err := validateOverridePresentations(cfg, engine); err != nil {
 		return err
 	}
 	if cfg.Defaults.Template != "" {
@@ -1605,70 +1613,6 @@ func ParsePercent(s string) (float64, bool) {
 		return 0, false
 	}
 	return n / 100, true
-}
-
-// FirstMatchingWildcard returns the first ordered wildcard matching normalizedPath
-// or its host-native base name. Declaration order is the precedence contract.
-func FirstMatchingWildcard(wildcards []WildcardConfig, normalizedPath string) (WildcardConfig, bool) {
-	if normalizedPath == "" {
-		return WildcardConfig{}, false
-	}
-	base := filepath.Base(normalizedPath)
-	for _, wildcard := range wildcards {
-		if MatchWildcard(wildcard.Pattern, normalizedPath) || MatchWildcard(wildcard.Pattern, base) {
-			return wildcard, true
-		}
-	}
-	return WildcardConfig{}, false
-}
-
-// MatchWildcard reports whether path matches a [[wildcards]] pattern. A
-// leading "~" in pattern expands to the user's home directory so documented
-// patterns like "~/projects/kubernetes/**" compare correctly against
-// resolved candidate paths; "**" matches zero or more whole path segments
-// (recursive descent) the way it is documented, while any other segment
-// keeps filepath.Match semantics (single-segment globbing). A malformed
-// pattern is treated as "no match" rather than an error, so a bad glob in
-// config never crashes resolution.
-func MatchWildcard(pattern, path string) bool {
-	if pattern == "" || path == "" {
-		return false
-	}
-	// Expand a leading "~" once, here, via the shared leaf helper. A malformed
-	// pattern later degrades to "no match"; an unresolvable HOME is treated the
-	// same way (pattern left untouched) so resolution never crashes.
-	if expanded, err := pathutil.ExpandTilde(pattern); err == nil {
-		pattern = expanded
-	}
-	patSegs := strings.Split(filepath.ToSlash(pattern), "/")
-	pathSegs := strings.Split(filepath.ToSlash(path), "/")
-	return matchWildcardSegments(patSegs, pathSegs)
-}
-
-// matchWildcardSegments recursively matches pattern segments against path
-// segments. "**" may match zero or more segments; any other pattern segment
-// matches exactly one path segment via filepath.Match.
-func matchWildcardSegments(pat, path []string) bool {
-	if len(pat) == 0 {
-		return len(path) == 0
-	}
-	if pat[0] == "**" {
-		if matchWildcardSegments(pat[1:], path) {
-			return true
-		}
-		if len(path) == 0 {
-			return false
-		}
-		return matchWildcardSegments(pat, path[1:])
-	}
-	if len(path) == 0 {
-		return false
-	}
-	ok, err := filepath.Match(pat[0], path[0])
-	if err != nil || !ok {
-		return false
-	}
-	return matchWildcardSegments(pat[1:], path[1:])
 }
 
 // isValidSelector reports whether s is one of the supported selector values.

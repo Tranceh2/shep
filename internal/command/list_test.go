@@ -439,3 +439,75 @@ func TestList_SuccessfulListWorks(t *testing.T) {
 		t.Fatalf("expected stdout to contain proj-a and proj-b, got: %q", out)
 	}
 }
+
+// TestList_IconColumnRendersTheResolvedIconTemplate proves the TSV and JSON
+// icon fields carry the icon the picker draws: the resolved template (a
+// wildcard's here, styled text kept and live markers dropped), the source's
+// default for the rest.
+func TestList_IconColumnRendersTheResolvedIconTemplate(t *testing.T) {
+	t.Parallel()
+	cfg, root := workspacesCfg(t, "api", "web")
+	cfg.Wildcards = []config.WildcardConfig{{
+		Pattern:      filepath.Join(root, "web"),
+		Presentation: config.Presentation{Icon: strPtr(`{{ muted "W" }}{{ pin }} `)},
+	}}
+	defaultIcon := cfg.Presentations().Workspaces.Icon
+	out, _, err := runListFor(t, cfg, "tsv")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	icons := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+		fields := strings.Split(line, "\t")
+		if len(fields) != 3 {
+			t.Fatalf("tsv line %q, want 3 fields", line)
+		}
+		icons[fields[1]] = fields[2]
+	}
+	if icons["api"] != defaultIcon || icons["web"] != "W " {
+		t.Errorf("tsv icons = %q, want api %q and web %q", icons, defaultIcon, "W ")
+	}
+	out, _, err = runListFor(t, cfg, "json")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var listed []listCandidate
+	if err := json.Unmarshal([]byte(out), &listed); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range listed {
+		if c.Icon != icons[c.Label] {
+			t.Errorf("json icon of %s = %q, want %q", c.Label, c.Icon, icons[c.Label])
+		}
+	}
+}
+
+// TestListIcons_CustomRowIcon proves a custom source row's own icon reaches
+// the icon column through the default icon template, a template can default
+// it, and a configured icon still overrides it.
+func TestListIcons_CustomRowIcon(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		icon    *string
+		rowIcon string
+		want    string
+	}{
+		{name: "the row's own icon", rowIcon: "P", want: "P"},
+		{name: "a default for rows without one", icon: strPtr(`{{ .Icon | default "x" }}`), want: "x"},
+		{name: "a configured icon overrides it", icon: strPtr("C"), rowIcon: "P", want: "C"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.Defaults()
+			cfg.Sources.Custom = []config.CustomSourceConfig{{Name: "prs", Command: []string{"true"}, Presentation: config.Presentation{Icon: tc.icon}}}
+			app := New()
+			app.cfg = cfg
+			cands := []source.Candidate{{Source: "prs", Label: "PR 42", Icon: tc.rowIcon, Meta: map[string]string{"custom_source": "true"}}}
+			app.listIcons(cands)
+			if cands[0].Icon != tc.want {
+				t.Errorf("icon = %q, want %q", cands[0].Icon, tc.want)
+			}
+		})
+	}
+}

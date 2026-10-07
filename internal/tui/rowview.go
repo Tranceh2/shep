@@ -45,7 +45,7 @@ func (m Model) buildRowView(row Row) rowView {
 	set := m.icons()
 	f := m.rowFormat(row)
 	data := rowTemplateData(row)
-	raw, ok := renderParts(m.layout.Templates, f, data)
+	raw, ok := renderParts(m.layout.Templates, &f, data)
 	live := m.liveValues(row)
 	var v rowView
 	v.indent, v.tree = m.treePrefix(row)

@@ -139,7 +139,7 @@ func (m Model) withPresentation(edit func(*config.Presentations)) Model {
 		edit(&p)
 	}
 	m.layout.Presentation = &p
-	m.formats = newRowFormats(p)
+	m.formats = newRowFormats(p, m.layout.IconColors)
 	m.styles = newPalette(m.theme, m.formats.iconRefs)
 	m.invalidateRowWindow()
 	return m

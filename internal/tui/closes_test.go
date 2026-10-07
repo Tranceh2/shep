@@ -183,7 +183,7 @@ func TestCloseRefreshRemovesAgentFromAgentsAndSourceTabs(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			driver := &scriptedSnapshotDriver{responses: []snapshotDriverResponse{{snapshot: source.Snapshot{}}}}
 			layout := Layout{SourceOrder: []string{config.SourceAgents}, Tabs: tc.tabs, InitialTab: tc.selected, Closer: func(context.Context, string, string) CloseResultMsg { return CloseResultMsg{} }}
-			m := NewModelWithTree(source.AgentCandidates(initial), nil, NewTreeExpanderFromSnapshot(initial), layout).WithSnapshotRefresh(driver, initial, nil, nil)
+			m := NewModelWithTree(source.AgentCandidates(initial), nil, NewTreeExpanderFromSnapshot(initial), layout).WithSnapshotRefresh(driver, initial, nil)
 			if tc.name == "group" {
 				m.groupCandidates["group"] = source.AgentCandidates(initial)
 				m.applyFilter()
@@ -245,7 +245,7 @@ func TestCloseWhileSnapshotAlreadyInFlightRefreshesAfterIt(t *testing.T) {
 	driver := &scriptedSnapshotDriver{responses: []snapshotDriverResponse{{snapshot: initial}, {snapshot: source.Snapshot{}}}}
 	m := NewModelWithTree(source.HerdrCandidates(initial), nil, NewTreeExpanderFromSnapshot(initial), Layout{
 		Closer: func(context.Context, string, string) CloseResultMsg { return CloseResultMsg{} },
-	}).WithSnapshotRefresh(driver, initial, nil, nil)
+	}).WithSnapshotRefresh(driver, initial, nil)
 	m.lastSnapshotAt = time.Now().Add(-snapshotTTL)
 	old := m.maybeRefreshSnapshot()
 	m, cmd := update(t, m, closeKey())
@@ -306,7 +306,7 @@ func TestCloseSuccessForcesSnapshotRefreshAndFailureDoesNot(t *testing.T) {
 		if fail {
 			err = errors.New("workspace_group_close_required")
 		}
-		m := NewModelWithTree(source.HerdrCandidates(initial), nil, NewTreeExpanderFromSnapshot(initial), Layout{Closer: func(context.Context, string, string) CloseResultMsg { return CloseResultMsg{Err: err} }}).WithSnapshotRefresh(driver, initial, nil, nil)
+		m := NewModelWithTree(source.HerdrCandidates(initial), nil, NewTreeExpanderFromSnapshot(initial), Layout{Closer: func(context.Context, string, string) CloseResultMsg { return CloseResultMsg{Err: err} }}).WithSnapshotRefresh(driver, initial, nil)
 		m.lastSnapshotAt = time.Now()
 		m, cmd := update(t, m, closeKey())
 		if cmd == nil {

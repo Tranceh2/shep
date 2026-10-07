@@ -20,8 +20,9 @@
 // (Run then returns ErrCancelled), except Esc first clears a non-empty query
 // before ever cancelling. "q" is an ordinary query character, not a cancel
 // key. Colors come from the theme the command layer selected (Layout.Theme,
-// see theme.go); rows are drawn from their presentation templates
-// (Layout.Presentation, see rowparts.go).
+// see theme.go); rows are drawn from their presentation templates, resolved
+// per candidate by the command layer (source.Candidate.Presentation, see
+// rowparts.go).
 package tui
 
 import (
@@ -116,10 +117,22 @@ type Layout struct {
 	// picker's own semantic icons — see icons.go's resolveIconSet and
 	// Model.icons(). Empty defaults to IconsUnicode.
 	Icons string
-	// Presentation is how every kind of row is drawn: the resolved
-	// [sources.<name>] (and [sources.herdr.tab]/[sources.herdr.pane])
-	// presentations. nil means the built-in defaults for Icons.
-	Presentation    *config.Presentations
+	// Presentation draws the Herdr tab and pane rows nested under an open
+	// workspace ([sources.herdr.tab], [sources.herdr.pane]) and every
+	// candidate that carries no resolved presentation of its own, as its
+	// source. nil means the built-in defaults for Icons.
+	Presentation *config.Presentations
+	// IconColors are the icon colors resolved presentations may name
+	// (effective.Resolver.IconColors); the picker prepares one style each.
+	IconColors []string
+	// Resolve attaches each candidate's resolved presentation in place
+	// (effective.Resolver.Attach) for the candidates the picker derives
+	// itself from a Herdr generation: a refreshed snapshot's rows and the
+	// agents view's panes. It reads the filesystem, so the model only calls
+	// it in its background refresh command and in WithSnapshotRefresh before
+	// the program starts, never from Update or View. nil leaves those
+	// candidates unresolved (they draw as their source).
+	Resolve         func([]source.Candidate)
 	RankingSnapshot ranking.Snapshot
 	StatusDialer    StatusDialer
 	PinToggler      PinToggler
@@ -238,7 +251,10 @@ type Model struct {
 	// snapshot. Model is the single owner of eligible refreshes.
 	snapshotDriver      SnapshotDriver
 	rendererForSnapshot SnapshotRendererFactory
-	snapshotIcons       map[string]string
+	// agentPresentations are the resolved presentations of the current
+	// generation's agent panes, keyed by pane id: the agents view derives its
+	// rows from the snapshot on every filter and only looks them up here.
+	agentPresentations map[string]*source.Presentation
 	// snapshotSources records which candidate sources the active snapshot
 	// generation feeds (see SourceResultMsg.SnapshotSources); the periodic
 	// refresh re-derives exactly those source slices.
@@ -351,9 +367,9 @@ type SourceResultMsg struct {
 	SnapshotDriver      SnapshotDriver
 	Snapshot            *source.Snapshot
 	RendererForSnapshot SnapshotRendererFactory
-	// SnapshotIcons supplies configured icons for candidates re-derived from
-	// the shared Herdr snapshot, keyed by source name.
-	SnapshotIcons map[string]string
+	// AgentPresentations are the resolved presentations of Snapshot's agent
+	// panes, keyed by pane id (see AgentPresentations).
+	AgentPresentations map[string]*source.Presentation
 	// SnapshotSources names the candidate sources this message's Snapshot
 	// generation feeds (config.SourceHerdr, config.SourceAgents): rows of
 	// those sources are re-derived from every later snapshot refresh instead
@@ -436,13 +452,31 @@ type panePreviewMsg struct {
 	err  error
 }
 
-// snapshotResponseMsg carries an asynchronous full-generation refresh. The
-// request seq is independent from previewSeq because it protects source state,
-// while previewSeq protects renderer output for a particular generation/row.
+// snapshotResponseMsg carries an asynchronous full-generation refresh: the
+// snapshot and the candidates derived and resolved from it in the background
+// (see maybeRefreshSnapshot), so Update only splices them. The request seq is
+// independent from previewSeq because it protects source state, while
+// previewSeq protects renderer output for a particular generation/row.
 type snapshotResponseMsg struct {
 	seq      int
 	snapshot source.Snapshot
-	err      error
+	// herdr and agents are the generation's herdr workspace and agent pane
+	// candidates; agentPresentations their presentations by pane id.
+	herdr, agents      []source.Candidate
+	agentPresentations map[string]*source.Presentation
+	err                error
+}
+
+// AgentPresentations returns the presentations of agents, resolved agent
+// candidates, keyed by pane id.
+func AgentPresentations(agents []source.Candidate) map[string]*source.Presentation {
+	out := make(map[string]*source.Presentation, len(agents))
+	for _, c := range agents {
+		if id := c.Meta["pane_id"]; id != "" && c.Presentation != nil {
+			out[id] = c.Presentation
+		}
+	}
+	return out
 }
 
 // NewModel builds a model over the supplied candidates. renderer may be nil,
@@ -511,7 +545,7 @@ func newModelWithLayout(candidates []source.Candidate, renderer preview.Renderer
 		defaults := config.DefaultPresentations(layout.Icons)
 		presentation = &defaults
 	}
-	formats := newRowFormats(*presentation)
+	formats := newRowFormats(*presentation, layout.IconColors)
 	styles := newPalette(th, formats.iconRefs)
 	if layout.Templates == nil {
 		home := layout.HomeDir
@@ -643,13 +677,16 @@ func (m Model) WithLiveStatus(events <-chan StatusEvent) Model {
 
 // WithSnapshotRefresh wires a startup generation into the model. The initial
 // state is already resolved by command/open; this method merely establishes
-// the one refresh owner and generation-scoped tree/focus references.
-func (m Model) WithSnapshotRefresh(driver SnapshotDriver, snapshot source.Snapshot, rendererForSnapshot SnapshotRendererFactory, snapshotIcons map[string]string) Model {
+// the one refresh owner and generation-scoped tree/focus references, and
+// resolves the generation's agent panes for the agents view (it runs before
+// the program starts, never from Update).
+func (m Model) WithSnapshotRefresh(driver SnapshotDriver, snapshot source.Snapshot, rendererForSnapshot SnapshotRendererFactory) Model {
 	m.snapshotDriver = driver
 	m.rendererForSnapshot = rendererForSnapshot
-	m.snapshotIcons = make(map[string]string, len(snapshotIcons))
-	for name, icon := range snapshotIcons {
-		m.snapshotIcons[name] = icon
+	if m.layout.Resolve != nil {
+		agents := source.AgentCandidates(snapshot)
+		m.layout.Resolve(agents)
+		m.agentPresentations = AgentPresentations(agents)
 	}
 	// The synchronous picker only refreshes families eligible in its source
 	// order. Direct callers with no order retain the historical Herdr default.
@@ -810,11 +847,8 @@ func (m Model) handleSourceResult(msg SourceResultMsg) (Model, tea.Cmd) {
 	if msg.RendererForSnapshot != nil {
 		m.rendererForSnapshot = msg.RendererForSnapshot
 	}
-	if msg.SnapshotIcons != nil {
-		m.snapshotIcons = make(map[string]string, len(msg.SnapshotIcons))
-		for name, icon := range msg.SnapshotIcons {
-			m.snapshotIcons[name] = icon
-		}
+	if msg.AgentPresentations != nil {
+		m.agentPresentations = msg.AgentPresentations
 	}
 	if len(msg.SnapshotSources) > 0 {
 		if m.snapshotSources == nil {
@@ -1178,10 +1212,7 @@ func (m Model) handleSnapshotResponse(msg snapshotResponseMsg) (Model, tea.Cmd) 
 	}
 
 	if m.snapshotRefreshesSource(config.SourceHerdr) {
-		replacement := source.HerdrCandidates(msg.snapshot)
-		for i := range replacement {
-			replacement[i].Icon = m.snapshotIcons[config.SourceHerdr]
-		}
+		replacement := msg.herdr
 		m.baseCandidates = spliceHerdrCandidates(m.baseCandidates, replacement)
 		if _, loaded := m.groupCandidates[config.SourceHerdr]; loaded {
 			m.groupCandidates[config.SourceHerdr] = replacement
@@ -1195,6 +1226,7 @@ func (m Model) handleSnapshotResponse(msg snapshotResponseMsg) (Model, tea.Cmd) 
 	snapshotCopy := msg.snapshot
 	m.startupSnapshot = &snapshotCopy
 	m.snapshotUnavailable = nil
+	m.agentPresentations = msg.agentPresentations
 	m.groupGeneration++
 	for _, tab := range m.tabs() {
 		if tab.Kind == TabGroup && m.groupUsesSnapshot(tab) {
@@ -1223,10 +1255,9 @@ func (m Model) handleSnapshotResponse(msg snapshotResponseMsg) (Model, tea.Cmd) 
 			m.snapshotSources = make(map[string]bool, 1)
 		}
 		m.snapshotSources[config.SourceAgents] = true
-		agentReplacement := source.AgentCandidates(snapshotWithLiveStatuses(msg.snapshot, m.liveStatuses))
-		for i := range agentReplacement {
-			agentReplacement[i].Icon = m.snapshotIcons[config.SourceAgents]
-		}
+		// The generation's statuses are older than the live observations
+		// that survived above, which take precedence.
+		agentReplacement := m.projectLiveAgentStatuses(msg.agents)
 		m.baseCandidates = spliceSourceCandidates(m.baseCandidates, agentReplacement, config.SourceAgents, "pane_id")
 		m.candidates = m.baseCandidates
 		if m.candidatesBySource != nil {
@@ -1313,25 +1344,6 @@ func (m Model) snapshotRefreshesSource(name string) bool {
 	// Historical default: a generation whose families were never declared
 	// still owns the herdr rows.
 	return len(m.snapshotSources) == 0 && m.layout.SourceOrder == nil && name == config.SourceHerdr
-}
-
-// snapshotWithLiveStatuses returns snapshot with each pane's AgentStatus
-// overridden by the newest surviving live observation, so rows re-derived from
-// the new generation keep live statuses that arrived after the refresh was
-// requested instead of regressing to the snapshot's own (older) value.
-func snapshotWithLiveStatuses(snapshot source.Snapshot, live map[string]liveObservation) source.Snapshot {
-	if len(live) == 0 {
-		return snapshot
-	}
-	effective := snapshot
-	effective.Panes = make([]source.Pane, len(snapshot.Panes))
-	copy(effective.Panes, snapshot.Panes)
-	for i := range effective.Panes {
-		if obs, ok := live[effective.Panes[i].ID]; ok && obs.status != "" {
-			effective.Panes[i].AgentStatus = obs.status
-		}
-	}
-	return effective
 }
 
 // spliceHerdrCandidates preserves every non-Herdr candidate in its original
@@ -1449,14 +1461,14 @@ func RunWithTree(ctx context.Context, candidates []source.Candidate, query strin
 // RunWithSnapshot drives a picker from one coherent startup generation and
 // gives the model the sole eligible-refresh driver. The renderer factory builds
 // an immutable renderer each time a newer generation succeeds.
-func RunWithSnapshot(ctx context.Context, candidates []source.Candidate, query string, renderer preview.Renderer, snapshot source.Snapshot, driver SnapshotDriver, rendererForSnapshot SnapshotRendererFactory, snapshotIcons map[string]string, currentPane *source.Pane, layout ...Layout) (source.Candidate, RowAction, string, bool, error) {
+func RunWithSnapshot(ctx context.Context, candidates []source.Candidate, query string, renderer preview.Renderer, snapshot source.Snapshot, driver SnapshotDriver, rendererForSnapshot SnapshotRendererFactory, currentPane *source.Pane, layout ...Layout) (source.Candidate, RowAction, string, bool, error) {
 	var l Layout
 	if len(layout) > 0 {
 		l = layout[0]
 	}
 	m := newModelWithTreeLayout(candidates, renderer, ctx, NewTreeExpanderFromSnapshot(snapshot), l).
 		WithCurrentPane(currentPane).
-		WithSnapshotRefresh(driver, snapshot, rendererForSnapshot, snapshotIcons)
+		WithSnapshotRefresh(driver, snapshot, rendererForSnapshot)
 	m.query = query
 	m.applyFilter()
 	return runProgram(ctx, m)

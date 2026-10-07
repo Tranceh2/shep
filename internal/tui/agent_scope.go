@@ -325,12 +325,17 @@ func (m Model) currentPaneID() string {
 	return ""
 }
 
-// collectAgentCandidates collects flat candidate representations of active Herdr agents.
+// collectAgentCandidates collects flat candidate representations of active
+// Herdr agents. They are derived on every filter, because their statuses and
+// focus follow live observations, but never resolved here: each takes its
+// pane's presentation, resolved in the background with its generation (see
+// agentPresentations). A pane the generation did not know draws with the
+// agents source's presentation.
 func (m Model) collectAgentCandidates() []source.Candidate {
 	snap := m.snapshotForAgents()
 	candidates := source.AgentCandidates(snap)
 	for i := range candidates {
-		candidates[i].Icon = m.snapshotIcons[config.SourceAgents]
+		candidates[i].Presentation = m.agentPresentations[candidates[i].Meta["pane_id"]]
 	}
 	return candidates
 }

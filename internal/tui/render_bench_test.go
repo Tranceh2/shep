@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 	"github.com/tranceh2/shep/internal/config"
+	"github.com/tranceh2/shep/internal/effective"
 	"github.com/tranceh2/shep/internal/preview"
 	"github.com/tranceh2/shep/internal/source"
 )
@@ -203,6 +204,33 @@ func BenchmarkView_AllWide(b *testing.B) {
 // empty-query model value, so every iteration filters the full set.
 func BenchmarkUpdate_TypeQuery(b *testing.B) {
 	base := benchAllModel(b)
+	keys := []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune{'s'}},
+		{Type: tea.KeyRunes, Runes: []rune{'h'}},
+		{Type: tea.KeyRunes, Runes: []rune{'e'}},
+		{Type: tea.KeyRunes, Runes: []rune{'p'}},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		m := base
+		for _, k := range keys {
+			m = benchStep(m, k)
+		}
+		_ = m.View()
+	}
+}
+
+// BenchmarkUpdate_TypeQueryResolved is BenchmarkUpdate_TypeQuery with every
+// candidate carrying its resolved presentation, as the command layer's
+// producers attach it (effective.Resolver.Attach), so rows draw from the
+// candidate's own presentation instead of their source's.
+func BenchmarkUpdate_TypeQueryResolved(b *testing.B) {
+	setupBenchRendering(b)
+	snap := benchSnapshot(30)
+	cands := benchAllCandidates(snap)
+	effective.New(config.Defaults()).Attach(cands)
+	base := NewModelWithTree(cands, benchWorkspaceRenderer{}, NewTreeExpanderFromSnapshot(snap), Layout{Theme: testTheme(ThemeMocha)})
+	base = benchStep(base, tea.WindowSizeMsg{Width: 140, Height: 38})
 	keys := []tea.KeyMsg{
 		{Type: tea.KeyRunes, Runes: []rune{'s'}},
 		{Type: tea.KeyRunes, Runes: []rune{'h'}},

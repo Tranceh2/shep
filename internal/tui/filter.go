@@ -91,12 +91,34 @@ func (m *Model) maybeRefreshSnapshot() tea.Cmd {
 	seq := m.snapshotSeq
 	driver := m.snapshotDriver
 	ctx := m.renderCtx
+	resolve := m.layout.Resolve
 	return func() tea.Msg {
 		snapshotCtx, cancel := context.WithTimeout(ctx, source.SnapshotTimeout)
 		defer cancel()
 		snapshot, err := driver.Snapshot(snapshotCtx)
-		return snapshotResponseMsg{seq: seq, snapshot: snapshot, err: err}
+		if err != nil {
+			return snapshotResponseMsg{seq: seq, err: err}
+		}
+		return resolvedGeneration(seq, snapshot, resolve)
 	}
+}
+
+// resolvedGeneration derives a refreshed generation's herdr and agent
+// candidates and resolves them (resolve may be nil), off the UI thread: the
+// response carries them ready for Update to splice.
+func resolvedGeneration(seq int, snapshot source.Snapshot, resolve func([]source.Candidate)) snapshotResponseMsg {
+	msg := snapshotResponseMsg{
+		seq:      seq,
+		snapshot: snapshot,
+		herdr:    source.HerdrCandidates(snapshot),
+		agents:   source.AgentCandidates(snapshot),
+	}
+	if resolve != nil {
+		resolve(msg.herdr)
+		resolve(msg.agents)
+	}
+	msg.agentPresentations = AgentPresentations(msg.agents)
+	return msg
 }
 
 // baseFlatCandidates returns the flat candidate set buildRows groups: the

@@ -651,7 +651,7 @@ root = "agent_pane"
 
 ### `[[wildcards]]` — Dynamic Path Rules
 
-Apply templates and custom naming rules based on path patterns. The first matching pattern wins.
+Apply templates, custom naming rules, previews and row presentation keys (`icon`, `icon_color`, `label_format`, `detail_format`, `marker_format`) based on path patterns. Each setting comes from the first matching pattern that sets it; a pattern that does not set it never stops the scan. A `[[workspaces]]` entry's own keys outrank wildcards for its own row (its `preview` also for the other rows in its directory), and `[sources.<name>]` comes after both.
 
 ```toml
 [[wildcards]]

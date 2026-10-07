@@ -590,7 +590,7 @@ func goldenScenarios() []goldenScenario {
 				m := NewModelWithTree(
 					[]source.Candidate{herdrCandidate("backend", "/srv/backend", "w1")},
 					nil, treeFromFake(driver), Layout{Theme: testTheme(ThemeMocha), Presentation: goldenPresentation()},
-				).WithSnapshotRefresh(driver, snapshot, nil, nil)
+				).WithSnapshotRefresh(driver, snapshot, nil)
 				m, _ = update(t, m, sizeMsg(120, 36))
 				m.expandedWorkspaces["w1"] = true
 				m.applyFilter()
@@ -773,7 +773,7 @@ func goldenScenarios() []goldenScenario {
 				}
 				driver := &fakeTreeDriver{tabs: snapshot.Tabs, panes: snapshot.Panes}
 				m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(snapshot), Layout{Theme: testTheme(ThemeMocha), Presentation: goldenPresentation(), InitialTab: "agents", HomeDir: "/home/dev"}).
-					WithSnapshotRefresh(driver, snapshot, nil, nil)
+					WithSnapshotRefresh(driver, snapshot, nil)
 				m.startupSnapshot = &snapshot // as the streaming producer delivers it
 				m.applyFilter()
 				m, _ = update(t, m, sizeMsg(120, 24))

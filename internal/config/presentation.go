@@ -289,6 +289,24 @@ func validatePresentation(engine *tmpl.Engine, field string, p Presentation, kin
 	return nil
 }
 
+// validateOverridePresentations validates the presentation keys of every
+// [[workspaces]] and [[wildcards]] entry. Either may apply to any candidate
+// in a directory (an open Herdr workspace, a project, an agent pane...), so
+// each template is checked against every directory-like kind.
+func validateOverridePresentations(cfg *Config, engine *tmpl.Engine) error {
+	for i, ws := range cfg.Workspaces {
+		if err := validatePresentation(engine, fmt.Sprintf("workspaces[%d]", i), ws.Presentation, directoryKinds...); err != nil {
+			return err
+		}
+	}
+	for i, w := range cfg.Wildcards {
+		if err := validatePresentation(engine, fmt.Sprintf("wildcards[%d]", i), w.Presentation, directoryKinds...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // validatePresentations validates the built-in sources' presentations, each
 // against the kinds of rows it draws. Custom sources are validated with the
 // rest of their table (see validateCustomSources).

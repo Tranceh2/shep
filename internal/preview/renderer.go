@@ -4,12 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/tranceh2/shep/internal/config"
-	"github.com/tranceh2/shep/internal/pathutil"
+	"github.com/tranceh2/shep/internal/effective"
 	"github.com/tranceh2/shep/internal/source"
 	"github.com/tranceh2/shep/internal/tmpl"
 )
@@ -60,12 +59,14 @@ type Section struct {
 	Text string
 }
 
-// defaultRenderer resolves the ordered section list per candidate (workspace
-// > wildcard > source > global default > built-in fallback) and renders each
-// named section — hardcoded built-ins (identity, git, workspace, active_pane,
-// dir) or a declared [preview.commands.<name>] — with TTL caching.
+// defaultRenderer takes the ordered section list of each candidate from the
+// settings resolver (see internal/effective for the precedence) and renders
+// each named section — hardcoded built-ins (identity, git, workspace,
+// active_pane, dir) or a declared [preview.commands.<name>] — with TTL
+// caching.
 type defaultRenderer struct {
-	cfg *config.Config
+	cfg      *config.Config
+	settings *effective.Resolver
 	// templates renders [preview.commands] and custom-source preview argv.
 	templates *tmpl.Engine
 	probes    config.Probes
@@ -110,19 +111,19 @@ func cloneSnapshot(snapshot source.Snapshot) source.Snapshot {
 	return copy
 }
 
-// NewRenderer wires the production renderer from the full config (Workspaces
-// and Wildcards feed the preview-name precedence chain; Preview carries the
-// caps/commands/default), the process's template engine (which renders
-// preview command arguments), a binary probes snapshot, an optional
+// NewRenderer wires the production renderer from the process's settings
+// resolver (each candidate's preview sections; its configuration's [preview]
+// carries the caps and commands), the process's template engine (which
+// renders preview command arguments), a binary probes snapshot, an optional
 // GitProvider, and an optional CommandRunner (used for both the "dir"
-// built-in and any declared preview.commands). templates is required. A
-// TTL cache (preview.cache_ttl) keeps cursor revisits responsive.
-func NewRenderer(cfg *config.Config, templates *tmpl.Engine, probes config.Probes, git GitProvider, runner CommandRunner, opts ...RendererOption) Renderer {
-	if cfg == nil {
-		cfg = config.Defaults()
-	}
+// built-in and any declared preview.commands). settings and templates are
+// required. A TTL cache (preview.cache_ttl) keeps cursor revisits
+// responsive.
+func NewRenderer(settings *effective.Resolver, templates *tmpl.Engine, probes config.Probes, git GitProvider, runner CommandRunner, opts ...RendererOption) Renderer {
+	cfg := settings.Config()
 	r := &defaultRenderer{
 		cfg:       cfg,
+		settings:  settings,
 		templates: templates,
 		probes:    probes,
 		git:       git,
@@ -144,7 +145,7 @@ func (r *defaultRenderer) Render(ctx context.Context, cand source.Candidate) (Re
 		return cached, nil
 	}
 
-	names := resolvePreviewNames(r.cfg, cand)
+	names := r.settings.For(cand).Preview
 	var blocks []string
 	var sections []Section
 	for _, name := range names {
@@ -210,95 +211,6 @@ func customSourcePreviewCommand(cfg *config.Config, sourceName, name string) (co
 		}
 	}
 	return config.CustomSourcePreviewCommand{}, false
-}
-
-// resolvePreviewNames implements the documented precedence: workspace >
-// wildcard > source > source-specific fallback > default > identity fallback.
-// Sessions skip path-based overrides because SessionDir is display metadata.
-//
-// The source-specific fallback sits ahead of Preview.Default because a session
-// candidate carries no path, no git repository and no Herdr pane: the general
-// default sections would render an empty path and nothing else, while
-// session_info is the only section that describes a session at all. Since
-// Preview.Default is now always populated, placing the fallback after it would
-// make it unreachable for every loaded config. A user who names
-// sources.sessions.preview still wins over both.
-func resolvePreviewNames(cfg *config.Config, cand source.Candidate) []string {
-	if cand.Source != config.SourceSessions {
-		path := renderPath(cand)
-		base := filepath.Base(path)
-
-		for _, ws := range cfg.Workspaces {
-			wsPath := ws.Path
-			if expanded, err := pathutil.ExpandTilde(ws.Path); err == nil {
-				wsPath = expanded
-			}
-			if wsPath == "" || len(ws.Preview) == 0 {
-				continue
-			}
-			if cand.Source == config.SourceWorkspaces && ws.Name != cand.Label && ws.Name != cand.Meta["workspace_name"] {
-				continue
-			}
-			// pathutil.SameDir already resolves symlinks and case-fold
-			// equivalence via os.Stat + os.SameFile (device+inode identity), so
-			// no separate Normalize pass is needed on either side here: a
-			// wsPath that is itself a symlink, or that differs only in case
-			// from path on a case-insensitive filesystem, still matches.
-			if pathutil.SameDir(wsPath, path) {
-				return ws.Preview
-			}
-		}
-		for _, w := range cfg.Wildcards {
-			if config.MatchWildcard(w.Pattern, path) || config.MatchWildcard(w.Pattern, base) {
-				if len(w.Preview) > 0 {
-					return w.Preview
-				}
-				break
-			}
-		}
-	}
-	// A non-nil list is the source's answer, including an explicit empty one:
-	// `preview = []` means "no sections for this source" and must not fall
-	// through to a default the user did not ask for. nil means the key was
-	// absent, so normalization already supplied the built-in list for the four
-	// directory/workspace sources and only sessions, an unconfigured agents
-	// source, and unknown sources arrive here unset.
-	if names := sourcePreview(cfg, cand.Source); names != nil {
-		return names
-	}
-	if cand.Source == config.SourceSessions {
-		return []string{config.PreviewSessionInfo}
-	}
-	if len(cfg.Preview.Default) > 0 {
-		return cfg.Preview.Default
-	}
-	return []string{config.PreviewIdentity}
-}
-
-// sourcePreview returns the configured [sources.<name>].preview list for the
-// candidate's source, or the declared [[sources.custom]] entry's own preview
-// list for a custom source, or nil when unset/unknown.
-func sourcePreview(cfg *config.Config, sourceName string) []string {
-	switch sourceName {
-	case config.SourceHerdr:
-		return cfg.Sources.Herdr.Preview
-	case config.SourceSessions:
-		return cfg.Sources.Sessions.Preview
-	case config.SourceWorkspaces:
-		return cfg.Sources.Workspaces.Preview
-	case config.SourceZoxide:
-		return cfg.Sources.Zoxide.Preview
-	case config.SourceProjects:
-		return cfg.Sources.Projects.Preview
-	case config.SourceAgents:
-		return cfg.Sources.Agents.Preview
-	}
-	for _, customSource := range cfg.Sources.Custom {
-		if customSource.Name == sourceName {
-			return customSource.Preview
-		}
-	}
-	return nil
 }
 
 // renderIdentity shows label, path, source, and a matched template (when

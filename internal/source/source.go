@@ -38,13 +38,20 @@ const (
 
 // Candidate is one project discovered by a provider. Path is the raw path as
 // observed; NormalizedPath is filled by the resolver (left empty here).
-// Label is a short human-friendly name (usually the base directory). Source
+// Label is a short human-friendly name (usually the base directory). Icon is
+// the icon the provider itself supplied (a custom source row's "icon"; empty
+// for the built-in providers), which row templates read as .Icon. Source
 // names the provider that produced the candidate (herdr, workspaces, zoxide,
 // projects, or "path" for a direct --path/--path . invocation). Meta carries
 // optional, provider-specific metadata (copied defensively on read by
 // callers). Missing marks a configured workspace whose path does not exist
 // on disk; the picker may still show it (clearly marked), but selecting it
 // fails cleanly instead of falling back to "/", $HOME, or cwd.
+//
+// Presentation is the row presentation resolved for this candidate (see
+// internal/effective), attached by the command layer before the candidate
+// reaches the picker; nil means it was never resolved. It is immutable and
+// may be shared by several candidates.
 type Candidate struct {
 	Path           string
 	NormalizedPath string
@@ -54,6 +61,19 @@ type Candidate struct {
 	Missing        bool
 	Aliases        []string
 	Meta           map[string]string
+	Presentation   *Presentation
+}
+
+// Presentation is a candidate's resolved row presentation as plain strings:
+// the icon, label_format, detail_format and marker_format templates and the
+// icon color reference (a palette token, a role or a color). Each template
+// is rendered by the picker against the candidate's data.
+type Presentation struct {
+	Icon      string
+	IconColor string
+	Label     string
+	Detail    string
+	Marker    string
 }
 
 // Clone returns a deep-enough copy of the candidate so mutating the returned
@@ -562,8 +582,8 @@ func (r *Registry) Enabled() []Provider {
 // Collect runs all enabled providers and concatenates their candidates. A
 // failing provider contributes no candidates and its error is returned
 // alongside the other providers' results, so a single broken source never
-// blanks the list. Each candidate receives its source's configured icon
-// (from [sources.<name>].icon) so the picker can render it.
+// blanks the list. Candidates come back as the providers report them; their
+// presentation is resolved by the caller (see internal/effective).
 func (r *Registry) Collect(ctx context.Context) ([]Candidate, error) {
 	var (
 		out      []Candidate
@@ -577,51 +597,12 @@ func (r *Registry) Collect(ctx context.Context) ([]Candidate, error) {
 			}
 			continue
 		}
-		icon := r.IconFor(p.Name())
 		// Defensive copy: providers may reuse backing arrays across calls.
 		for _, c := range cands {
-			clone := c.Clone()
-			if icon != "" {
-				clone.Icon = icon
-			}
-			out = append(out, clone)
+			out = append(out, c.Clone())
 		}
 	}
 	return out, firstErr
-}
-
-// IconFor returns the named source's configured icon when it is a fixed
-// string, "" when none is configured or when the icon is a template (one that
-// depends on the row, such as the projects default): the picker draws icons
-// from the presentation templates itself, so the stamped value only feeds
-// the .Icon field and shep list's icon column.
-func (r *Registry) IconFor(name string) string {
-	var icon *string
-	switch name {
-	case config.SourceHerdr:
-		icon = r.cfg.Sources.Herdr.Icon
-	case config.SourceSessions:
-		icon = r.cfg.Sources.Sessions.Icon
-	case config.SourceWorkspaces:
-		icon = r.cfg.Sources.Workspaces.Icon
-	case config.SourceZoxide:
-		icon = r.cfg.Sources.Zoxide.Icon
-	case config.SourceProjects:
-		icon = r.cfg.Sources.Projects.Icon
-	case config.SourceAgents:
-		icon = r.cfg.Sources.Agents.Icon
-	default:
-		for _, customSource := range r.cfg.Sources.Custom {
-			if customSource.Name == name {
-				icon = customSource.Icon
-				break
-			}
-		}
-	}
-	if icon == nil || strings.Contains(*icon, "{{") {
-		return ""
-	}
-	return *icon
 }
 
 // --- workspaces provider ---

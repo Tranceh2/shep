@@ -98,7 +98,7 @@ func hostileAgentsModel(t *testing.T, w, h int) Model {
 	}
 	driver := &fakeTreeDriver{tabs: snap.Tabs, panes: snap.Panes}
 	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(snap), Layout{Theme: testTheme(ThemeMocha), InitialTab: "agents", HomeDir: "/home/dev"}).
-		WithSnapshotRefresh(driver, snap, nil, nil)
+		WithSnapshotRefresh(driver, snap, nil)
 	m.startupSnapshot = &snap
 	m.applyFilter()
 	m, _ = update(t, m, sizeMsg(w, h))

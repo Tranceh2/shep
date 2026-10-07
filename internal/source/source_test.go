@@ -733,10 +733,11 @@ func TestRegistry_CollectPreservesResultsOnPartialError(t *testing.T) {
 	}
 }
 
-// TestRegistry_CollectAttachesConfiguredIcon (requirement: source icons from
-// [sources.*].icon must be shown) confirms Collect looks up the configured
-// icon for each candidate's source and attaches it to the candidate.
-func TestRegistry_CollectAttachesConfiguredIcon(t *testing.T) {
+// TestRegistry_CollectReturnsCandidatesAsProvidersReportThem proves Collect
+// stamps nothing: a configured [sources.<name>].icon is a presentation
+// template resolved later (internal/effective), so the candidate keeps the
+// provider's own icon (none for a built-in source) and no presentation.
+func TestRegistry_CollectReturnsCandidatesAsProvidersReportThem(t *testing.T) {
 	t.Parallel()
 	cfg := config.Defaults()
 	star := "★"
@@ -750,15 +751,8 @@ func TestRegistry_CollectAttachesConfiguredIcon(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 candidate, got %d", len(got))
 	}
-	if got[0].Icon != "★" {
-		t.Errorf("expected icon %q on workspaces candidate, got %q", "★", got[0].Icon)
-	}
-
-	// A template icon depends on the row; only the picker draws it.
-	tmplIcon := "{{ if .IsWorktree }}W{{ end }}"
-	cfg.Sources.Workspaces.Icon = &tmplIcon
-	if icon := NewRegistry(cfg, config.Probes{}, nil).IconFor(config.SourceWorkspaces); icon != "" {
-		t.Errorf("IconFor(template icon) = %q, want empty", icon)
+	if got[0].Icon != "" || got[0].Presentation != nil {
+		t.Errorf("workspaces candidate icon = %q, presentation = %+v; want the provider's own (none)", got[0].Icon, got[0].Presentation)
 	}
 }
 
@@ -1488,8 +1482,6 @@ func TestAgentCandidates_DerivationAndPrecedence(t *testing.T) {
 
 func TestAgentsProvider_RegistryLifecycle(t *testing.T) {
 	cfg := config.Defaults()
-	robot := "🤖 "
-	cfg.Sources.Agents.Icon = &robot
 	probes := config.Probes{Herdr: true}
 
 	reg := NewRegistry(cfg, probes, nil)
@@ -1502,11 +1494,6 @@ func TestAgentsProvider_RegistryLifecycle(t *testing.T) {
 	}
 	if agentsProv == nil {
 		t.Fatal("agents provider not registered in Registry")
-	}
-
-	// IconFor
-	if got, want := reg.IconFor(config.SourceAgents), "🤖 "; got != want {
-		t.Errorf("reg.IconFor(SourceAgents) = %q, want %q", got, want)
 	}
 
 	// By default, agents is not in cfg.General.SourceOrder, so Enabled() should not include it
@@ -1535,9 +1522,6 @@ func TestAgentsProvider_RegistryLifecycle(t *testing.T) {
 	}
 	if cands[0].Source != config.SourceAgents {
 		t.Errorf("cand.Source = %q, want %q", cands[0].Source, config.SourceAgents)
-	}
-	if cands[0].Icon != "🤖 " {
-		t.Errorf("cand.Icon = %q, want %q", cands[0].Icon, "🤖 ")
 	}
 
 	// DisableHerdr disables agentsProvider
