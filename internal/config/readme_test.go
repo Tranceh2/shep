@@ -141,7 +141,7 @@ func TestREADME_ThemeTablesListEveryTokenRoleAndTheme(t *testing.T) {
 
 // TestREADME_HerdrIconsExample proves the worked example of icons inside
 // Herdr workspace names loads and draws what it says: the open workspace
-// named "<icon> ~/work/api" reads "api" with "~/work" as its context.
+// named "<icon> ~/fsociety/stage2" reads "stage2" with "~/fsociety" as its context.
 func TestREADME_HerdrIconsExample(t *testing.T) {
 	t.Parallel()
 	cfg := loadREADMEBlock(t, readmeBlock(t, readme(t), "<!-- example:herdr-icons -->"))
@@ -150,12 +150,12 @@ func TestREADME_HerdrIconsExample(t *testing.T) {
 	}
 	engine := tmpl.New(tmpl.SampleHome)
 	icon := strings.TrimSpace(*cfg.Wildcards[0].Icon)
-	name, err := engine.RenderPlain(cfg.Wildcards[0].WorkspaceName, tmpl.Data{Path: tmpl.SampleHome + "/work/api"})
-	if err != nil || name != icon+" ~/work/api" {
-		t.Fatalf("workspace name = %q (%v), want %q", name, err, icon+" ~/work/api")
+	name, err := engine.RenderPlain(cfg.Wildcards[0].WorkspaceName, tmpl.Data{Path: tmpl.SampleHome + "/fsociety/stage2"})
+	if err != nil || name != icon+" ~/fsociety/stage2" {
+		t.Fatalf("workspace name = %q (%v), want %q", name, err, icon+" ~/fsociety/stage2")
 	}
 	p := cfg.Presentations().Herdr
-	for _, part := range []struct{ format, want string }{{p.Label, "api"}, {p.Detail, "~/work"}} {
+	for _, part := range []struct{ format, want string }{{p.Label, "stage2"}, {p.Detail, "~/fsociety"}} {
 		if got, err := engine.Render(part.format, tmpl.Data{Label: name}); err != nil || got != part.want {
 			t.Errorf("%q on %q = %q (%v), want %q", part.format, name, got, err, part.want)
 		}

@@ -273,12 +273,12 @@ the full recovery and refusal taxonomy.
 The picker is one grid with a single frame (Herdr's popup border when it runs as a plugin): views on top, the search prompt and the list on the left, the preview on the right, and the shortcuts that apply to the selected row at the bottom.
 
 ```text
- all   agents   kube-contexts
- ❯ api█                               12/651 │ api-gateway                    project
+ all   agents   dark-army
+ ❯ eco█                               12/651 │ ecorp-ledger                   project
  ────────────────────────────────────────────┼──────────────────────────────────────────
- ❯ 󰳆  payments                             ⠋ │ ~/work/api-gateway
-     api-gateway  ~/work                     │ on main · 2 changes
-     Kubernetes                            › │
+ ❯ 󰳆  fsociety                             ⠋ │ ~/allsafe/ecorp-ledger
+     ecorp-ledger  ~/allsafe                 │ on main · 2 changes
+     Dark Army                             › │
                                              │ Files ───────────────────────────────────
  enter open · tab agents · ctrl+f pin · ? help · esc clear
 ```
@@ -1036,13 +1036,13 @@ Herdr's sidebar shows only workspace names, so an icon there has to be part of t
 version = 3
 
 [[wildcards]]
-pattern = "~/work/**"
-workspace_name = ' {{ .Path | tilde }}'   # Herdr's sidebar: " ~/work/api"
-icon = " "                                 # shep's rows for ~/work/...
+pattern = "~/fsociety/**"
+workspace_name = ' {{ .Path | tilde }}'   # Herdr's sidebar: " ~/fsociety/stage2"
+icon = " "                                 # shep's rows for ~/fsociety/...
 icon_color = "peach"
 
 [sources.herdr]
-# The open workspace " ~/work/api" draws as   api  ~/work
+# The open workspace " ~/fsociety/stage2" draws as   stage2  ~/fsociety
 label_format = '{{ .Label | trimIcon | tilde | name }}'
 detail_format = '{{ .Label | trimIcon | tilde | parent }}'
 ```
