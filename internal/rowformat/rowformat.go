@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"errors"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"text/template"
 )
 
@@ -28,9 +30,46 @@ func Parse(format string) (*template.Template, error) {
 	return template.New("rowformat").Funcs(FuncMap).Option("missingkey=zero").Parse(format)
 }
 
+// maxCachedTemplates bounds the parsed-template cache. Formats and command
+// tokens come from configuration, so real sessions stay far below it; the cap
+// only guarantees the cache can never grow without limit.
+const maxCachedTemplates = 512
+
+// parsedTemplate is one cached Parse outcome, including a parse error so an
+// invalid format is not re-parsed on every call either.
+type parsedTemplate struct {
+	tmpl *template.Template
+	err  error
+}
+
+var (
+	// templateCache maps a format string to its parsedTemplate. The picker
+	// renders every visible row on every frame, and text/template parsing
+	// dominated that cost. A parsed template is never mutated afterwards and
+	// text/template documents Execute as safe for concurrent use.
+	templateCache      sync.Map
+	templateCacheCount atomic.Int64
+)
+
+// cachedParse returns the parsed template for format, parsing it at most
+// once while the cache has room.
+func cachedParse(format string) (*template.Template, error) {
+	if cached, ok := templateCache.Load(format); ok {
+		entry := cached.(parsedTemplate)
+		return entry.tmpl, entry.err
+	}
+	tmpl, err := Parse(format)
+	if templateCacheCount.Load() < maxCachedTemplates {
+		if _, loaded := templateCache.LoadOrStore(format, parsedTemplate{tmpl: tmpl, err: err}); !loaded {
+			templateCacheCount.Add(1)
+		}
+	}
+	return tmpl, err
+}
+
 // Render evaluates format with data using the shared template function map.
 func Render(format string, data Context) (string, error) {
-	tmpl, err := Parse(format)
+	tmpl, err := cachedParse(format)
 	if err != nil {
 		return "", err
 	}
