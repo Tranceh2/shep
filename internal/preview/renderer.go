@@ -380,32 +380,99 @@ func (r *defaultRenderer) renderWorkspaceSection(ctx context.Context, cand sourc
 	return strings.Join(lines, "\n"), true
 }
 
-// renderAgentStatusSection renders a static, at-open-time snapshot of the
-// focused Herdr pane's agent status from the immutable snapshot. ok=false
-// means the section is skipped entirely: the candidate is not an active Herdr
-// workspace, or no snapshot is wired. No focused pane degrades to a "no active
-// pane" note.
-// This section normalizes both an empty AgentStatus and an explicit
-// "unknown" to the same "unknown" display text — the preview always shows a
-// definite line under the heading rather than distinguishing "not reported"
-// from "reported as unknown".
+// renderAgentStatusSection renders a static, at-open-time view of the
+// candidate's own agent state, read from the immutable snapshot. It never
+// looks at the pane focused globally in Herdr (where shep was launched from):
+// every workspace row reports its own panes.
+//
+//   - An agent candidate (Meta["pane_id"] naming a pane of its workspace)
+//     reports that pane's status, so an agent row never borrows a sibling
+//     agent's state.
+//   - Any other candidate reports the workspace's most important agent state
+//     across all of its panes, by attention precedence blocked > working >
+//     done > idle > unknown (see agentStatusRank). Panes with an empty
+//     AgentStatus carry no agent (a plain shell pane, or an older Herdr) and
+//     are ignored.
+//
+// ok=false means the section is skipped entirely: the candidate is not an
+// active Herdr workspace, or no snapshot is wired. A workspace with no panes
+// degrades to a "no active pane" note; one whose panes report no agent status
+// at all shows "unknown". The section therefore normalizes "not reported" and
+// an explicit "unknown" to the same display text, so the heading is always
+// followed by a definite line. The "  status: " prefix is parsed by the TUI
+// (internal/tui/preview_body.go statusLinePrefix) and must stay stable.
 func (r *defaultRenderer) renderAgentStatusSection(ctx context.Context, cand source.Candidate) (string, bool) {
 	workspaceID := cand.Meta["workspace_id"]
 	if workspaceID == "" || r.snapshot == nil {
 		return "", false
 	}
 	lines := []string{"agent status"}
-	pane, ok := source.ResolveFocusedPane(*r.snapshot)
-	if !ok {
+	_, panes := snapshotWorkspace(*r.snapshot, workspaceID)
+	if len(panes) == 0 {
 		lines = append(lines, "(no active pane)")
 		return strings.Join(lines, "\n"), true
 	}
-	status := pane.AgentStatus
+	status, ok := paneAgentStatus(panes, cand.Meta["pane_id"])
+	if !ok {
+		status = workspaceAgentStatus(panes)
+	}
 	if status == "" {
 		status = "unknown"
 	}
 	lines = append(lines, "  status: "+status)
 	return strings.Join(lines, "\n"), true
+}
+
+// paneAgentStatus returns the AgentStatus of the pane with id paneID among
+// panes. ok=false when paneID is empty or names no pane of the workspace (a
+// non-agent candidate, or a stale id), so the caller falls back to the
+// workspace aggregate.
+func paneAgentStatus(panes []source.Pane, paneID string) (string, bool) {
+	if paneID == "" {
+		return "", false
+	}
+	for _, p := range panes {
+		if p.ID == paneID {
+			return p.AgentStatus, true
+		}
+	}
+	return "", false
+}
+
+// workspaceAgentStatus returns the most important agent state reported by
+// panes, by agentStatusRank, or "" when no pane reports one. Ties keep the
+// first pane in snapshot order, so the result is deterministic.
+func workspaceAgentStatus(panes []source.Pane) string {
+	best, bestRank := "", -1
+	for _, p := range panes {
+		if p.AgentStatus == "" {
+			continue
+		}
+		if rank := agentStatusRank(p.AgentStatus); rank > bestRank {
+			best, bestRank = p.AgentStatus, rank
+		}
+	}
+	return best
+}
+
+// agentStatusRank orders Herdr agent states by how urgently they need the
+// user: a blocked agent waits on input, a working one is busy, a done one has
+// output to review, an idle one needs nothing. "unknown" and any value this
+// build does not recognise rank lowest, so they surface only when nothing
+// better is known.
+func agentStatusRank(status string) int {
+	switch status {
+	case "blocked":
+		return 4
+	case "working":
+		return 3
+	case "done":
+		return 2
+	case "idle":
+		return 1
+	default:
+		return 0
+	}
 }
 
 // renderActivePaneSection renders the active pane's captured terminal
@@ -557,25 +624,39 @@ func boundedContext(ctx context.Context, timeout config.Duration) (context.Conte
 var dirLookPath = exec.LookPath
 
 // dirArgv picks the first available of lsd, eza, else falls back to ls, per
-// the documented "dir" built-in. lsd and eza are forced to --color=always so
-// the "dir" section shows their real colored listing — the reason to prefer
-// them over plain ls in the first place. Forcing color also keeps the
-// output deterministic regardless of the invoking process's $TERM/color-
-// profile detection (which would otherwise vary whether lsd/eza auto-detect
-// a color-capable terminal), so this built-in section's TTL-cached result
-// stays stable for the same input. internal/tui/model.go's truncateToWidth
-// is ANSI-aware (it delegates to charmbracelet/x/ansi.Truncate), which is
-// what makes it safe to carry real color codes through this section without
-// corrupting truncation at narrow widths. ls has no such flag and stays
-// plain. Icons are kept — they're plain glyphs, not escape sequences.
+// the documented "dir" built-in. Every variant prints a compact listing sized
+// for a narrow preview pane: one entry name per line, directories first,
+// hidden entries included but never the implied "." and "..". Long-format
+// columns (permissions, owner, group, size, date) are deliberately omitted —
+// they drown the names the user scans for.
+//
+//   - lsd: --almost-all --oneline --group-directories-first (lsd >= 1.0; the
+//     last flag is lsd's alias of --group-dirs=first).
+//   - eza: --all (eza needs -aa to add "." and "..") --oneline
+//     --group-directories-first (eza >= 0.18).
+//   - ls: -1Ap — one per line, almost-all, a trailing "/" marks directories
+//     in place of grouping, which BSD and GNU ls do not share a flag for.
+//
+// lsd and eza are forced to --color=always so the "dir" section shows their
+// real colored listing — the reason to prefer them over plain ls in the first
+// place. Forcing color also keeps the output deterministic regardless of the
+// invoking process's $TERM/color-profile detection (which would otherwise
+// vary whether lsd/eza auto-detect a color-capable terminal), so this built-in
+// section's TTL-cached result stays stable for the same input. Icons are
+// forced the same way (--icon=always / --icons=always): the output is piped,
+// so their "auto" default would print none. internal/tui/model.go's
+// truncateToWidth is ANSI-aware (it delegates to charmbracelet/x/ansi.Truncate),
+// which is what makes it safe to carry real color codes through this section
+// without corrupting truncation at narrow widths. ls has no portable color
+// flag (BSD -G and GNU --color differ) and stays plain.
 func dirArgv(path string) []string {
 	if _, err := dirLookPath("lsd"); err == nil {
-		return []string{"lsd", "-la", "--icon=always", "--color=always", path}
+		return []string{"lsd", "--almost-all", "--oneline", "--group-directories-first", "--icon=always", "--color=always", path}
 	}
 	if _, err := dirLookPath("eza"); err == nil {
-		return []string{"eza", "--all", "--git", "--icons", "--color=always", path}
+		return []string{"eza", "--all", "--oneline", "--group-directories-first", "--icons=always", "--color=always", path}
 	}
-	return []string{"ls", "-la", path}
+	return []string{"ls", "-1Ap", path}
 }
 
 // readPanePreview bounds a ReadPane call by herdrPreviewTimeout.

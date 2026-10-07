@@ -1007,7 +1007,7 @@ func TestRenderAgentStatusSection_KnownStatus(t *testing.T) {
 	t.Parallel()
 
 	cfg := cfgWithDefault(config.PreviewAgentStatus)
-	driver := &fakePreviewDriver{currentPane: source.Pane{ID: "wA:p1", AgentStatus: "idle"}}
+	driver := &fakePreviewDriver{currentPane: source.Pane{ID: "wA:p1", WorkspaceID: "wA", AgentStatus: "idle"}}
 	r := NewRenderer(cfg, config.Probes{}, nil, nil, withFakeSnapshot(driver))
 	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
 	if !strings.Contains(got, "agent status") {
@@ -1029,7 +1029,7 @@ func TestRenderAgentStatusSection_EmptyStatus(t *testing.T) {
 	t.Parallel()
 
 	cfg := cfgWithDefault(config.PreviewAgentStatus)
-	driver := &fakePreviewDriver{currentPane: source.Pane{ID: "wA:p1", AgentStatus: ""}}
+	driver := &fakePreviewDriver{currentPane: source.Pane{ID: "wA:p1", WorkspaceID: "wA", AgentStatus: ""}}
 	r := NewRenderer(cfg, config.Probes{}, nil, nil, withFakeSnapshot(driver))
 	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
 	if !strings.Contains(got, "agent status") {
@@ -1052,6 +1052,151 @@ func TestRenderAgentStatusSection_SectionDisabled(t *testing.T) {
 	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
 	if strings.Contains(got, "agent status") || strings.Contains(got, "working") {
 		t.Errorf("agent_status section must be omitted when disabled: %q", got)
+	}
+}
+
+// renderAgentStatus renders only the agent_status section for cand against
+// snapshot, so tests can compare the exact section text.
+func renderAgentStatus(t *testing.T, snapshot source.Snapshot, cand source.Candidate) string {
+	t.Helper()
+	r := NewRenderer(cfgWithDefault(config.PreviewAgentStatus), config.Probes{}, nil, nil, WithSnapshot(snapshot))
+	return mustRender(t, r, cand)
+}
+
+// TestRenderAgentStatusSection_ReportsCandidateWorkspaceNotGlobalFocus is the
+// regression test for the real-session bug where every workspace preview said
+// "working": the section read the pane focused globally in Herdr (where shep
+// was launched) instead of the candidate workspace's own panes.
+func TestRenderAgentStatusSection_ReportsCandidateWorkspaceNotGlobalFocus(t *testing.T) {
+	t.Parallel()
+
+	snapshot := source.Snapshot{
+		Workspaces: []source.Workspace{{ID: "wA"}, {ID: "wB"}},
+		Panes: []source.Pane{
+			{ID: "wA:p1", WorkspaceID: "wA", Focused: true, AgentStatus: "working"},
+			{ID: "wB:p1", WorkspaceID: "wB", Focused: true, AgentStatus: "idle"},
+		},
+		FocusedWorkspaceID: "wA",
+		FocusedPaneID:      "wA:p1",
+	}
+	if got, want := renderAgentStatus(t, snapshot, herdrCandidate("b", "/b", "wB")), "agent status\n  status: idle"; got != want {
+		t.Errorf("workspace B must report its own idle agent, not the globally focused pane:\n got %q\nwant %q", got, want)
+	}
+	if got, want := renderAgentStatus(t, snapshot, herdrCandidate("a", "/a", "wA")), "agent status\n  status: working"; got != want {
+		t.Errorf("workspace A must report its own working agent:\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestRenderAgentStatusSection_PrecedenceAcrossPanes confirms a workspace
+// reports its most important agent state across all panes — blocked > working
+// > done > idle > unknown — independent of pane order or focus, and that
+// shell panes ("" status) never mask an agent.
+func TestRenderAgentStatusSection_PrecedenceAcrossPanes(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		statuses []string
+		want     string
+	}{
+		{"blocked beats working", []string{"working", "blocked", "idle"}, "blocked"},
+		{"blocked beats everything", []string{"idle", "done", "unknown", "working", "blocked"}, "blocked"},
+		{"working beats done", []string{"done", "working"}, "working"},
+		{"done beats idle", []string{"idle", "done"}, "done"},
+		{"idle beats unknown", []string{"unknown", "idle"}, "idle"},
+		{"shell panes are ignored", []string{"", "idle", ""}, "idle"},
+		{"only unknown", []string{"unknown", ""}, "unknown"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			snapshot := source.Snapshot{Workspaces: []source.Workspace{{ID: "wA"}, {ID: "wOther"}}}
+			for i, status := range tc.statuses {
+				snapshot.Panes = append(snapshot.Panes, source.Pane{
+					ID:          "wA:p" + string(rune('1'+i)),
+					WorkspaceID: "wA",
+					Focused:     i == 0,
+					AgentStatus: status,
+				})
+			}
+			// A globally focused, blocked pane elsewhere must never leak into
+			// wA: every non-blocked case would report it if it did.
+			snapshot.Panes = append(snapshot.Panes, source.Pane{ID: "wOther:p1", WorkspaceID: "wOther", Focused: true, AgentStatus: "blocked"})
+			snapshot.FocusedPaneID = "wOther:p1"
+
+			got := renderAgentStatus(t, snapshot, herdrCandidate("a", "/a", "wA"))
+			if want := "agent status\n  status: " + tc.want; got != want {
+				t.Errorf("statuses %q:\n got %q\nwant %q", tc.statuses, got, want)
+			}
+		})
+	}
+}
+
+// TestRenderAgentStatusSection_ShellPanesOnlyIsUnknown confirms a workspace
+// whose panes carry no agent at all ("" status everywhere) keeps the existing
+// "unknown" degradation instead of borrowing the global focus.
+func TestRenderAgentStatusSection_ShellPanesOnlyIsUnknown(t *testing.T) {
+	t.Parallel()
+
+	snapshot := source.Snapshot{
+		Workspaces: []source.Workspace{{ID: "wA"}, {ID: "wB"}},
+		Panes: []source.Pane{
+			{ID: "wA:p1", WorkspaceID: "wA", Focused: true},
+			{ID: "wA:p2", WorkspaceID: "wA"},
+			{ID: "wB:p1", WorkspaceID: "wB", Focused: true, AgentStatus: "working"},
+		},
+		FocusedPaneID: "wB:p1",
+	}
+	if got, want := renderAgentStatus(t, snapshot, herdrCandidate("a", "/a", "wA")), "agent status\n  status: unknown"; got != want {
+		t.Errorf("shell-only workspace:\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestRenderAgentStatusSection_EmptyWorkspaceNotesNoActivePane confirms a
+// workspace with no panes in the snapshot keeps the "(no active pane)" note,
+// even while another workspace has a focused, working pane.
+func TestRenderAgentStatusSection_EmptyWorkspaceNotesNoActivePane(t *testing.T) {
+	t.Parallel()
+
+	snapshot := source.Snapshot{
+		Workspaces:    []source.Workspace{{ID: "wA"}, {ID: "wB"}},
+		Panes:         []source.Pane{{ID: "wB:p1", WorkspaceID: "wB", Focused: true, AgentStatus: "working"}},
+		FocusedPaneID: "wB:p1",
+	}
+	if got, want := renderAgentStatus(t, snapshot, herdrCandidate("a", "/a", "wA")), "agent status\n(no active pane)"; got != want {
+		t.Errorf("empty workspace:\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestRenderAgentStatusSection_AgentCandidateReportsItsOwnPane confirms an
+// agents-source row (which carries pane_id and reaches agent_status through
+// preview.default) shows its own pane's state, not the workspace aggregate,
+// so an idle agent is never labelled "blocked" because of a sibling. A stale
+// pane_id falls back to the workspace aggregate.
+func TestRenderAgentStatusSection_AgentCandidateReportsItsOwnPane(t *testing.T) {
+	t.Parallel()
+
+	snapshot := source.Snapshot{
+		Workspaces: []source.Workspace{{ID: "wA"}},
+		Panes: []source.Pane{
+			{ID: "wA:p1", WorkspaceID: "wA", Focused: true, Agent: "claude", AgentStatus: "blocked"},
+			{ID: "wA:p2", WorkspaceID: "wA", Agent: "codex", AgentStatus: "idle"},
+		},
+		FocusedPaneID: "wA:p1",
+	}
+	agent := func(paneID string) source.Candidate {
+		return source.Candidate{
+			Path:   "/a",
+			Label:  "agent " + paneID,
+			Source: config.SourceAgents,
+			Meta:   map[string]string{"workspace_id": "wA", "pane_id": paneID, "kind": "agent"},
+		}
+	}
+	if got, want := renderAgentStatus(t, snapshot, agent("wA:p2")), "agent status\n  status: idle"; got != want {
+		t.Errorf("agent row must report its own pane:\n got %q\nwant %q", got, want)
+	}
+	if got, want := renderAgentStatus(t, snapshot, agent("wA:gone")), "agent status\n  status: blocked"; got != want {
+		t.Errorf("stale pane_id must fall back to the workspace aggregate:\n got %q\nwant %q", got, want)
 	}
 }
 
@@ -1162,13 +1307,14 @@ func TestRender_DirSection_FallsBackToLs(t *testing.T) {
 	}
 }
 
-// TestDirArgv_Lsd_UsesColorAlways confirms dirArgv forces --color=always
-// into the lsd invocation so the "dir" preview section shows lsd's real
-// colored listing (the whole point of shelling out to lsd instead of
-// plain ls). This is safe because internal/tui/model.go's truncateToWidth
-// is ANSI-aware (charmbracelet/x/ansi.Truncate) and never cuts mid-escape
-// sequence — see TestTruncateToWidth_ANSIStyledInput_* in
-// internal/tui/model_internal_test.go.
+// TestDirArgv_Lsd_UsesColorAlways confirms dirArgv asks lsd for the compact
+// listing (one name per line, directories first, hidden entries without "."
+// and "..", no long-format columns) and forces --icon=always and
+// --color=always so the "dir" preview section shows lsd's real colored
+// listing (the whole point of shelling out to lsd instead of plain ls). This
+// is safe because internal/tui/model.go's truncateToWidth is ANSI-aware
+// (charmbracelet/x/ansi.Truncate) and never cuts mid-escape sequence — see
+// TestTruncateToWidth_ANSIStyledInput_* in internal/tui/model_internal_test.go.
 func TestDirArgv_Lsd_UsesColorAlways(t *testing.T) {
 	// No t.Parallel(): this test mutates the package-level dirLookPath seam
 	// (see dirLookPath in renderer.go), which races under -race against
@@ -1183,14 +1329,15 @@ func TestDirArgv_Lsd_UsesColorAlways(t *testing.T) {
 	defer func() { dirLookPath = orig }()
 
 	got := dirArgv("/p/foo")
-	want := []string{"lsd", "-la", "--icon=always", "--color=always", "/p/foo"}
+	want := []string{"lsd", "--almost-all", "--oneline", "--group-directories-first", "--icon=always", "--color=always", "/p/foo"}
 	if !equalArgv(got, want) {
 		t.Errorf("dirArgv(lsd) = %v, want %v", got, want)
 	}
 }
 
 // TestDirArgv_Eza_UsesColorAlways is the eza counterpart of
-// TestDirArgv_Lsd_UsesColorAlways.
+// TestDirArgv_Lsd_UsesColorAlways. --icons=always is required: a bare
+// --icons means "auto" in eza >= 0.18 and prints no icons when piped.
 func TestDirArgv_Eza_UsesColorAlways(t *testing.T) {
 	// No t.Parallel(): this test mutates the package-level dirLookPath seam
 	// (see dirLookPath in renderer.go), which races under -race against
@@ -1205,9 +1352,26 @@ func TestDirArgv_Eza_UsesColorAlways(t *testing.T) {
 	defer func() { dirLookPath = orig }()
 
 	got := dirArgv("/p/foo")
-	want := []string{"eza", "--all", "--git", "--icons", "--color=always", "/p/foo"}
+	want := []string{"eza", "--all", "--oneline", "--group-directories-first", "--icons=always", "--color=always", "/p/foo"}
 	if !equalArgv(got, want) {
 		t.Errorf("dirArgv(eza) = %v, want %v", got, want)
+	}
+}
+
+// TestDirArgv_Ls_CompactListing confirms the ls fallback prints the same
+// compact shape as lsd/eza (one entry per line, hidden entries without "."
+// and "..", directories marked with a trailing "/") using only flags BSD and
+// GNU ls share, and no long-format -l.
+func TestDirArgv_Ls_CompactListing(t *testing.T) {
+	// No t.Parallel(): this test mutates the package-level dirLookPath seam.
+	orig := dirLookPath
+	dirLookPath = func(string) (string, error) { return "", errors.New("not found") }
+	defer func() { dirLookPath = orig }()
+
+	got := dirArgv("/p/foo")
+	want := []string{"ls", "-1Ap", "/p/foo"}
+	if !equalArgv(got, want) {
+		t.Errorf("dirArgv(ls) = %v, want %v", got, want)
 	}
 }
 
