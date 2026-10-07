@@ -130,6 +130,7 @@ func TestHelpBodyText_MatchesApprovedContent(t *testing.T) {
 		"  ctrl+f                    pin/unpin the highlighted top-level candidate",
 		"  tab / shift+tab           switch between all and agents filter",
 		"  backspace                 delete the last query character",
+		"  ctrl+w, alt+backspace     delete the last query word",
 		"",
 		m.styles.helpHeadingStyle.Render("Preview (while focused)"),
 		"  up/down, ctrl+j/ctrl+k    scroll one line",

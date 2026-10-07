@@ -7,6 +7,7 @@
 │   ctrl+f                    pin/unpin the highlighted top-level candidate                                            │
 │   tab / shift+tab           switch between all and agents filter                                                     │
 │   backspace                 delete the last query character                                                          │
+│   ctrl+w, alt+backspace     delete the last query word                                                               │
 │                                                                                                                      │
 │ Preview (while focused)                                                                                              │
 │   up/down, ctrl+j/ctrl+k    scroll one line                                                                          │
@@ -30,7 +31,6 @@
 │                                                                                                                      │
 │ Session                                                                                                              │
 │   esc, ctrl+c, ctrl+g       cancel the picker                                                                        │
-│                                                                                                                      │
 │                                                                                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 enter open   tab agents   ? help   esc quit

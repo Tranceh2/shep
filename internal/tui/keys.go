@@ -3,6 +3,9 @@ package tui
 import (
 	"fmt"
 	"slices"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -11,14 +14,113 @@ import (
 	"github.com/tranceh2/shep/internal/source"
 )
 
-// isPrintable returns true for single-rune printable input that should
-// extend the query. We avoid pulling in unicode classes for the v1 picker.
-func isPrintable(s string) bool {
-	if s == "" || len([]rune(s)) != 1 {
-		return false
+// keyChord returns the chord name every key switch in this file matches
+// against. Bubble Tea v1 coalesces a fast typing burst or a tmux send-keys
+// string into ONE KeyRunes message whose String() is just those runes, so
+// typing "tab", "esc", "enter" or "up" quickly would otherwise be dispatched
+// as that named key (cycling the tab, cancelling, selecting a row) instead
+// of being searched for. Literal text — any KeyRunes message carrying more
+// than one rune, and any bracketed paste — therefore maps to "", which no
+// case matches, and reaches the query through queryInputRunes instead. A
+// single typed rune keeps its String(), so "?" still opens help and "y"
+// still confirms a close.
+func keyChord(msg tea.KeyMsg) string {
+	if msg.Type == tea.KeyRunes && (msg.Paste || len(msg.Runes) > 1) {
+		return ""
 	}
-	r := []rune(s)[0]
-	return r >= 0x20 && r != 0x7f
+	return msg.String()
+}
+
+// queryInputRunes returns the runes a key contributes to the query, or nil
+// when it is not text input. Text is a typed rune, a multi-rune burst, a
+// bracketed paste (Paste only changes String(), the runes are the same),
+// or space. Alt-modified keys are chords ("alt+x"), never text: the old
+// single-rune contract dropped them and so does this one.
+func queryInputRunes(msg tea.KeyMsg) []rune {
+	if msg.Alt {
+		return nil
+	}
+	switch msg.Type {
+	case tea.KeyRunes:
+		return msg.Runes
+	case tea.KeySpace:
+		// Bubble Tea reports space as its own key type; its Runes field is
+		// not guaranteed to be populated, so spell the rune out.
+		return []rune{' '}
+	}
+	return nil
+}
+
+// appendQueryRunes returns query extended with the printable runes of
+// runes, and whether anything was added. Control runes (C0, DEL, C1) are
+// dropped instead of inserted: a bracketed paste delivers newlines, tabs
+// and carriage returns verbatim, the launcher query is a single line, and a
+// raw control character echoed back into the prompt row could drive the
+// terminal. They vanish rather than turning into spaces so a pasted
+// wrapped path stays one search term.
+func appendQueryRunes(query string, runes []rune) (string, bool) {
+	var added strings.Builder
+	for _, r := range runes {
+		if !unicode.IsControl(r) {
+			added.WriteRune(r)
+		}
+	}
+	if added.Len() == 0 {
+		return query, false
+	}
+	return query + added.String(), true
+}
+
+// deleteLastRune returns query without its last rune. Slicing off the last
+// byte instead would split a multi-byte rune (á, ñ, emoji) and leave
+// invalid UTF-8 in the query. An empty query is returned unchanged.
+func deleteLastRune(query string) string {
+	_, size := utf8.DecodeLastRuneInString(query)
+	return query[:len(query)-size]
+}
+
+// deleteLastWord returns query without its last word, following readline's
+// unix-word-rubout (ctrl+w): first the trailing whitespace, then the run of
+// non-whitespace runes before it, keeping the whitespace that separates it
+// from the previous word ("foo bar  " -> "foo "). Whitespace is the word
+// boundary because it is also the term separator of the search syntax.
+func deleteLastWord(query string) string {
+	trimmed := strings.TrimRightFunc(query, unicode.IsSpace)
+	i := strings.LastIndexFunc(trimmed, unicode.IsSpace)
+	if i < 0 {
+		return ""
+	}
+	_, size := utf8.DecodeRuneInString(trimmed[i:])
+	return trimmed[:i+size]
+}
+
+// setQuery replaces the query and applies the side effects every query edit
+// shares: focus returns to the list (a no-op from FocusList; from
+// FocusPreview it lets the user type or delete straight out of the preview
+// without an extra Tab), rows are refiltered, and the preview is re-synced
+// to whichever row is now highlighted. The command is built before
+// returning so the pointer-receiver mutations of applyFilter and
+// syncPreviewAfterSelectionChange are guaranteed to land in the returned
+// model.
+func (m Model) setQuery(query string) (tea.Model, tea.Cmd) {
+	m.focus = FocusList
+	m.query = query
+	cmd := tea.Batch(m.applyFilter(), m.syncPreviewAfterSelectionChange())
+	return m, cmd
+}
+
+// deleteFromQuery applies a deletion edit (deleteLastRune for backspace,
+// deleteLastWord for ctrl+w/alt+backspace) through setQuery. With an empty
+// query there is nothing to delete: focus still returns to the list and the
+// preview is re-synced, but rows are not refiltered — the same contract
+// backspace has always had in both focus states.
+func (m Model) deleteFromQuery(edit func(string) string) (tea.Model, tea.Cmd) {
+	if m.query == "" {
+		m.focus = FocusList
+		cmd := m.syncPreviewAfterSelectionChange()
+		return m, cmd
+	}
+	return m.setQuery(edit(m.query))
 }
 
 // scrollViewport applies one scroll key to vp in place: up/down/ctrl+j/
@@ -57,19 +159,20 @@ func scrollViewport(vp *viewport.Model, key string) bool {
 // Otherwise, global bindings ("?"/esc/ctrl+c/ctrl+g/tab/shift+tab/ctrl+t/
 // ctrl+p/ctrl+f) are checked next regardless of focus, and the remainder branches
 // on m.focus: FocusPreview routes navigation to the preview viewport and any
-// printable rune (including "q" — it is an ordinary query character, NOT a
+// text input (including "q" — it is an ordinary query character, NOT a
 // cancel key; only esc/ctrl+c/ctrl+g cancel) bounces focus back to the list
 // before extending the query (so a user can start typing again straight out
 // of the preview without an extra Tab); FocusList is the classic
 // row-cursor/query-editing behavior, extended with Left/Right for
 // expand/collapse, Enter for selection, and ctrl+l for the layout cycle —
 // all three are List-only actions, no-ops from FocusPreview (see
-// handlePreviewFocusedKey).
+// handlePreviewFocusedKey). Every switch matches keyChord(msg), never the
+// raw String(), so a typing burst or a paste is always text, never a chord.
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.closeConfirm != nil {
 		target := *m.closeConfirm
 		m.closeConfirm = nil
-		if msg.String() == "y" {
+		if keyChord(msg) == "y" {
 			return m.startClose(target)
 		}
 		m.closeStatus = "close cancelled"
@@ -81,7 +184,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.focus == FocusHelp {
 		return m.handleHelpFocusedKey(msg)
 	}
-	switch msg.String() {
+	switch keyChord(msg) {
 	case "?":
 		m.prevFocus = m.focus
 		m.focus = FocusHelp
@@ -91,9 +194,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// a non-empty query is cleared and focus returns to the list
 		// before ever cancelling; only an empty query cancels.
 		if m.query != "" {
-			m.query = ""
-			m.focus = FocusList
-			return m, tea.Batch(m.applyFilter(), m.syncPreviewAfterSelectionChange())
+			return m.setQuery("")
 		}
 		m.cancelled = true
 		return m, tea.Quit
@@ -126,11 +227,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // and Esc close help, restoring m.prevFocus (the state recorded when "?"
 // opened it); ctrl+c/ctrl+g remain the unconditional cancel escape hatch;
 // up/down/ctrl+j/ctrl+k/pgup/pgdown/home/end scroll helpViewport. Every
-// other key — printable runes, backspace, ctrl+u, enter, ctrl+l, ctrl+t,
-// ctrl+p, left/right — is swallowed: reading help must never mutate the
-// query, move the list cursor, change layout, or select anything.
+// other key — text input (typed, burst or pasted), backspace, ctrl+w,
+// alt+backspace, ctrl+u, enter, ctrl+l, ctrl+t, ctrl+p, left/right — is
+// swallowed: reading help must never mutate the query, move the list
+// cursor, change layout, or select anything.
 func (m Model) handleHelpFocusedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
+	switch chord := keyChord(msg); chord {
 	case "?", "esc":
 		m.focus = m.prevFocus
 		return m, nil
@@ -138,7 +240,7 @@ func (m Model) handleHelpFocusedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cancelled = true
 		return m, tea.Quit
 	case "up", "down", "ctrl+j", "ctrl+k", "pgup", "pgdown", "home", "end":
-		scrollViewport(&m.helpViewport, msg.String())
+		scrollViewport(&m.helpViewport, chord)
 		return m, nil
 	}
 	return m, nil
@@ -179,47 +281,33 @@ func (m Model) togglePin() (tea.Model, tea.Cmd) {
 }
 
 // handlePreviewFocusedKey routes scroll keys to the viewport while the
-// preview pane owns focus. ctrl+u and backspace both return focus to the
-// list, mutating the query (clear vs. delete-last) in the same step. Any
-// other printable rune does the same before extending the query — the
-// non-negotiable "printable rune returns to list and searches" contract.
-// enter/ctrl+l/left/right are List-only actions (selection, layout cycle,
-// expand/collapse) and are explicit no-ops here.
+// preview pane owns focus. ctrl+u, backspace and ctrl+w/alt+backspace all
+// return focus to the list, mutating the query (clear vs. delete the last
+// rune vs. delete the last word) in the same step. Any text input — a
+// typed rune, a burst or a paste — does the same before extending the
+// query: the non-negotiable "printable rune returns to list and searches"
+// contract. enter/ctrl+l/left/right are List-only actions (selection,
+// layout cycle, expand/collapse) and are explicit no-ops here.
 func (m Model) handlePreviewFocusedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
+	switch chord := keyChord(msg); chord {
 	case "up", "down", "ctrl+j", "ctrl+k", "pgup", "pgdown", "home", "end":
-		scrollViewport(&m.viewport, msg.String())
+		scrollViewport(&m.viewport, chord)
 		return m, nil
 	case "ctrl+u":
-		m.focus = FocusList
-		m.query = ""
-		return m, tea.Batch(m.applyFilter(), m.syncPreviewAfterSelectionChange())
+		return m.setQuery("")
 	case "backspace":
-		m.focus = FocusList
-		if len(m.query) > 0 {
-			m.query = m.query[:len(m.query)-1]
-			return m, tea.Batch(m.applyFilter(), m.syncPreviewAfterSelectionChange())
-		}
-		return m, m.syncPreviewAfterSelectionChange()
+		return m.deleteFromQuery(deleteLastRune)
+	case "ctrl+w", "alt+backspace":
+		return m.deleteFromQuery(deleteLastWord)
 	case "enter", "ctrl+l", "left", "right":
 		return m, nil
 	}
-	if isPrintable(msg.String()) {
-		m.focus = FocusList
-		m.query += msg.String()
-		return m, tea.Batch(m.applyFilter(), m.syncPreviewAfterSelectionChange())
+	if query, ok := appendQueryRunes(m.query, queryInputRunes(msg)); ok {
+		return m.setQuery(query)
 	}
 	return m, nil
 }
 
-// handleListFocusedKey is the classic row-cursor/query-editing key set,
-// extended with Left/Right expand-collapse, Enter to select, and ctrl+l to
-// cycle the layout override — all List-only actions (see
-// handlePreviewFocusedKey's explicit no-ops for the same three while the
-// preview pane is focused). ctrl+j/ctrl+k always move the cursor regardless
-// of focus's usual up/down mapping (kept as a stable alternate binding);
-// plain "j"/"k" are intentionally NOT bound to movement here so they fall
-// through to the query instead.
 func (m Model) cycleScopeForward() (tea.Model, tea.Cmd) {
 	next := m.adjacentTab(1)
 	m.activeTab = next.ID
@@ -238,16 +326,25 @@ func (m Model) cycleScopeBackward() (tea.Model, tea.Cmd) {
 	return m, tea.Batch(m.maybeLoadGroup(), m.applyFilter(), m.syncPreviewAfterSelectionChange())
 }
 
-// handleListFocusedKey applies one key press while FocusList owns focus.
+// handleListFocusedKey applies one key press while FocusList owns focus:
+// the classic row-cursor/query-editing key set, extended with Left/Right
+// expand-collapse, Enter to select, and ctrl+l to cycle the layout
+// override — all List-only actions (see handlePreviewFocusedKey's explicit
+// no-ops for the same three while the preview pane is focused).
+// ctrl+j/ctrl+k always move the cursor regardless of focus's usual up/down
+// mapping (kept as a stable alternate binding); plain "j"/"k" are
+// intentionally NOT bound to movement here so they fall through to the
+// query instead. ctrl+u stays half-page up (it does not clear the query);
+// backspace deletes the last rune and ctrl+w/alt+backspace the last word.
 func (m Model) handleListFocusedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
+	switch chord := keyChord(msg); chord {
 	case "enter":
 		return m.handleEnter()
 	case "ctrl+l":
 		m.cycleOrientationOverride()
 		return m, nil
 	case "pgup", "pgdown":
-		if scrollViewport(&m.viewport, msg.String()) {
+		if scrollViewport(&m.viewport, chord) {
 			return m, nil
 		}
 		return m, nil
@@ -266,15 +363,12 @@ func (m Model) handleListFocusedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cursorTouched = true
 		return m, tea.Batch(m.collapseCurrent(), m.syncPreviewAfterSelectionChange())
 	case "backspace":
-		if len(m.query) > 0 {
-			m.query = m.query[:len(m.query)-1]
-			return m, tea.Batch(m.applyFilter(), m.syncPreviewAfterSelectionChange())
-		}
-		return m, m.syncPreviewAfterSelectionChange()
+		return m.deleteFromQuery(deleteLastRune)
+	case "ctrl+w", "alt+backspace":
+		return m.deleteFromQuery(deleteLastWord)
 	default:
-		if isPrintable(msg.String()) {
-			m.query += msg.String()
-			return m, tea.Batch(m.applyFilter(), m.syncPreviewAfterSelectionChange())
+		if query, ok := appendQueryRunes(m.query, queryInputRunes(msg)); ok {
+			return m.setQuery(query)
 		}
 		return m, m.syncPreviewAfterSelectionChange()
 	}

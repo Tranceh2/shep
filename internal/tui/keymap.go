@@ -22,6 +22,8 @@ const (
 	keyChordShiftTab  = "shift+tab"
 	keyChordHalfPage  = "ctrl+d/ctrl+u"
 	keyChordBackspace = "backspace"
+	keyChordCtrlW     = "ctrl+w"
+	keyChordAltBksp   = "alt+backspace"
 	keyChordPgUpDown  = "pgup/pgdown"
 	keyChordHomeEnd   = "home/end"
 	keyChordAnyLetter = "any letter"
@@ -110,6 +112,7 @@ var keyMap = []keySection{
 			keyBindingPin,
 			keyBindingTab,
 			{chord: keyChordBackspace, help: "delete the last query character"},
+			{chord: keyChordCtrlW + ", " + keyChordAltBksp, help: "delete the last query word"},
 		},
 	},
 	{
