@@ -103,9 +103,9 @@ func TestBuildRows_CollapsedDirectMatchKeepsItsOwnScore(t *testing.T) {
 	t.Parallel()
 	in := expandInput("back", false)
 	in.matcher = newQueryMatcher(in.query)
-	_, withTree, _, _ := buildCandidateRow(in, in.candidates[0])
+	_, withTree, _, _ := buildCandidateRow(in, in.candidates[0], in.selfMatch(0))
 	in.children = nil
-	_, alone, _, _ := buildCandidateRow(in, in.candidates[0])
+	_, alone, _, _ := buildCandidateRow(in, in.candidates[0], in.selfMatch(0))
 	if withTree != alone {
 		t.Errorf("score with descendants = %d, alone = %d, want equal", withTree, alone)
 	}

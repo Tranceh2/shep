@@ -200,19 +200,68 @@ type usage struct {
 	lastUsed int64
 }
 
-type scored struct {
-	candidate  source.Candidate
-	textual    textualQuality
-	openAction bool
+// Features are a candidate's query-independent sort keys under one snapshot.
+// Computing them hashes the candidate's identity, so a caller that sorts the
+// same candidates on every keystroke computes them once (Snapshot.Features)
+// and sorts with SortIndexes.
+type Features struct {
 	pinned     bool
-	usage      float64
-	sourceRank int
-	order      int
-	// The empty-query keys, computed once per candidate rather than on every
-	// comparison (Identity hashes path candidates).
+	openAction bool
+	// usage is the raw frecency, whether or not adaptive ranking is on; see
+	// Snapshot.UsageOf.
+	usage float64
+	// The empty-query keys.
 	current   bool
 	mruRank   int
 	recentIdx int
+}
+
+// Pinned reports whether the candidate was pinned in the snapshot the
+// features were computed under.
+func (f Features) Pinned() bool { return f.pinned }
+
+// Features computes candidate's sort keys under s.
+func (s Snapshot) Features(candidate source.Candidate) Features {
+	f := Features{
+		pinned:     s.IsPinned(candidate),
+		openAction: isOpenAction(candidate),
+		mruRank:    s.WorkspaceMRURank(candidate),
+		recentIdx:  len(s.recent) + 1,
+	}
+	hasUsage := len(s.exact) > 0 || len(s.resource) > 0
+	if !hasUsage && len(s.recent) == 0 && s.currentExact == "" {
+		// Nothing recorded: skip hashing the candidate's keys. Only an empty
+		// identity equals the empty current one.
+		f.current = !hasIdentity(candidate)
+		return f
+	}
+	identity := Identity(candidate)
+	f.current = identity == s.currentExact
+	if len(s.recent) > 0 {
+		f.recentIdx = s.recentRank(identity)
+	}
+	if hasUsage {
+		f.usage = s.usage(identity, candidate)
+	}
+	return f
+}
+
+// UsageOf is UsageFor over precomputed features.
+func (s Snapshot) UsageOf(f Features) float64 {
+	if !s.enabled || s.adaptiveDisabled {
+		return 0
+	}
+	return f.usage
+}
+
+// scored is one candidate being sorted: its index into the caller's slice,
+// its features, and the keys that depend on the query or the source order.
+type scored struct {
+	index      int
+	features   Features
+	textual    textualQuality
+	sourceRank int
+	order      int
 }
 
 const (
@@ -311,6 +360,22 @@ func Identity(candidate source.Candidate) string {
 	return pathKey(candidate.Source, path)
 }
 
+// hasIdentity reports whether Identity(candidate) is non-empty, without
+// hashing anything.
+func hasIdentity(candidate source.Candidate) bool {
+	if candidate.Meta != nil {
+		for _, key := range []string{"pane_id", "tab_id", "workspace_id", "session_name", "entry_id"} {
+			if candidate.Meta[key] != "" {
+				return true
+			}
+		}
+		if candidate.Meta["custom_source"] == "true" {
+			return true
+		}
+	}
+	return candidate.NormalizedPath != "" || candidate.Path != ""
+}
+
 func Resource(candidate source.Candidate) string {
 	path := candidate.NormalizedPath
 	if path == "" {
@@ -327,30 +392,43 @@ func pathKey(namespace, path string) string {
 	return pathKeyVersion + ":" + namespace + ":" + hex.EncodeToString(digest[:])
 }
 
-func cloneCandidates(candidates []source.Candidate) []source.Candidate {
-	out := make([]source.Candidate, len(candidates))
-	for i, candidate := range candidates {
-		out[i] = candidate.Clone()
-	}
-	return out
-}
-
 // SortBySourceOrder composes strict source blocks for an empty query. Herdr
 // uses adaptive recent ordering with the focused workspace last; projects use
 // adaptive ordering only inside their own block. Other listed providers retain
 // provider order. Candidates whose source is not part of sourceOrder are
 // appended last and keep the global adaptive ranking so they are never left in
 // raw provider order. Non-empty queries continue through the global
-// label-first ranker.
+// label-first ranker. It returns sorted clones of candidates.
 func SortBySourceOrder(candidates []source.Candidate, query string, sourceOrder []string, snapshot Snapshot) []source.Candidate {
+	return cloneInOrder(candidates, SortIndexes(candidates, snapshot.FeaturesOf(candidates), query, sourceOrder, snapshot))
+}
+
+// Sort ranks candidates with no source order and returns sorted clones.
+func Sort(candidates []source.Candidate, query string, snapshot Snapshot) []source.Candidate {
+	indexes := sortIndexes(candidates, snapshot.FeaturesOf(candidates), allIndexes(len(candidates)), query, snapshot, nil)
+	return cloneInOrder(candidates, indexes)
+}
+
+// SortIndexes is SortBySourceOrder over precomputed features (features[i]
+// belongs to candidates[i]): it returns the order as indexes into candidates,
+// copying and cloning nothing.
+func SortIndexes(candidates []source.Candidate, features []Features, query string, sourceOrder []string, snapshot Snapshot) []int {
+	return SortIndexesOf(candidates, features, allIndexes(len(candidates)), query, sourceOrder, snapshot)
+}
+
+// SortIndexesOf is SortIndexes over the subset of candidates at indexes
+// (in their original relative order). The ranking is a stable sort on
+// per-candidate keys, so a subset is ordered exactly as it is within the
+// whole set.
+func SortIndexesOf(candidates []source.Candidate, features []Features, indexes []int, query string, sourceOrder []string, snapshot Snapshot) []int {
 	if query != "" {
-		return sortWithSourceOrder(candidates, query, sourceOrder, snapshot)
+		return sortIndexes(candidates, features, indexes, query, snapshot, sourceOrder)
 	}
-	bySource := make(map[string][]source.Candidate)
-	for _, candidate := range candidates {
-		bySource[candidate.Source] = append(bySource[candidate.Source], candidate)
+	bySource := make(map[string][]int)
+	for _, i := range indexes {
+		bySource[candidates[i].Source] = append(bySource[candidates[i].Source], i)
 	}
-	out := make([]source.Candidate, 0, len(candidates))
+	out := make([]int, 0, len(indexes))
 	seen := make(map[string]struct{}, len(sourceOrder))
 	for _, sourceName := range sourceOrder {
 		if _, duplicate := seen[sourceName]; duplicate {
@@ -359,114 +437,110 @@ func SortBySourceOrder(candidates []source.Candidate, query string, sourceOrder 
 		seen[sourceName] = struct{}{}
 		block := bySource[sourceName]
 		if sourceName == config.SourceHerdr || sourceName == config.SourceProjects || sourceName == config.SourceAgents {
-			block = Sort(block, "", snapshot)
+			block = sortIndexes(candidates, features, block, "", snapshot, nil)
 		} else {
-			block = pinFirst(block, snapshot)
+			block = pinFirst(block, features)
 		}
 		out = append(out, block...)
 	}
-	var unlisted []source.Candidate
-	for _, candidate := range candidates {
-		if _, listed := seen[candidate.Source]; listed {
-			continue
+	var unlisted []int
+	for _, i := range indexes {
+		if _, listed := seen[candidates[i].Source]; !listed {
+			unlisted = append(unlisted, i)
 		}
-		unlisted = append(unlisted, candidate)
 	}
-	out = append(out, Sort(unlisted, "", snapshot)...)
+	return append(out, sortIndexes(candidates, features, unlisted, "", snapshot, nil)...)
+}
+
+// FeaturesOf computes the features of every candidate under s
+// (FeaturesOf(candidates)[i] belongs to candidates[i]).
+func (s Snapshot) FeaturesOf(candidates []source.Candidate) []Features {
+	features := make([]Features, len(candidates))
+	for i, candidate := range candidates {
+		features[i] = s.Features(candidate)
+	}
+	return features
+}
+
+func allIndexes(n int) []int {
+	indexes := make([]int, n)
+	for i := range indexes {
+		indexes[i] = i
+	}
+	return indexes
+}
+
+func cloneInOrder(candidates []source.Candidate, indexes []int) []source.Candidate {
+	out := make([]source.Candidate, len(indexes))
+	for i, index := range indexes {
+		out[i] = candidates[index].Clone()
+	}
 	return out
 }
 
-func pinFirst(candidates []source.Candidate, snapshot Snapshot) []source.Candidate {
-	out := cloneCandidates(candidates)
+// pinFirst stably moves the pinned candidates of indexes to the front.
+func pinFirst(indexes []int, features []Features) []int {
+	out := append([]int(nil), indexes...)
 	sort.SliceStable(out, func(i, j int) bool {
-		return snapshot.IsPinned(out[i]) && !snapshot.IsPinned(out[j])
+		return features[out[i]].pinned && !features[out[j]].pinned
 	})
 	return out
 }
 
-func sortWithSourceOrder(candidates []source.Candidate, query string, sourceOrder []string, snapshot Snapshot) []source.Candidate {
-	return sortCandidates(candidates, query, snapshot, func(candidate source.Candidate) int {
-		for i, name := range sourceOrder {
-			if name == candidate.Source {
-				return i
-			}
-		}
-		return len(sourceOrder)
-	})
-}
-
-func Sort(candidates []source.Candidate, query string, snapshot Snapshot) []source.Candidate {
-	return sortCandidates(candidates, query, snapshot, func(source.Candidate) int { return 0 })
-}
-
-func sortCandidates(candidates []source.Candidate, query string, snapshot Snapshot, rank func(source.Candidate) int) []source.Candidate {
+// sortIndexes ranks the candidates at indexes. A non-empty query ranks by
+// textual quality first; sourceOrder ranks sources after the fuzzy score (a
+// source outside it ranks last).
+func sortIndexes(candidates []source.Candidate, features []Features, indexes []int, query string, snapshot Snapshot, sourceOrder []string) []int {
 	// Empty-query ordering is intentionally disabled without a ranking
 	// snapshot; the caller's configured source blocks and provider order are the
 	// contract in that mode. Textual query ordering remains deterministic even
 	// when adaptive ranking is unavailable.
 	if (!snapshot.enabled || snapshot.adaptiveDisabled) && query == "" {
 		if len(snapshot.pins) > 0 {
-			return pinFirst(candidates, snapshot)
+			return pinFirst(indexes, features)
 		}
-		return cloneCandidates(candidates)
+		return append([]int(nil), indexes...)
 	}
-	if (!snapshot.enabled || snapshot.adaptiveDisabled) && query != "" {
-		snapshot.enabled = true
-	}
-	scoredCandidates := make([]scored, 0, len(candidates))
-	for index, candidate := range candidates {
-		textual := textualQuality{}
+	items := make([]scored, len(indexes))
+	for order, index := range indexes {
+		item := scored{index: index, features: features[index], order: order}
 		if query != "" {
-			textual = classifyText(query, candidate)
+			item.textual = classifyText(query, candidates[index])
+			item.sourceRank = sourceRankOf(sourceOrder, candidates[index].Source)
 		}
-		item := scored{
-			candidate:  candidate.Clone(),
-			textual:    textual,
-			openAction: isOpenAction(candidate),
-			pinned:     snapshot.IsPinned(candidate),
-			usage:      snapshot.usageFor(candidate),
-			sourceRank: rank(candidate),
-			order:      index,
-		}
-		if query == "" {
-			identity := Identity(candidate)
-			item.current = identity == snapshot.currentExact
-			item.mruRank = snapshot.WorkspaceMRURank(candidate)
-			item.recentIdx = snapshot.recentRank(identity)
-		}
-		scoredCandidates = append(scoredCandidates, item)
-
+		items[order] = item
 	}
-	sort.SliceStable(scoredCandidates, func(i, j int) bool {
-		left, right := scoredCandidates[i], scoredCandidates[j]
+	sort.SliceStable(items, func(i, j int) bool {
+		left, right := items[i], items[j]
+		lf, rf := left.features, right.features
 		if query == "" {
-			if left.pinned != right.pinned {
-				return left.pinned
+			if lf.pinned != rf.pinned {
+				return lf.pinned
 			}
-			if left.current != right.current {
-				return !left.current
+			if lf.current != rf.current {
+				return !lf.current
 			}
-			if !left.current && !right.current {
-				if left.mruRank != right.mruRank {
-					return left.mruRank < right.mruRank
+			if !lf.current && !rf.current {
+				if lf.mruRank != rf.mruRank {
+					return lf.mruRank < rf.mruRank
 				}
-				if left.recentIdx != right.recentIdx {
-					return left.recentIdx < right.recentIdx
+				if lf.recentIdx != rf.recentIdx {
+					return lf.recentIdx < rf.recentIdx
 				}
 			}
-			if left.usage != right.usage {
-				return left.usage > right.usage
+			if lf.usage != rf.usage {
+				return lf.usage > rf.usage
 			}
 			return left.order < right.order
 		}
 		if left.textual.layer != right.textual.layer {
 			return left.textual.layer > right.textual.layer
 		}
-		if left.openAction != right.openAction {
-			return left.openAction
+		if lf.openAction != rf.openAction {
+			return lf.openAction
 		}
-		if left.pinned != right.pinned {
-			return left.pinned
+		if lf.pinned != rf.pinned {
+			return lf.pinned
 		}
 		if left.textual.score != right.textual.score {
 			return left.textual.score > right.textual.score
@@ -474,16 +548,30 @@ func sortCandidates(candidates []source.Candidate, query string, snapshot Snapsh
 		if left.sourceRank != right.sourceRank {
 			return left.sourceRank < right.sourceRank
 		}
-		if left.usage != right.usage {
-			return left.usage > right.usage
+		if lf.usage != rf.usage {
+			return lf.usage > rf.usage
 		}
 		return left.order < right.order
 	})
-	out := make([]source.Candidate, len(scoredCandidates))
-	for i, item := range scoredCandidates {
-		out[i] = item.candidate
+	out := make([]int, len(items))
+	for i, item := range items {
+		out[i] = item.index
 	}
 	return out
+}
+
+// sourceRankOf is name's position in sourceOrder; a nil order ranks every
+// source equally and an unlisted source ranks last.
+func sourceRankOf(sourceOrder []string, name string) int {
+	if sourceOrder == nil {
+		return 0
+	}
+	for i, listed := range sourceOrder {
+		if listed == name {
+			return i
+		}
+	}
+	return len(sourceOrder)
 }
 
 func classifyText(query string, candidate source.Candidate) textualQuality {
@@ -495,8 +583,7 @@ func classifyText(query string, candidate source.Candidate) textualQuality {
 		return textualQuality{layer: LayerPrefix, score: textScore(query, label)}
 	}
 	if fuzzy.Match(query, label) {
-		score, _ := fuzzy.Score(query, label)
-		return textualQuality{layer: LayerFuzzyLabel, score: score}
+		return textualQuality{layer: LayerFuzzyLabel, score: fuzzy.ScoreOnly(query, label)}
 	}
 	if quality, ok := aliasQuality(query, candidate); ok {
 		return quality
@@ -506,13 +593,11 @@ func classifyText(query string, candidate source.Candidate) textualQuality {
 		path = candidate.Path
 	}
 	if fuzzy.Match(query, path) {
-		score, _ := fuzzy.Score(query, path)
-		return textualQuality{layer: LayerPathOrMeta, score: score}
+		return textualQuality{layer: LayerPathOrMeta, score: fuzzy.ScoreOnly(query, path)}
 	}
 	for _, value := range permittedMetadata(candidate) {
 		if fuzzy.Match(query, value) {
-			score, _ := fuzzy.Score(query, value)
-			return textualQuality{layer: LayerPathOrMeta, score: score}
+			return textualQuality{layer: LayerPathOrMeta, score: fuzzy.ScoreOnly(query, value)}
 		}
 	}
 	return textualQuality{}
@@ -553,8 +638,7 @@ func permittedMetadata(candidate source.Candidate) []string {
 }
 
 func textScore(query, value string) int {
-	score, _ := fuzzy.Score(query, value)
-	return score
+	return fuzzy.ScoreOnly(query, value)
 }
 
 // ContainsWordOrPrefix reports whether query, ignoring case, prefixes one of
@@ -652,11 +736,16 @@ func (s Snapshot) usageFor(candidate source.Candidate) float64 {
 	if len(s.exact) == 0 && len(s.resource) == 0 {
 		return 0 // no recorded usage: skip hashing the candidate's keys
 	}
+	return s.usage(Identity(candidate), candidate)
+}
+
+// usage is usageFor with the candidate's identity already computed.
+func (s Snapshot) usage(identity string, candidate source.Candidate) float64 {
 	now := s.capturedAt
 	if now.IsZero() {
 		now = time.Now()
 	}
-	return frecency(s.exactUsage(Identity(candidate)), now) + 0.35*frecency(s.resourceUsage(Resource(candidate)), now)
+	return frecency(s.exactUsage(identity), now) + 0.35*frecency(s.resourceUsage(Resource(candidate)), now)
 }
 
 func (s Snapshot) exactUsage(identity string) usage {

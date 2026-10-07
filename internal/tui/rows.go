@@ -62,9 +62,32 @@ type rowBuildInput struct {
 	// empty-sources fallback.
 	sourceOrder     []string
 	rankingSnapshot ranking.Snapshot
-	ranked          bool
+	// features are candidates' ranking features under rankingSnapshot
+	// (features[i] belongs to candidates[i]); buildRows computes them when
+	// the caller has none.
+	features []ranking.Features
+	// selfMatches, when set, are candidates' own query matches
+	// (selfMatches[i] belongs to candidates[i]) the caller already computed.
+	selfMatches []rowMatch
+	ranked      bool
 	// matcher is query parsed once for the pass; buildRows fills it in.
 	matcher *queryMatcher
+}
+
+// rowMatch is one row's own match against the query (see matchRow).
+type rowMatch struct {
+	score    int
+	indexes  []int
+	matched  bool
+	original bool
+}
+
+// selfMatch is candidates[i]'s own query match.
+func (in rowBuildInput) selfMatch(i int) rowMatch {
+	if in.selfMatches != nil {
+		return in.selfMatches[i]
+	}
+	return in.matcher.matchCandidate(in.candidates[i])
 }
 
 // effectiveSourceOrder returns in.sourceOrder when non-empty, else
@@ -215,6 +238,12 @@ func candidateMetadataHaystack(c source.Candidate, kind RowKind) string {
 // used at score AGGREGATION time (see aggregateScore / expandedChildren) so a
 // metadata-only match never inflates an original-domain group's aggregate
 // score; it does not impose a global ordering tier.
+// matchCandidate is matchRow for a candidate's own row.
+func (q *queryMatcher) matchCandidate(c source.Candidate) rowMatch {
+	score, indexes, matched, original := q.matchRow(c, RowCandidate)
+	return rowMatch{score: score, indexes: indexes, matched: matched, original: original}
+}
+
 func (q *queryMatcher) matchRow(c source.Candidate, kind RowKind) (score int, indexes []int, matched bool, original bool) {
 	if q.raw == "" {
 		return 0, nil, true, true
@@ -249,10 +278,13 @@ func buildRows(in rowBuildInput) []Row {
 	if in.matcher == nil {
 		in.matcher = newQueryMatcher(in.query)
 	}
+	if in.features == nil {
+		in.features = in.rankingSnapshot.FeaturesOf(in.candidates)
+	}
 	if in.ranked {
 		var out []Row
-		for _, candidate := range in.candidates {
-			rows, _, ok, _ := buildCandidateRow(in, candidate)
+		for i, candidate := range in.candidates {
+			rows, _, ok, _ := buildCandidateRow(in, candidate, in.selfMatch(i))
 			if ok {
 				out = append(out, rows...)
 			}
@@ -403,11 +435,12 @@ func (q *queryMatcher) groupLayer(rows []Row) int {
 // original provider order.
 func visibleGroupRows(in rowBuildInput, groupSource string) []scoredRowGroup {
 	var out []scoredRowGroup
+	rank := sourceRank(effectiveSourceOrder(in), groupSource)
 	for order, c := range in.candidates {
 		if c.Source != groupSource {
 			continue
 		}
-		rows, score, ok, original := buildCandidateRow(in, c)
+		rows, score, ok, original := buildCandidateRow(in, c, in.selfMatch(order))
 		if !ok {
 			continue
 		}
@@ -415,11 +448,12 @@ func visibleGroupRows(in rowBuildInput, groupSource string) []scoredRowGroup {
 		if layer == 0 && original {
 			layer = ranking.LayerPathOrMeta
 		}
+		features := in.features[order]
 		out = append(out, scoredRowGroup{
 			rows: rows, layer: layer, isOpen: c.Source == config.SourceHerdr,
-			score: score, sourceRank: sourceRank(effectiveSourceOrder(in), c.Source),
-			pinned: in.rankingSnapshot.IsPinned(c),
-			usage:  in.rankingSnapshot.UsageFor(c), original: original, order: order,
+			score: score, sourceRank: rank,
+			pinned: features.Pinned(),
+			usage:  in.rankingSnapshot.UsageOf(features), original: original, order: order,
 		})
 	}
 	return out
@@ -432,8 +466,8 @@ func visibleGroupRows(in rowBuildInput, groupSource string) []scoredRowGroup {
 // Label+Path domain (self or any original-domain descendant); a group visible
 // only via the metadata fallback returns original=false so it can be shown
 // but never reorders an original-domain group.
-func buildCandidateRow(in rowBuildInput, c source.Candidate) ([]Row, int, bool, bool) {
-	selfScore, selfMatchedIndexes, selfMatch, selfOriginal := in.matcher.matchRow(c, RowCandidate)
+func buildCandidateRow(in rowBuildInput, c source.Candidate, self rowMatch) ([]Row, int, bool, bool) {
+	selfScore, selfMatchedIndexes, selfMatch, selfOriginal := self.score, self.indexes, self.matched, self.original
 	// A workspace that matches the query by itself stays collapsed unless the
 	// user expanded it: typing a common fragment must not unfold every open
 	// workspace into tabs and panes. It keeps its own score; its descendants

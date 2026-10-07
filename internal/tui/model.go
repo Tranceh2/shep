@@ -309,6 +309,12 @@ type Model struct {
 	// applyFilter.
 	sourceOrder     []string
 	rankingSnapshot ranking.Snapshot
+	// rankingGen counts rankingSnapshot changes (see setRankingSnapshot), so
+	// rankFeatures knows when its features went stale.
+	rankingGen int
+	// rankFeatures memoizes the ranking features of the candidate set the
+	// active view last ranked (see featuresFor).
+	rankFeatures featureMemo
 
 	// focus is the list or the help overlay.
 	focus Focus
@@ -795,14 +801,14 @@ func (m Model) handleSourceResult(msg SourceResultMsg) (Model, tea.Cmd) {
 	m.loadingCandidates = len(m.pendingProducers) > 0
 
 	if msg.RankingSnapshot != nil {
-		m.rankingSnapshot = *msg.RankingSnapshot
+		m.setRankingSnapshot(*msg.RankingSnapshot)
 		if m.startupSnapshot != nil {
-			m.rankingSnapshot = m.rankingSnapshot.WithFilteredWorkspaceMRU(m.startupSnapshot.Workspaces)
+			m.setRankingSnapshot(m.rankingSnapshot.WithFilteredWorkspaceMRU(m.startupSnapshot.Workspaces))
 			if m.startupSnapshot.FocusedWorkspaceID != "" {
-				m.rankingSnapshot = m.rankingSnapshot.WithCurrentExact(ranking.Identity(source.Candidate{
+				m.setRankingSnapshot(m.rankingSnapshot.WithCurrentExact(ranking.Identity(source.Candidate{
 					Source: config.SourceHerdr,
 					Meta:   map[string]string{"workspace_id": m.startupSnapshot.FocusedWorkspaceID},
-				}))
+				})))
 			}
 		}
 	}
@@ -837,12 +843,12 @@ func (m Model) handleSourceResult(msg SourceResultMsg) (Model, tea.Cmd) {
 		m.snapshotUnavailable = nil
 		m.startupSnapshot = msg.Snapshot
 		m.lastSnapshotAt = m.now()
-		m.rankingSnapshot = m.rankingSnapshot.WithFilteredWorkspaceMRU(msg.Snapshot.Workspaces)
+		m.setRankingSnapshot(m.rankingSnapshot.WithFilteredWorkspaceMRU(msg.Snapshot.Workspaces))
 		if m.rankingSnapshot.Active() && msg.Snapshot.FocusedWorkspaceID != "" {
-			m.rankingSnapshot = m.rankingSnapshot.WithCurrentExact(ranking.Identity(source.Candidate{
+			m.setRankingSnapshot(m.rankingSnapshot.WithCurrentExact(ranking.Identity(source.Candidate{
 				Source: config.SourceHerdr,
 				Meta:   map[string]string{"workspace_id": msg.Snapshot.FocusedWorkspaceID},
-			}))
+			})))
 		}
 	}
 
@@ -1058,7 +1064,7 @@ func (m Model) handlePaneStatus(msg paneStatusMsg) (Model, tea.Cmd) {
 	var clearCmd tea.Cmd
 	if (m.rankingSnapshot.IsPaneAcknowledged(msg.PaneID, "blocked") && status != "blocked") ||
 		(m.rankingSnapshot.IsPaneAcknowledged(msg.PaneID, "done") && status != "done") {
-		m.rankingSnapshot = m.rankingSnapshot.WithClearedAcknowledgement(msg.PaneID)
+		m.setRankingSnapshot(m.rankingSnapshot.WithClearedAcknowledgement(msg.PaneID))
 		if m.layout.AckClearer != nil {
 			paneID := msg.PaneID
 			clearer := m.layout.AckClearer
@@ -1178,7 +1184,7 @@ func (m Model) handlePinToggleResult(msg PinToggleResultMsg) (Model, tea.Cmd) {
 		m.pinStatus = errorStatus("pin update failed: " + msg.Err.Error())
 		return m, nil
 	}
-	m.rankingSnapshot = m.rankingSnapshot.WithPinned(msg.Key, msg.Pinned)
+	m.setRankingSnapshot(m.rankingSnapshot.WithPinned(msg.Key, msg.Pinned))
 	if msg.Pinned {
 		m.pinStatus = successStatus("pinned")
 	} else {
@@ -1276,12 +1282,12 @@ func (m Model) handleSnapshotResponse(msg snapshotResponseMsg) (Model, tea.Cmd) 
 		m.renderer = m.rendererForSnapshot(msg.snapshot)
 	}
 	if m.rankingSnapshot.Active() {
-		m.rankingSnapshot = m.rankingSnapshot.WithFilteredWorkspaceMRU(msg.snapshot.Workspaces)
+		m.setRankingSnapshot(m.rankingSnapshot.WithFilteredWorkspaceMRU(msg.snapshot.Workspaces))
 		if msg.snapshot.FocusedWorkspaceID != "" {
-			m.rankingSnapshot = m.rankingSnapshot.WithCurrentExact(ranking.Identity(source.Candidate{
+			m.setRankingSnapshot(m.rankingSnapshot.WithCurrentExact(ranking.Identity(source.Candidate{
 				Source: config.SourceHerdr,
 				Meta:   map[string]string{"workspace_id": msg.snapshot.FocusedWorkspaceID},
-			}))
+			})))
 		}
 	}
 	var clearCmds []tea.Cmd
@@ -1290,7 +1296,7 @@ func (m Model) handleSnapshotResponse(msg snapshotResponseMsg) (Model, tea.Cmd) 
 			status := normalizeStatus(p.AgentStatus)
 			if (m.rankingSnapshot.IsPaneAcknowledged(p.ID, "blocked") && status != "blocked") ||
 				(m.rankingSnapshot.IsPaneAcknowledged(p.ID, "done") && status != "done") {
-				m.rankingSnapshot = m.rankingSnapshot.WithClearedAcknowledgement(p.ID)
+				m.setRankingSnapshot(m.rankingSnapshot.WithClearedAcknowledgement(p.ID))
 				if m.layout.AckClearer != nil {
 					paneID := p.ID
 					clearer := m.layout.AckClearer

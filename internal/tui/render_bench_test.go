@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -16,6 +17,7 @@ import (
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/effective"
 	"github.com/tranceh2/shep/internal/preview"
+	"github.com/tranceh2/shep/internal/ranking"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -204,6 +206,68 @@ func BenchmarkView_AllWide(b *testing.B) {
 // empty-query model value, so every iteration filters the full set.
 func BenchmarkUpdate_TypeQuery(b *testing.B) {
 	base := benchAllModel(b)
+	keys := []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune{'s'}},
+		{Type: tea.KeyRunes, Runes: []rune{'h'}},
+		{Type: tea.KeyRunes, Runes: []rune{'e'}},
+		{Type: tea.KeyRunes, Runes: []rune{'p'}},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		m := base
+		for _, k := range keys {
+			m = benchStep(m, k)
+		}
+		_ = m.View()
+	}
+}
+
+// benchHistorySnapshot returns a ranking snapshot with usage recorded for
+// every candidate of the all view plus 2,900 unrelated launches: the scale
+// of a ranking history after months of use, so a filter pass pays its real
+// per-candidate frecency lookups. The store is built once per test binary.
+var benchHistorySnapshot = sync.OnceValues(func() (ranking.Snapshot, error) {
+	dir, err := os.MkdirTemp("", "shep-bench-ranking-")
+	if err != nil {
+		return ranking.Snapshot{}, err
+	}
+	defer os.RemoveAll(dir)
+	store, err := ranking.OpenPath(filepath.Join(dir, "ranking.sqlite3"))
+	if err != nil {
+		return ranking.Snapshot{}, err
+	}
+	defer store.Close()
+	ctx := context.Background()
+	for i, c := range benchAllCandidates(benchSnapshot(30)) {
+		for range 1 + i%3 {
+			if err := store.Record(ctx, c); err != nil {
+				return ranking.Snapshot{}, err
+			}
+		}
+	}
+	for i := range 2900 {
+		gone := zoxideCandidate(fmt.Sprintf("~/gone/%04d", i), fmt.Sprintf("%s/gone/%04d", benchHome, i))
+		if err := store.Record(ctx, gone); err != nil {
+			return ranking.Snapshot{}, err
+		}
+	}
+	return store.Snapshot(ctx, ""), nil
+})
+
+// BenchmarkUpdate_TypeQueryWithHistory is BenchmarkUpdate_TypeQuery with a
+// populated ranking history, as every long-lived installation has.
+func BenchmarkUpdate_TypeQueryWithHistory(b *testing.B) {
+	snapshot, err := benchHistorySnapshot()
+	if err != nil {
+		b.Fatal(err)
+	}
+	setupBenchRendering(b)
+	snap := benchSnapshot(30)
+	base := NewModelWithTree(benchAllCandidates(snap), benchWorkspaceRenderer{}, NewTreeExpanderFromSnapshot(snap), Layout{Theme: testTheme(ThemeMocha), RankingSnapshot: snapshot})
+	base = benchStep(base, tea.WindowSizeMsg{Width: 140, Height: 38})
+	if got := len(base.rows); got < 600 {
+		b.Fatalf("bench model has %d rows, want ~650", got)
+	}
 	keys := []tea.KeyMsg{
 		{Type: tea.KeyRunes, Runes: []rune{'s'}},
 		{Type: tea.KeyRunes, Runes: []rune{'h'}},

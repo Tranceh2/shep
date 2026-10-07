@@ -25,6 +25,7 @@ func (m *Model) applyFilter() tea.Cmd {
 		if tab.Kind == TabAll && len(m.layout.Tabs) > 0 {
 			candidates = m.allTabCandidates()
 		}
+		onlySource := ""
 		switch tab.Kind {
 		case TabGroup:
 			candidates = m.groupCandidates[tab.ID]
@@ -39,24 +40,17 @@ func (m *Model) applyFilter() tea.Cmd {
 			} else if rows, ok := m.candidatesBySource[tab.ID]; ok {
 				candidates = rows
 			}
-			filtered := make([]source.Candidate, 0)
-			for _, c := range candidates {
-				if c.Source == tab.ID {
-					filtered = append(filtered, c)
-				}
-			}
-			candidates = filtered
+			onlySource = tab.ID
 			order = []string{tab.ID}
 		}
+		features := m.featuresFor(candidates)
+		if onlySource != "" {
+			candidates, features = keepSource(candidates, features, onlySource)
+		}
 
-		m.rows = buildRows(rowBuildInput{
-			candidates:         ranking.SortBySourceOrder(candidates, m.query, order, m.rankingSnapshot),
-			query:              m.query,
-			children:           m.fetchChildrenFor(candidates),
-			expandedWorkspaces: m.expandedWorkspaces,
-			sourceOrder:        order,
-			rankingSnapshot:    m.rankingSnapshot,
-		})
+		in := m.rankedInput(candidates, features, order)
+		in.children = m.fetchChildrenFor(candidates)
+		m.rows = buildRows(in)
 		// Agents in a group/source tab are flat provider rows, not tree panes.
 		// Keep their focus action and status rendering consistent with Agents.
 		for i := range m.rows {
@@ -78,6 +72,98 @@ func (m *Model) applyFilter() tea.Cmd {
 	}
 	m.retainSelection(prevID)
 	return m.maybeRefreshSnapshot()
+}
+
+// featureMemo is the ranking features of one candidate slice under one
+// ranking snapshot generation. Candidate slices are never modified in place
+// (every change installs a new slice), so the slice's first element and
+// length identify it.
+type featureMemo struct {
+	first    *source.Candidate
+	gen      int
+	features []ranking.Features
+}
+
+// setRankingSnapshot installs a new ranking snapshot.
+func (m *Model) setRankingSnapshot(snapshot ranking.Snapshot) {
+	m.rankingSnapshot = snapshot
+	m.rankingGen++
+}
+
+// featuresFor returns candidates' ranking features. They hash every
+// candidate's identity, so they are computed once per candidate set and
+// ranking snapshot instead of on every keystroke.
+func (m *Model) featuresFor(candidates []source.Candidate) []ranking.Features {
+	var first *source.Candidate
+	if len(candidates) > 0 {
+		first = &candidates[0]
+	}
+	memo := m.rankFeatures
+	if memo.gen == m.rankingGen && memo.first == first && len(memo.features) == len(candidates) {
+		return memo.features
+	}
+	features := m.rankingSnapshot.FeaturesOf(candidates)
+	m.rankFeatures = featureMemo{first: first, gen: m.rankingGen, features: features}
+	return features
+}
+
+// keepSource keeps the candidates of one source, with their features.
+func keepSource(candidates []source.Candidate, features []ranking.Features, name string) ([]source.Candidate, []ranking.Features) {
+	var keptCandidates []source.Candidate
+	var keptFeatures []ranking.Features
+	for i, c := range candidates {
+		if c.Source == name {
+			keptCandidates = append(keptCandidates, c)
+			keptFeatures = append(keptFeatures, features[i])
+		}
+	}
+	return keptCandidates, keptFeatures
+}
+
+// rankedInput ranks the candidates the active view shows for the current
+// query. A non-empty query first drops every candidate it cannot show — its
+// own label, path, aliases and metadata do not match and it has no Herdr
+// tabs or panes that could — and ranks the rest: the ranking is a stable sort
+// on per-candidate keys, so ranking the shown subset orders it exactly as
+// ranking every candidate would, and the matches computed here are reused
+// for the rows.
+func (m *Model) rankedInput(candidates []source.Candidate, features []ranking.Features, order []string) rowBuildInput {
+	in := rowBuildInput{
+		query:              m.query,
+		expandedWorkspaces: m.expandedWorkspaces,
+		sourceOrder:        order,
+		rankingSnapshot:    m.rankingSnapshot,
+		matcher:            newQueryMatcher(m.query),
+	}
+	shown := make([]int, 0, len(candidates))
+	var matches []rowMatch
+	if m.query == "" {
+		for i := range candidates {
+			shown = append(shown, i)
+		}
+	} else {
+		matches = make([]rowMatch, len(candidates))
+		for i, c := range candidates {
+			matches[i] = in.matcher.matchCandidate(c)
+			if matches[i].matched || c.Source == config.SourceHerdr {
+				shown = append(shown, i)
+			}
+		}
+	}
+	indexes := ranking.SortIndexesOf(candidates, features, shown, m.query, order, m.rankingSnapshot)
+	in.candidates = make([]source.Candidate, len(indexes))
+	in.features = make([]ranking.Features, len(indexes))
+	if matches != nil {
+		in.selfMatches = make([]rowMatch, len(indexes))
+	}
+	for k, i := range indexes {
+		in.candidates[k] = candidates[i]
+		in.features[k] = features[i]
+		if matches != nil {
+			in.selfMatches[k] = matches[i]
+		}
+	}
+	return in
 }
 
 func (m *Model) maybeRefreshSnapshot() tea.Cmd {
