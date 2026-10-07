@@ -295,9 +295,6 @@ func (m Model) renderedScopeTabs() []string {
 		if label == "" {
 			label = tab.ID
 		}
-		if tab.Kind == TabAgents {
-			label = scopeDefinitionFor(ScopeAgents).Label(m)
-		}
 		if isActive {
 			label = "● " + label
 		}

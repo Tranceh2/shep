@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"strings"
 
@@ -43,7 +42,6 @@ type TabDefinition struct {
 type scopeDefinition struct {
 	ID          FilterScope
 	Name        string
-	Label       func(m Model) string
 	Placeholder string
 	FooterLabel string
 	EmptyState  func(m Model) []string
@@ -53,7 +51,6 @@ var scopeRegistry = []scopeDefinition{
 	{
 		ID:          ScopeAll,
 		Name:        "all",
-		Label:       func(m Model) string { return "all" },
 		Placeholder: "type to filter…",
 		FooterLabel: "all",
 		EmptyState: func(m Model) []string {
@@ -70,12 +67,8 @@ var scopeRegistry = []scopeDefinition{
 		},
 	},
 	{
-		ID:   ScopeAgents,
-		Name: "agents",
-		Label: func(m Model) string {
-			counts := m.AgentCounts()
-			return fmt.Sprintf("agents (%d)", counts.Total)
-		},
+		ID:          ScopeAgents,
+		Name:        "agents",
 		Placeholder: "filter agents…",
 		FooterLabel: "agents",
 		EmptyState: func(m Model) []string {

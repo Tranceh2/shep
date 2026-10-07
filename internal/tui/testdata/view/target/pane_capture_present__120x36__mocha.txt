@@ -1,4 +1,4 @@
-SHEP  ● all   agents (0)                                                                                    1 candidates
+SHEP  ● all   agents                                                                                        1 candidates
 ⌕ type to filter…
 ╭────────────────────────────────────────────────────────────────╮ ╭ PREVIEW · /srv/api ───────────────────────────────╮
 │   backend                                                      │ │ path   /srv/api                                   │

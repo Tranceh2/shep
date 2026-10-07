@@ -1,4 +1,4 @@
-SHEP  ● all   agents (0)                                                                                          1 of 3
+SHEP  ● all   agents                                                                                              1 of 3
 ⌕ alpha
 ╭────────────────────────────────────────────────────────────────╮ ╭ PREVIEW · alpha-dir ──────────────────────────────╮
 │ ❯ alpha-dir                                                    │ │ label  alpha-dir                                  │
