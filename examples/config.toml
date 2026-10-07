@@ -1,15 +1,17 @@
-# shep example configuration — v0.1.1 schema (version = 2)
+# shep example configuration (schema version 3)
 #
 # This is a practical, path-agnostic starting point. It is NOT what
 # `shep init` writes (see internal/config/example.go / ExampleTOML() for the
-# exhaustively-commented canonical reference); this file favors a shorter,
-# working example over line-by-line documentation of every field.
+# exhaustively-commented canonical reference, which lists every built-in
+# default); this file favors a shorter, working example over line-by-line
+# documentation of every field. The README's "Customization" section explains
+# the templates, row parts, themes and precedence used below.
 #
 # Copy it to $XDG_CONFIG_HOME/shep/config.toml (or ~/.config/shep/config.toml
 # when XDG_CONFIG_HOME is unset) and replace the example paths below with
 # your own.
 
-version = 2
+version = 3
 
 [general]
 # Built-ins, in merge/display order. "sessions" is opt-in: add it here only
@@ -24,7 +26,6 @@ selector = "builtin"
 enabled = true
 
 [defaults]
-type = "shell"
 template = "default"
 
 # Responsive TUI: side-by-side on wide terminals, list-only on narrow ones.
@@ -37,11 +38,22 @@ tabs = ["all", "agents"]
 # tabs = ["all", "projects", "pull-requests", "project-group", "agents"]
 list_width = "35%"
 preview_width = "65%"
-theme = "mocha"
+# "inherit" (the default) follows Herdr's own theme, [theme.custom] included.
+# Name a built-in theme ("nord", "catppuccin-latte"...) or a [themes.<name>]
+# table to pick one here.
+theme = "inherit"
 icons = "unicode"
 # ctrl+x closes an open Herdr pane, tab, or workspace; opt into a footer y/n
 # confirmation per kind. Omitted or [] means close immediately.
 # confirm_close = ["workspace", "tab"]
+
+# A custom theme: Herdr's nord palette with a pink accent and brighter row
+# context. Select it with [tui].theme = "nord-pink".
+[themes.nord-pink]
+base = "nord"
+accent = "#f5c2e7"
+[themes.nord-pink.roles]
+"row.detail" = "subtext0"
 
 # [preview] intentionally has no "default" key here. Each source below
 # declares its own preview list, which is exactly what shep ships without
@@ -53,30 +65,35 @@ timeout = "150ms"
 cache_ttl = "5s"
 max_lines = 50
 
+# A reusable preview section, listed by name in a preview = [...] list (the
+# kubernetes wildcard below uses it). title is its heading in the picker;
+# without it the heading would be the humanized name, "Recent commits".
+[preview.commands.recent_commits]
+command = "git -C {{.Path}} log -n 5 --oneline"
+title = "Recent commits"
+
+# Each source draws its rows from icon, label_format, detail_format and
+# marker_format templates (see the README for the defaults). Only what
+# differs from the defaults needs to be written.
 [sources.herdr]
-icon = "󰳆 "
 preview = ["workspace", "active_pane", "agent_status"]
 
 # Agent titles come from Herdr; Herdr may already shorten terminal_title.
-# The default label_format is "{{ status }} {{ or .Label .Path | tilde }}"
-# (the status glyph, then the title); templates can use .Agent, .AgentStatus,
-# .TabLabel, .Workspace (the Herdr workspace label) and every metadata key:
-# .Meta.workspace_id, .Meta.tab_id, .Meta.pane_id, .Meta.terminal_title,
-# .Meta.kind... Missing metadata keys render empty.
+# Templates can use .Agent, .AgentStatus, .TabLabel, .Workspace (the Herdr
+# workspace label) and every metadata key (.Meta.pane_id, .Meta.terminal_title,
+# .Meta.kind...). This marker shows the agent's name before its workspace; a
+# label_format of your own should keep {{ status }} to keep the status glyph.
 [sources.agents]
-icon = " "
+marker_format = '{{ .Agent }} {{ .Workspace | trimIcon | name }}'
 # preview = ["identity", "git"] # unset uses [preview].default; [] shows only identity
 
 [sources.workspaces]
-icon = " "
 preview = ["identity", "dir"]
 
 [sources.zoxide]
-icon = " "
 preview = ["identity", "dir"]
 
 [sources.projects]
-icon = " "
 recursive = true
 max_depth = 3
 markers = [".git", "go.mod", "package.json", "Cargo.toml", "pyproject.toml", "flake.nix"]
@@ -90,11 +107,14 @@ name = "dotfiles"
 path = "~/dotfiles"
 aliases = ["config"]
 
+# An entry's icon and marker apply to its own row only.
 [[workspaces]]
 name = "notes"
 path = "~/notes"
 command = "nvim ."
 close_on_exit = true
+icon = " "
+marker_format = '{{ pin }}'
 
 [[workspaces]]
 name = "projects"
@@ -151,9 +171,14 @@ root = "opencode"
 # name = "pull-requests"
 # command = ["/path/to/list-prs-for-shep"] # emits Shep JSON rows
 
-# --- Wildcards: apply a template/preview to paths matching a glob ---
+# --- Wildcards: settings for every row under a path ---
 
+# Every row under ~/projects/kubernetes (zoxide folders, projects, open Herdr
+# workspaces...) gets the k8s template, a preview with recent commits and its
+# own icon. Each setting comes from the first matching rule that sets it.
 [[wildcards]]
 pattern = "~/projects/kubernetes/**"
 template = "k8s"
-preview = ["identity", "git"]
+preview = ["identity", "git", "recent_commits"]
+icon = "󱃾 "
+icon_color = "blue"

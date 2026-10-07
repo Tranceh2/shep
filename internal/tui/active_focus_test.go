@@ -71,7 +71,7 @@ func TestCurrentAccessory_RendersMutedAtTheRowEnd(t *testing.T) {
 		if !strings.HasSuffix(line, " current") {
 			t.Errorf("[%s] tab row = %q, want the current accessory at its end", icons, line)
 		}
-		if want := "    " + set.TreeLast + " " + set.TabIcon + " api"; !strings.HasPrefix(line, want) {
+		if want := "    " + set.TreeLast + " " + defaultTabIcon(set.Name) + " api"; !strings.HasPrefix(line, want) {
 			t.Errorf("[%s] tab row = %q, want the tree glyph right after the indent (%q)", icons, line, want)
 		}
 	}

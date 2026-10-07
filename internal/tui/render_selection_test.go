@@ -121,7 +121,6 @@ func TestRenderRowLine_SelectedDescendantUsesCursorMarker(t *testing.T) {
 		Candidate:  herdrCandidate("backend", "/srv/backend", "w1"),
 		Match:      MatchDescendant,
 		Expandable: true,
-		Expanded:   true,
 	}
 	got := renderRowLineText(m.renderRowLine(row, true, 40))
 	if !strings.HasPrefix(got, "❯ ") {
@@ -216,7 +215,6 @@ func TestRenderRowLine_NonSelectedUsesBlankMarker(t *testing.T) {
 		Candidate:  herdrCandidate("backend", "/srv/backend", "w1"),
 		Match:      MatchDescendant,
 		Expandable: true,
-		Expanded:   true,
 	}
 	got := renderRowLineText(m.renderRowLine(desc, false, 40))
 	if strings.HasPrefix(got, "❯") || strings.HasPrefix(got, ">") {
@@ -456,7 +454,7 @@ func TestRenderRowLine_LeftTruncationPreservesTabTreeGlyph(t *testing.T) {
 	// two-cell marker gutter + kindPrefix's tree glyph + the tab icon — the
 	// whole thing is the row's protected fixed prefix; only the label/path body
 	// after it may be truncated.
-	wantPrefix := strings.Repeat(" ", cursorPrefixWidth) + m.kindPrefix(row) + set.TabIcon + " "
+	wantPrefix := strings.Repeat(" ", cursorPrefixWidth) + m.kindPrefix(row) + defaultTabIcon(set.Name) + " "
 	if !strings.HasPrefix(got, wantPrefix) {
 		t.Fatalf("truncated tab row = %q, want it to start with the intact tree-glyph prefix %q", got, wantPrefix)
 	}

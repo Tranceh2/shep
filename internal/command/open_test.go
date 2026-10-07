@@ -335,7 +335,7 @@ func TestCascadeFor_RoutesBySelector(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := cascadeFor(tc.sel, nil, nil, nil, nil, nil, nil).Names()
+			got := cascadeFor(tc.sel, nil, nil, nil, nil, tui.Layout{}).Names()
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("selector %q: cascade names got %v want %v", tc.sel, got, tc.want)
 			}
@@ -343,34 +343,33 @@ func TestCascadeFor_RoutesBySelector(t *testing.T) {
 	}
 }
 
-// TestCascadeFor_TreeActiveSkipsFzf (7.1/R6): when tree-expand is active
-// (multiple matches, at least one already-open herdr workspace), the
-// cascade skips fzf entirely — even when [general].selector requests it —
-// and uses the tree-aware tui_tree selector instead of tui, because fzf
-// cannot render synthesized child rows.
-func TestCascadeFor_TreeActiveSkipsFzf(t *testing.T) {
+// TestSnapshotCascadeFor_TreeActiveSkipsFzf: when the picker can show the
+// tabs and panes of open Herdr workspaces (several matches, at least one an
+// open workspace), the snapshot cascade skips fzf — even when
+// [general].selector requests it — because fzf cannot render those child
+// rows.
+func TestSnapshotCascadeFor_TreeActiveSkipsFzf(t *testing.T) {
 	t.Parallel()
 	matches := []source.Candidate{
 		{Source: config.SourceHerdr, Path: "/hw", Label: "open-ws", Meta: map[string]string{"workspace_id": "wA"}},
 		{Source: config.SourceZoxide, Path: "/zx", Label: "zx"},
 	}
-	got := cascadeFor(config.SelectorFzf, nil, nil, nil, nil, nil, matches).Names()
+	got := snapshotCascadeFor(config.SelectorFzf, nil, nil, nil, nil, source.Snapshot{}, nil, nil, matches, tui.Layout{}).Names()
 	want := []string{"direct", "tui_tree"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("tree-active cascade names = %v, want %v (fzf must be skipped)", got, want)
 	}
 }
 
-// TestCascadeFor_SingleMatchIsNotTreeActive (7.1 triangulation): a single
-// herdr match is never ambiguous (direct already short-circuits it before a
-// cascade is even needed in practice), so tree-expand must not activate and
-// the normal cascade — including fzf, if configured — still applies.
-func TestCascadeFor_SingleMatchIsNotTreeActive(t *testing.T) {
+// TestSnapshotCascadeFor_SingleMatchIsNotTreeActive: a single herdr match is
+// never ambiguous, so the normal cascade — including fzf, if configured —
+// still applies.
+func TestSnapshotCascadeFor_SingleMatchIsNotTreeActive(t *testing.T) {
 	t.Parallel()
 	matches := []source.Candidate{
 		{Source: config.SourceHerdr, Path: "/hw", Label: "open-ws", Meta: map[string]string{"workspace_id": "wA"}},
 	}
-	got := cascadeFor(config.SelectorFzf, nil, nil, nil, nil, nil, matches).Names()
+	got := snapshotCascadeFor(config.SelectorFzf, nil, nil, nil, nil, source.Snapshot{}, nil, nil, matches, tui.Layout{}).Names()
 	want := []string{"direct", "fzf", "tui"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("single-match cascade names = %v, want %v (tree-expand must not activate)", got, want)
@@ -1387,7 +1386,7 @@ func TestLayoutFromConfig_ThreadsPerCustomSourcePresentation(t *testing.T) {
 // silently defaulting to nil.
 func TestNewTUISelector_StoresRenderer(t *testing.T) {
 	r := fakePreviewRenderer{}
-	s := newTUISelector(r, nil, nil, nil)
+	s := newTUISelector(r, nil, nil, nil, tui.Layout{})
 	if s.renderer == nil {
 		t.Fatal("expected tuiSelector to carry a non-nil renderer")
 	}
@@ -1402,8 +1401,8 @@ func TestNewTUISelector_StoresRenderer(t *testing.T) {
 func TestTUISelector_Select_ForwardsChosenTargetToApp(t *testing.T) {
 	t.Parallel()
 	app := New()
-	sel := newTUISelector(nil, nil, app.setChosenTarget, app.setChosenAction)
-	sel.run = func(_ context.Context, candidates []source.Candidate, _ string, _ preview.Renderer, _ *source.Pane, _ ...tui.Layout) (source.Candidate, tui.RowAction, string, bool, error) {
+	sel := newTUISelector(nil, nil, app.setChosenTarget, app.setChosenAction, tui.Layout{})
+	sel.run = func(_ context.Context, candidates []source.Candidate, _ string, _ preview.Renderer, _ *source.Pane, _ tui.Layout) (source.Candidate, tui.RowAction, string, bool, error) {
 		return candidates[0], tui.RowActionOpen, "tab", true, nil
 	}
 
@@ -1432,8 +1431,8 @@ func TestTUISelector_Select_ForwardsChosenTargetToApp(t *testing.T) {
 func TestTUISelector_Select_ForwardsChosenActionToApp(t *testing.T) {
 	t.Parallel()
 	app := New()
-	sel := newTUISelector(nil, nil, app.setChosenTarget, app.setChosenAction)
-	sel.run = func(_ context.Context, candidates []source.Candidate, _ string, _ preview.Renderer, _ *source.Pane, _ ...tui.Layout) (source.Candidate, tui.RowAction, string, bool, error) {
+	sel := newTUISelector(nil, nil, app.setChosenTarget, app.setChosenAction, tui.Layout{})
+	sel.run = func(_ context.Context, candidates []source.Candidate, _ string, _ preview.Renderer, _ *source.Pane, _ tui.Layout) (source.Candidate, tui.RowAction, string, bool, error) {
 		return candidates[0], tui.RowActionFocusTab, "", true, nil
 	}
 
@@ -1457,8 +1456,8 @@ func TestTUISelector_Select_EnterLeavesChosenTargetEmpty(t *testing.T) {
 	t.Parallel()
 	app := New()
 	app.chosenTarget = "pane" // simulate stale state from a prior invocation
-	sel := newTUISelector(nil, nil, app.setChosenTarget, app.setChosenAction)
-	sel.run = func(_ context.Context, candidates []source.Candidate, _ string, _ preview.Renderer, _ *source.Pane, _ ...tui.Layout) (source.Candidate, tui.RowAction, string, bool, error) {
+	sel := newTUISelector(nil, nil, app.setChosenTarget, app.setChosenAction, tui.Layout{})
+	sel.run = func(_ context.Context, candidates []source.Candidate, _ string, _ preview.Renderer, _ *source.Pane, _ tui.Layout) (source.Candidate, tui.RowAction, string, bool, error) {
 		return candidates[0], tui.RowActionOpen, "", true, nil
 	}
 
@@ -1477,8 +1476,8 @@ func TestTUISelector_Select_CancelledNeverInvokesOnTarget(t *testing.T) {
 	t.Parallel()
 	app := New()
 	app.chosenTarget = "tab"
-	sel := newTUISelector(nil, nil, app.setChosenTarget, app.setChosenAction)
-	sel.run = func(_ context.Context, _ []source.Candidate, _ string, _ preview.Renderer, _ *source.Pane, _ ...tui.Layout) (source.Candidate, tui.RowAction, string, bool, error) {
+	sel := newTUISelector(nil, nil, app.setChosenTarget, app.setChosenAction, tui.Layout{})
+	sel.run = func(_ context.Context, _ []source.Candidate, _ string, _ preview.Renderer, _ *source.Pane, _ tui.Layout) (source.Candidate, tui.RowAction, string, bool, error) {
 		return source.Candidate{}, tui.RowActionOpen, "pane", false, tui.ErrCancelled
 	}
 
@@ -1600,9 +1599,7 @@ func TestOpenLayoutToggle_ConfigUnchangedAfterCtrlL(t *testing.T) {
 
 	// Sanity: the toggle DID flip the model's own session-only orientation
 	// (proving this test actually exercises the mutation path) — starting
-	// from landscape, a single ctrl+l toggles back to auto (the stacked/
-	// portrait third state was removed along with the stacked layout) —
-	// while...
+	// from landscape, a single ctrl+l toggles back to auto — while...
 	toggled := layoutFromConfig(configWithTUI(config.TUIConfig{Layout: ""}), nil)
 	if mm.Layout().Orientation != toggled.Orientation {
 		t.Fatalf("setup: expected ctrl+l to flip Model's orientation to auto, got %+v", mm.Layout())
@@ -2730,8 +2727,8 @@ func TestLaunchOutcome_CompletedRecordsExactlyOnce(t *testing.T) {
 		// Build a TUI selector whose fake run returns a focus-tab pick; wire
 		// it through selectorFactory's cascade so onAction reaches the App.
 		focusCand := source.Candidate{Label: "tab1", Path: svc, Meta: map[string]string{"tab_id": "t1"}}
-		tuiSel := newTUISelector(nil, nil, app.setChosenTarget, app.setChosenAction)
-		tuiSel.run = func(_ context.Context, _ []source.Candidate, _ string, _ preview.Renderer, _ *source.Pane, _ ...tui.Layout) (source.Candidate, tui.RowAction, string, bool, error) {
+		tuiSel := newTUISelector(nil, nil, app.setChosenTarget, app.setChosenAction, tui.Layout{})
+		tuiSel.run = func(_ context.Context, _ []source.Candidate, _ string, _ preview.Renderer, _ *source.Pane, _ tui.Layout) (source.Candidate, tui.RowAction, string, bool, error) {
 			return focusCand, tui.RowActionFocusTab, "", true, nil
 		}
 		cascade := selector.New(selector.Direct{}, tuiSel)
@@ -3216,7 +3213,7 @@ func TestOpen_VisibleAgentsTabUsesSingleSnapshotWithoutEnablingAll(t *testing.T)
 	driver := &openDriver{detect: true, snapshot: source.Snapshot{Panes: []source.Pane{{ID: "p1", Agent: "opencode"}}}}
 	app.herdrDriver = driver
 	app.herdrDriverInjected = true
-	producers := app.buildStreamingProducers(context.Background())
+	producers := app.streamingProducersForView(context.Background(), "")
 	agents := 0
 	for _, producer := range producers {
 		msg := producer(context.Background())

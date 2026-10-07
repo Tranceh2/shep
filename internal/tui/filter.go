@@ -25,12 +25,13 @@ func (m *Model) applyFilter() tea.Cmd {
 		if tab.Kind == TabAll && len(m.layout.Tabs) > 0 {
 			candidates = m.allTabCandidates()
 		}
-		if tab.Kind == TabGroup {
+		switch tab.Kind {
+		case TabGroup:
 			candidates = m.groupCandidates[tab.ID]
 			if len(tab.SourceOrder) > 0 {
 				order = tab.SourceOrder
 			}
-		} else if tab.Kind == TabSource || tab.Kind == TabCustomSource {
+		case TabSource, TabCustomSource:
 			// Streaming producers retain undeduplicated provider results; a
 			// synchronous tab-only source instead uses its lazy result.
 			if tab.Load != nil {
@@ -45,8 +46,6 @@ func (m *Model) applyFilter() tea.Cmd {
 				}
 			}
 			candidates = filtered
-		}
-		if tab.Kind == TabSource || tab.Kind == TabCustomSource {
 			order = []string{tab.ID}
 		}
 
@@ -145,7 +144,6 @@ func (m Model) allTabCandidates() []source.Candidate {
 	return m.allTab
 }
 
-// fetchAllChildren keeps the legacy all-candidate helper for direct callers.
 // fetchChildrenFor returns, keyed by workspace_id, the synthesized tab/pane
 // tree for every SourceHerdr candidate that needs one THIS filter pass:
 // only when the query is non-empty (a descendant might match) or the
@@ -156,10 +154,6 @@ func (m Model) allTabCandidates() []source.Candidate {
 // tree, or a Fetch miss (cache miss + driver error/timeout), leaves that
 // workspace absent from the map — buildRows degrades to zero children for
 // it, never a crash.
-func (m *Model) fetchAllChildren() map[string]workspaceChildren {
-	return m.fetchChildrenFor(m.baseFlatCandidates())
-}
-
 func (m *Model) fetchChildrenFor(candidates []source.Candidate) map[string]workspaceChildren {
 	if m.tree == nil {
 		return nil
@@ -216,21 +210,6 @@ func (m *Model) retainSelection(prevID string) {
 	if m.cursor < 0 {
 		m.cursor = 0
 	}
-	if m.rows[m.cursor].Selectable() {
-		return
-	}
-	for i := m.cursor; i < len(m.rows); i++ {
-		if m.rows[i].Selectable() {
-			m.cursor = i
-			return
-		}
-	}
-	for i := m.cursor; i >= 0; i-- {
-		if m.rows[i].Selectable() {
-			m.cursor = i
-			return
-		}
-	}
 }
 
 // currentRow returns the row under the cursor, or ok=false when rows is
@@ -246,7 +225,7 @@ func (m Model) currentRow() (Row, bool) {
 // nothing is highlighted (empty rows).
 func (m Model) currentCandidate() (source.Candidate, bool) {
 	row, ok := m.currentRow()
-	if !ok || !row.Selectable() {
+	if !ok {
 		return source.Candidate{}, false
 	}
 	return row.Candidate, true

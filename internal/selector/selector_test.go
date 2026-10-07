@@ -15,6 +15,12 @@ import (
 	"github.com/tranceh2/shep/internal/tui"
 )
 
+// withLookPathAndRunner builds an Fzf with substituted PATH lookup and
+// subprocess runner.
+func withLookPathAndRunner(lp lookPathFunc, r fzfRunner) *Fzf {
+	return &Fzf{lookPath: lp, run: r}
+}
+
 func mkCand(path, label string) source.Candidate {
 	return source.Candidate{Path: path, NormalizedPath: path, Label: label, Source: "projects"}
 }

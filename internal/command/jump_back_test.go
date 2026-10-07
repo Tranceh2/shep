@@ -15,6 +15,11 @@ import (
 	"github.com/tranceh2/shep/internal/source"
 )
 
+// controlDialerFunc adapts a function to controlDialer.
+type controlDialerFunc func(ctx context.Context) (net.Conn, error)
+
+func (f controlDialerFunc) Dial(ctx context.Context) (net.Conn, error) { return f(ctx) }
+
 // jbDriver is the narrow snapshot+focus surface jump-back consumes. Scripted
 // snapshots are returned in order so the two independent validation reads
 // (resolution and pre-focus) can diverge, which is what the race guards need.

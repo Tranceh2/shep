@@ -132,7 +132,7 @@ func TestRoot_PreRunLoadsConfigAndProbes(t *testing.T) {
 
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	const doc = `
+	const doc = `version = 3
 [herdr]
 binary = "herdr"
 [sources.projects]

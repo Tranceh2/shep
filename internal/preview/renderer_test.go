@@ -406,6 +406,50 @@ func TestRender_PreviewCommandsRenderSharedTemplateData(t *testing.T) {
 	}
 }
 
+// TestRender_SectionTitles proves every custom command section carries its
+// picker heading: the configured title, "" when the title is explicitly
+// empty, the humanized name when unset; built-in sections carry none (the
+// picker draws them with fixed headings). The text output is unchanged.
+func TestRender_SectionTitles(t *testing.T) {
+	t.Parallel()
+	title := func(s string) *string { return &s }
+	cfg := cfgWithDefault(config.PreviewIdentity, "recent_commits", "plain", "named", "cluster")
+	cfg.Preview.Commands = map[string]config.PreviewCommand{
+		"recent_commits": {Command: "log"},
+		"plain":          {Command: "plain", Title: title("")},
+		"named":          {Command: "named", Title: title("Build status")},
+	}
+	cfg.Sources.Custom = []config.CustomSourceConfig{{
+		Name: "kube",
+		PreviewCommands: map[string]config.CustomSourcePreviewCommand{
+			"cluster": {Command: []string{"cluster"}, Title: title("K8s context"), Timeout: config.Duration(time.Second), MaxLines: 5},
+		},
+	}}
+	runner := &fakeRunner{out: map[string]string{"log": "a", "plain": "b", "named": "c", "cluster": "d"}}
+	r := NewRenderer(effective.New(cfg), testTemplates, config.Probes{}, nil, runner)
+	res, err := r.Render(context.Background(), source.Candidate{Path: "/tmp", Label: "x", Source: "kube"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, s := range res.Sections {
+		got[s.Kind] = s.Title
+	}
+	want := map[string]string{
+		config.PreviewIdentity: "",
+		"recent_commits":       "Recent commits",
+		"plain":                "",
+		"named":                "Build status",
+		"cluster":              "K8s context",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("section titles = %v, want %v", got, want)
+	}
+	if !strings.HasSuffix(res.Text, "a\n\nb\n\nc\n\nd") {
+		t.Errorf("text = %q, want the command outputs without headings", res.Text)
+	}
+}
+
 func TestRender_CustomSourceLocalFailureDoesNotHideOtherSections(t *testing.T) {
 	t.Parallel()
 	cfg := config.Defaults()
@@ -462,7 +506,7 @@ func TestResolvePreviewNames_PerSourceDefaultsAndUserControl(t *testing.T) {
 	load := func(t *testing.T, body string) *config.Config {
 		t.Helper()
 		path := filepath.Join(t.TempDir(), "config.toml")
-		if err := os.WriteFile(path, []byte("version = 2\n"+body), 0o600); err != nil {
+		if err := os.WriteFile(path, []byte("version = 3\n"+body), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		cfg, err := config.Load(path)
@@ -536,7 +580,7 @@ func TestResolvePreviewNames_SessionsKeepTheirOwnFallback(t *testing.T) {
 	load := func(t *testing.T, body string) *config.Config {
 		t.Helper()
 		path := filepath.Join(t.TempDir(), "config.toml")
-		if err := os.WriteFile(path, []byte("version = 2\n"+body), 0o600); err != nil {
+		if err := os.WriteFile(path, []byte("version = 3\n"+body), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		cfg, err := config.Load(path)
@@ -572,7 +616,7 @@ func TestResolvePreviewNames_SessionsKeepTheirOwnFallback(t *testing.T) {
 func TestLoadedConfig_ExplicitEmptyPreviewDefaultDisablesTheDefault(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(path, []byte("version = 2\n[preview]\ndefault = []\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("version = 3\n[preview]\ndefault = []\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := config.Load(path)
@@ -1476,7 +1520,8 @@ func TestRender_CustomCommand_LoadedTemplateExecutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(t.TempDir(), "config.toml")
-	const doc = `[preview]
+	const doc = `version = 3
+[preview]
 default = ["path_probe"]
 
 [preview.commands.path_probe]
@@ -1603,7 +1648,7 @@ func TestResolvePreviewNames_AgentsHonorConfiguredPreview(t *testing.T) {
 	load := func(t *testing.T, body string) *config.Config {
 		t.Helper()
 		path := filepath.Join(t.TempDir(), "config.toml")
-		if err := os.WriteFile(path, []byte("version = 2\n"+body), 0o600); err != nil {
+		if err := os.WriteFile(path, []byte("version = 3\n"+body), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		cfg, err := config.Load(path)

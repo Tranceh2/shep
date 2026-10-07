@@ -39,15 +39,15 @@ func rowSummary(rows []Row) []string {
 }
 
 // TestBuildRows_DirectWorkspaceMatchStaysCollapsed proves a workspace that
-// matches the query by itself does not unfold its tree, and reports so.
+// matches the query by itself does not unfold its tree.
 func TestBuildRows_DirectWorkspaceMatchStaysCollapsed(t *testing.T) {
 	t.Parallel()
 	rows := buildRows(expandInput("back", false))
 	if got := rowSummary(rows); len(got) != 1 || got[0] != "ws:backend" {
 		t.Fatalf("rows = %v, want the workspace alone", got)
 	}
-	if rows[0].Match != MatchDirect || rows[0].Expanded || !rows[0].Expandable {
-		t.Errorf("workspace row = %+v, want a direct, collapsed, expandable match", rows[0])
+	if rows[0].Match != MatchDirect || !rows[0].Expandable {
+		t.Errorf("workspace row = %+v, want a direct, expandable match", rows[0])
 	}
 }
 
@@ -59,8 +59,8 @@ func TestBuildRows_DescendantOnlyMatchShowsItsBranch(t *testing.T) {
 	if got := rowSummary(rows); len(got) != 3 || got[0] != "ws:backend" || got[1] != "tab:web" || got[2] != "pane:/srv/web" {
 		t.Fatalf("rows = %v, want the workspace and its web branch", got)
 	}
-	if rows[0].Match != MatchDescendant || !rows[0].Expanded {
-		t.Errorf("workspace row = %+v, want a descendant match shown expanded", rows[0])
+	if rows[0].Match != MatchDescendant {
+		t.Errorf("workspace row = %+v, want a descendant match", rows[0])
 	}
 }
 
@@ -87,12 +87,8 @@ func TestBuildRows_ManualExpandDuringQueryShowsAllChildren(t *testing.T) {
 	if matches["tab:api"] != MatchDirect || matches["pane:/srv/api"] != MatchDirect || matches["tab:web"] != MatchNone || matches["pane:/srv/web"] != MatchNone {
 		t.Errorf("matches = %v, want only the api branch marked", matches)
 	}
-	if !rows[0].Expanded {
-		t.Error("an expanded workspace must report Expanded")
-	}
-
 	direct := buildRows(expandInput("back", true))
-	if len(direct) != 5 || !direct[0].Expanded {
+	if len(direct) != 5 {
 		t.Errorf("expanded direct match rows = %v, want its whole tree", rowSummary(direct))
 	}
 	if collapsed := buildRows(expandInput("back", false)); len(collapsed) != 1 {
@@ -132,11 +128,11 @@ func TestModel_ExpandAndCollapseDuringQuery(t *testing.T) {
 		t.Fatalf("rows = %v, want the collapsed workspace", rowSummary(m.rows))
 	}
 	m, _ = update(t, m, key("right"))
-	if len(m.rows) != 3 || !m.rows[0].Expanded {
+	if len(m.rows) != 3 {
 		t.Fatalf("after right: rows = %v, want the whole tree", rowSummary(m.rows))
 	}
 	m, _ = update(t, m, key("left"))
-	if len(m.rows) != 1 || m.rows[0].Expanded {
+	if len(m.rows) != 1 {
 		t.Errorf("after left: rows = %v, want the workspace collapsed", rowSummary(m.rows))
 	}
 }

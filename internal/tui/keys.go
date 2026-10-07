@@ -217,9 +217,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cancelled = true
 		return m, tea.Quit
 	case "tab":
-		return m.cycleScopeForward()
+		return m.cycleTabForward()
 	case "shift+tab":
-		return m.cycleScopeBackward()
+		return m.cycleTabBackward()
 	case "ctrl+t":
 		return m.selectWithTarget("tab")
 	case "ctrl+p":
@@ -292,19 +292,17 @@ func (m Model) togglePin() (tea.Model, tea.Cmd) {
 	}
 }
 
-func (m Model) cycleScopeForward() (tea.Model, tea.Cmd) {
+func (m Model) cycleTabForward() (tea.Model, tea.Cmd) {
 	next := m.adjacentTab(1)
 	m.activeTab = next.ID
-	m.scope = scopeForTab(next.ID)
 	m.cursor = 0
 	m.cursorTouched = false
 	return m, tea.Batch(m.maybeLoadGroup(), m.applyFilter(), m.syncPreviewAfterSelectionChange())
 }
 
-func (m Model) cycleScopeBackward() (tea.Model, tea.Cmd) {
+func (m Model) cycleTabBackward() (tea.Model, tea.Cmd) {
 	next := m.adjacentTab(-1)
 	m.activeTab = next.ID
-	m.scope = scopeForTab(next.ID)
 	m.cursor = 0
 	m.cursorTouched = false
 	return m, tea.Batch(m.maybeLoadGroup(), m.applyFilter(), m.syncPreviewAfterSelectionChange())
@@ -415,8 +413,7 @@ func (m Model) selectWithTarget(target string) (tea.Model, tea.Cmd) {
 // Orientation value, which re-engages the responsive width-based mode (see
 // nextResponsiveMode). m.mode is recomputed immediately against the current
 // width/height so the visible layout reacts to ctrl+l in the same step,
-// instead of staying stale until the next WindowSizeMsg/render. The
-// stacked/portrait third state was removed along with the stacked layout.
+// instead of staying stale until the next WindowSizeMsg/render.
 func (m *Model) cycleOrientationOverride() {
 	if m.layout.Orientation == "" {
 		m.layout.Orientation = LayoutLandscape

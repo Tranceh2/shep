@@ -390,9 +390,12 @@ func (m Model) previewSectionBlocks(row Row, width, room int, cache *fitCache) [
 			used++ // the blank line between sections
 		}
 		lines := make([]string, 0, len(body)+1)
-		lines = append(lines, fitWidth(m.previewHeading(title, width), width))
-		blocks = append(blocks, previewBlock{lines: append(lines, body...), animated: animated})
-		used += len(body) + 1
+		if title != "" {
+			lines = append(lines, fitWidth(m.previewHeading(title, width), width))
+		}
+		lines = append(lines, body...)
+		blocks = append(blocks, previewBlock{lines: lines, animated: animated})
+		used += len(lines)
 	}
 	capture, captureTitle := "", "Active pane"
 	switch row.Kind {
@@ -418,7 +421,9 @@ func (m Model) previewSectionBlocks(row Row, width, room int, cache *fitCache) [
 			case config.PreviewDir:
 				add("Files", m.fitText(cache, s.Text, width, -1), false)
 			default:
-				add(humanizeKind(s.Kind), m.fitText(cache, s.Text, width, -1), false)
+				// A custom command: its configured or humanized title
+				// (config.PreviewTitle), no heading for an empty one.
+				add(plainText(s.Title), m.fitText(cache, s.Text, width, -1), false)
 			}
 		}
 	}
@@ -464,17 +469,6 @@ func (m Model) previewHeading(title string, width int) string {
 		return heading
 	}
 	return heading + " " + m.styles.ruleStyle.Render(strings.Repeat(m.icons().RuleHorizontal, rule))
-}
-
-// humanizeKind turns a custom section's kind into its heading:
-// "recent_commits" → "Recent commits", "cluster" → "Cluster".
-func humanizeKind(kind string) string {
-	words := strings.FieldsFunc(kind, func(r rune) bool { return r == '_' || r == '-' })
-	if len(words) == 0 {
-		return kind
-	}
-	text := strings.Join(words, " ")
-	return strings.ToUpper(text[:1]) + text[1:]
 }
 
 // tabLabelMaxCells caps the label column of the Tabs section.

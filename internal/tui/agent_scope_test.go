@@ -38,12 +38,12 @@ func TestConfiguredTabs_FilterAndNavigation(t *testing.T) {
 	if !hasHint(m.footerHints(), keyBindingTab.footerChord, "projects") {
 		t.Errorf("footer = %q, want the next tab named in the tab hint", footerText(m))
 	}
-	next, _ := m.cycleScopeForward()
+	next, _ := m.cycleTabForward()
 	m = next.(Model)
 	if m.ActiveTab() != "projects" || len(m.rows) != 1 || m.rows[0].Candidate.Label != "project" {
 		t.Fatalf("projects tab = %q, rows = %+v", m.ActiveTab(), m.rows)
 	}
-	next, _ = m.cycleScopeBackward()
+	next, _ = m.cycleTabBackward()
 	m = next.(Model)
 	if m.ActiveTab() != "review" {
 		t.Errorf("backward tab = %q", m.ActiveTab())
@@ -51,16 +51,16 @@ func TestConfiguredTabs_FilterAndNavigation(t *testing.T) {
 }
 
 func TestConfiguredTabs_SingleAndHiddenAgents(t *testing.T) {
-	m := NewModelWithLayout(nil, nil, Layout{Tabs: []TabDefinition{{ID: "projects", Kind: TabSource}}, InitialScope: ScopeAgents})
+	m := NewModelWithLayout(nil, nil, Layout{Tabs: []TabDefinition{{ID: "projects", Kind: TabSource}}, InitialTab: "agents"})
 	if m.ActiveTab() != "agents" {
 		t.Fatalf("explicit agents tab = %q", m.ActiveTab())
 	}
-	next, _ := m.cycleScopeForward()
+	next, _ := m.cycleTabForward()
 	m = next.(Model)
 	if m.ActiveTab() != "projects" {
 		t.Fatalf("forward from hidden agents = %q", m.ActiveTab())
 	}
-	next, _ = m.cycleScopeForward()
+	next, _ = m.cycleTabForward()
 	m = next.(Model)
 	if m.ActiveTab() != "projects" {
 		t.Errorf("single tab wrap = %q", m.ActiveTab())
@@ -169,7 +169,7 @@ func TestConfiguredTabs_QueryTabOnlyProviderPreservesAll(t *testing.T) {
 	if len(m.rows) != 2 || calls != 0 {
 		t.Fatalf("all rows = %+v, lazy calls = %d", m.rows, calls)
 	}
-	next, cmd := m.cycleScopeForward()
+	next, cmd := m.cycleTabForward()
 	m = next.(Model)
 	if cmd == nil || calls != 0 {
 		t.Fatalf("provider not lazy: calls = %d, cmd = %v", calls, cmd)
@@ -189,7 +189,7 @@ func TestConfiguredTabs_QueryTabOnlyProviderPreservesAll(t *testing.T) {
 	if calls != 1 || len(m.rows) != 1 || m.rows[0].Candidate.Source != "review" {
 		t.Fatalf("review rows = %+v, calls = %d", m.rows, calls)
 	}
-	next, _ = m.cycleScopeBackward()
+	next, _ = m.cycleTabBackward()
 	m = next.(Model)
 	if len(m.rows) != 2 || m.rows[0].Candidate.Source != config.SourceWorkspaces {
 		t.Fatalf("all gained tab-only candidates: %+v", m.rows)
@@ -208,7 +208,7 @@ func TestConfiguredTabs_GroupLoadsLazilyOnce(t *testing.T) {
 	if calls != 0 {
 		t.Fatal("group loaded before activation")
 	}
-	next, cmd := m.cycleScopeForward()
+	next, cmd := m.cycleTabForward()
 	m = next.(Model)
 	if cmd == nil || calls != 0 {
 		t.Fatalf("group load should be scheduled, calls = %d", calls)
@@ -229,9 +229,9 @@ func TestConfiguredTabs_GroupLoadsLazilyOnce(t *testing.T) {
 	if calls != 1 || len(m.rows) != 1 || m.rows[0].Candidate.Label != "team project" {
 		t.Fatalf("group rows = %+v, loads = %d", m.rows, calls)
 	}
-	next, _ = m.cycleScopeBackward()
+	next, _ = m.cycleTabBackward()
 	m = next.(Model)
-	next, cmd = m.cycleScopeForward()
+	next, cmd = m.cycleTabForward()
 	m = next.(Model)
 	if calls != 1 || m.groupLoading["team"] {
 		t.Errorf("group reloaded: %d", calls)
@@ -299,7 +299,7 @@ func TestConfiguredTabs_GroupRefreshRecollectsCurrentGeneration(t *testing.T) {
 		}},
 	}})
 	m, _ = update(t, m, SourceResultMsg{Source: config.SourceHerdr, Snapshot: &source.Snapshot{Workspaces: []source.Workspace{{ID: "old", Label: "old"}}}})
-	next, cmd := m.cycleScopeForward()
+	next, cmd := m.cycleTabForward()
 	m = next.(Model)
 	var deliver func(tea.Msg)
 	deliver = func(msg tea.Msg) {
@@ -324,9 +324,9 @@ func TestConfiguredTabs_GroupRefreshRecollectsCurrentGeneration(t *testing.T) {
 	if calls != 2 || len(m.rows) != 1 || m.rows[0].Candidate.Label != "new" || m.cursor >= len(m.rows) {
 		t.Fatalf("refreshed rows = %+v, cursor = %d, loads = %d", m.rows, m.cursor, calls)
 	}
-	next, _ = m.cycleScopeBackward()
+	next, _ = m.cycleTabBackward()
 	m = next.(Model)
-	next, _ = m.cycleScopeForward()
+	next, _ = m.cycleTabForward()
 	m = next.(Model)
 	if calls != 2 || m.groupLoading["team"] {
 		t.Fatalf("unchanged generation loaded again: %d", calls)
@@ -408,7 +408,7 @@ func TestConfiguredTabs_SourceUsesUndeduplicatedProviderRows(t *testing.T) {
 	if len(m.rows) != 1 || m.rows[0].Candidate.Source != config.SourceProjects {
 		t.Fatalf("all rows = %+v", m.rows)
 	}
-	next, _ := m.cycleScopeForward()
+	next, _ := m.cycleTabForward()
 	m = next.(Model)
 	if len(m.rows) != 1 || m.rows[0].Candidate.Label != "pull request" {
 		t.Fatalf("custom source rows = %+v", m.rows)
@@ -424,7 +424,7 @@ func TestConfiguredTabs_AllKeepsEnabledRowOnPathCollision(t *testing.T) {
 	if len(m.rows) != 1 || m.rows[0].Candidate.Label != "project" {
 		t.Fatalf("all collision rows = %+v", m.rows)
 	}
-	next, _ := m.cycleScopeForward()
+	next, _ := m.cycleTabForward()
 	m = next.(Model)
 	if len(m.rows) != 1 || m.rows[0].Candidate.Label != "pull request" {
 		t.Fatalf("custom source collision rows = %+v", m.rows)
@@ -545,7 +545,7 @@ func TestAgentScope_OrderingUrgencyAndMRU(t *testing.T) {
 
 	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(*snapshot), Layout{})
 	m.startupSnapshot = snapshot
-	m = m.WithScope(ScopeAgents)
+	m = withActiveTab(m, "agents")
 	m.applyFilter()
 
 	if len(m.rows) != 4 {
@@ -602,7 +602,7 @@ func TestAgentScope_TiedUrgencyBreaksByWorkspaceMRU(t *testing.T) {
 	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(*snapshot), Layout{})
 	m.startupSnapshot = snapshot
 	m.rankingSnapshot = rs
-	m = m.WithScope(ScopeAgents)
+	m = withActiveTab(m, "agents")
 	m.applyFilter()
 
 	if len(m.rows) != 2 {
@@ -647,7 +647,7 @@ func TestAgentScope_LiveStatusUrgencyReorder(t *testing.T) {
 
 	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(*snapshot), Layout{})
 	m.startupSnapshot = snapshot
-	m = m.WithScope(ScopeAgents)
+	m = withActiveTab(m, "agents")
 	m.applyFilter()
 
 	// Initial order: p1 (working) > p2 (idle)
@@ -702,7 +702,7 @@ func TestAgentScope_Filtering(t *testing.T) {
 
 	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(*snapshot), Layout{})
 	m.startupSnapshot = snapshot
-	m = m.WithScope(ScopeAgents)
+	m = withActiveTab(m, "agents")
 
 	// Filter by status:blocked
 	m.query = "status:blocked"
@@ -783,7 +783,7 @@ func TestAgentScope_EnterDispatchesFocus(t *testing.T) {
 
 	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(*snapshot), Layout{})
 	m.startupSnapshot = snapshot
-	m = m.WithScope(ScopeAgents)
+	m = withActiveTab(m, "agents")
 	m.applyFilter()
 
 	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -978,7 +978,7 @@ func TestAgentScope_FullDeterministicTiers(t *testing.T) {
 	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(*snapshot), Layout{})
 	m.startupSnapshot = snapshot
 	m.rankingSnapshot = rs
-	m = m.WithScope(ScopeAgents)
+	m = withActiveTab(m, "agents")
 	m.applyFilter()
 
 	if len(m.rows) != 7 {
@@ -1028,7 +1028,7 @@ func TestAgentScope_AttentionTierRemainsPrimaryDuringQuery(t *testing.T) {
 
 	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(*snapshot), Layout{})
 	m.startupSnapshot = snapshot
-	m = m.WithScope(ScopeAgents)
+	m = withActiveTab(m, "agents")
 	m.query = "deploy"
 	m.applyFilter()
 
@@ -1073,7 +1073,7 @@ func TestAgentScope_LiveTransitionInvalidatesAckAndRestoresNewAttention(t *testi
 	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(*snapshot), Layout{AckClearer: ackClearer})
 	m.startupSnapshot = snapshot
 	m.rankingSnapshot = rs
-	m = m.WithScope(ScopeAgents)
+	m = withActiveTab(m, "agents")
 	m.applyFilter()
 
 	// Initial: p1 is acknowledged blocked (Tier 3), so p2 (working, Tier 2) is first
@@ -1129,7 +1129,7 @@ func TestAgentScope_CandidatesUseSourceAgents(t *testing.T) {
 
 	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(*snapshot), Layout{})
 	m.startupSnapshot = snapshot
-	m = m.WithScope(ScopeAgents)
+	m = withActiveTab(m, "agents")
 	m.applyFilter()
 
 	if len(m.rows) != 1 {
@@ -1169,7 +1169,7 @@ func TestAgentScope_CurrentPaneLastAndPreviousFirst(t *testing.T) {
 	m.startupSnapshot = snapshot
 	m.rankingSnapshot = rs
 	m = m.WithCurrentPane(&snapshot.Panes[0]) // p_current
-	m = m.WithScope(ScopeAgents)
+	m = withActiveTab(m, "agents")
 	m.applyFilter()
 
 	if len(m.rows) != 3 {
@@ -1236,7 +1236,7 @@ func TestAgentScope_PriorToggleAndFallback(t *testing.T) {
 			m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(snap), Layout{})
 			m.startupSnapshot = &snap
 			m.rankingSnapshot = rs
-			m = m.WithScope(ScopeAgents)
+			m = withActiveTab(m, "agents")
 			m.query = tc.query
 			m.applyFilter()
 			var got []string
@@ -1274,7 +1274,7 @@ func TestAgentScope_AmbiguousPriorWorkspace(t *testing.T) {
 			m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(base), Layout{})
 			m.startupSnapshot = &base
 			m.rankingSnapshot = ranking.Snapshot{}.WithWorkspaceMRU([]string{"current", "prior", "other"}).WithRecent(tc.recent)
-			m = m.WithScope(ScopeAgents)
+			m = withActiveTab(m, "agents")
 			m.applyFilter()
 			var got []string
 			for _, row := range m.rows {
@@ -1313,7 +1313,7 @@ func TestAgentScope_CurrentPaneDoesNotHideUnacknowledgedAttention(t *testing.T) 
 	m.startupSnapshot = snapshot
 	m.rankingSnapshot = rs
 	m = m.WithCurrentPane(&snapshot.Panes[0]) // p_current_blocked
-	m = m.WithScope(ScopeAgents)
+	m = withActiveTab(m, "agents")
 	m.applyFilter()
 
 	if len(m.rows) != 3 {
@@ -1361,7 +1361,7 @@ func TestAgentScope_PriorSelectionFirstViaRanking(t *testing.T) {
 	m.startupSnapshot = snapshot
 	m.rankingSnapshot = rs
 	m = m.WithCurrentPane(&snapshot.Panes[4]) // p_current
-	m = m.WithScope(ScopeAgents)
+	m = withActiveTab(m, "agents")
 	m.applyFilter()
 
 	if len(m.rows) != 5 {
@@ -1404,7 +1404,7 @@ func TestAgentScope_QueryTieBreaksByCurrentPaneAndMRU(t *testing.T) {
 	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(*snapshot), Layout{})
 	m.startupSnapshot = snapshot
 	m = m.WithCurrentPane(&snapshot.Panes[0]) // p_current
-	m = m.WithScope(ScopeAgents)
+	m = withActiveTab(m, "agents")
 	m.query = "task"
 	m.applyFilter()
 

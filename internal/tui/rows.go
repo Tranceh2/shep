@@ -82,10 +82,8 @@ func effectiveSourceOrder(in rowBuildInput) []string {
 // position in any slice, used for selection retention across a rebuild and
 // for expand/collapse state lookups. It derives the key from the candidate's
 // Meta ids (pane_id, then tab_id, then workspace_id) for synthesized tree
-// children, falling back to a source+path key for a normal provider
-// candidate — so it no longer depends on the removed SourceHerdrTab /
-// SourceHerdrPane string constants (a child candidate's identity is its own
-// most-specific id, not a fake Source value).
+// children (a child candidate's identity is its own most-specific id),
+// falling back to a source+path key for a normal provider candidate.
 func rowIdentity(c source.Candidate) string {
 	if id := c.Meta["pane_id"]; id != "" {
 		return "pane:" + id
@@ -217,11 +215,6 @@ func candidateMetadataHaystack(c source.Candidate, kind RowKind) string {
 // used at score AGGREGATION time (see aggregateScore / expandedChildren) so a
 // metadata-only match never inflates an original-domain group's aggregate
 // score; it does not impose a global ordering tier.
-func matchRow(query string, c source.Candidate, kind RowKind) (score int, indexes []int, matched bool, original bool) {
-	return newQueryMatcher(query).matchRow(c, kind)
-}
-
-// matchRow is matchRow with the query already parsed (see queryMatcher).
 func (q *queryMatcher) matchRow(c source.Candidate, kind RowKind) (score int, indexes []int, matched bool, original bool) {
 	if q.raw == "" {
 		return 0, nil, true, true
@@ -475,7 +468,6 @@ func buildCandidateRow(in rowBuildInput, c source.Candidate) ([]Row, int, bool, 
 		MatchedIndexes: selfMatchedIndexes,
 		ID:             rowIdentity(c),
 		Expandable:     c.Source == config.SourceHerdr,
-		Expanded:       len(children) > 0,
 	}
 	// Provenance: the group is original-domain if self or any descendant
 	// matched the original domain. Score aggregation only counts a source of

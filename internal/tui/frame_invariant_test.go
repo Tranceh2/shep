@@ -129,7 +129,7 @@ func hostileCustomModel(t *testing.T, w, h int) Model {
 		t.Fatalf("setup: want %d custom rows, got %d", len(cands), len(m.rows))
 	}
 	m, _ = update(t, m, previewResponseMsg{seq: m.previewSeq, result: preview.Result{Sections: []preview.Section{
-		{Kind: "pr_details", Text: "PR #42\r\nstatus:\topen\x07\r\nchecks:\t\x1b[32mpassing\x1b[m\r\n"},
+		{Kind: "pr_details", Title: "Pr details", Text: "PR #42\r\nstatus:\topen\x07\r\nchecks:\t\x1b[32mpassing\x1b[m\r\n"},
 	}}})
 	return m
 }

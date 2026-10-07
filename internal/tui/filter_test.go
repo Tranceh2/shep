@@ -126,8 +126,8 @@ func TestApplyFilter_FallsBackToNearestSelectableWhenLost(t *testing.T) {
 	m.applyFilter()
 
 	row, ok := m.currentRow()
-	if !ok || !row.Selectable() {
-		t.Fatalf("expected a selectable row after losing the previous selection, got %+v (ok=%v)", row, ok)
+	if !ok {
+		t.Fatalf("expected a row after losing the previous selection, got %+v (ok=%v)", row, ok)
 	}
 	if row.Candidate.Label != "beta" {
 		t.Errorf("currentRow = %+v, want beta (the only surviving candidate)", row)

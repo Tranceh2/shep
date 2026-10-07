@@ -21,7 +21,7 @@ func deref(p *string) string {
 func loadDoc(t *testing.T, doc string) (*Config, error) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return Load(path)

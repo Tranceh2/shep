@@ -136,11 +136,6 @@ func NewFzf() *Fzf {
 	return &Fzf{lookPath: exec.LookPath, run: execFzf{}}
 }
 
-// withLookPathAndRunner is the test constructor.
-func withLookPathAndRunner(lp lookPathFunc, r fzfRunner) *Fzf {
-	return &Fzf{lookPath: lp, run: r}
-}
-
 func (*Fzf) Name() string { return "fzf" }
 
 // Select formats candidates as "ordinal\tpath\tlabel\taliases...", pipes the

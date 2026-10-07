@@ -10,15 +10,6 @@ import (
 	"github.com/tranceh2/shep/internal/source"
 )
 
-// FilterScope preserves the historical all/agents initial-view API. Configured
-// tabs use Model.ActiveTab for their exact identifier.
-type FilterScope int
-
-const (
-	ScopeAll FilterScope = iota
-	ScopeAgents
-)
-
 // TabKind selects how a top-level tab obtains its candidate rows.
 type TabKind string
 
@@ -40,57 +31,6 @@ type TabDefinition struct {
 	Load        func(context.Context, *source.Snapshot) ([]source.Candidate, error)
 }
 
-type scopeDefinition struct {
-	ID          FilterScope
-	Name        string
-	Placeholder string
-	FooterLabel string
-	EmptyState  func(m Model) []string
-}
-
-var scopeRegistry = []scopeDefinition{
-	{
-		ID:          ScopeAll,
-		Name:        "all",
-		Placeholder: "Search workspaces, projects, folders",
-		FooterLabel: "all",
-		EmptyState: func(m Model) []string {
-			if m.loadingCandidates && len(m.baseFlatCandidates()) == 0 {
-				return []string{
-					"No workspaces yet",
-					"Sources are still loading…",
-				}
-			}
-			if len(m.baseFlatCandidates()) == 0 {
-				return []string{"No candidates available"}
-			}
-			return []string{"No workspaces yet"}
-		},
-	},
-	{
-		ID:          ScopeAgents,
-		Name:        "agents",
-		Placeholder: "Search agents",
-		FooterLabel: "agents",
-		EmptyState: func(m Model) []string {
-			if len(m.layout.Tabs) > 0 && !(len(m.layout.Tabs) == 2 && m.layout.Tabs[0].ID == "all" && m.layout.Tabs[1].ID == "agents") {
-				return []string{"No active agents detected", "tab switch to " + m.adjacentTab(1).ID}
-			}
-			return []string{
-				"No active agents detected",
-				"tab switch to all workspaces",
-			}
-		},
-	},
-}
-
-func scopeForTab(id string) FilterScope {
-	if id == "agents" {
-		return ScopeAgents
-	}
-	return ScopeAll
-}
-
 func (m Model) tabs() []TabDefinition {
 	if len(m.layout.Tabs) == 0 {
 		return []TabDefinition{{ID: "all", Kind: TabAll}, {ID: "agents", Kind: TabAgents}}
@@ -102,9 +42,6 @@ func (m Model) tabs() []TabDefinition {
 func (m Model) ActiveTab() string {
 	if m.activeTab != "" {
 		return m.activeTab
-	}
-	if m.scope == ScopeAgents {
-		return "agents"
 	}
 	return m.tabs()[0].ID
 }
@@ -147,78 +84,73 @@ func (m Model) groupUsesSnapshot(tab TabDefinition) bool {
 	return false
 }
 
-func (m Model) tabPresentation() scopeDefinition {
+// tabPresentation is how the active tab reads: its search placeholder and
+// the lines shown when it has no rows.
+type tabPresentation struct {
+	Placeholder string
+	EmptyState  func(m Model) []string
+}
+
+func (m Model) tabPresentation() tabPresentation {
 	tab := m.activeDefinition()
 	switch tab.Kind {
 	case TabAgents:
-		return scopeDefinitionFor(ScopeAgents)
+		return tabPresentation{Placeholder: "Search agents", EmptyState: agentsEmptyState}
 	case TabAll:
-		def := scopeDefinitionFor(ScopeAll)
-		if len(m.layout.Tabs) > 0 {
-			def.EmptyState = func(m Model) []string {
-				if m.loadingCandidates && len(m.allTabCandidates()) == 0 {
-					return []string{"No workspaces yet", "Sources are still loading…"}
-				}
-				if len(m.allTabCandidates()) == 0 {
-					return []string{"No candidates available"}
-				}
-				return []string{"No workspaces yet"}
+		return tabPresentation{Placeholder: "Search workspaces, projects, folders", EmptyState: allEmptyState}
+	}
+	kind := "source"
+	switch tab.Kind {
+	case TabCustomSource:
+		kind = "custom source"
+	case TabGroup:
+		kind = "group"
+	}
+	return tabPresentation{
+		Placeholder: "Search " + tabName(tab),
+		EmptyState: func(m Model) []string {
+			if tab.Kind == TabGroup && m.groupNeedsSnapshot() && m.snapshotUnavailable != nil {
+				return []string{"Group candidates unavailable", "Herdr snapshot unavailable: " + plainText(m.snapshotUnavailable.Error())}
 			}
-		}
-		return def
+			if m.groupLoading[tab.ID] {
+				return []string{"Loading " + kind + " candidates…"}
+			}
+			if err := m.groupErrors[tab.ID]; err != nil {
+				return []string{"Group candidates unavailable", plainText(err.Error())}
+			}
+			if m.loadingCandidates && tab.Load == nil {
+				return []string{"Sources are still loading…"}
+			}
+			return []string{"No " + kind + " candidates available"}
+		},
+	}
+}
+
+// allEmptyState is the all tab's empty state: its candidates are the
+// enabled sources' results while [tui].tabs is configured, else the base set.
+func allEmptyState(m Model) []string {
+	candidates := m.baseFlatCandidates()
+	if len(m.layout.Tabs) > 0 {
+		candidates = m.allTabCandidates()
+	}
+	switch {
+	case len(candidates) > 0:
+		return []string{"No workspaces yet"}
+	case m.loadingCandidates:
+		return []string{"No workspaces yet", "Sources are still loading…"}
 	default:
-		kind := "source"
-		if tab.Kind == TabCustomSource {
-			kind = "custom source"
-		}
-		if tab.Kind == TabGroup {
-			kind = "group"
-		}
-		return scopeDefinition{Name: tab.ID, Placeholder: "Search " + tabName(tab), FooterLabel: tab.ID,
-			EmptyState: func(m Model) []string {
-				if tab.Kind == TabGroup && m.groupNeedsSnapshot() && m.snapshotUnavailable != nil {
-					return []string{"Group candidates unavailable", "Herdr snapshot unavailable: " + plainText(m.snapshotUnavailable.Error())}
-				}
-				if m.groupLoading[tab.ID] {
-					return []string{"Loading " + kind + " candidates…"}
-				}
-				if err := m.groupErrors[tab.ID]; err != nil {
-					return []string{"Group candidates unavailable", plainText(err.Error())}
-				}
-				if m.loadingCandidates && tab.Load == nil {
-					return []string{"Sources are still loading…"}
-				}
-				return []string{"No " + kind + " candidates available"}
-			},
-		}
+		return []string{"No candidates available"}
 	}
 }
 
-func scopeDefinitionFor(scope FilterScope) scopeDefinition {
-	for _, def := range scopeRegistry {
-		if def.ID == scope {
-			return def
-		}
+// agentsEmptyState is the agents tab's empty state; its hint names the next
+// tab unless the tabs are the default all/agents pair.
+func agentsEmptyState(m Model) []string {
+	tabs := m.layout.Tabs
+	if len(tabs) > 0 && (len(tabs) != 2 || tabs[0].ID != "all" || tabs[1].ID != "agents") {
+		return []string{"No active agents detected", "tab switch to " + m.adjacentTab(1).ID}
 	}
-	return scopeRegistry[0]
-}
-
-func (s FilterScope) Next() FilterScope {
-	for i, def := range scopeRegistry {
-		if def.ID == s {
-			return scopeRegistry[(i+1)%len(scopeRegistry)].ID
-		}
-	}
-	return scopeRegistry[0].ID
-}
-
-func (s FilterScope) Prev() FilterScope {
-	for i, def := range scopeRegistry {
-		if def.ID == s {
-			return scopeRegistry[(i-1+len(scopeRegistry))%len(scopeRegistry)].ID
-		}
-	}
-	return scopeRegistry[0].ID
+	return []string{"No active agents detected", "tab switch to all workspaces"}
 }
 
 // AgentCounts summarizes detected agent panes by status.

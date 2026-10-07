@@ -76,7 +76,7 @@ type App struct {
 	asyncTUIRun asyncTUIRunFunc
 	// chosenTarget records a target override chosen by the interactive TUI
 	// picker (ctrl+t => "tab", ctrl+p => "pane"). Empty means "no override":
-	// runOpen then uses the --target flag value (default "workspace"). It is
+	// runOpenWithView then uses the --target flag value (default "workspace"). It is
 	// populated only when the TUI is the selecting selector and the user
 	// pressed a target binding; Direct/fzf never set it.
 	chosenTarget string
@@ -84,7 +84,7 @@ type App struct {
 	// TUI picker selected (RowActionFocusTab for a synthesized tab/pane row,
 	// RowActionOpen otherwise). The zero value (RowActionOpen) is the default
 	// for every non-TUI path (Direct, fzf, --path, "."). It is populated only
-	// when the TUI is the selecting selector; runOpen threads it into launch,
+	// when the TUI is the selecting selector; runOpenWithView threads it into launch,
 	// which dispatches on the typed action instead of the candidate's Source
 	// string.
 	chosenAction tui.RowAction
@@ -92,7 +92,7 @@ type App struct {
 	// means "not inside a Herdr pane" (or snapshot hydration failed); the
 	// tab/pane launch targets are disabled in that case.
 	currentPane *source.Pane
-	// startupSnapshot is the one full state generation captured by runOpen.
+	// startupSnapshot is the one full state generation captured by runOpenWithView.
 	// attempted prevents a failed initial hydration from triggering a second
 	// provider-level state call during candidate resolution.
 	startupSnapshot          *source.Snapshot
@@ -179,40 +179,47 @@ func (a *App) settings() *effective.Resolver {
 	return a.resolver
 }
 
-// selectedTheme selects the picker's color theme once per process with
-// theme.Select: NO_COLOR, then SHEP_THEME, then [tui].theme and its
-// [themes.<name>] tables, inheriting Herdr's own theme (its config.toml,
-// [theme.custom] included) by default. The terminal's appearance is asked
-// only when Herdr's auto_switch needs it, before the picker starts, and
-// reads as dark when the terminal does not answer. A selection error (the
-// configuration was validated, so none is expected) is reported on stderr
-// and the picker keeps Herdr's default theme.
+// selectedTheme selects the picker's color theme once per process (see
+// selectTheme). A selection error (the configuration was validated, so none
+// is expected) is reported on stderr and the picker keeps Herdr's default
+// theme.
 func (a *App) selectedTheme(cfg *config.Config) theme.Theme {
 	a.themeOnce.Do(func() {
-		getenv := a.themeGetenv
-		if getenv == nil {
-			getenv = os.Getenv
-		}
-		dark := a.darkBackground
-		if dark == nil {
-			dark = lipgloss.HasDarkBackground
-		}
-		customs, err := cfg.CustomThemes()
-		if err == nil {
-			a.pickerTheme, err = theme.Select(theme.Options{
-				ConfigTheme:     cfg.TUI.Theme,
-				Customs:         customs,
-				Getenv:          getenv,
-				HerdrConfigPath: theme.DefaultHerdrConfigPath(getenv, a.templateEngine().Home()),
-				Dark:            dark,
-			})
-		}
+		t, err := a.selectTheme(cfg)
 		if err != nil {
 			fmt.Fprintf(a.err, "shep: %v; using the %s theme\n", err, theme.NameDefault)
-			a.pickerTheme = theme.Theme{}
+			t = theme.Theme{}
 		}
+		a.pickerTheme = t
 	})
 	return a.pickerTheme
+}
+
+// selectTheme selects the color theme with theme.Select: NO_COLOR, then
+// SHEP_THEME, then [tui].theme and its [themes.<name>] tables, inheriting
+// Herdr's own theme (its config.toml, [theme.custom] included) by default.
+// The terminal's appearance is asked only when Herdr's auto_switch needs it,
+// and reads as dark when the terminal does not answer.
+func (a *App) selectTheme(cfg *config.Config) (theme.Theme, error) {
+	getenv := a.themeGetenv
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	dark := a.darkBackground
+	if dark == nil {
+		dark = lipgloss.HasDarkBackground
+	}
+	customs, err := cfg.CustomThemes()
+	if err != nil {
+		return theme.Theme{}, err
+	}
+	return theme.Select(theme.Options{
+		ConfigTheme:     cfg.TUI.Theme,
+		Customs:         customs,
+		Getenv:          getenv,
+		HerdrConfigPath: theme.DefaultHerdrConfigPath(getenv, a.templateEngine().Home()),
+		Dark:            dark,
+	})
 }
 
 // versionInfo bundles injected build metadata.

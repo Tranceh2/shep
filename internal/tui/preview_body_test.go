@@ -304,19 +304,20 @@ func TestCaptureTail_FitsTheRoomLeft(t *testing.T) {
 
 // === Sections ===
 
-// TestCustomSections_HumanizedAndSeparate proves each custom section keeps
-// its own humanized heading and its body unchanged (blank lines and a
-// heading-like first line included), in configured order, with the dir
-// listing under Files.
-func TestCustomSections_HumanizedAndSeparate(t *testing.T) {
+// TestCustomSections_TitledAndSeparate proves each custom section keeps
+// its own heading (the title the renderer resolved) and its body unchanged
+// (blank lines and a heading-like first line included), in configured order,
+// with the dir listing under Files; an empty title draws the body alone.
+func TestCustomSections_TitledAndSeparate(t *testing.T) {
 	t.Parallel()
 	m := resolvedModel(t, []source.Candidate{zoxideCandidate("shep", "/p")}, nil,
-		preview.Section{Kind: "cluster", Text: "workspace\nfake heading\n\nline2"},
+		preview.Section{Kind: "cluster", Title: "Cluster", Text: "workspace\nfake heading\n\nline2"},
 		preview.Section{Kind: config.PreviewDir, Text: "README.md\nmain.go"},
-		preview.Section{Kind: "recent_commits", Text: "abc fix"},
+		preview.Section{Kind: "recent_commits", Title: "Recent commits", Text: "abc fix"},
+		preview.Section{Kind: "untitled", Title: "", Text: "bare output"},
 	)
 	body := previewBodyAt(m, 0)
-	for _, want := range []string{"Cluster ─", "workspace\nfake heading\n\nline2", "Files ─", "README.md\nmain.go", "Recent commits ─", "abc fix"} {
+	for _, want := range []string{"Cluster ─", "workspace\nfake heading\n\nline2", "Files ─", "README.md\nmain.go", "Recent commits ─", "abc fix", "bare output"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("preview = %q, missing %q", body, want)
 		}
@@ -324,11 +325,11 @@ func TestCustomSections_HumanizedAndSeparate(t *testing.T) {
 	if c, f, r := strings.Index(body, "Cluster"), strings.Index(body, "Files"), strings.Index(body, "Recent commits"); c >= f || f >= r {
 		t.Errorf("sections out of configured order: %q", body)
 	}
-	if strings.Contains(body, "Directory") || strings.Contains(body, "Tabs") {
-		t.Errorf("preview = %q, sections must not merge or be reclassified", body)
+	if strings.Contains(body, "Directory") || strings.Contains(body, "Tabs") || strings.Contains(body, "Untitled") {
+		t.Errorf("preview = %q, sections must not merge, be reclassified or gain a heading", body)
 	}
-	if got := humanizeKind("my-custom_command"); got != "My custom command" {
-		t.Errorf("humanizeKind = %q", got)
+	if i := strings.Index(body, "bare output"); i < 0 || !strings.HasSuffix(strings.TrimRight(body[:i], " "), "\n\n") {
+		t.Errorf("untitled section must follow a blank line with no heading: %q", body)
 	}
 }
 

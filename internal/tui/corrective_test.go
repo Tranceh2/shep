@@ -156,23 +156,6 @@ func TestBuildRows_OnlyKnownRowKinds(t *testing.T) {
 	}
 }
 
-// TestCursor_NeverLandsOnNonActionableRow proves every row Selectable() is
-// true — trivially guaranteed now that group headers are gone, but asserted
-// explicitly per the corrective-round contract ("the cursor can never land
-// on a non-actionable row").
-func TestCursor_NeverLandsOnNonActionableRow(t *testing.T) {
-	t.Parallel()
-	rows := buildRows(rowBuildInput{candidates: goldenCandidates()})
-	if len(rows) == 0 {
-		t.Fatal("setup: expected at least one row")
-	}
-	for i, r := range rows {
-		if !r.Selectable() {
-			t.Errorf("row %d (%+v) is not selectable — a non-actionable row exists", i, r)
-		}
-	}
-}
-
 // === 4. Pane row primary/secondary + status icon (never a literal word) ===
 
 // TestRowDisplayText_PaneRow_PathPrimarySecondaryPaneID proves a RowPane's

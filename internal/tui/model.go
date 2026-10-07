@@ -139,8 +139,8 @@ type Layout struct {
 	Closer          Closer
 	ConfirmClose    []string
 	AckClearer      AckClearer
-	InitialScope    FilterScope
-	InitialTab      string
+	// InitialTab is the tab the picker opens on; empty means the first tab.
+	InitialTab string
 	// HomeDir is the home directory displayed paths under it are shown
 	// relative to ("~/...") when Templates is nil. Empty resolves
 	// os.UserHomeDir once at construction; tests set it for deterministic
@@ -156,8 +156,7 @@ type Layout struct {
 // the responsive width-based mode (see nextResponsiveMode) picks wide vs.
 // list-only from the reported terminal size, with hysteresis so a borderline
 // resize never flaps between modes every frame. LayoutLandscape forces wide
-// mode (still subject to the terminal-height floor). The "portrait" (stacked)
-// orientation was removed.
+// mode (still subject to the terminal-height floor).
 const LayoutLandscape = "landscape"
 
 // ErrCancelled is the quiet cancellation sentinel returned by Run when the
@@ -182,10 +181,9 @@ type Model struct {
 	// caller (== baseCandidates for a tree-wired model — see
 	// newModelWithTreeLayout).
 	candidates []source.Candidate
-	// baseCandidates is the immutable flat set a tree-wired model
-	// (NewModelWithTree) was constructed from; nil for a plain
-	// NewModel/NewModelWithLayout model (no tree, no children ever
-	// synthesized — see fetchAllChildren).
+	// baseCandidates is the immutable flat set a tree-wired model (see
+	// newModelWithTreeLayout) was constructed from; nil for a model without
+	// a tree, which never synthesizes tab or pane children.
 	baseCandidates []source.Candidate
 	// allTab is the all tab's candidate set while [tui].tabs is configured:
 	// the enabled sources' results, deduplicated in source order.
@@ -229,7 +227,6 @@ type Model struct {
 	hasSelected         bool
 	selectedAction      RowAction
 	cancelled           bool
-	scope               FilterScope
 	activeTab           string
 	groupCandidates     map[string][]source.Candidate
 	groupLoading        map[string]bool
@@ -479,27 +476,12 @@ func AgentPresentations(agents []source.Candidate) map[string]*source.Presentati
 	return out
 }
 
-// NewModel builds a model over the supplied candidates. renderer may be nil,
-// in which case the preview pane shows a static built-in summary instead of
-// an async render.
-func NewModel(candidates []source.Candidate, renderer preview.Renderer) Model {
-	return newModelWithLayout(candidates, renderer, context.TODO(), Layout{}, ranking.Snapshot{})
-}
-
-// NewModelWithLayout builds a model like NewModel but with an explicit
-// Layout (list/preview widths, orientation override, and theme).
+// NewModelWithLayout builds a model over the supplied candidates with an
+// explicit Layout (list/preview widths, orientation override, theme, tabs).
+// renderer may be nil, in which case the preview pane shows a static built-in
+// summary instead of an async render.
 func NewModelWithLayout(candidates []source.Candidate, renderer preview.Renderer, layout Layout) Model {
-	return newModelWithLayout(candidates, renderer, context.TODO(), layout, layout.RankingSnapshot)
-}
-
-// NewModelWithTree builds a tree-expand-aware model: candidates is the flat
-// base row set (retained as baseCandidates), and tree fetches/caches each
-// SourceHerdr candidate's tabs/panes so buildRows can synthesize matching
-// RowTab/RowPane children. A nil tree degrades to identical flat-per-group
-// behavior, so this constructor is always safe to call even when the caller
-// has no HerdrDriver wired.
-func NewModelWithTree(candidates []source.Candidate, renderer preview.Renderer, tree *TreeExpander, layout Layout) Model {
-	return newModelWithTreeLayout(candidates, renderer, context.TODO(), tree, layout)
+	return newModelWithLayout(candidates, renderer, context.TODO(), layout)
 }
 
 // NewModelWithProducers constructs a Model that renders its initial frame
@@ -509,7 +491,7 @@ func NewModelWithProducers(producers []SourceProducer, query string, renderer pr
 	if renderCtx == nil {
 		renderCtx = context.TODO()
 	}
-	m := newModelWithLayout(nil, renderer, renderCtx, layout, layout.RankingSnapshot)
+	m := newModelWithLayout(nil, renderer, renderCtx, layout)
 	m.query = query
 	m.producers = producers
 	m.pendingProducers = make(map[int]bool, len(producers))
@@ -524,7 +506,7 @@ func NewModelWithProducers(producers []SourceProducer, query string, renderer pr
 }
 
 func newModelWithTreeLayout(candidates []source.Candidate, renderer preview.Renderer, renderCtx context.Context, tree *TreeExpander, layout Layout) Model {
-	m := newModelWithLayout(candidates, renderer, renderCtx, layout, layout.RankingSnapshot)
+	m := newModelWithLayout(candidates, renderer, renderCtx, layout)
 	m.baseCandidates = make([]source.Candidate, len(candidates))
 	copy(m.baseCandidates, candidates)
 	m.tree = tree
@@ -532,7 +514,7 @@ func newModelWithTreeLayout(candidates []source.Candidate, renderer preview.Rend
 	return m
 }
 
-func newModelWithLayout(candidates []source.Candidate, renderer preview.Renderer, renderCtx context.Context, layout Layout, snapshots ...ranking.Snapshot) Model {
+func newModelWithLayout(candidates []source.Candidate, renderer preview.Renderer, renderCtx context.Context, layout Layout) Model {
 	if renderCtx == nil {
 		renderCtx = context.TODO()
 	}
@@ -554,10 +536,6 @@ func newModelWithLayout(candidates []source.Candidate, renderer preview.Renderer
 		}
 		layout.Templates = tmpl.New(home)
 	}
-	var snapshot ranking.Snapshot
-	if len(snapshots) > 0 {
-		snapshot = snapshots[0]
-	}
 	m := Model{
 		candidates:         make([]source.Candidate, len(candidates)),
 		selected:           source.Candidate{},
@@ -569,8 +547,7 @@ func newModelWithLayout(candidates []source.Candidate, renderer preview.Renderer
 		formats:            formats,
 		expandedWorkspaces: map[string]bool{},
 		sourceOrder:        layout.SourceOrder,
-		rankingSnapshot:    snapshot,
-		scope:              layout.InitialScope,
+		rankingSnapshot:    layout.RankingSnapshot,
 		groupCandidates:    make(map[string][]source.Candidate),
 		groupLoading:       make(map[string]bool),
 		groupErrors:        make(map[string]error),
@@ -583,14 +560,9 @@ func newModelWithLayout(candidates []source.Candidate, renderer preview.Renderer
 		// headless/test context" behavior.
 	}
 	copy(m.candidates, candidates)
-	if layout.InitialTab != "" {
-		m.activeTab = layout.InitialTab
-		m.scope = scopeForTab(m.activeTab)
-	} else if layout.InitialScope == ScopeAgents {
-		m.activeTab = "agents"
-	} else {
+	m.activeTab = layout.InitialTab
+	if m.activeTab == "" {
 		m.activeTab = m.tabs()[0].ID
-		m.scope = scopeForTab(m.activeTab)
 	}
 	m.applyFilter()
 	m.refreshPreviewLoadingFlag()
@@ -623,23 +595,6 @@ func (m Model) SelectedAction() RowAction { return m.selectedAction }
 // (esc/ctrl+c/ctrl+g).
 func (m Model) Cancelled() bool { return m.cancelled }
 
-// Scope returns the legacy all/agents view category. ActiveTab identifies
-// the exact configured source, custom source or group tab.
-func (m Model) Scope() FilterScope { return m.scope }
-
-// WithScope returns a copy of the model with the given filter scope activated.
-func (m Model) WithScope(s FilterScope) Model {
-	m.scope = s
-	if s == ScopeAgents {
-		m.activeTab = "agents"
-	} else {
-		m.activeTab = "all"
-	}
-	m.cursor = 0
-	m.cursorTouched = false
-	return m
-}
-
 // Layout returns the model's current session-only Layout (list/preview
 // widths, orientation override, theme), reflecting any live ctrl+l toggle.
 // It never reads back from — or writes to — the config.TUIConfig the caller
@@ -647,11 +602,8 @@ func (m Model) WithScope(s FilterScope) Model {
 func (m Model) Layout() Layout { return m.layout }
 
 // icons resolves this Model's configured icon fallback tier from
-// Layout.Icons — see resolveIconSet. Computed on demand (not cached as a
-// Model field) so every existing test/production construction path,
-// including a bare Model{} literal with a zero-value Layout, resolves the
-// same backward-compatible IconsUnicode default without needing to be
-// updated for Phase 8.
+// Layout.Icons — see resolveIconSet. Computed on demand, so a bare Model{}
+// with a zero-value Layout resolves the IconsUnicode default.
 func (m Model) icons() IconSet {
 	return resolveIconSet(m.layout.Icons)
 }
@@ -915,7 +867,7 @@ func (m Model) handleSourceResult(msg SourceResultMsg) (Model, tea.Cmd) {
 	if msg.Source == config.SourceHerdr && msg.Snapshot == nil && m.startupSnapshot == nil {
 		m.snapshotUnavailable = msg.Err
 		if m.snapshotUnavailable == nil {
-			m.snapshotUnavailable = errors.New("Herdr is unavailable")
+			m.snapshotUnavailable = errors.New("herdr is unavailable")
 		}
 	}
 	filterCmd := m.applyFilter()
@@ -1432,27 +1384,9 @@ func (m Model) handleSpinnerTick(msg spinner.TickMsg) (Model, tea.Cmd) {
 // candidate, the typed RowAction of the picked row (RowActionFocusTab for a
 // synthesized tab/pane row, RowActionOpen otherwise), and the target the user
 // chose (ctrl+t => "tab", ctrl+p => "pane", or "" for the default via enter).
-func Run(ctx context.Context, candidates []source.Candidate, query string, renderer preview.Renderer, currentPane *source.Pane, layout ...Layout) (source.Candidate, RowAction, string, bool, error) {
-	var l Layout
-	if len(layout) > 0 {
-		l = layout[0]
-	}
-	m := newModelWithLayout(candidates, renderer, ctx, l).WithCurrentPane(currentPane)
-	m.query = query
-	m.applyFilter()
-	return runProgram(ctx, m)
-}
-
-// RunWithTree is Run's tree-expand-active counterpart: identical contract,
-// but the model is built via newModelWithTreeLayout so a non-empty query (or
-// a manual expand) can synthesize Herdr tab/pane child rows under a matching
-// SourceHerdr candidate.
-func RunWithTree(ctx context.Context, candidates []source.Candidate, query string, renderer preview.Renderer, tree *TreeExpander, currentPane *source.Pane, layout ...Layout) (source.Candidate, RowAction, string, bool, error) {
-	var l Layout
-	if len(layout) > 0 {
-		l = layout[0]
-	}
-	m := newModelWithTreeLayout(candidates, renderer, ctx, tree, l).WithCurrentPane(currentPane)
+// It is the picker without Herdr state: no tab or pane children.
+func Run(ctx context.Context, candidates []source.Candidate, query string, renderer preview.Renderer, currentPane *source.Pane, layout Layout) (source.Candidate, RowAction, string, bool, error) {
+	m := newModelWithLayout(candidates, renderer, ctx, layout).WithCurrentPane(currentPane)
 	m.query = query
 	m.applyFilter()
 	return runProgram(ctx, m)
@@ -1461,12 +1395,8 @@ func RunWithTree(ctx context.Context, candidates []source.Candidate, query strin
 // RunWithSnapshot drives a picker from one coherent startup generation and
 // gives the model the sole eligible-refresh driver. The renderer factory builds
 // an immutable renderer each time a newer generation succeeds.
-func RunWithSnapshot(ctx context.Context, candidates []source.Candidate, query string, renderer preview.Renderer, snapshot source.Snapshot, driver SnapshotDriver, rendererForSnapshot SnapshotRendererFactory, currentPane *source.Pane, layout ...Layout) (source.Candidate, RowAction, string, bool, error) {
-	var l Layout
-	if len(layout) > 0 {
-		l = layout[0]
-	}
-	m := newModelWithTreeLayout(candidates, renderer, ctx, NewTreeExpanderFromSnapshot(snapshot), l).
+func RunWithSnapshot(ctx context.Context, candidates []source.Candidate, query string, renderer preview.Renderer, snapshot source.Snapshot, driver SnapshotDriver, rendererForSnapshot SnapshotRendererFactory, currentPane *source.Pane, layout Layout) (source.Candidate, RowAction, string, bool, error) {
+	m := newModelWithTreeLayout(candidates, renderer, ctx, NewTreeExpanderFromSnapshot(snapshot), layout).
 		WithCurrentPane(currentPane).
 		WithSnapshotRefresh(driver, snapshot, rendererForSnapshot)
 	m.query = query
@@ -1515,7 +1445,7 @@ func runProgramWithPane(ctx context.Context, m Model, opts ...tea.ProgramOption)
 
 // runProgram drives m through a real Bubble Tea program and turns its
 // terminated state into the (Candidate, RowAction, target, ok, error)
-// quintuple both Run and RunWithTree return.
+// quintuple both Run and RunWithSnapshot return.
 //
 // WithAltScreen is required: without it, Bubble Tea renders inline and
 // repaints by moving the cursor up N lines on every update, which desyncs

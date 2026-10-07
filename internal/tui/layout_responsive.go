@@ -2,8 +2,8 @@ package tui
 
 // Responsive display modes. modeWide splits list/preview side by side;
 // modeListOnly hides the preview entirely (a terminal too small to show a
-// usable preview pane alongside the list). The stacked/portrait mode was
-// removed — these are the only two modes the picker resolves to.
+// usable preview pane alongside the list). These are the only two modes the
+// picker resolves to.
 const (
 	modeWide     = "wide"
 	modeListOnly = "list-only"
@@ -48,8 +48,8 @@ func nextResponsiveMode(m Model, prev string) string {
 }
 
 // autoWidthMode is the pure width+hysteresis core of nextResponsiveMode,
-// isolated so it is directly unit-testable without constructing a Model. With
-// the stacked mode removed it is a single-breakpoint wide/list-only decision.
+// isolated so it is directly unit-testable without constructing a Model: a
+// single-breakpoint wide/list-only decision.
 func autoWidthMode(width int, prev string) string {
 	switch prev {
 	case modeWide:

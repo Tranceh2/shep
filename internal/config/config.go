@@ -20,6 +20,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/pelletier/go-toml/v2"
 	"github.com/tranceh2/shep/internal/tmpl"
@@ -41,7 +43,12 @@ const (
 // defaultSourceOrder is used when general.source_order is empty/absent.
 var defaultSourceOrder = []string{SourceHerdr, SourceWorkspaces, SourceZoxide, SourceProjects}
 
-const CurrentSchemaVersion = 2
+// CurrentSchemaVersion is the only configuration schema version Load
+// accepts: a document must set version = 3 (see versionError).
+const CurrentSchemaVersion = 3
+
+// migrationGuide is where the README explains how to migrate an older file.
+const migrationGuide = `"Migrating from version 2" in the README (https://github.com/tranceh2/shep#migrating-from-version-2)`
 
 var validSourceNames = map[string]bool{
 	SourceHerdr: true, SourceSessions: true, SourceWorkspaces: true, SourceZoxide: true, SourceProjects: true, SourceAgents: true,
@@ -138,9 +145,9 @@ type Config struct {
 	// workspace: tabs, panes, splits, sizes and commands. Keyed by name and
 	// referenced from [defaults], [[workspaces]] and [[wildcards]].
 	Templates map[string]TemplateConfig `toml:"templates,omitempty"`
-	// Wildcards is an ordered list of glob -> template/preview rules scanned
-	// in declaration order; the first pattern matching the candidate's
-	// normalised path or base name wins.
+	// Wildcards is an ordered list of glob rules matched against the
+	// candidate's normalised path or base name; per setting, the first
+	// matching rule that sets it applies (see internal/effective).
 	Wildcards []WildcardConfig `toml:"wildcards,omitempty"`
 	// Themes declares custom color themes, keyed by name and selected with
 	// [tui].theme (see CustomThemes for the table's shape).
@@ -170,21 +177,17 @@ type Herdr struct {
 	Binary string `toml:"binary,omitempty"`
 }
 
-// DefaultsConfig holds the small set of fallback values applied when a
-// resolved candidate carries none of its own: Type is informational
-// candidate metadata (e.g. "shell"); Template names the [templates.<name>]
-// applied when no workspace/wildcard template matched.
+// DefaultsConfig holds the fallback values applied when a resolved candidate
+// carries none of its own: Template names the [templates.<name>] applied to
+// a freshly created workspace when no workspace or wildcard template matched.
 type DefaultsConfig struct {
-	Type     string `toml:"type,omitempty"`
 	Template string `toml:"template,omitempty"`
 }
 
-// TUIConfig configures the Bubble Tea picker's pane sizing and orientation.
-// ListWidth/PreviewWidth are either "auto" or a percentage string like
-// "60%"; see ParsePercent. Layout is TUILayoutLandscape (default when empty
-// means auto-responsive) — the only orientation the picker resolves to a
-// distinct mode now (it forces side-by-side wide mode). The stacked "portrait"
-// layout was removed and is rejected at validation.
+// TUIConfig configures the Bubble Tea picker's tabs, pane sizing,
+// orientation, theme and glyph tier. ListWidth/PreviewWidth are either "auto"
+// or a percentage string like "60%"; see ParsePercent. Layout is empty
+// (responsive) or TUILayoutLandscape (forces side-by-side wide mode).
 type TUIConfig struct {
 	Tabs []string `toml:"tabs,omitempty"`
 	// ConfirmClose opts into a footer confirmation for selected open Herdr kinds.
@@ -212,9 +215,7 @@ type TUIConfig struct {
 // TUI icon fallback tier names for [tui].icons, mirrored in
 // internal/tui/icons.go's IconsUnicode/IconsASCII constants so config
 // validation and the TUI resolve the exact same set without an import cycle
-// (config cannot import tui). The "nerd" tier was removed (only unicode and
-// ascii remain); validateTUI rejects it explicitly rather than silently
-// falling back.
+// (config cannot import tui).
 const (
 	TUIIconsUnicode = "unicode"
 	TUIIconsASCII   = "ascii"
@@ -224,12 +225,9 @@ var validTUIIcons = map[string]bool{
 	TUIIconsUnicode: true, TUIIconsASCII: true,
 }
 
-// TUI layout orientation values for [tui].layout. TUILayoutLandscape (empty/
-// default means auto-responsive) is the only orientation the picker resolves
-// to a distinct mode now: it forces side-by-side wide mode (still subject to
-// the terminal-height floor). The stacked "portrait" layout was removed (only
-// wide and list-only modes remain), so [tui].layout = "portrait" is rejected
-// at validation.
+// TUILayoutLandscape is the only [tui].layout value besides empty (the
+// responsive default): it forces side-by-side wide mode (still subject to the
+// terminal-height floor).
 const TUILayoutLandscape = "landscape"
 
 // SourcesConfig configures the built-in providers and command-backed custom sources.
@@ -309,9 +307,11 @@ type CustomSourceConfig struct {
 
 // CustomSourcePreviewCommand is a private preview command belonging to one
 // custom source. Command is argv, not a shell string. Zero timeout/max_lines
-// values inherit the normalized global [preview] defaults during Load.
+// values inherit the normalized global [preview] defaults during Load. Title
+// is the section's heading in the picker (see PreviewTitle).
 type CustomSourcePreviewCommand struct {
 	Command  []string `toml:"command"`
+	Title    *string  `toml:"title,omitempty"`
 	Timeout  Duration `toml:"timeout,omitempty"`
 	MaxLines int      `toml:"max_lines,omitempty"`
 }
@@ -323,7 +323,6 @@ type ProjectsSourceOverride struct {
 	MaxDepth  *int      `toml:"max_depth,omitempty"`
 	Markers   *[]string `toml:"markers,omitempty"`
 	Ignore    *[]string `toml:"ignore,omitempty"`
-	Preview   *[]string `toml:"preview,omitempty"`
 }
 
 // WorkspaceSourcesConfig reserves structured provider settings below a group
@@ -402,10 +401,9 @@ func (d *Duration) UnmarshalText(text []byte) error {
 
 // PreviewConfig configures the workspace preview rendered in the Bubble Tea
 // selector and `shep preview <path>`. Default lists the section names shown
-// when nothing more specific (workspace > wildcard > source) applies; a source
-// may provide its own last-resort fallback after Default. Commands declares
-// custom preview commands referenced by name from any `preview = [...]` list
-// alongside the hardcoded built-ins.
+// when no [[workspaces]] entry, [[wildcards]] rule or source table sets a
+// list (see internal/effective). Commands declares custom preview commands
+// referenced by name from any `preview = [...]` list alongside the built-ins.
 type PreviewConfig struct {
 	Timeout  Duration                  `toml:"timeout,omitempty"`
 	CacheTTL Duration                  `toml:"cache_ttl,omitempty"`
@@ -416,10 +414,41 @@ type PreviewConfig struct {
 
 // PreviewCommand is one [preview.commands.<name>] entry: a shell-style
 // command with template actions such as {{.Path}}, executed safely
-// (argv-parsed, no
-// `sh -c`, timeout + line cap from the surrounding PreviewConfig).
+// (argv-parsed, no `sh -c`, timeout + line cap from the surrounding
+// PreviewConfig). Title is the section's heading in the picker (see
+// PreviewTitle).
 type PreviewCommand struct {
-	Command string `toml:"command"`
+	Command string  `toml:"command"`
+	Title   *string `toml:"title,omitempty"`
+}
+
+// PreviewTitle is the picker heading of the custom preview section name
+// whose configured title is title: the title itself when set ("" draws the
+// section's output without a heading), else the name humanized
+// ("recent_commits" → "Recent commits"). Built-in sections keep their own
+// fixed headings.
+func PreviewTitle(title *string, name string) string {
+	if title != nil {
+		return *title
+	}
+	words := strings.FieldsFunc(name, func(r rune) bool { return r == '_' || r == '-' })
+	if len(words) == 0 {
+		return name
+	}
+	text := strings.Join(words, " ")
+	r, size := utf8.DecodeRuneInString(text)
+	return string(unicode.ToUpper(r)) + text[size:]
+}
+
+// validatePreviewTitle rejects a title the picker could not draw on one line.
+func validatePreviewTitle(field string, title *string) error {
+	if title == nil {
+		return nil
+	}
+	if i := strings.IndexFunc(*title, unicode.IsControl); i >= 0 {
+		return fmt.Errorf("%s.title: %q contains a control character", field, *title)
+	}
+	return nil
 }
 
 // TemplateFocus names which tab (and optionally which pane within it) should
@@ -577,7 +606,7 @@ func Defaults() *Config {
 		General:    General{SourceOrder: append([]string(nil), defaultSourceOrder...), Selector: SelectorBuiltin},
 		Herdr:      Herdr{},
 		Ranking:    RankingConfig{Enabled: true},
-		Defaults:   DefaultsConfig{Type: WorkspaceTypeShell, Template: "default"},
+		Defaults:   DefaultsConfig{Template: "default"},
 		Sources:    SourcesConfig{Custom: []CustomSourceConfig{}},
 		Workspaces: []WorkspaceConfig{},
 		Templates:  map[string]TemplateConfig{"default": {Command: ""}},
@@ -642,6 +671,10 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("read config %q: %w", resolved, err)
 	}
 
+	if err := checkVersion(data); err != nil {
+		return nil, fmt.Errorf("parse config %q: %w", resolved, err)
+	}
+
 	cfg := Defaults()
 	// The pane split is decided by normalizeTUI below, after decoding, because
 	// the two widths are validated as a pair. Clearing the pre-seeded defaults
@@ -658,22 +691,13 @@ func Load(path string) (*Config, error) {
 	// one whose default depends on the document's [tui].icons.
 	cfg.Preview.Default = nil
 	cfg.Sources = SourcesConfig{}
-	// DisallowUnknownFields makes an unrecognised or legacy/removed key (a
-	// typo'd field, a stale top-level table, an arbitrary [sources.<name>])
-	// fail Load fast instead of silently ignoring it.
+	// DisallowUnknownFields makes an unrecognised key (a typo'd field, an
+	// arbitrary [sources.<name>]) fail Load fast instead of silently ignoring
+	// it.
 	dec := toml.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(cfg); err != nil {
-		if strings.Contains(err.Error(), "strict mode") && bytes.Contains(data, []byte("[[integrations]]")) {
-			return nil, fmt.Errorf("parse config %q: [[integrations]] was removed; declare command-backed sources under [[sources.custom]]: %w", resolved, err)
-		}
 		return nil, fmt.Errorf("parse config %q: %w", resolved, err)
-	}
-	if cfg.Version != CurrentSchemaVersion {
-		if cfg.Version < CurrentSchemaVersion {
-			return nil, fmt.Errorf("config schema version %d is no longer supported; migrate to version = %d (rename [general].sources to source_order and use [workspaces.sources.<name>] for group overrides)", cfg.Version, CurrentSchemaVersion)
-		}
-		return nil, fmt.Errorf("config schema version %d is newer than supported version %d", cfg.Version, CurrentSchemaVersion)
 	}
 	if cfg.Workspaces == nil {
 		cfg.Workspaces = []WorkspaceConfig{}
@@ -707,6 +731,35 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config %q: %w", resolved, err)
 	}
 	return cfg, nil
+}
+
+// checkVersion reads only the document's top-level version and rejects any
+// value but CurrentSchemaVersion, before the strict decode: a file written for
+// another schema then fails with this one message rather than with the first
+// key that schema named differently. A malformed document is reported as is.
+func checkVersion(data []byte) error {
+	var doc struct {
+		Version any `toml:"version"`
+	}
+	if err := toml.Unmarshal(data, &doc); err != nil {
+		return err
+	}
+	switch v := doc.Version.(type) {
+	case nil:
+		return versionError("the file sets no version")
+	case int64:
+		if v == CurrentSchemaVersion {
+			return nil
+		}
+		return versionError(fmt.Sprintf("the file sets version = %d", v))
+	default:
+		return versionError(fmt.Sprintf("the file sets version to a %T", v))
+	}
+}
+
+// versionError is the one error for a document of another schema version.
+func versionError(found string) error {
+	return fmt.Errorf("unsupported configuration: version = %d is required (%s); see %s", CurrentSchemaVersion, found, migrationGuide)
 }
 
 // normalizeAliases trims aliases, drops empty values, and removes duplicate
@@ -809,11 +862,12 @@ func normalizePreview(p *PreviewConfig) {
 // nil means the key was absent; an explicit `preview = []` decodes to an empty
 // non-nil slice and is a deliberate request for no sections, so it survives —
 // the same distinction preview.default relies on. Sessions is deliberately
-// absent here: its fallback lives in the renderer so that a user-set
-// preview.default is not shadowed by a value normalization invented.
+// absent here: its fallback lives in the settings resolver (internal/effective)
+// so that a user-set preview.default is not shadowed by a value normalization
+// invented.
 //
 // userSetDefault suppresses these built-in lists entirely. Since a per-source
-// list outranks preview.default in the renderer, filling them would make an
+// list outranks preview.default in the resolver, filling them would make an
 // explicitly written preview.default invisible for the four sources the picker
 // actually shows — the same silent surprise this package removed for
 // sources.sessions.preview. So a document that writes preview.default keeps one
@@ -934,6 +988,9 @@ func validateWorkspaceNames(cfg *Config, engine *tmpl.Engine) error {
 // for every kind of candidate a global preview command can run for.
 func validatePreviewCommandTemplates(commands map[string]PreviewCommand, engine *tmpl.Engine) error {
 	for name, command := range commands {
+		if err := validatePreviewTitle("preview.commands."+name, command.Title); err != nil {
+			return err
+		}
 		field := fmt.Sprintf("preview.commands.%s.command", name)
 		tokens, err := tmpl.Tokenize(command.Command)
 		if err != nil {
@@ -962,6 +1019,9 @@ func validateCustomSourcePreviewCommands(customSource CustomSourceConfig, index 
 		}
 		if len(command.Command) == 0 {
 			return fmt.Errorf("%s: command is required", field)
+		}
+		if err := validatePreviewTitle(field, command.Title); err != nil {
+			return err
 		}
 		for j, arg := range command.Command {
 			if j == 0 && strings.TrimSpace(arg) == "" {
@@ -1077,15 +1137,13 @@ func validateCustomSources(customSources []CustomSourceConfig, engine *tmpl.Engi
 
 // validateSources rejects names outside validSourceNames and the declared
 // custom sources, so typos fail fast instead of silently disabling a source.
-func validateSources(names []string, customSources ...[]CustomSourceConfig) error {
-	allowed := make(map[string]bool, len(validSourceNames))
+func validateSources(names []string, customSources []CustomSourceConfig) error {
+	allowed := make(map[string]bool, len(validSourceNames)+len(customSources))
 	for name := range validSourceNames {
 		allowed[name] = true
 	}
-	if len(customSources) > 0 {
-		for _, customSource := range customSources[0] {
-			allowed[customSource.Name] = true
-		}
+	for _, customSource := range customSources {
+		allowed[customSource.Name] = true
 	}
 	for _, n := range names {
 		if !allowed[n] {
@@ -1118,9 +1176,6 @@ func MergeProjectsSourceConfig(global ProjectsSourceConfig, override *ProjectsSo
 	}
 	if override.Ignore != nil {
 		out.Ignore = append([]string(nil), (*override.Ignore)...)
-	}
-	if override.Preview != nil {
-		out.Preview = append([]string(nil), (*override.Preview)...)
 	}
 	return out
 }
@@ -1457,13 +1512,7 @@ func validateTUI(t TUIConfig) error {
 		return err
 	}
 	if t.Icons != "" && !validTUIIcons[t.Icons] {
-		switch t.Icons {
-		case "nerd":
-			return fmt.Errorf("tui.icons: %q was removed (only %s and %s are supported)", t.Icons, TUIIconsUnicode, TUIIconsASCII)
-		default:
-			return fmt.Errorf("tui.icons: %q must be one of %s, %s",
-				t.Icons, TUIIconsUnicode, TUIIconsASCII)
-		}
+		return fmt.Errorf("tui.icons: %q must be one of %s, %s", t.Icons, TUIIconsUnicode, TUIIconsASCII)
 	}
 	return nil
 }
@@ -1516,13 +1565,10 @@ func ResolveView(cfg *Config, id string) (string, error) {
 
 // validateTabs resolves only stable group IDs; names and paths can be shared
 // across workspace entries and cannot unambiguously identify a tab.
+// Custom source names were already checked against the built-in tabs and
+// sources by validateCustomSources.
 func validateTabs(cfg *Config) error {
 	known := ViewKinds(cfg)
-	for _, customSource := range cfg.Sources.Custom {
-		if customSource.Name == "all" || customSource.Name == "agents" {
-			return fmt.Errorf("sources.custom name %q: collides with built-in tab scope", customSource.Name)
-		}
-	}
 	seenIDs := map[string]string{"all": "scope", "agents": "scope"}
 	for _, name := range []string{SourceHerdr, SourceWorkspaces, SourceZoxide, SourceProjects, SourceSessions} {
 		seenIDs[name] = "source"
@@ -1564,16 +1610,10 @@ func validateTabs(cfg *Config) error {
 
 // validateTUILayout enforces that [tui].layout is empty (auto) or "landscape",
 // failing Load fast with the bad value named in the error — consistent with
-// validateWidthField above. The removed "portrait" (stacked) layout is rejected
-// with its own clear message so a stale config fails fast instead of silently
-// degrading.
+// validateWidthField above.
 func validateTUILayout(layout string) error {
-	switch layout {
-	case "", TUILayoutLandscape:
+	if layout == "" || layout == TUILayoutLandscape {
 		return nil
-	case "portrait":
-		return fmt.Errorf("tui.layout: %q was removed (only %q or empty/auto is supported; the stacked layout was deleted)",
-			layout, TUILayoutLandscape)
 	}
 	return fmt.Errorf("tui.layout: %q must be %q or empty (auto)", layout, TUILayoutLandscape)
 }

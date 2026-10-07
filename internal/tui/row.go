@@ -7,11 +7,8 @@ import "github.com/tranceh2/shep/internal/source"
 // Row adds the hierarchy/match-provenance information listLines and
 // handleKey need without re-deriving it from scratch on every keystroke.
 //
-// Corrective round: group headers (the old RowGroupHeader divider rows) were
-// removed entirely — the list is a single flat sequence, differentiated only
-// by each row's icon/color per source (see buildRowView/kindPrefix). Every
-// row is now selectable by construction; there is no non-actionable row kind
-// left to skip.
+// The list is a single flat sequence (no header rows), differentiated by each
+// row's presentation (see buildRowView); every row is selectable.
 type RowKind int
 
 const (
@@ -72,10 +69,6 @@ type Row struct {
 	// further children in this model; other candidate sources never have
 	// descendants).
 	Expandable bool
-	// Expanded reports whether this row's children are currently rendered
-	// beneath it (either because the user manually expanded it, or because
-	// the active query matched a descendant — see buildRows).
-	Expanded bool
 	// IsLast reports whether this synthesized RowTab or RowPane is the final
 	// child in its parent's displayed sibling order.
 	IsLast bool
@@ -84,10 +77,3 @@ type Row struct {
 	// per-depth representation if the hierarchy gains a third level.
 	AncestorIsLast bool
 }
-
-// Selectable reports whether Enter should treat r as "open this". Every row
-// kind is actionable since group headers were removed — kept as a named
-// predicate (rather than inlined `true`) so callers stay self-documenting
-// and the invariant ("the cursor can never land on a non-actionable row")
-// stays assertable from one place.
-func (r Row) Selectable() bool { return true }

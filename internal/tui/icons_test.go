@@ -38,12 +38,9 @@ func TestResolveIconSet_DefaultsToUnicode(t *testing.T) {
 		StatusDone:    "●",
 		StatusBlocked: "◉",
 		StatusUnknown: "○",
-		ExpandOpen:    "▾",
-		ExpandClosed:  "▸",
 		TreeMid:       "├─",
 		TreeLast:      "└─",
 		TreeVertical:  "│ ",
-		TabIcon:       "◫",
 		SearchPrompt:  "❯",
 
 		RuleHorizontal: "─",
@@ -84,9 +81,8 @@ func TestResolveIconSet_ASCII(t *testing.T) {
 		"StatusIdle": set.StatusIdle, "StatusDone": set.StatusDone,
 		"StatusBlocked": set.StatusBlocked, "StatusUnknown": set.StatusUnknown,
 		"StatusWorking": set.StatusWorking,
-		"ExpandOpen":    set.ExpandOpen, "ExpandClosed": set.ExpandClosed,
-		"TreeMid": set.TreeMid, "TreeLast": set.TreeLast,
-		"TreeVertical": set.TreeVertical, "TabIcon": set.TabIcon,
+		"TreeMid":       set.TreeMid, "TreeLast": set.TreeLast,
+		"TreeVertical":   set.TreeVertical,
 		"SearchPrompt":   set.SearchPrompt,
 		"RuleHorizontal": set.RuleHorizontal, "RuleVertical": set.RuleVertical,
 		"RuleJunction": set.RuleJunction, "HintSeparator": set.HintSeparator,
@@ -200,30 +196,19 @@ func TestAgentStatusIcon_WorkingIsASCIISafeUnderASCIITier(t *testing.T) {
 
 // === kindPrefix respects the configured tier ===
 
-// TestKindPrefix_RowCandidateNeverGetsExpandGlyph proves a RowCandidate
-// (top-level workspace row) never gets an expand/collapse glyph regardless
-// of Expandable/Expanded state or the configured icon tier (TRL-3: per-
-// source icons already differentiate row types, so the ▸/▾ marker was
-// removed from workspace rows entirely). Left/Right/Enter still toggle the
-// underlying Expandable/Expanded state (see keys.go) — only the glyph is
-// gone.
+// TestKindPrefix_RowCandidateNeverGetsExpandGlyph proves a top-level row
+// never gets a tree or expand glyph, expandable or not, under any icon tier:
+// per-source icons already differentiate row types.
 func TestKindPrefix_RowCandidateNeverGetsExpandGlyph(t *testing.T) {
 	t.Parallel()
 	for _, tier := range []string{IconsUnicode, IconsASCII} {
 		t.Run(tier, func(t *testing.T) {
 			t.Parallel()
 			m := newRenderTestModelWithIcons(ThemeMocha, tier)
-			expanded := m.kindPrefix(Row{Kind: RowCandidate, Expandable: true, Expanded: true})
-			collapsed := m.kindPrefix(Row{Kind: RowCandidate, Expandable: true, Expanded: false})
-			notExpandable := m.kindPrefix(Row{Kind: RowCandidate, Expandable: false})
-			if expanded != "" {
-				t.Errorf("[%s] kindPrefix(expanded RowCandidate) = %q, want \"\" (no glyph)", tier, expanded)
-			}
-			if collapsed != "" {
-				t.Errorf("[%s] kindPrefix(collapsed RowCandidate) = %q, want \"\" (no glyph)", tier, collapsed)
-			}
-			if notExpandable != "" {
-				t.Errorf("[%s] kindPrefix(non-expandable RowCandidate) = %q, want \"\"", tier, notExpandable)
+			for _, expandable := range []bool{true, false} {
+				if got := m.kindPrefix(Row{Kind: RowCandidate, Expandable: expandable}); got != "" {
+					t.Errorf("[%s] kindPrefix(RowCandidate, expandable=%v) = %q, want \"\"", tier, expandable, got)
+				}
 			}
 		})
 	}
@@ -283,9 +268,9 @@ func TestRowDisplayText_TreePrefixDistinguishesLastTab(t *testing.T) {
 		row  Row
 		want string
 	}{
-		{name: "non-last", row: Row{Kind: RowTab, Depth: 1, Candidate: source.Candidate{Label: "deploy", Path: "/svc"}}, want: "  " + "├─ " + set.TabIcon + " deploy"},
-		{name: "last tab with number", row: Row{Kind: RowTab, Depth: 1, IsLast: true, Candidate: source.Candidate{Label: "deploy", Path: "/svc", Meta: map[string]string{"tab_number": "3"}}}, want: "  " + "└─ " + set.TabIcon + " 3 deploy"},
-		{name: "last tab without number", row: Row{Kind: RowTab, Depth: 1, IsLast: true, Candidate: source.Candidate{Label: "deploy", Path: "/svc"}}, want: "  " + "└─ " + set.TabIcon + " deploy"},
+		{name: "non-last", row: Row{Kind: RowTab, Depth: 1, Candidate: source.Candidate{Label: "deploy", Path: "/svc"}}, want: "  " + "├─ " + defaultTabIcon(set.Name) + " deploy"},
+		{name: "last tab with number", row: Row{Kind: RowTab, Depth: 1, IsLast: true, Candidate: source.Candidate{Label: "deploy", Path: "/svc", Meta: map[string]string{"tab_number": "3"}}}, want: "  " + "└─ " + defaultTabIcon(set.Name) + " 3 deploy"},
+		{name: "last tab without number", row: Row{Kind: RowTab, Depth: 1, IsLast: true, Candidate: source.Candidate{Label: "deploy", Path: "/svc"}}, want: "  " + "└─ " + defaultTabIcon(set.Name) + " deploy"},
 		{name: "candidate without tree", row: Row{Kind: RowCandidate, IsLast: true, AncestorIsLast: true, Candidate: source.Candidate{Label: "workspace", Path: "/srv/ws"}}, want: "ws"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

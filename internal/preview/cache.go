@@ -67,10 +67,28 @@ func customSourceFingerprint(customSources []config.CustomSourceConfig) string {
 		b.WriteByte('=')
 		b.WriteString(strconv.Quote(fmt.Sprint(customSource.Preview)))
 		b.WriteByte(':')
-		b.WriteString(strconv.Quote(fmt.Sprint(customSource.PreviewCommands)))
+		names := make([]string, 0, len(customSource.PreviewCommands))
+		for name := range customSource.PreviewCommands {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			cmd := customSource.PreviewCommands[name]
+			b.WriteString(strconv.Quote(name))
+			b.WriteString(strconv.Quote(fmt.Sprint(cmd.Command, cmd.Timeout, cmd.MaxLines)))
+			b.WriteString(titleFingerprint(cmd.Title))
+		}
 		b.WriteByte('|')
 	}
 	return b.String()
+}
+
+// titleFingerprint serialises a section title, distinguishing unset from "".
+func titleFingerprint(title *string) string {
+	if title == nil {
+		return "-"
+	}
+	return strconv.Quote(*title)
 }
 
 // candidateFingerprint serialises the parts of a candidate that influence
@@ -111,6 +129,16 @@ func candidateFingerprint(cand source.Candidate) string {
 // configFingerprint serialises the renderer-relevant preview config into a
 // stable string whose changes invalidate the cache.
 func configFingerprint(cfg config.PreviewConfig) string {
-	return fmt.Sprintf("timeout=%d|ttl=%d|max=%d|default=%v|commands=%v",
-		cfg.Timeout, cfg.CacheTTL, cfg.MaxLines, cfg.Default, cfg.Commands)
+	names := make([]string, 0, len(cfg.Commands))
+	for name := range cfg.Commands {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var commands strings.Builder
+	for _, name := range names {
+		cmd := cfg.Commands[name]
+		commands.WriteString(strconv.Quote(name) + "=" + strconv.Quote(cmd.Command) + titleFingerprint(cmd.Title) + ",")
+	}
+	return fmt.Sprintf("timeout=%d|ttl=%d|max=%d|default=%v|commands=%s",
+		cfg.Timeout, cfg.CacheTTL, cfg.MaxLines, cfg.Default, commands.String())
 }

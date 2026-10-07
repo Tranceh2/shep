@@ -169,8 +169,7 @@ func selectTabPaneID(panes []source.Pane, tabID string) (string, bool) {
 // These synthesized candidates carry NO Source (Source stays ""): they are not
 // provider candidates and never flow through the flat Registry/Dedup/Match
 // pipeline. Their semantics live on the Row (Kind RowTab/RowPane + Action
-// RowActionFocusTab), not on a fake Source string — the old
-// config.SourceHerdrTab / config.SourceHerdrPane constants were removed.
+// RowActionFocusTab), not on a Source string.
 //
 // Every synthesized candidate's Meta carries every id an ancestor might need
 // (workspace_id always; workspace_label for parent identity; tab_id on both

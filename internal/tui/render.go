@@ -182,11 +182,7 @@ func (m Model) emptyStateLines() []string {
 			"esc clears the search",
 		}
 	}
-	def := m.tabPresentation()
-	if def.EmptyState != nil {
-		return def.EmptyState(m)
-	}
-	return []string{"No workspaces yet"}
+	return m.tabPresentation().EmptyState(m)
 }
 
 // applySurface merges the selection surface treatment into ownStyle: the
@@ -203,14 +199,6 @@ func applySurface(ownStyle, surface lipgloss.Style) lipgloss.Style {
 		return ownStyle.Faint(true)
 	}
 	return ownStyle
-}
-
-// kindPrefix returns the tree prefix drawn before a row's icon: the depth
-// indent and the sibling-sensitive tree glyphs (see treePrefix). Top-level
-// and flat (Depth 0) rows have none.
-func (m Model) kindPrefix(row Row) string {
-	indent, tree := m.treePrefix(row)
-	return indent + tree
 }
 
 // containsCurrentPane reports whether row holds the Herdr pane shep is

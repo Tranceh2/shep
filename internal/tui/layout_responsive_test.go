@@ -357,16 +357,16 @@ func TestViewHeight_EqualsTerminalHeight(t *testing.T) {
 					}
 				}
 
-				for _, scope := range []FilterScope{ScopeAll, ScopeAgents} {
-					t.Run(fmt.Sprintf("%dx%d_count%d_scope%d", w, h, count, scope), func(t *testing.T) {
-						m := NewModel(cands, nil).WithScope(scope)
+				for _, tab := range []string{"all", "agents"} {
+					t.Run(fmt.Sprintf("%dx%d_count%d_%s", w, h, count, tab), func(t *testing.T) {
+						m := withActiveTab(NewModel(cands, nil), tab)
 						m, _ = update(t, m, sizeMsg(w, h))
 
 						view := m.View()
 						gotH := lipgloss.Height(view)
 						if gotH != h {
-							t.Errorf("width=%d height=%d count=%d scope=%d: View() height = %d, want %d",
-								w, h, count, scope, gotH, h)
+							t.Errorf("width=%d height=%d count=%d tab=%s: View() height = %d, want %d",
+								w, h, count, tab, gotH, h)
 						}
 					})
 				}

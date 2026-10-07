@@ -118,7 +118,7 @@ func TestOpen_AsyncLoader_InteractiveStartup(t *testing.T) {
 
 	cmd := app.openCmd()
 	cmd.SetContext(context.Background())
-	err := app.runOpen(cmd, "", "", "workspace")
+	err := app.runOpenWithView(cmd, "", "", "workspace", "")
 	if err != nil {
 		t.Fatalf("runOpen failed: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestOpen_AsyncLoader_CancelReturnsQuiet(t *testing.T) {
 
 	cmd := app.openCmd()
 	cmd.SetContext(context.Background())
-	err := app.runOpen(cmd, "", "", "workspace")
+	err := app.runOpenWithView(cmd, "", "", "workspace", "")
 	if err != nil {
 		t.Fatalf("runOpen on cancel = %v, want nil", err)
 	}
@@ -220,7 +220,7 @@ func TestOpen_AsyncLoader_GroupWorkspaceRecursion(t *testing.T) {
 
 	cmd := app.openCmd()
 	cmd.SetContext(context.Background())
-	err := app.runOpen(cmd, "", "", "workspace")
+	err := app.runOpenWithView(cmd, "", "", "workspace", "")
 	if err != nil {
 		t.Fatalf("runOpen: %v", err)
 	}
@@ -295,7 +295,7 @@ func TestOpen_AsyncLoader_SamePathGroupWorkspaceRecursion(t *testing.T) {
 
 	cmd := app.openCmd()
 	cmd.SetContext(context.Background())
-	err := app.runOpen(cmd, "", "", "workspace")
+	err := app.runOpenWithView(cmd, "", "", "workspace", "")
 	if err != nil {
 		t.Fatalf("runOpen: %v\nstderr: %s", err, errOut.String())
 	}
@@ -324,7 +324,7 @@ func TestBuildStreamingProducers_IncludesCustomSourceProviderCandidates(t *testi
 	app.cfg = cfg
 	app.probes = config.Probes{}
 
-	producers := app.buildStreamingProducers(context.Background())
+	producers := app.streamingProducersForView(context.Background(), "")
 	var got []source.Candidate
 	var sawSource bool
 	for _, p := range producers {
@@ -361,7 +361,7 @@ func TestBuildStreamingProducers_CustomSourceFailureSurfacesVisibleError(t *test
 	app.cfg = cfg
 	app.probes = config.Probes{}
 
-	producers := app.buildStreamingProducers(context.Background())
+	producers := app.streamingProducersForView(context.Background(), "")
 	var sawErr bool
 	for _, p := range producers {
 		msg := p(context.Background())
@@ -411,7 +411,7 @@ func TestBuildStreamingProducers_AgentsShareOneSnapshotGeneration(t *testing.T) 
 	app.cfg = cfg
 	app.probes = config.Probes{Herdr: true}
 
-	producers := app.buildStreamingProducers(context.Background())
+	producers := app.streamingProducersForView(context.Background(), "")
 	var snapshotMsgs []tui.SourceResultMsg
 	for _, p := range producers {
 		msg := p(context.Background())
@@ -471,7 +471,7 @@ func TestBuildStreamingProducers_AgentsOnlyCarriesSnapshotInfra(t *testing.T) {
 	app.cfg = cfg
 	app.probes = config.Probes{Herdr: true}
 
-	producers := app.buildStreamingProducers(context.Background())
+	producers := app.streamingProducersForView(context.Background(), "")
 	var msg tui.SourceResultMsg
 	sawSnapshot := false
 	for _, p := range producers {

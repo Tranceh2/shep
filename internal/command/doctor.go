@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/pathutil"
 )
 
@@ -18,12 +19,18 @@ import (
 func (a *App) doctorCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor",
-		Short: "Check configured workspace paths and the published PATH name",
+		Short: "Check workspace paths, the picker theme and the published PATH name",
 		Long: `shep doctor checks every [[workspaces]] entry (including group workspaces)
 and reports any whose path does not exist on disk. It never creates
 directories and never fails the config; missing paths are reported as
 warnings so you can fix your config.toml before they surface as a confusing
-"path does not exist" error from shep open.
+"path does not exist" error from shep open. Templates and colors are checked
+when the configuration loads, so a doctor run that reaches this report has a
+valid configuration.
+
+It reports the color theme the picker uses and where it came from
+(NO_COLOR, SHEP_THEME, [tui].theme, or inherited from Herdr), with Herdr's
+own diagnostics for its theme settings when the theme inherits from it.
 
 It also reports what the published PATH name currently resolves to, so you can
 tell which install a bare "shep" reaches. doctor only observes: it never links,
@@ -41,13 +48,20 @@ func (a *App) runDoctor(cmd *cobra.Command) error {
 	out := cmd.OutOrStdout()
 	cfg := a.Config()
 	// An empty workspace list is not a reason to skip the rest of the report:
-	// the published PATH name is worth knowing regardless of how many
-	// workspaces are configured, and a fresh install with no config is exactly
-	// when an operator asks where a bare `shep` points.
+	// the theme and the published PATH name are worth knowing regardless of
+	// how many workspaces are configured, and a fresh install with no config
+	// is exactly when an operator asks where a bare `shep` points.
+	a.reportWorkspaces(out, cfg)
+	a.reportTheme(out, cfg)
+	a.reportPublishedName(out)
+	return nil
+}
+
+// reportWorkspaces checks that every [[workspaces]] path exists.
+func (a *App) reportWorkspaces(out io.Writer, cfg *config.Config) {
 	if len(cfg.Workspaces) == 0 {
 		fmt.Fprintln(out, "no [[workspaces]] entries configured")
-		a.reportPublishedName(out)
-		return nil
+		return
 	}
 	missing := 0
 	for _, ws := range cfg.Workspaces {
@@ -67,8 +81,26 @@ func (a *App) runDoctor(cmd *cobra.Command) error {
 	if missing > 0 {
 		fmt.Fprintf(out, "\n%d of %d configured workspace path(s) missing\n", missing, len(cfg.Workspaces))
 	}
-	a.reportPublishedName(out)
-	return nil
+}
+
+// reportTheme prints the theme the picker renders with and where it came
+// from (theme.Source), the Herdr configuration it inherits from, and every
+// note: an ignored SHEP_THEME, a missing Herdr configuration, Herdr's own
+// diagnostics (unknown theme names, colors Herdr would draw as cyan).
+func (a *App) reportTheme(out io.Writer, cfg *config.Config) {
+	t, err := a.selectTheme(cfg)
+	if err != nil {
+		fmt.Fprintf(out, "\nTheme: ERROR %v\n", err)
+		return
+	}
+	fmt.Fprintf(out, "\nTheme: %s\n", t.Name)
+	fmt.Fprintf(out, "  source: %s\n", t.Source)
+	if t.Source.HerdrPath != "" {
+		fmt.Fprintf(out, "  herdr config: %s\n", t.Source.HerdrPath)
+	}
+	for _, note := range t.Source.Notes {
+		fmt.Fprintf(out, "  note: %s\n", note)
+	}
 }
 
 // reportPublishedName describes what the published PATH name currently points

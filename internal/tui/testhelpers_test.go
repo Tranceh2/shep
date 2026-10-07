@@ -15,6 +15,43 @@ import (
 	"github.com/tranceh2/shep/internal/theme"
 )
 
+// NewModel builds a model over candidates with the zero Layout. renderer
+// may be nil (the preview pane then shows the built-in summary).
+func NewModel(candidates []source.Candidate, renderer preview.Renderer) Model {
+	return newModelWithLayout(candidates, renderer, context.TODO(), Layout{})
+}
+
+// NewModelWithTree builds a tree-wired model: tree supplies each open Herdr
+// workspace's tabs and panes (nil degrades to flat rows), as RunWithSnapshot
+// does from its startup generation.
+func NewModelWithTree(candidates []source.Candidate, renderer preview.Renderer, tree *TreeExpander, layout Layout) Model {
+	return newModelWithTreeLayout(candidates, renderer, context.TODO(), tree, layout)
+}
+
+// withActiveTab returns m switched to the tab id with the cursor reset, as
+// the tab keys switch it (the rows are rebuilt by the next filter pass).
+func withActiveTab(m Model, id string) Model {
+	m.activeTab = id
+	m.cursor = 0
+	m.cursorTouched = false
+	return m
+}
+
+// defaultTabIcon is the default icon of a Herdr tab row under the icons tier
+// (config.DefaultPresentations).
+func defaultTabIcon(tier string) string { return config.DefaultPresentations(tier).HerdrTab.Icon }
+
+// kindPrefix is the tree prefix drawn before a row's icon (see treePrefix).
+func (m Model) kindPrefix(row Row) string {
+	indent, tree := m.treePrefix(row)
+	return indent + tree
+}
+
+// matchRow scores one row against an unparsed query (see queryMatcher).
+func matchRow(query string, c source.Candidate, kind RowKind) (score int, indexes []int, matched bool, original bool) {
+	return newQueryMatcher(query).matchRow(c, kind)
+}
+
 // fakeTreeDriver supplies immutable snapshot records plus the dedicated live
 // pane-read command to TUI tests.
 type fakeTreeDriver struct {

@@ -1,30 +1,17 @@
-// Package tui test: golden render harness for the shep TUI redesign.
+// Package tui test: golden render harness for the shep picker.
 //
-// EVIDENCE, NOT TARGETS. The fixtures under testdata/view/before/ are
-// approval-test snapshots of the CURRENT (pre-redesign) candidate output for
-// each named scenario, theme, and terminal dimension. They are evidence of
-// what the picker rendered before the redesign — including any current
-// shortcomings (e.g. OSC pass-through, wide-render at a size the redesign
-// intends to be list-only) — NOT approved design targets. The before/
-// directory is IMMUTABLE: never modify or delete anything in it.
-//
-// TARGETS. As each redesign phase changes a scenario's intended output, the
-// NEW approved output is written as a TARGET fixture under
-// testdata/view/target/. The harness compares a scenario against its target
-// fixture when one exists, else falls back to the before/ evidence fixture —
-// so a passing golden test proves "the render matches the approved target
-// (or, pending one, did not change from the evidence)".
+// Each scenario renders a deterministic model and compares the normalized
+// View() against its approved fixture under testdata/view/target/. A passing
+// golden test proves the render matches the approved output.
 //
 // Updating fixtures is per-scenario and opt-in. To (re)generate one
-// scenario's TARGET fixture, run ONLY that scenario with -update-golden,
-// e.g.:
+// scenario's fixture, run ONLY that scenario with -update-golden, e.g.:
 //
 //	go test -run '^TestViewGolden/preview_loading$' ./internal/tui/ -update-golden
 //
-// -update-golden ALWAYS writes to target/ (never before/). Never run
-// -update-golden without a -run filter that scopes it to the intended
-// scenario(s); the default (no -update-golden) is compare-only and never
-// writes.
+// Never run -update-golden without a -run filter that scopes it to the
+// intended scenario(s); the default (no -update-golden) is compare-only and
+// never writes.
 //
 // Two Go-test gotchas worth knowing: (1) the flag is named -update-golden
 // (not -update) because the transitive teatest ->
@@ -50,17 +37,11 @@ import (
 	"github.com/tranceh2/shep/internal/source"
 )
 
-// updateGolden, when set via -update-golden, regenerates the target/ fixture
-// for each scenario selected by -run (before/ stays immutable). Compare-only
-// by default.
-var updateGolden = flag.Bool("update-golden", false, "regenerate the target/ golden fixtures for the scenarios selected by -run")
+// updateGolden, when set via -update-golden, regenerates the fixture for
+// each scenario selected by -run. Compare-only by default.
+var updateGolden = flag.Bool("update-golden", false, "regenerate the golden fixtures for the scenarios selected by -run")
 
-// beforeDir is the root for the immutable pre-redesign EVIDENCE fixtures.
-const beforeDir = "testdata/view/before"
-
-// targetDir is the root for the approved redesign TARGET fixtures. A scenario
-// compares against its target fixture when one exists, else falls back to
-// before/. -update-golden writes here (never before/).
+// targetDir is the root of the approved fixtures; -update-golden writes here.
 const targetDir = "testdata/view/target"
 
 // --- normalization helpers (unit-tested below; defined later in this file) ---
@@ -377,8 +358,8 @@ func accessoryCandidates() ([]source.Candidate, *TreeExpander, ranking.Snapshot)
 // by pane_capture_present: printable box-drawing characters, one SGR color
 // sequence, one over-width long line (exercises wrap/overflow), and one
 // unsafe OSC sequence (\x1b]0;evil title\x07) so the fixture and the
-// evidence assertion together prove the Phase 5 containment boundary strips
-// OSC/DCS while leaving everything else (including the SGR sequence) intact.
+// evidence assertion together prove the sanitization boundary strips OSC/DCS
+// while leaving everything else (including the SGR sequence) intact.
 func paneCaptureBuffer() string {
 	return strings.Join([]string{
 		"┌────────┐",
@@ -418,17 +399,13 @@ type goldenScenario struct {
 	// state-advancing messages, returning the model ready to View().
 	setup func(t *testing.T) Model
 	// evidence, when non-nil, is called with the raw (pre-normalization)
-	// View() output to assert a current-behavior observation the normalized
-	// fixture cannot itself carry (e.g. OSC pass-through). It is an approval
-	// assertion of TODAY's behavior: when the redesign changes that behavior,
-	// it should fail RED and be updated alongside the fixture.
+	// View() output to assert what the normalized fixture cannot itself
+	// carry (e.g. that an OSC sequence never reaches the terminal).
 	evidence func(t *testing.T, raw string)
 }
 
-// goldenScenarios is the fixed set of pre-redesign EVIDENCE scenarios. Each
-// is driven purely through the existing constructors and Update/View, with
-// no production changes. Dimensions and names are taken verbatim from the
-// approved Phase 1 plan.
+// goldenScenarios is the fixed set of golden scenarios. Each is driven
+// purely through the constructors and Update/View.
 func goldenScenarios() []goldenScenario {
 	return []goldenScenario{
 		{
@@ -524,11 +501,7 @@ func goldenScenarios() []goldenScenario {
 		},
 		{
 			name: "short_list_only", width: 100, height: 10, theme: ThemeMocha,
-			// NOTE: at 100x10 the CURRENT code resolves modeWide (width >=
-			// wideBreakpoint=100 and height 10 >= minPreviewHeight=8), NOT
-			// list-only. The fixture is therefore EVIDENCE that the current
-			// breakpoints do not force list-only at this size — a finding for
-			// the redesign, not a test failure. See the Phase 1 report.
+			// The fixture pins the mode the breakpoints resolve at 100x10.
 			setup: func(t *testing.T) Model {
 				m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: testTheme(ThemeMocha), Presentation: goldenPresentation()})
 				m, _ = update(t, m, sizeMsg(100, 10))
@@ -805,13 +778,7 @@ func goldenScenarios() []goldenScenario {
 	}
 }
 
-// beforeFixturePath is the immutable before/ evidence fixture path for sc:
-// testdata/view/before/<scenario>__<WxH>__<theme>.txt
-func beforeFixturePath(sc goldenScenario) string {
-	return filepath.Join(beforeDir, fmt.Sprintf("%s__%dx%d__%s.txt", sc.name, sc.width, sc.height, sc.theme))
-}
-
-// targetFixturePath is the approved target/ fixture path for sc:
+// targetFixturePath is the approved fixture path for sc:
 // testdata/view/target/<scenario>__<WxH>__<theme>.txt
 func targetFixturePath(sc goldenScenario) string {
 	return filepath.Join(targetDir, fmt.Sprintf("%s__%dx%d__%s.txt", sc.name, sc.width, sc.height, sc.theme))
@@ -830,11 +797,10 @@ func writeFixture(t *testing.T, path, content string) {
 	t.Logf("updated golden fixture %s", path)
 }
 
-// TestViewGolden is the approval-test harness for the pre-redesign picker
-// render. Each scenario builds a deterministic model, drives it through a
-// fixed tea.WindowSizeMsg (and any state-advancing messages), renders
-// View(), normalizes, and compares against its target fixture when one
-// exists, else its immutable before/ evidence fixture.
+// TestViewGolden is the approval-test harness for the picker render. Each
+// scenario builds a deterministic model, drives it through a fixed
+// tea.WindowSizeMsg (and any state-advancing messages), renders View(),
+// normalizes, and compares against its approved fixture.
 //
 // It is deliberately NOT t.Parallel, which keeps fixture writes (only under
 // -update-golden) race-free.
@@ -854,12 +820,7 @@ func TestViewGolden(t *testing.T) {
 				return
 			}
 
-			// Prefer an approved target fixture; fall back to the immutable
-			// before/ evidence fixture until a target is written for sc.
 			path := targetFixturePath(sc)
-			if _, err := os.Stat(path); err != nil {
-				path = beforeFixturePath(sc)
-			}
 			want, err := os.ReadFile(path)
 			if err != nil {
 				if os.IsNotExist(err) {

@@ -138,49 +138,41 @@ func TestEscStillClearsQueryAfterHalfPageNavigation(t *testing.T) {
 
 // --- Focus + viewport scrolling ---
 
-// TestCycleFocus_TabAndShiftTabWrapListAndPreview proves Tab/Shift+Tab
-// cycles focus between the list and the preview pane in both directions,
-// wrapping at each end of the ring (List<->Preview is the whole ring, so
-// TestCycleScope_TabAndShiftTabWrapAllAndAgents proves Tab and Shift+Tab
-// cycle the filter scope between ScopeAll and ScopeAgents.
-func TestCycleScope_TabAndShiftTabWrapAllAndAgents(t *testing.T) {
+// TestCycleTabs_TabAndShiftTabWrapAllAndAgents proves Tab and Shift+Tab
+// cycle the default all/agents tabs in both directions, wrapping at each end.
+func TestCycleTabs_TabAndShiftTabWrapAllAndAgents(t *testing.T) {
 	t.Parallel()
 	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
 	m, _ = update(t, m, sizeMsg(120, 36))
-	if m.scope != ScopeAll {
-		t.Fatalf("initial scope = %v, want ScopeAll", m.scope)
-	}
-	m, _ = update(t, m, key("tab"))
-	if m.scope != ScopeAgents {
-		t.Errorf("after tab: scope = %v, want ScopeAgents", m.scope)
-	}
-	m, _ = update(t, m, key("tab")) // wraps forward ScopeAgents -> ScopeAll
-	if m.scope != ScopeAll {
-		t.Errorf("after 2nd tab (wrap): scope = %v, want ScopeAll", m.scope)
-	}
-	m, _ = update(t, m, key("shift+tab")) // wraps backward ScopeAll -> ScopeAgents
-	if m.scope != ScopeAgents {
-		t.Errorf("after shift+tab (wrap): scope = %v, want ScopeAgents", m.scope)
-	}
-	m, _ = update(t, m, key("shift+tab"))
-	if m.scope != ScopeAll {
-		t.Errorf("after 2nd shift+tab: scope = %v, want ScopeAll", m.scope)
+	for i, step := range []struct{ key, want string }{
+		{"", "all"},
+		{"tab", "agents"},
+		{"tab", "all"}, // wraps forward
+		{"shift+tab", "agents"},
+		{"shift+tab", "all"}, // wraps backward
+	} {
+		if step.key != "" {
+			m, _ = update(t, m, key(step.key))
+		}
+		if got := m.ActiveTab(); got != step.want {
+			t.Errorf("step %d (%q): active tab = %q, want %q", i, step.key, got, step.want)
+		}
 	}
 }
 
-// TestCycleScope_WorksInListOnlyMode proves Tab/Shift+Tab cycle scopes
+// TestCycleTabs_WorksInListOnlyMode proves Tab/Shift+Tab cycle the tabs
 // even when the current layout has no preview pane available.
-func TestCycleScope_WorksInListOnlyMode(t *testing.T) {
+func TestCycleTabs_WorksInListOnlyMode(t *testing.T) {
 	t.Parallel()
 	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
 	m.mode = modeListOnly
 	m, _ = update(t, m, key("tab"))
-	if m.scope != ScopeAgents {
-		t.Errorf("tab in list-only mode: scope = %v, want ScopeAgents", m.scope)
+	if got := m.ActiveTab(); got != "agents" {
+		t.Errorf("tab in list-only mode: active tab = %q, want agents", got)
 	}
 	m, _ = update(t, m, key("shift+tab"))
-	if m.scope != ScopeAll {
-		t.Errorf("shift+tab in list-only mode: scope = %v, want ScopeAll", m.scope)
+	if got := m.ActiveTab(); got != "all" {
+		t.Errorf("shift+tab in list-only mode: active tab = %q, want all", got)
 	}
 }
 
@@ -437,8 +429,7 @@ func TestSelectWithTarget_EligiblePaneDispatchUnchanged(t *testing.T) {
 
 // --- ctrl+l layout cycling ---
 
-// TestCtrlL_TogglesAutoLandscapeAuto proves the two-state toggle (the
-// stacked/portrait third state was removed along with the stacked layout).
+// TestCtrlL_TogglesAutoLandscapeAuto proves the two-state toggle.
 func TestCtrlL_TogglesAutoLandscapeAuto(t *testing.T) {
 	t.Parallel()
 	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)

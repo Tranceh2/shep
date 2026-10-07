@@ -36,9 +36,6 @@ linters:
       # teatest helpers and small test-only members may relax style rules.
       - path: _test\.go
         linters: [errcheck, revive]
-      # cobra root Predicates and the tui palette are data, not logic.
-      - path: internal/tui/palette\.go
-        linters: [unused]
       # shep's convention: writes to stdout/stderr are fire-and-forget user
       # messages; checking every fmt.Fprint return adds noise without value
       # (matches the existing list.go style).

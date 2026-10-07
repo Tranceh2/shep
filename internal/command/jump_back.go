@@ -54,10 +54,6 @@ type controlDialer interface {
 	Dial(ctx context.Context) (net.Conn, error)
 }
 
-type controlDialerFunc func(ctx context.Context) (net.Conn, error)
-
-func (f controlDialerFunc) Dial(ctx context.Context) (net.Conn, error) { return f(ctx) }
-
 // unixControlDialer dials the owner's Unix control endpoint.
 type unixControlDialer struct{ path string }
 

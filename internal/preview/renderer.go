@@ -53,10 +53,14 @@ type Result struct {
 // config.PreviewWorkspace, config.PreviewActivePane, config.PreviewAgentStatus,
 // config.PreviewDir, or a custom command name). Text is the complete section
 // block — it may contain blank lines and heading-like content, and is
-// preserved byte-for-byte by the TUI recomposition.
+// preserved byte-for-byte by the TUI recomposition. Title is the picker
+// heading of a custom command's section (config.PreviewTitle; "" draws it
+// without one); built-in sections leave it empty and keep their own fixed
+// headings.
 type Section struct {
-	Kind string
-	Text string
+	Kind  string
+	Title string
+	Text  string
 }
 
 // defaultRenderer takes the ordered section list of each candidate from the
@@ -151,7 +155,7 @@ func (r *defaultRenderer) Render(ctx context.Context, cand source.Candidate) (Re
 	for _, name := range names {
 		if block, ok := r.renderSection(ctx, cand, name); ok {
 			blocks = append(blocks, block)
-			sections = append(sections, Section{Kind: name, Text: block})
+			sections = append(sections, Section{Kind: name, Title: r.sectionTitle(cand.Source, name), Text: block})
 		}
 	}
 	// Every configured section can legitimately contribute nothing (a
@@ -201,6 +205,19 @@ func (r *defaultRenderer) renderSection(ctx context.Context, cand source.Candida
 		}
 		return r.renderCustomCommand(ctx, cmd, cand)
 	}
+}
+
+// sectionTitle is the picker heading of section name for a candidate of
+// sourceName: a custom command's configured or humanized title, "" for a
+// built-in section (the picker draws those with fixed headings).
+func (r *defaultRenderer) sectionTitle(sourceName, name string) string {
+	if cmd, ok := customSourcePreviewCommand(r.cfg, sourceName, name); ok {
+		return config.PreviewTitle(cmd.Title, name)
+	}
+	if cmd, ok := r.cfg.Preview.Commands[name]; ok {
+		return config.PreviewTitle(cmd.Title, name)
+	}
+	return ""
 }
 
 func customSourcePreviewCommand(cfg *config.Config, sourceName, name string) (config.CustomSourcePreviewCommand, bool) {

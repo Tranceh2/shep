@@ -223,9 +223,9 @@ func TestRowPrimaryText_TabAndPaneDefaultsAreLabelOnly(t *testing.T) {
 		icon string
 		want string
 	}{
-		{"tab label equals number", Row{Kind: RowTab, Depth: 1, IsLast: true, Candidate: source.Candidate{Label: "1", Path: "/svc", Meta: map[string]string{"tab_number": "1"}}}, set.TabIcon + " ", "1"},
-		{"tab number and label", Row{Kind: RowTab, Depth: 1, IsLast: true, Candidate: source.Candidate{Label: "deploy", Path: "/svc", Meta: map[string]string{"tab_number": "3"}}}, set.TabIcon + " ", "3 deploy"},
-		{"tab without number", Row{Kind: RowTab, Depth: 1, IsLast: true, Candidate: source.Candidate{Label: "deploy", Path: "/svc"}}, set.TabIcon + " ", "deploy"},
+		{"tab label equals number", Row{Kind: RowTab, Depth: 1, IsLast: true, Candidate: source.Candidate{Label: "1", Path: "/svc", Meta: map[string]string{"tab_number": "1"}}}, defaultTabIcon(set.Name) + " ", "1"},
+		{"tab number and label", Row{Kind: RowTab, Depth: 1, IsLast: true, Candidate: source.Candidate{Label: "deploy", Path: "/svc", Meta: map[string]string{"tab_number": "3"}}}, defaultTabIcon(set.Name) + " ", "3 deploy"},
+		{"tab without number", Row{Kind: RowTab, Depth: 1, IsLast: true, Candidate: source.Candidate{Label: "deploy", Path: "/svc"}}, defaultTabIcon(set.Name) + " ", "deploy"},
 		{"pane label", Row{Kind: RowPane, Depth: 2, IsLast: true, AncestorIsLast: true, Candidate: source.Candidate{Label: "worker", Path: "/srv/api", Meta: map[string]string{"pane_id": "w4W:p1"}}}, "", "worker"},
 		{"pane without label shows its path, filename first", Row{Kind: RowPane, Depth: 2, IsLast: true, AncestorIsLast: true, Candidate: source.Candidate{Path: "/srv/api"}}, "", "api"},
 	} {

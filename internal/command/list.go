@@ -36,16 +36,18 @@ func parseFormat(s string) (format, error) {
 }
 
 // listCandidate is the JSON projection of a candidate. Fields are stable and
-// lowercase so cable/tooling integrations can rely on the schema.
+// lowercase so cable/tooling integrations can rely on the schema. Meta is
+// every provider key, exactly what templates read as .Meta.
 type listCandidate struct {
-	Path           string `json:"path"`
-	NormalizedPath string `json:"normalized_path"`
-	Label          string `json:"label"`
-	Icon           string `json:"icon"`
-	Source         string `json:"source"`
-	Missing        bool   `json:"missing"`
-	IsWorktree     bool   `json:"is_worktree,omitempty"`
-	Branch         string `json:"branch,omitempty"`
+	Path           string            `json:"path"`
+	NormalizedPath string            `json:"normalized_path"`
+	Label          string            `json:"label"`
+	Icon           string            `json:"icon"`
+	Source         string            `json:"source"`
+	Missing        bool              `json:"missing"`
+	IsWorktree     bool              `json:"is_worktree,omitempty"`
+	Branch         string            `json:"branch,omitempty"`
+	Meta           map[string]string `json:"meta,omitempty"`
 }
 
 // listCmd builds `shep list` which enumerates candidates from all enabled
@@ -226,6 +228,7 @@ func renderJSON(out io.Writer, cands []source.Candidate) error {
 			Missing:        c.Missing,
 			IsWorktree:     c.Meta["is_worktree"] == "true",
 			Branch:         c.Meta["branch"],
+			Meta:           c.Meta,
 		})
 	}
 	if out2 == nil {

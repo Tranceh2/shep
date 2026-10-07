@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -133,6 +134,9 @@ func TestRender_WorktreeMetadata(t *testing.T) {
 		}
 		if len(got) != 1 || !got[0].IsWorktree || got[0].Branch != "feat/x\tline\nnext" {
 			t.Fatalf("worktree metadata = %+v, want typed flag and exact branch", got)
+		}
+		if !reflect.DeepEqual(got[0].Meta, candidate.Meta) {
+			t.Fatalf("meta = %v, want every provider key %v (what templates read as .Meta)", got[0].Meta, candidate.Meta)
 		}
 	})
 

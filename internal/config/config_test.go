@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -11,6 +12,15 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 )
+
+// v3 prefixes a test document with the schema version Load requires, unless
+// the document sets a version itself.
+func v3(doc string) string {
+	if strings.HasPrefix(doc, "version") || strings.Contains(doc, "\nversion =") {
+		return doc
+	}
+	return "version = 3\n" + doc
+}
 
 func TestLoadConfirmClose(t *testing.T) {
 	for _, tc := range []struct {
@@ -24,7 +34,7 @@ func TestLoadConfirmClose(t *testing.T) {
 		{`confirm_close = ["other"]`, nil, "tui.confirm_close"},
 	} {
 		path := filepath.Join(t.TempDir(), "config.toml")
-		if err := os.WriteFile(path, []byte("version = 2\n[tui]\n"+tc.value+"\n"), 0o600); err != nil {
+		if err := os.WriteFile(path, []byte("version = 3\n[tui]\n"+tc.value+"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		cfg, err := Load(path)
@@ -48,7 +58,7 @@ func TestDefaults_EnableRanking(t *testing.T) {
 		t.Fatal("ranking should be enabled by default")
 	}
 	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(path, []byte("[ranking]\nenabled = false\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3("[ranking]\nenabled = false\n")), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -63,8 +73,8 @@ func TestDefaults_EnableRanking(t *testing.T) {
 func TestLoad_RejectsControlAliases(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.toml")
-	doc := "version = 2\n[[workspaces]]\nname = \"x\"\npath = \"/tmp/x\"\naliases = [\"safe\", \"bad\\nvalue\"]\n"
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	doc := "version = 3\n[[workspaces]]\nname = \"x\"\npath = \"/tmp/x\"\naliases = [\"safe\", \"bad\\nvalue\"]\n"
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -89,7 +99,7 @@ name = "kube-contexts"
 command = ["printf", "[]"]
 aliases = [" k8s ", "K8S", "kube"]
 `
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -174,7 +184,7 @@ func TestLoad_TemplateNodeLabelPresence(t *testing.T) {
 				doc += tc.labelLine + "\n"
 			}
 			path := filepath.Join(t.TempDir(), "config.toml")
-			if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			cfg, err := Load(path)
@@ -225,9 +235,8 @@ recursive = false
 max_depth = 0
 markers = []
 ignore = []
-preview = []
 `
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -260,7 +269,7 @@ preview = []
 func TestLoad_RejectsLegacyListShapedSources(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(path, []byte("version = 2\n[general]\nsources = [\"herdr\"]\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("version = 3\n[general]\nsources = [\"herdr\"]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path); err == nil {
@@ -268,19 +277,30 @@ func TestLoad_RejectsLegacyListShapedSources(t *testing.T) {
 	}
 }
 
-func TestLoad_ValidatesConfigSchemaVersion(t *testing.T) {
+// TestLoad_RequiresSchemaVersion3 proves version = 3 is the only accepted
+// schema version and every other value, or none, fails with the one
+// migration message, before any key the old schema named differently is
+// reported.
+func TestLoad_RequiresSchemaVersion3(t *testing.T) {
 	t.Parallel()
+	const guide = `version = 3 is required`
+	const readme = `see "Migrating from version 2" in the README (https://github.com/tranceh2/shep#migrating-from-version-2)`
 	cases := []struct {
 		name string
 		doc  string
 		want string
 	}{
-		{name: "current accepted", doc: "version = 2\n", want: ""},
-		{name: "old rejected with migration", doc: "version = 1\n", want: "migrate to version = 2"},
-		{name: "future rejected", doc: "version = 3\n", want: "newer than supported version 2"},
+		{name: "current accepted", doc: "version = 3\n", want: ""},
+		{name: "missing", doc: "[general]\nselector = \"builtin\"\n", want: "(the file sets no version)"},
+		{name: "version 2", doc: "version = 2\n", want: "(the file sets version = 2)"},
+		{name: "version 2 with removed keys", doc: "version = 2\n[defaults]\ntype = \"shell\"\n[sources.herdr]\ntab_label_format = \"{{.Label}}\"\n", want: "(the file sets version = 2)"},
+		{name: "version 1", doc: "version = 1\n", want: "(the file sets version = 1)"},
+		{name: "future", doc: "version = 4\n", want: "(the file sets version = 4)"},
+		{name: "not an integer", doc: "version = \"3\"\n", want: "(the file sets version to a string)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			path := filepath.Join(t.TempDir(), "config.toml")
 			if err := os.WriteFile(path, []byte(tc.doc), 0o600); err != nil {
 				t.Fatal(err)
@@ -292,319 +312,15 @@ func TestLoad_ValidatesConfigSchemaVersion(t *testing.T) {
 				}
 				return
 			}
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("Load() error = %v, want %q", err, tc.want)
+			if err == nil {
+				t.Fatalf("Load() accepted %q", tc.doc)
+			}
+			for _, part := range []string{guide, tc.want, readme} {
+				if !strings.Contains(err.Error(), part) {
+					t.Errorf("Load() error = %v, want it to contain %q", err, part)
+				}
 			}
 		})
-	}
-}
-
-// TestMergeProjectsSourceConfigHonorsExplicitZeroValues verifies field-wise
-// inheritance and replacement semantics independently from TOML decoding.
-func TestMergeProjectsSourceConfigHonorsExplicitZeroValues(t *testing.T) {
-	t.Parallel()
-	markers := []string{}
-	ignore := []string{}
-	preview := []string{}
-	override := &ProjectsSourceOverride{
-		Recursive: &[]bool{false}[0],
-		MaxDepth:  &[]int{0}[0],
-		Markers:   &markers,
-		Ignore:    &ignore,
-		Preview:   &preview,
-	}
-	global := ProjectsSourceConfig{Recursive: true, MaxDepth: 5, Markers: []string{"go.mod"}, Ignore: []string{"vendor"}, Preview: []string{"git"}}
-	got := MergeProjectsSourceConfig(global, override)
-	if got.Recursive || got.MaxDepth != 0 || len(got.Markers) != 0 || len(got.Ignore) != 0 || len(got.Preview) != 0 {
-		t.Fatalf("merged project config did not honor explicit replacements: %+v", got)
-	}
-}
-
-// TestMergeProjectsSourceConfigInheritsOmittedFields proves omitted local
-// fields retain their global values while one present field replaces only that
-// field. Explicit false, zero, and empty-list replacement is covered above.
-func TestMergeProjectsSourceConfigInheritsOmittedFields(t *testing.T) {
-	t.Parallel()
-	global := ProjectsSourceConfig{
-		Recursive: true,
-		MaxDepth:  5,
-		Markers:   []string{"go.mod"},
-		Ignore:    []string{"vendor"},
-		Preview:   []string{"git"},
-	}
-	override := &ProjectsSourceOverride{MaxDepth: &[]int{2}[0]}
-
-	got := MergeProjectsSourceConfig(global, override)
-	if got.Recursive != global.Recursive {
-		t.Errorf("recursive = %v, want inherited %v", got.Recursive, global.Recursive)
-	}
-	if got.MaxDepth != 2 {
-		t.Errorf("max_depth = %d, want explicit override 2", got.MaxDepth)
-	}
-	if !reflect.DeepEqual(got.Markers, global.Markers) {
-		t.Errorf("markers = %v, want inherited %v", got.Markers, global.Markers)
-	}
-	if !reflect.DeepEqual(got.Ignore, global.Ignore) {
-		t.Errorf("ignore = %v, want inherited %v", got.Ignore, global.Ignore)
-	}
-	if !reflect.DeepEqual(got.Preview, global.Preview) {
-		t.Errorf("preview = %v, want inherited %v", got.Preview, global.Preview)
-	}
-
-	got.Markers[0] = "changed"
-	if global.Markers[0] != "go.mod" {
-		t.Fatal("merged markers share backing storage with global configuration")
-	}
-}
-
-// TestSessionsSource_OptInRegistration verifies sessions is accepted when
-// configured, carries its source presentation defaults, and never joins the
-// default source order.
-func TestSessionsSource_OptInRegistration(t *testing.T) {
-	t.Parallel()
-
-	defaults := Defaults()
-	for _, name := range defaults.General.SourceOrder {
-		if name == SourceSessions {
-			t.Fatalf("sessions must be opt-in, default sources = %v", defaults.General.SourceOrder)
-		}
-	}
-	if err := validateSources([]string{SourceSessions}); err != nil {
-		t.Fatalf("sessions must be a valid source: %v", err)
-	}
-	if got, want := deref(defaults.Sources.Sessions.LabelFormat), defaultNameFormat; got != want {
-		t.Errorf("sessions label format = %q, want %q", got, want)
-	}
-	if got := defaults.Sources.Sessions.Preview; len(got) != 0 {
-		t.Errorf("sessions preview = %v, want unset", got)
-	}
-
-	path := filepath.Join(t.TempDir(), "config.toml")
-	const doc = `[general]
-source_order = ["sessions"]
-
-[sources.sessions]
-icon = "S"
-label_format = "session {{.Label}}"
-preview = ["session_info"]
-`
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("load sessions config: %v", err)
-	}
-	if got, want := cfg.General.SourceOrder, []string{SourceSessions}; !reflect.DeepEqual(got, want) {
-		t.Errorf("configured sources = %v, want %v", got, want)
-	}
-	if got, want := deref(cfg.Sources.Sessions.Icon), "S"; got != want {
-		t.Errorf("sessions icon = %q, want %q", got, want)
-	}
-	if got, want := deref(cfg.Sources.Sessions.LabelFormat), "session {{.Label}}"; got != want {
-		t.Errorf("sessions label format = %q, want %q", got, want)
-	}
-}
-
-func TestDefaults_VisualDefaults(t *testing.T) {
-	t.Parallel()
-
-	cfg := Defaults()
-	for _, tc := range []struct {
-		name string
-		got  string
-		want string
-	}{
-		{name: SourceHerdr, got: deref(cfg.Sources.Herdr.Icon), want: "\U000f0cc6 "},
-		{name: SourceWorkspaces, got: deref(cfg.Sources.Workspaces.Icon), want: "\ue615 "},
-		{name: SourceZoxide, got: deref(cfg.Sources.Zoxide.Icon), want: "\uf114 "},
-		{name: SourceProjects, got: deref(cfg.Sources.Projects.Icon), want: "{{ if .IsWorktree }}\ue725 {{ else }}\ue702 {{ end }}"},
-	} {
-		if tc.got != tc.want {
-			t.Errorf("%s icon = %q, want %q", tc.name, tc.got, tc.want)
-		}
-	}
-	if got := deref(cfg.Sources.Sessions.Icon); got != "" {
-		t.Errorf("sessions icon = %q, want empty (sessions has no default icon)", got)
-	}
-	if got, want := cfg.Preview.Default, []string{PreviewAgentStatus, PreviewIdentity, PreviewGit}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("preview default sections = %v, want %v", got, want)
-	}
-	if got, want := cfg.TUI.ListWidth, "35%"; got != want {
-		t.Fatalf("tui list_width = %q, want %q", got, want)
-	}
-	if got, want := cfg.TUI.PreviewWidth, "65%"; got != want {
-		t.Fatalf("tui preview_width = %q, want %q", got, want)
-	}
-}
-
-// TestLoad_MissingFileFallsBackToDefaults confirms a missing config path
-// resolves to Defaults rather than an error, including the visual defaults.
-func TestLoad_MissingFileFallsBackToDefaults(t *testing.T) {
-	t.Parallel()
-
-	tmp := t.TempDir()
-	cfg, err := Load(filepath.Join(tmp, "nope.toml"))
-	if err != nil {
-		t.Fatalf("expected nil error on missing file, got %v", err)
-	}
-	if cfg == nil {
-		t.Fatal("expected defaults, got nil")
-	}
-	if got, want := time.Duration(cfg.Preview.Timeout), 150*time.Millisecond; got != want {
-		t.Errorf("preview timeout: got %v want %v", got, want)
-	}
-	if got, want := time.Duration(cfg.Preview.CacheTTL), 5*time.Second; got != want {
-		t.Errorf("preview cache_ttl: got %v want %v", got, want)
-	}
-	if got, want := cfg.Preview.MaxLines, 50; got != want {
-		t.Errorf("preview max_lines: got %d want %d", got, want)
-	}
-	if got, want := cfg.Preview.Default, []string{PreviewAgentStatus, PreviewIdentity, PreviewGit}; !reflect.DeepEqual(got, want) {
-		t.Errorf("preview default sections: got %v want %v", got, want)
-	}
-	if got, want := cfg.TUI.ListWidth, "35%"; got != want {
-		t.Errorf("tui list_width: got %q want %q", got, want)
-	}
-	if got, want := cfg.TUI.PreviewWidth, "65%"; got != want {
-		t.Errorf("tui preview_width: got %q want %q", got, want)
-	}
-	for _, tc := range []struct {
-		name string
-		got  string
-		want string
-	}{
-		{name: SourceHerdr, got: deref(cfg.Sources.Herdr.Icon), want: "\U000f0cc6 "},
-		{name: SourceWorkspaces, got: deref(cfg.Sources.Workspaces.Icon), want: "\ue615 "},
-		{name: SourceZoxide, got: deref(cfg.Sources.Zoxide.Icon), want: "\uf114 "},
-		{name: SourceProjects, got: deref(cfg.Sources.Projects.Icon), want: "{{ if .IsWorktree }}\ue725 {{ else }}\ue702 {{ end }}"},
-	} {
-		if tc.got != tc.want {
-			t.Errorf("%s icon: got %q want %q", tc.name, tc.got, tc.want)
-		}
-	}
-}
-
-func TestLoad_PresentConfigWithoutSourcesUsesSourceIconDefaults(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(path, []byte("version = 2\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, tc := range []struct {
-		name string
-		got  string
-		want string
-	}{
-		{name: SourceHerdr, got: deref(cfg.Sources.Herdr.Icon), want: "\U000f0cc6 "},
-		{name: SourceWorkspaces, got: deref(cfg.Sources.Workspaces.Icon), want: "\ue615 "},
-		{name: SourceZoxide, got: deref(cfg.Sources.Zoxide.Icon), want: "\uf114 "},
-		{name: SourceProjects, got: deref(cfg.Sources.Projects.Icon), want: "{{ if .IsWorktree }}\ue725 {{ else }}\ue702 {{ end }}"},
-	} {
-		if tc.got != tc.want {
-			t.Errorf("%s icon = %q, want %q", tc.name, tc.got, tc.want)
-		}
-	}
-}
-
-// TestLoad_PartialVisualDefaultsAndExplicitOverrides covers how the first-run
-// visual defaults interact with a partial document.
-//
-// The pane split is one decision: validateTUI rejects a pair summing past
-// 100%, so naming one side must NOT pair it with the built-in default for the
-// other. A config carrying only `list_width = "50%"` was valid before these
-// defaults existed and must stay valid — hence the regression case below.
-func TestLoad_PartialVisualDefaultsAndExplicitOverrides(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name                  string
-		doc                   string
-		wantList, wantPreview string
-		wantSections          []string
-	}{
-		{name: "partial tui keeps the named side only", doc: "version = 2\n[tui]\nlist_width = \"30%\"\n", wantList: "30%", wantPreview: "", wantSections: []string{PreviewAgentStatus, PreviewIdentity, PreviewGit}},
-		{name: "a majority list width stays loadable", doc: "version = 2\n[tui]\nlist_width = \"50%\"\n", wantList: "50%", wantPreview: "", wantSections: []string{PreviewAgentStatus, PreviewIdentity, PreviewGit}},
-		{name: "naming only the preview side", doc: "version = 2\n[tui]\npreview_width = \"80%\"\n", wantList: "", wantPreview: "80%", wantSections: []string{PreviewAgentStatus, PreviewIdentity, PreviewGit}},
-		{name: "both named", doc: "version = 2\n[tui]\nlist_width = \"45%\"\npreview_width = \"55%\"\n", wantList: "45%", wantPreview: "55%", wantSections: []string{PreviewAgentStatus, PreviewIdentity, PreviewGit}},
-		{name: "explicit preview", doc: "version = 2\n[preview]\ndefault = [\"git\"]\n", wantList: "35%", wantPreview: "65%", wantSections: []string{"git"}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			path := filepath.Join(t.TempDir(), "config.toml")
-			if err := os.WriteFile(path, []byte(tt.doc), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			cfg, err := Load(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if cfg.TUI.ListWidth != tt.wantList || cfg.TUI.PreviewWidth != tt.wantPreview {
-				t.Fatalf("widths = %q/%q, want %q/%q", cfg.TUI.ListWidth, cfg.TUI.PreviewWidth, tt.wantList, tt.wantPreview)
-			}
-			if !reflect.DeepEqual(cfg.Preview.Default, tt.wantSections) {
-				t.Fatalf("preview.default = %v, want %v", cfg.Preview.Default, tt.wantSections)
-			}
-		})
-	}
-}
-
-func TestLoad_ExplicitSourceIconsWin(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join(t.TempDir(), "config.toml")
-	const doc = `[sources.herdr]
-icon = "H "
-
-[sources.workspaces]
-icon = "W "
-
-[sources.zoxide]
-icon = "Z "
-
-[sources.projects]
-icon = "P "
-`
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, tc := range []struct {
-		name string
-		got  string
-		want string
-	}{
-		{name: SourceHerdr, got: deref(cfg.Sources.Herdr.Icon), want: "H "},
-		{name: SourceWorkspaces, got: deref(cfg.Sources.Workspaces.Icon), want: "W "},
-		{name: SourceZoxide, got: deref(cfg.Sources.Zoxide.Icon), want: "Z "},
-		{name: SourceProjects, got: deref(cfg.Sources.Projects.Icon), want: "P "},
-	} {
-		if tc.got != tc.want {
-			t.Errorf("%s icon = %q, want %q", tc.name, tc.got, tc.want)
-		}
-	}
-}
-
-func TestLoad_ExplicitLabelFormatsWin(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join(t.TempDir(), "config.toml")
-	const doc = "[sources.zoxide]\nlabel_format = \"custom {{.Path}}\"\n[sources.projects]\nlabel_format = \"project {{.Label}}\"\n"
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if deref(cfg.Sources.Zoxide.LabelFormat) != "custom {{.Path}}" || deref(cfg.Sources.Projects.LabelFormat) != "project {{.Label}}" {
-		t.Fatalf("explicit label formats were replaced: zoxide=%q projects=%q", deref(cfg.Sources.Zoxide.LabelFormat), deref(cfg.Sources.Projects.LabelFormat))
 	}
 }
 
@@ -613,7 +329,7 @@ func TestLoad_RejectsUnknownSourceName(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
 	doc := "[general]\nsource_order = [\"herdr\", \"cwd\"]\n"
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -630,11 +346,10 @@ func TestLoad_CustomSourceSchema(t *testing.T) {
 		name, doc, want string
 	}{
 		{name: "new declaration", doc: "[[sources.custom]]\nname = \"prs\"\ncommand = [\"printf\", \"[]\"]\n", want: ""},
-		{name: "obsolete declaration", doc: "[[integrations]]\nname = \"prs\"\ncommand = [\"printf\", \"[]\"]\n", want: "[[integrations]] was removed; declare command-backed sources under [[sources.custom]]"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.toml")
-			if err := os.WriteFile(path, []byte(tc.doc), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(v3(tc.doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			_, err := Load(path)
@@ -662,7 +377,7 @@ timeout = "3s"
 label_format = "PR {{.Label}}"
 preview = ["identity"]
 `
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -698,7 +413,7 @@ func TestLoad_CustomSourceValidationFailsFast(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.toml")
-			if err := os.WriteFile(path, []byte(tt.doc), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(v3(tt.doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			_, err := Load(path)
@@ -712,7 +427,7 @@ func TestLoad_CustomSourceValidationFailsFast(t *testing.T) {
 func TestLoad_CustomSourceTimeoutDefaultsToThreeSeconds(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(path, []byte("[[sources.custom]]\nname = \"prs\"\ncommand = [\"printf\"]\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3("[[sources.custom]]\nname = \"prs\"\ncommand = [\"printf\"]\n")), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -746,7 +461,7 @@ command = ["/path/kube-preview", "health", "{{ index .Meta \"context\" }}"]
 timeout = "1s"
 max_lines = 10
 `
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -794,7 +509,7 @@ func TestLoad_CustomSourcePreviewNamespaceValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.toml")
-			if err := os.WriteFile(path, []byte(tt.doc), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(v3(tt.doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			_, err := Load(path)
@@ -822,7 +537,7 @@ preview = ["cluster"]
 [sources.custom.preview_commands.cluster]
 command = ["printf", "b"]
 `
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path); err != nil {
@@ -846,7 +561,7 @@ type = "group"
 path = "~/projects"
 source_order = ["kube-contexts"]
 `
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -861,7 +576,7 @@ source_order = ["kube-contexts"]
 func TestLoad_GroupSourceOrderRejectsUnknownSource(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.toml")
-	const doc = `version = 2
+	const doc = `version = 3
 
 [[workspaces]]
 name = "Kubernetes"
@@ -869,7 +584,7 @@ type = "group"
 path = "~/projects"
 source_order = ["not-declared"]
 `
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -884,7 +599,7 @@ func TestLoad_ParsesSchema(t *testing.T) {
 	t.Parallel()
 
 	const doc = `
-version = 2
+version = 3
 
 [general]
 source_order = ["herdr", "workspaces", "zoxide", "projects"]
@@ -894,7 +609,6 @@ selector = "fzf"
 binary = "/usr/local/bin/herdr"
 
 [defaults]
-type = "shell"
 template = "default"
 
 [tui]
@@ -939,7 +653,7 @@ description = "development workspace"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -951,9 +665,6 @@ description = "development workspace"
 	}
 	if got, want := cfg.Herdr.Binary, "/usr/local/bin/herdr"; got != want {
 		t.Errorf("herdr binary: got %q want %q", got, want)
-	}
-	if got, want := cfg.Defaults.Type, "shell"; got != want {
-		t.Errorf("defaults type: got %q want %q", got, want)
 	}
 	if got, want := cfg.Defaults.Template, "default"; got != want {
 		t.Errorf("defaults template: got %q want %q", got, want)
@@ -1032,7 +743,7 @@ label_format = "project {{.Path}}"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1130,7 +841,7 @@ func TestLoad_RejectsInvalidLabelFormats(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			path := filepath.Join(t.TempDir(), "config.toml")
-			if err := os.WriteFile(path, []byte(tc.doc), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(v3(tc.doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 
@@ -1167,7 +878,7 @@ func TestLoad_RejectsInvalidPreviewCommandTemplates(t *testing.T) {
 			t.Parallel()
 			path := filepath.Join(t.TempDir(), "config.toml")
 			doc := "[preview.commands.check]\ncommand = " + strconv.Quote(tc.command) + "\n"
-			if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 
@@ -1216,7 +927,7 @@ label_format = "{{ if eq .Kind \"group\" }}[{{ .Label }}]{{ else }}{{ .Label }}{
 command = "echo {{.Meta.anything}} {{.Kind}} {{.Path|tilde}}"
 `
 	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(path, []byte(valid), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(valid)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path); err != nil {
@@ -1224,7 +935,7 @@ command = "echo {{.Meta.anything}} {{.Kind}} {{.Path|tilde}}"
 	}
 
 	invalid := "[sources.zoxide]\nlabel_format = \"{{ slice .Branch 0 3 }}\"\n"
-	if err := os.WriteFile(path, []byte(invalid), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(invalid)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "sources.zoxide.label_format: template: shep:") {
@@ -1306,7 +1017,7 @@ func TestLoad_SelectorDefaultsToBuiltin(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte("[general]\nsource_order = [\"herdr\"]\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3("[general]\nsource_order = [\"herdr\"]\n")), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -1341,7 +1052,7 @@ func TestLoad_SelectorTable(t *testing.T) {
 			t.Parallel()
 			tmp := t.TempDir()
 			path := filepath.Join(tmp, "config.toml")
-			if err := os.WriteFile(path, []byte(tc.doc), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(v3(tc.doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			cfg, err := Load(path)
@@ -1477,7 +1188,7 @@ command = "git -C {{.Path}} log -n 5"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -1517,7 +1228,7 @@ command = "echo hi"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -1566,7 +1277,7 @@ func TestLoad_InvalidPreviewRejected(t *testing.T) {
 			t.Parallel()
 			tmp := t.TempDir()
 			path := filepath.Join(tmp, "config.toml")
-			if err := os.WriteFile(path, []byte(tc.doc), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(v3(tc.doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			_, err := Load(path)
@@ -1599,7 +1310,7 @@ func TestLoad_RejectsUnknownPreviewNameAnywhere(t *testing.T) {
 			t.Parallel()
 			tmp := t.TempDir()
 			path := filepath.Join(tmp, "config.toml")
-			if err := os.WriteFile(path, []byte(tc.doc), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(v3(tc.doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			_, err := Load(path)
@@ -1626,7 +1337,7 @@ command = "echo hi"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path); err != nil {
@@ -1647,7 +1358,7 @@ name = "x"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -1774,7 +1485,7 @@ command = "tail -f app.log"
 			t.Parallel()
 			tmp := t.TempDir()
 			path := filepath.Join(tmp, "config.toml")
-			if err := os.WriteFile(path, []byte(tc.doc), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(v3(tc.doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			_, err := Load(path)
@@ -1814,7 +1525,7 @@ id = "logs"
 command = "tail -f app.log"
 `
 	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -1856,7 +1567,7 @@ root = "main"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -1899,7 +1610,7 @@ type = "bogus"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path); err == nil {
@@ -1924,7 +1635,7 @@ func TestLoad_RejectsUnknownTemplateReference(t *testing.T) {
 			t.Parallel()
 			tmp := t.TempDir()
 			path := filepath.Join(tmp, "config.toml")
-			if err := os.WriteFile(path, []byte(tc.doc), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(v3(tc.doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := Load(path); err == nil {
@@ -1947,7 +1658,7 @@ source_order = ["projects", "roots"]
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path); err == nil {
@@ -1996,7 +1707,7 @@ func TestLoad_RejectsInvalidTUIWidth(t *testing.T) {
 	for _, doc := range cases {
 		tmp := t.TempDir()
 		path := filepath.Join(tmp, "config.toml")
-		if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := Load(path); err == nil {
@@ -2012,19 +1723,27 @@ func TestExampleTOML_MatchesCanonicalModel(t *testing.T) {
 	t.Parallel()
 	got := ExampleTOML()
 	for _, want := range []string{
-		"version = 2", "[general]", "source_order = [", "[defaults]", "type = ",
+		"\nversion = 3\n", "[general]", "source_order = [", "[defaults]",
 		"template = ", "[tui]", "list_width", "preview_width", `layout = "landscape"`, "[preview]",
-		"[preview.commands.", "[sources.herdr]", "[sources.projects]",
+		"[preview.commands.", "# title = ", "[sources.herdr]", "[sources.herdr.tab]", "[sources.herdr.pane]",
+		"[sources.sessions]", "[sources.agents]", "[sources.projects]",
 		"markers = ", "[templates.default]", "[templates.k8s]", "[[sources.custom]]",
+		"# [themes.example]", "# [themes.example.roles]", `theme = "inherit"`,
 		`theme is "inherit" (the default: Herdr's`,
 		`"plain" (no color) or`,
-		`the name of a [themes.<name>] table. NO_COLOR and SHEP_THEME win over it.`,
+		`table. NO_COLOR and SHEP_THEME win over it.`,
+		"# [[wildcards]]\n# pattern = ", "# icon_color = \"blue\"",
+		"# [[workspaces]]\n# name = \"dotfiles\"", "# marker_format = '{{ pin }}'",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("ExampleTOML missing %q", want)
 		}
 	}
-	for _, bad := range []string{"[layouts", "kind =", "provider_order", "/Users/", "Proyectos", "default = ["} {
+	for _, bad := range []string{
+		"[layouts", "kind =", "provider_order", "/Users/", "Proyectos", "default = [",
+		"version = 2", "[defaults]\ntype", "tab_label_format", "pane_label_format", "osBase", "osDir",
+		`icon = " "`, `theme = "mocha"`, "portrait",
+	} {
 		if strings.Contains(got, bad) {
 			t.Errorf("ExampleTOML must not contain %q:\n%s", bad, got)
 		}
@@ -2067,6 +1786,56 @@ func TestExampleTOML_MatchesCanonicalModel(t *testing.T) {
 	} {
 		if !reflect.DeepEqual(tc.got, tc.want) {
 			t.Errorf("sources.%s.preview = %v, want %v", tc.name, tc.got, tc.want)
+		}
+	}
+}
+
+// TestExampleTOML_CommentedPresentationsAreTheDefaults proves the commented
+// presentation keys under every built-in source table of the generated
+// config are exactly the built-in defaults (unicode tier), all five of them,
+// so uncommenting a line never changes a row by itself.
+func TestExampleTOML_CommentedPresentationsAreTheDefaults(t *testing.T) {
+	t.Parallel()
+	doc := ExampleTOML()
+	for _, tc := range []struct {
+		header string
+		kind   rowKind
+	}{
+		{"[sources.herdr]", rowHerdr},
+		{"[sources.herdr.tab]", rowHerdrTab},
+		{"[sources.herdr.pane]", rowHerdrPane},
+		{"[sources.sessions]", rowSessions},
+		{"[sources.agents]", rowAgents},
+		{"[sources.workspaces]", rowWorkspaces},
+		{"[sources.zoxide]", rowZoxide},
+		{"[sources.projects]", rowProjects},
+	} {
+		i := strings.Index(doc, "\n"+tc.header+"\n")
+		if i < 0 {
+			t.Errorf("ExampleTOML has no %s table", tc.header)
+			continue
+		}
+		var keys strings.Builder
+		for _, line := range strings.Split(doc[i+len(tc.header)+2:], "\n") {
+			rest, ok := strings.CutPrefix(line, "# ")
+			key, _, isKey := strings.Cut(rest, " = ")
+			if !ok || !isKey || !slices.Contains([]string{"icon", "icon_color", "label_format", "detail_format", "marker_format"}, key) {
+				break
+			}
+			keys.WriteString(rest + "\n")
+		}
+		var got map[string]string
+		if err := toml.Unmarshal([]byte(keys.String()), &got); err != nil {
+			t.Errorf("%s: commented keys are not valid TOML: %v\n%s", tc.header, err, keys.String())
+			continue
+		}
+		def := presentationDefaults(tc.kind, TUIIconsUnicode)
+		want := map[string]string{
+			"icon": def.Icon, "icon_color": def.IconColor, "label_format": def.Label,
+			"detail_format": def.Detail, "marker_format": def.Marker,
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s commented presentation = %v, want the defaults %v", tc.header, got, want)
 		}
 	}
 }
@@ -2130,6 +1899,28 @@ func TestTrackedExamplesConfigTOML_LoadsWithIntendedContract(t *testing.T) {
 			t.Errorf("examples/config.toml sources.%s.preview = %v, want %v", tc.name, tc.got, tc.want)
 		}
 	}
+	// The customization it demonstrates: a section title, a custom theme,
+	// presentation on a source, an entry and a wildcard.
+	if got := cfg.Preview.Commands["recent_commits"].Title; got == nil || *got != "Recent commits" {
+		t.Errorf("examples/config.toml recent_commits title = %v, want Recent commits", got)
+	}
+	if _, ok := cfg.Themes["nord-pink"]; !ok || cfg.TUI.Theme != "inherit" {
+		t.Errorf("examples/config.toml must declare [themes.nord-pink] and keep theme = inherit, got theme %q", cfg.TUI.Theme)
+	}
+	if p := cfg.Sources.Agents.MarkerFormat; p == nil || !strings.Contains(*p, ".Agent") {
+		t.Errorf("examples/config.toml agents marker_format = %v, want the agent name", p)
+	}
+	if len(cfg.Workspaces) < 2 || cfg.Workspaces[1].Icon == nil || cfg.Workspaces[1].MarkerFormat == nil {
+		t.Errorf("examples/config.toml must give the notes entry its own icon and marker")
+	}
+	if len(cfg.Wildcards) != 1 || cfg.Wildcards[0].Icon == nil || cfg.Wildcards[0].IconColor == nil {
+		t.Errorf("examples/config.toml wildcard must set icon and icon_color")
+	}
+	for _, bad := range []string{`icon = " "`, "version = 2", `theme = "mocha"`, "limit ="} {
+		if strings.Contains(string(raw), bad) {
+			t.Errorf("examples/config.toml must not contain %q", bad)
+		}
+	}
 }
 
 // TestLoad_RejectsTemplateNodeCycle confirms a cyclic node graph (a branch
@@ -2162,7 +1953,7 @@ command = ""
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2199,7 +1990,7 @@ command = ""
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path); err != nil {
@@ -2207,11 +1998,11 @@ command = ""
 	}
 }
 
-// TestLoad_RejectsUnknownAndLegacyKeys (requirement: strict config) fails
-// fast on any unrecognised or legacy/removed key — top-level, nested tables,
-// and arbitrary [sources.<name>] entries alike — instead of silently
-// ignoring it.
-func TestLoad_RejectsUnknownAndLegacyKeys(t *testing.T) {
+// TestLoad_RejectsUnknownKeys (requirement: strict config) fails fast on any
+// unrecognised key — top-level, nested tables, arbitrary [sources.<name>]
+// entries and keys older schemas had alike — with the generic strict-decode
+// error instead of silently ignoring it.
+func TestLoad_RejectsUnknownKeys(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name string
@@ -2230,13 +2021,17 @@ func TestLoad_RejectsUnknownAndLegacyKeys(t *testing.T) {
 		{name: "workspace legacy kind field", doc: "[[workspaces]]\nname = \"x\"\npath = \"~/x\"\nkind = \"shell\"\n"},
 		{name: "top-level provider_order", doc: "provider_order = [\"herdr\"]\n"},
 		{name: "template preview field", doc: "[templates.dev]\npreview = [\"identity\"]\n"},
+		{name: "integrations table", doc: "[[integrations]]\nname = \"prs\"\ncommand = [\"printf\", \"[]\"]\n"},
+		{name: "defaults type", doc: "[defaults]\ntype = \"shell\"\n"},
+		{name: "group projects preview", doc: "[[workspaces]]\nname = \"g\"\ntype = \"group\"\npath = \"~/g\"\n[workspaces.sources.projects]\npreview = [\"git\"]\n"},
+		{name: "herdr tab_label_format", doc: "[sources.herdr]\ntab_label_format = \"{{.Label}}\"\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			tmp := t.TempDir()
 			path := filepath.Join(tmp, "config.toml")
-			if err := os.WriteFile(path, []byte(tc.doc), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(v3(tc.doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := Load(path); err == nil {
@@ -2254,7 +2049,7 @@ func TestLoad_RejectsTUIWidthSumOverflow(t *testing.T) {
 	const doc = "[tui]\nlist_width = \"60%\"\npreview_width = \"60%\"\n"
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path); err == nil {
@@ -2273,7 +2068,7 @@ func TestLoad_AcceptsTUIWidthSumAtOrBelow100Percent(t *testing.T) {
 	for _, doc := range cases {
 		tmp := t.TempDir()
 		path := filepath.Join(tmp, "config.toml")
-		if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := Load(path); err != nil {
@@ -2289,7 +2084,7 @@ func TestLoad_TUILayout_DefaultsEmptyAndAccepted(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte("[tui]\nlist_width = \"auto\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3("[tui]\nlist_width = \"auto\"\n")), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -2303,7 +2098,6 @@ func TestLoad_TUILayout_DefaultsEmptyAndAccepted(t *testing.T) {
 
 // TestLoad_AcceptsValidTUILayoutValues confirms the only documented layout
 // value ("landscape"; empty means auto) parses and loads without error.
-// "portrait" is no longer accepted — see TestLoad_RejectsPortraitTUILayout.
 func TestLoad_AcceptsValidTUILayoutValues(t *testing.T) {
 	t.Parallel()
 	for _, val := range []string{"landscape"} {
@@ -2312,7 +2106,7 @@ func TestLoad_AcceptsValidTUILayoutValues(t *testing.T) {
 			tmp := t.TempDir()
 			path := filepath.Join(tmp, "config.toml")
 			doc := "[tui]\nlayout = \"" + val + "\"\n"
-			if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			cfg, err := Load(path)
@@ -2326,26 +2120,6 @@ func TestLoad_AcceptsValidTUILayoutValues(t *testing.T) {
 	}
 }
 
-// TestLoad_RejectsPortraitTUILayout confirms the removed "portrait" layout is
-// rejected at config validation with a clear error (the stacked/portrait
-// layout was deleted; only wide and list-only modes remain).
-func TestLoad_RejectsPortraitTUILayout(t *testing.T) {
-	t.Parallel()
-	tmp := t.TempDir()
-	path := filepath.Join(tmp, "config.toml")
-	const doc = "[tui]\nlayout = \"portrait\"\n"
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, err := Load(path)
-	if err == nil {
-		t.Fatal("expected error for the removed portrait tui.layout value")
-	}
-	if !strings.Contains(err.Error(), "portrait") {
-		t.Errorf("error must name the removed value %q, got: %v", "portrait", err)
-	}
-}
-
 // TestLoad_RejectsInvalidTUILayoutValue confirms an unknown [tui].layout
 // value fails Load fast with an error naming the bad value, consistent with
 // this project's established fail-fast convention (mirrors
@@ -2355,7 +2129,7 @@ func TestLoad_RejectsInvalidTUILayoutValue(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
 	const doc = "[tui]\nlayout = \"diagonal\"\n"
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2374,7 +2148,7 @@ func TestLoad_TUITheme_DefaultsEmptyAndAccepted(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte("[tui]\nlist_width = \"auto\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3("[tui]\nlist_width = \"auto\"\n")), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -2396,7 +2170,7 @@ func TestLoad_AcceptsValidTUIThemeValues(t *testing.T) {
 			tmp := t.TempDir()
 			path := filepath.Join(tmp, "config.toml")
 			doc := "[tui]\ntheme = \"" + val + "\"\n"
-			if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			cfg, err := Load(path)
@@ -2417,7 +2191,7 @@ func TestLoad_RejectsInvalidTUIThemeValue(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
 	const doc = "[tui]\ntheme = \"not-a-theme\"\n"
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2437,7 +2211,7 @@ func TestLoad_TUIIcons_DefaultsEmptyAndAccepted(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte("[tui]\nlist_width = \"auto\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3("[tui]\nlist_width = \"auto\"\n")), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -2450,8 +2224,7 @@ func TestLoad_TUIIcons_DefaultsEmptyAndAccepted(t *testing.T) {
 }
 
 // TestLoad_AcceptsValidTUIIconsValues confirms every documented icon
-// fallback tier name (unicode, ascii) parses and loads without error. The
-// "nerd" tier was removed — see TestLoad_RejectsNerdTUIIcons.
+// fallback tier name (unicode, ascii) parses and loads without error.
 func TestLoad_AcceptsValidTUIIconsValues(t *testing.T) {
 	t.Parallel()
 	for _, val := range []string{TUIIconsUnicode, TUIIconsASCII} {
@@ -2460,7 +2233,7 @@ func TestLoad_AcceptsValidTUIIconsValues(t *testing.T) {
 			tmp := t.TempDir()
 			path := filepath.Join(tmp, "config.toml")
 			doc := "[tui]\nicons = \"" + val + "\"\n"
-			if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			cfg, err := Load(path)
@@ -2474,26 +2247,6 @@ func TestLoad_AcceptsValidTUIIconsValues(t *testing.T) {
 	}
 }
 
-// TestLoad_RejectsNerdTUIIcons confirms the removed "nerd" icon tier is
-// rejected at config validation with a clear error rather than silently
-// falling back to another tier.
-func TestLoad_RejectsNerdTUIIcons(t *testing.T) {
-	t.Parallel()
-	tmp := t.TempDir()
-	path := filepath.Join(tmp, "config.toml")
-	const doc = "[tui]\nicons = \"nerd\"\n"
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, err := Load(path)
-	if err == nil {
-		t.Fatal("expected error for the removed nerd tui.icons value")
-	}
-	if !strings.Contains(err.Error(), "nerd") {
-		t.Errorf("error must name the removed value %q, got: %v", "nerd", err)
-	}
-}
-
 // TestLoad_RejectsInvalidTUIIconsValue confirms an unknown [tui].icons value
 // fails Load fast with an error naming the bad value.
 func TestLoad_RejectsInvalidTUIIconsValue(t *testing.T) {
@@ -2501,7 +2254,7 @@ func TestLoad_RejectsInvalidTUIIconsValue(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
 	const doc = "[tui]\nicons = \"emoji\"\n"
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2552,7 +2305,7 @@ root = "opencode"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -2600,7 +2353,7 @@ root = "shell"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -2631,7 +2384,7 @@ root = "main"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -2661,7 +2414,7 @@ root = "main"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2691,7 +2444,7 @@ root = "main"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2730,7 +2483,7 @@ root = "ai"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2757,7 +2510,7 @@ root = "main"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -2789,7 +2542,7 @@ root = "main"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2816,7 +2569,7 @@ focus = true
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2846,7 +2599,7 @@ root = "main"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2888,7 +2641,7 @@ root = "main"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2916,7 +2669,7 @@ close_on_exit = true
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -2947,7 +2700,7 @@ close_on_exit = true
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2977,7 +2730,7 @@ close_on_exit = true
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -3003,7 +2756,7 @@ close_on_exit = true
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -3027,7 +2780,7 @@ close_on_exit = true
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -3064,7 +2817,7 @@ root = "main"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -3088,7 +2841,7 @@ close_on_exit = true
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -3121,7 +2874,7 @@ root = "main"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -3154,7 +2907,7 @@ workspace_name = "second"
 name = "explicit"
 path = "/srv/services/platform-api"
 `
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -3186,7 +2939,7 @@ func TestLoad_RejectsInvalidWorkspaceNameFieldsWithScope(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			path := filepath.Join(t.TempDir(), "config.toml")
-			if err := os.WriteFile(path, []byte(tc.doc), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(v3(tc.doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			_, err := Load(path)
@@ -3226,7 +2979,7 @@ preview = ["identity", "active_pane"]
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := Load(path)
@@ -3257,7 +3010,7 @@ label_format = "{{ .InvalidSyntax "
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "bad_label.toml")
-	if err := os.WriteFile(path, []byte(docBadLabel), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(docBadLabel)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "sources.agents.label_format") {
@@ -3270,7 +3023,7 @@ label_format = "{{ .InvalidSyntax "
 preview = ["nonexistent_section"]
 `
 	path2 := filepath.Join(tmp, "bad_preview.toml")
-	if err := os.WriteFile(path2, []byte(docBadPreview), 0o600); err != nil {
+	if err := os.WriteFile(path2, []byte(v3(docBadPreview)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path2); err == nil || !strings.Contains(err.Error(), "sources.agents.preview") {
@@ -3290,7 +3043,7 @@ func TestConfig_AgentsSource_GroupRequiresRoot(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.toml")
 			doc := "[[workspaces]]\nname = \"agents-group\"\ntype = \"group\"\nsource_order = [\"agents\"]\n" + tt.path + "\n"
-			if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "workspaces[0]") || !strings.Contains(err.Error(), "path") {
@@ -3312,7 +3065,7 @@ source_order = ["agents", "herdr"]
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "group_agents.toml")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -3345,7 +3098,7 @@ func TestLoad_TabsValidation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.toml")
-			if err := os.WriteFile(path, []byte(tc.doc), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(v3(tc.doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			cfg, err := Load(path)
@@ -3362,5 +3115,77 @@ func TestLoad_TabsValidation(t *testing.T) {
 				t.Fatalf("tabs = %v, want %v", cfg.TUI.Tabs, tc.want)
 			}
 		})
+	}
+}
+
+// TestPreviewTitle proves a custom preview section's heading: the configured
+// title (an explicit "" means none), else the humanized name.
+func TestPreviewTitle(t *testing.T) {
+	t.Parallel()
+	title := func(s string) *string { return &s }
+	for _, tc := range []struct {
+		title *string
+		name  string
+		want  string
+	}{
+		{nil, "recent_commits", "Recent commits"},
+		{nil, "my-custom_command", "My custom command"},
+		{nil, "cluster", "Cluster"},
+		{nil, "édition", "Édition"},
+		{title(""), "cluster", ""},
+		{title("K8s context"), "cluster", "K8s context"},
+	} {
+		if got := PreviewTitle(tc.title, tc.name); got != tc.want {
+			t.Errorf("PreviewTitle(%v, %q) = %q, want %q", tc.title, tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestLoad_PreviewCommandTitles proves title decodes on global and custom
+// source preview commands, unset and explicitly empty kept apart, and that a
+// title with a control character fails with its field path.
+func TestLoad_PreviewCommandTitles(t *testing.T) {
+	t.Parallel()
+	cfg, err := loadDoc(t, `
+[preview.commands.recent_commits]
+command = "git log"
+[preview.commands.status]
+command = "git status"
+title = ""
+[preview.commands.build]
+command = "make -n"
+title = "Build plan"
+
+[[sources.custom]]
+name = "kube"
+command = ["kube-rows"]
+[sources.custom.preview_commands.cluster]
+command = ["kubectl", "config", "current-context"]
+title = "Context"
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmds := cfg.Preview.Commands
+	if cmds["recent_commits"].Title != nil {
+		t.Errorf("unset title = %q, want nil", *cmds["recent_commits"].Title)
+	}
+	if got := cmds["status"].Title; got == nil || *got != "" {
+		t.Errorf("explicit empty title = %v, want a pointer to \"\"", got)
+	}
+	if got := cmds["build"].Title; got == nil || *got != "Build plan" {
+		t.Errorf("build title = %v, want Build plan", got)
+	}
+	if got := cfg.Sources.Custom[0].PreviewCommands["cluster"].Title; got == nil || *got != "Context" {
+		t.Errorf("custom source title = %v, want Context", got)
+	}
+	for _, tc := range []struct{ doc, want string }{
+		{"[preview.commands.x]\ncommand = \"ls\"\ntitle = \"a\\tb\"\n", "preview.commands.x.title"},
+		{"[[sources.custom]]\nname = \"kube\"\ncommand = [\"k\"]\n[sources.custom.preview_commands.c]\ncommand = [\"k\"]\ntitle = \"a\\nb\"\n", `sources.custom[0] ("kube").preview_commands.c.title`},
+	} {
+		_, err := loadDoc(t, tc.doc)
+		if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "control character") {
+			t.Errorf("Load(%q) error = %v, want %q and a control character error", tc.doc, err, tc.want)
+		}
 	}
 }
