@@ -1,24 +1,24 @@
-⌕ type to filter…                                   7 candidates
-╭──────────────────────────────────────────────────────────────╮
-│ ❯ backend                                                    │
-│   frontend                                                   │
-│   notes                                                      │
-│   tmp                                                        │
-│   Downloads                                                  │
-│   shep                                                       │
-│   dotfiles                                                   │
-│                                                              │
-│                                                              │
-│                                                              │
-│                                                              │
-│                                                              │
-│                                                              │
-│                                                              │
-│                                                              │
-│                                                              │
-│                                                              │
-│                                                              │
-│                                                              │
-│                                                              │
-╰──────────────────────────────────────────────────────────────╯
-enter open   tab agents   ? help   esc quit
+  all   agents
+ ❯  Search workspaces, projects, folders                      7
+ ──────────────────────────────────────────────────────────────
+ ❯ backend
+   frontend
+   notes
+   tmp
+   Downloads
+   shep
+   dotfiles
+
+
+
+
+
+
+
+
+
+
+
+
+
+ enter open · tab agents · ? help · esc quit

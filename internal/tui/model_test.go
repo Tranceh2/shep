@@ -173,7 +173,7 @@ func TestTUI_PreviewErrorState(t *testing.T) {
 		m, _ = sendKey(t, m, sizeCmd())
 	}
 	view := m.View()
-	if !strings.Contains(view, "preview error") {
+	if !strings.Contains(view, "Preview unavailable") {
 		t.Errorf("expected a visible preview error indicator, got view:\n%s", view)
 	}
 }

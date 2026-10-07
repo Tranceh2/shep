@@ -1,10 +1,10 @@
-SHEP  ● all   agents                                                                    7 candidates
-⌕ type to filter…
-╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ ❯ backend                                                                                        │
-│   frontend                                                                                       │
-│   notes                                                                                          │
-│   tmp                                                                                            │
-│   Downloads                                                                                      │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-enter open   tab agents   ? help   esc quit
+  all   agents
+ ❯  Search workspaces, projects, folders                                                          7
+ ──────────────────────────────────────────────────────────────────────────────────────────────────
+ ❯ backend                                                                                        ┃
+   frontend                                                                                       ┃
+   notes                                                                                          ┃
+   tmp                                                                                            ┃
+   Downloads                                                                                      ┃
+   shep                                                                                           │
+ enter open · tab agents · ? help · esc quit

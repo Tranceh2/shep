@@ -1,0 +1,24 @@
+  all   agents
+ ❯  Search agents                                              3 │ Review the contract parser before release     claude
+ ────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────
+ ❯ ◉ Review the contract parser before release      whiterose-db │ ~/allsafe/whiterose-db
+   ⠿ Fix invoice rounding                                billing │ ◉ blocked · claude · in whiterose-db › editor
+   ✓ opencode                                            billing │
+                                                                 │ Pane ───────────────────────────────────────────────
+                                                                 │ step 15: parsed clause 45
+                                                                 │ step 16: parsed clause 48
+                                                                 │ step 17: parsed clause 51
+                                                                 │ step 18: parsed clause 54
+                                                                 │ step 19: parsed clause 57
+                                                                 │ step 20: parsed clause 60
+                                                                 │ step 21: parsed clause 63
+                                                                 │ step 22: parsed clause 66
+                                                                 │ step 23: parsed clause 69
+                                                                 │ step 24: parsed clause 72
+                                                                 │ step 25: parsed clause 75
+                                                                 │ step 26: parsed clause 78
+                                                                 │ step 27: parsed clause 81
+                                                                 │ step 28: parsed clause 84
+                                                                 │ step 29: parsed clause 87
+                                                                 │
+ enter focus · tab all · ? help · esc quit

@@ -89,6 +89,42 @@ func (e *TreeExpander) UpdatePaneAgentStatus(paneID, status string) bool {
 	return false
 }
 
+// WorkspaceAgentStatus returns the most urgent agent status among
+// workspaceID's panes in this generation — blocked > working > done > idle,
+// the same attention order the preview's agent status section uses — or ""
+// when none of them reports one. Panes without a status (plain shells) and
+// "unknown" ones are ignored, so a workspace row shows a definite state or
+// nothing. Live updates applied by UpdatePaneAgentStatus are included.
+func (e *TreeExpander) WorkspaceAgentStatus(workspaceID string) string {
+	if e == nil || workspaceID == "" {
+		return ""
+	}
+	best, bestRank := "", 0
+	for _, p := range e.trees[workspaceID].Panes {
+		if rank := agentStatusRank(p.AgentStatus); rank > bestRank {
+			best, bestRank = p.AgentStatus, rank
+		}
+	}
+	return best
+}
+
+// agentStatusRank orders agent states by how urgently they need the user;
+// anything else ranks 0 and never wins.
+func agentStatusRank(status string) int {
+	switch status {
+	case "blocked":
+		return 4
+	case "working":
+		return 3
+	case "done":
+		return 2
+	case "idle":
+		return 1
+	default:
+		return 0
+	}
+}
+
 // ResolveActivePaneID returns the focused pane in tabID from the cached
 // workspace tree, falling back to that tab's first pane in Herdr list order.
 // A missing tree or matching pane is unavailable rather than selecting a pane

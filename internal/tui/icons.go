@@ -1,11 +1,12 @@
 // Package tui icon fallback resolution: [tui].icons (config.TUIConfig.Icons,
 // threaded through Layout.Icons — see layoutFromConfig in
-// internal/command/open.go) selects one of three glyph tiers for the
-// picker's OWN semantic icons — pane agent-status markers (agentStatusIcon)
-// and row tree/active-focus markers (kindPrefix). It intentionally does NOT
+// internal/command/open.go) selects one of the glyph tiers for the
+// picker's OWN semantic icons — agent status glyphs (statusGlyph),
+// row tree glyphs (kindPrefix) and the grid chrome (rules,
+// divider, prompt, footer separator — see chrome.go). It intentionally does NOT
 // cover source.Candidate.Icon (each [sources.<name>].icon in config): that
-// is a raw user-configured string rendered verbatim by rowDisplayText /
-// candidateDisplayText regardless of the resolved tier, since shep has no
+// is a raw user-configured string rendered verbatim by buildRowView
+// regardless of the resolved tier, since shep has no
 // way to know what codepoints the user's own choice needs.
 package tui
 
@@ -23,12 +24,12 @@ const (
 type IconSet struct {
 	Name string
 
-	StatusIdle    string // agentStatusIcon("idle")
-	StatusDone    string // agentStatusIcon("done")
-	StatusBlocked string // agentStatusIcon("blocked")
-	StatusUnknown string // agentStatusIcon("unknown")
+	StatusIdle    string // statusGlyph("idle")
+	StatusDone    string // statusGlyph("done")
+	StatusBlocked string // statusGlyph("blocked")
+	StatusUnknown string // statusGlyph("unknown")
 
-	// StatusWorking is a static agentStatusIcon("working") fallback for a
+	// StatusWorking is a static statusGlyph("working") fallback for a
 	// tier whose terminal/locale cannot render the model's shared animated
 	// spinner (spinner.MiniDot, which draws Unicode Braille dot glyphs).
 	// Empty means the tier renders the animated spinner as-is (a unicode
@@ -57,22 +58,36 @@ type IconSet struct {
 	// glyph.
 	TabIcon string
 
-	// ActiveMarker prefixes a RowTab/RowPane that identifies the Herdr tab or
-	// pane shep is currently running inside (see Model.isActiveFocusRow) — a
-	// truthful "you are here" indicator, since Enter can only ever focus the
-	// containing tab (Herdr has no per-pane focus command), never claim to
-	// focus one exact pane.
-	ActiveMarker string
-
-	// SearchPrompt prefixes the search input in the header (e.g. ⌕ for Unicode,
-	// > for ASCII).
+	// SearchPrompt prefixes the query on the prompt row (❯ for Unicode, >
+	// for ASCII) — the same chevron the list cursor uses, so "this is where
+	// you are" reads identically on both.
 	SearchPrompt string
+
+	// RuleHorizontal, RuleVertical and RuleJunction draw the borderless
+	// grid: the rule under the prompt row, the divider between the list and
+	// preview columns, and the junction where the two cross.
+	RuleHorizontal string
+	RuleVertical   string
+	RuleJunction   string
+
+	// HintSeparator joins footer hints ("enter open · tab agents").
+	HintSeparator string
+
+	// Overflow marks tab strip tabs hidden off either edge.
+	Overflow string
+
+	// ScrollThumb draws the list's scroll position over the divider (the
+	// track is RuleVertical) when the rows do not fit.
+	ScrollThumb string
+
+	// Pinned and Group are row accessories: a pinned candidate, and a group
+	// workspace that opens a nested picker.
+	Pinned string
+	Group  string
 }
 
-// iconSets holds every documented tier. IconsUnicode is byte-identical to
-// the picker's pre-Phase-8 hardcoded glyphs — the default tier, so an unset
-// [tui].icons never changes existing rendered output (and every pre-Phase-8
-// golden fixture stays valid unchanged). IconsASCII is 7-bit ASCII only, for
+// iconSets holds every documented tier. IconsUnicode is the default tier
+// (an unset [tui].icons). IconsASCII is 7-bit ASCII only, for
 // terminals/locales that cannot render Unicode at all.
 var iconSets = map[string]IconSet{
 	IconsUnicode: {
@@ -87,8 +102,16 @@ var iconSets = map[string]IconSet{
 		TreeLast:      "└─",
 		TreeVertical:  "│ ",
 		TabIcon:       "◫",
-		ActiveMarker:  "◆",
-		SearchPrompt:  "⌕",
+		SearchPrompt:  "❯",
+
+		RuleHorizontal: "─",
+		RuleVertical:   "│",
+		RuleJunction:   "┼",
+		HintSeparator:  "·",
+		Overflow:       "…",
+		ScrollThumb:    "┃",
+		Pinned:         "★",
+		Group:          "›",
 	},
 	IconsASCII: {
 		Name:          IconsASCII,
@@ -103,8 +126,16 @@ var iconSets = map[string]IconSet{
 		TreeLast:      "`-",
 		TreeVertical:  "| ",
 		TabIcon:       "t",
-		ActiveMarker:  "@",
 		SearchPrompt:  ">",
+
+		RuleHorizontal: "-",
+		RuleVertical:   "|",
+		RuleJunction:   "+",
+		HintSeparator:  "-",
+		Overflow:       "...",
+		ScrollThumb:    "#",
+		Pinned:         "*",
+		Group:          ">",
 	},
 }
 

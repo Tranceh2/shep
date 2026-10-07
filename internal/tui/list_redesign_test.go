@@ -29,7 +29,7 @@ import (
 
 // TestKindPrefix_RowPane_AncestorContinuationAlignsWithTabBranch proves a
 // RowPane whose parent tab is NOT the last tab puts its ancestor connector
-// immediately after the fixed active-marker slot. That makes the connector
+// right after the indent. That makes the connector
 // share the tab branch's column and pushes the pane's own branch one level
 // deeper.
 func TestKindPrefix_RowPane_AncestorContinuationAlignsWithTabBranch(t *testing.T) {
@@ -37,8 +37,7 @@ func TestKindPrefix_RowPane_AncestorContinuationAlignsWithTabBranch(t *testing.T
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	set := m.icons()
 	row := Row{Kind: RowPane, Depth: 2, IsLast: true, AncestorIsLast: false}
-	activeSlot := strings.Repeat(" ", lipgloss.Width(set.ActiveMarker+" "))
-	want := "  " + activeSlot + set.TreeVertical + set.TreeLast + " "
+	want := "  " + set.TreeVertical + set.TreeLast + " "
 	if got := m.kindPrefix(row); got != want {
 		t.Errorf("kindPrefix(non-last-ancestor pane) = %q, want %q", got, want)
 	}
@@ -53,9 +52,8 @@ func TestKindPrefix_RowPane_AncestorLastSiblingBlank(t *testing.T) {
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	set := m.icons()
 	row := Row{Kind: RowPane, Depth: 2, IsLast: true, AncestorIsLast: true}
-	activeSlot := strings.Repeat(" ", lipgloss.Width(set.ActiveMarker+" "))
 	blank := strings.Repeat(" ", lipgloss.Width(set.TreeVertical))
-	want := "  " + activeSlot + blank + set.TreeLast + " "
+	want := "  " + blank + set.TreeLast + " "
 	got := m.kindPrefix(row)
 	if got != want {
 		t.Errorf("kindPrefix(last-ancestor pane) = %q, want %q", got, want)
@@ -94,18 +92,16 @@ func TestKindPrefix_RowTab_NeverGetsAncestorColumn(t *testing.T) {
 }
 
 // TestKindPrefix_RowPane_ReservesNestedTreeDepth proves the real (Depth=2)
-// RowPane reserves the parent branch column plus its own child branch, while
-// active-marker gutters remain a fixed width.
+// RowPane reserves the parent branch column plus its own child branch.
 func TestKindPrefix_RowPane_ReservesNestedTreeDepth(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	set := m.icons()
 	pane := m.kindPrefix(Row{Kind: RowPane, Depth: 2, AncestorIsLast: true})
-	activeSlot := strings.Repeat(" ", lipgloss.Width(set.ActiveMarker+" "))
 	blankAncestor := strings.Repeat(" ", lipgloss.Width(set.TreeVertical))
-	wantWidth := lipgloss.Width("  " + activeSlot + blankAncestor + set.TreeMid + " ")
+	wantWidth := lipgloss.Width("  " + blankAncestor + set.TreeMid + " ")
 	if got := lipgloss.Width(pane); got != wantWidth {
-		t.Errorf("RowPane kindPrefix width = %d, want %d (nested tree depth with fixed active gutter)", got, wantWidth)
+		t.Errorf("RowPane kindPrefix width = %d, want %d (nested tree depth)", got, wantWidth)
 	}
 }
 
@@ -117,7 +113,6 @@ func TestKindPrefix_HerdrTreeGeometry(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	set := m.icons()
-	activeSlot := strings.Repeat(" ", lipgloss.Width(set.ActiveMarker+" "))
 	blankAncestor := strings.Repeat(" ", lipgloss.Width(set.TreeVertical))
 
 	for _, tt := range []struct {
@@ -125,11 +120,11 @@ func TestKindPrefix_HerdrTreeGeometry(t *testing.T) {
 		row  Row
 		want string
 	}{
-		{"non-last tab", Row{Kind: RowTab, Depth: 1}, "  " + activeSlot + set.TreeMid + " "},
-		{"first pane continues non-last tab", Row{Kind: RowPane, Depth: 2, AncestorIsLast: false}, "  " + activeSlot + set.TreeVertical + set.TreeMid + " "},
-		{"last pane continues non-last tab", Row{Kind: RowPane, Depth: 2, IsLast: true, AncestorIsLast: false}, "  " + activeSlot + set.TreeVertical + set.TreeLast + " "},
-		{"last tab", Row{Kind: RowTab, Depth: 1, IsLast: true}, "  " + activeSlot + set.TreeLast + " "},
-		{"pane under last tab", Row{Kind: RowPane, Depth: 2, IsLast: true, AncestorIsLast: true}, "  " + activeSlot + blankAncestor + set.TreeLast + " "},
+		{"non-last tab", Row{Kind: RowTab, Depth: 1}, "  " + set.TreeMid + " "},
+		{"first pane continues non-last tab", Row{Kind: RowPane, Depth: 2, AncestorIsLast: false}, "  " + set.TreeVertical + set.TreeMid + " "},
+		{"last pane continues non-last tab", Row{Kind: RowPane, Depth: 2, IsLast: true, AncestorIsLast: false}, "  " + set.TreeVertical + set.TreeLast + " "},
+		{"last tab", Row{Kind: RowTab, Depth: 1, IsLast: true}, "  " + set.TreeLast + " "},
+		{"pane under last tab", Row{Kind: RowPane, Depth: 2, IsLast: true, AncestorIsLast: true}, "  " + blankAncestor + set.TreeLast + " "},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := m.kindPrefix(tt.row); got != tt.want {
@@ -139,31 +134,27 @@ func TestKindPrefix_HerdrTreeGeometry(t *testing.T) {
 	}
 }
 
-// --- Change 2: labels apply only to synthesized Herdr rows ---
+// --- Change 2: label composition per row kind ---
 
-func TestRowPrimaryText_RowCandidate_PathOnly(t *testing.T) {
+// TestRowView_RowCandidate_PathFallbackIsFilenameFirst proves a candidate
+// whose label falls back to its path leads with the last directory, shows
+// the parent as the secondary text, and moves "missing" to the accessories
+// instead of suffixing the label.
+func TestRowView_RowCandidate_PathFallbackIsFilenameFirst(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	row := Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "backend", Path: "/srv/backend", Icon: "◆", Missing: true}}
-	primary, _ := m.rowPrimaryText(row)
-	if want := "◆ /srv/backend (missing)"; primary != want {
-		t.Errorf("rowPrimaryText(candidate) = %q, want %q", primary, want)
+	primary, secondary := m.rowDisplayText(row)
+	if primary != "◆ backend" || secondary != "/srv" {
+		t.Errorf("rowDisplayText(candidate) = %q + %q, want \"◆ backend\" + \"/srv\"", primary, secondary)
 	}
-	if strings.Contains(primary, "◆ backend") || strings.Contains(primary, labelPathSeparator) {
-		t.Errorf("rowPrimaryText(candidate) must use the path fallback without a separator, got %q", primary)
+	if got := m.rowAccessoryText(row); got != "missing" {
+		t.Errorf("accessories = %q, want missing", got)
 	}
-}
 
-func TestRowPrimaryText_RowCandidate_EmptyLabelShowsPathOnly(t *testing.T) {
-	t.Parallel()
-	m := newRenderTestModel(ThemeMocha, FocusList)
-	row := Row{Kind: RowCandidate, Candidate: source.Candidate{Path: "/srv/backend"}}
-	primary, _ := m.rowPrimaryText(row)
-	if want := "/srv/backend"; primary != want {
-		t.Errorf("rowPrimaryText(no label) = %q, want %q (path alone, no separator artifact)", primary, want)
-	}
-	if strings.Contains(primary, "·") {
-		t.Errorf("rowPrimaryText(no label) = %q, must not contain a dangling separator", primary)
+	row = Row{Kind: RowCandidate, Candidate: source.Candidate{Path: "/srv/backend"}}
+	if primary, secondary := m.rowDisplayText(row); primary != "backend" || secondary != "/srv" {
+		t.Errorf("rowDisplayText(no label) = %q + %q, want backend + /srv", primary, secondary)
 	}
 }
 
@@ -172,55 +163,35 @@ func TestRowPrimaryText_RowCandidate_HerdrLabelComposition(t *testing.T) {
 	m := newRenderTestModel(ThemeMocha, FocusList)
 
 	for _, tt := range []struct {
-		name string
-		row  Row
-		want string
+		name          string
+		row           Row
+		want, wantSec string
 	}{
 		{
 			name: "labeled Herdr workspace keeps its label",
-			row: Row{Kind: RowCandidate, Candidate: source.Candidate{
-				Source: config.SourceHerdr,
-				Label:  "backend",
-				Path:   "/srv/backend",
-				Icon:   "◆",
-			}},
+			row:  Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceHerdr, Label: "backend", Path: "/srv/backend", Icon: "◆"}},
 			want: "◆ backend",
 		},
 		{
-			name: "unlabeled Herdr workspace keeps path only",
-			row: Row{Kind: RowCandidate, Candidate: source.Candidate{
-				Source: config.SourceHerdr,
-				Path:   "/srv/backend",
-				Icon:   "◆",
-			}},
-			want: "◆ /srv/backend",
+			name: "unlabeled Herdr workspace falls back to its path, filename first",
+			row:  Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceHerdr, Path: "/srv/backend", Icon: "◆"}},
+			want: "◆ backend", wantSec: "/srv",
 		},
 		{
 			name: "labeled ordinary provider keeps its label",
-			row: Row{Kind: RowCandidate, Candidate: source.Candidate{
-				Source: config.SourceZoxide,
-				Label:  "backend",
-				Path:   "/srv/backend",
-				Icon:   "◆",
-			}},
+			row:  Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceZoxide, Label: "backend", Path: "/srv/backend", Icon: "◆"}},
 			want: "◆ backend",
 		},
 		{
-			name: "labeled Herdr workspace preserves missing suffix",
-			row: Row{Kind: RowCandidate, Candidate: source.Candidate{
-				Source:  config.SourceHerdr,
-				Label:   "backend",
-				Path:    "/srv/backend",
-				Icon:    "◆",
-				Missing: true,
-			}},
-			want: "◆ backend (missing)",
+			name: "a label that is not path-like stays single-part",
+			row:  Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceHerdr, Label: "Proyectos/shep", Path: "/srv/shep", Icon: "◆"}},
+			want: "◆ Proyectos/shep",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			primary, _ := m.rowPrimaryText(tt.row)
-			if primary != tt.want {
-				t.Errorf("rowPrimaryText(%s) = %q, want %q", tt.name, primary, tt.want)
+			primary, secondary := m.rowDisplayText(tt.row)
+			if primary != tt.want || secondary != tt.wantSec {
+				t.Errorf("rowDisplayText(%s) = %q + %q, want %q + %q", tt.name, primary, secondary, tt.want, tt.wantSec)
 			}
 		})
 	}
@@ -235,107 +206,58 @@ func wantRowPrimary(m Model, row Row, iconPart, body string) string {
 	return m.kindPrefix(row) + iconPart + body
 }
 
-func TestRowPrimaryText_RowTab_DedupTabNumber(t *testing.T) {
+// TestRowPrimaryText_TabAndPaneDefaultsAreLabelOnly proves the default tree
+// child formats name the tab or pane instead of repeating the workspace path
+// on every child: a tab shows "<number> <label>" (deduplicated when the
+// label is the number), a pane its label, or its path when it has none.
+func TestRowPrimaryText_TabAndPaneDefaultsAreLabelOnly(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	set := m.icons()
-	row := Row{
-		Kind: RowTab, Depth: 1, IsLast: true,
-		Candidate: source.Candidate{Label: "1", Path: "/svc", Meta: map[string]string{"tab_number": "1"}},
-	}
-	primary, _ := m.rowPrimaryText(row)
-	want := wantRowPrimary(m, row, set.TabIcon+" ", "1 · /svc")
-	if primary != want {
-		t.Errorf("rowPrimaryText(tab, label==number) = %q, want %q (no duplication)", primary, want)
-	}
-}
-
-func TestRowPrimaryText_RowTab_NumberAndDifferentLabel(t *testing.T) {
-	t.Parallel()
-	m := newRenderTestModel(ThemeMocha, FocusList)
-	set := m.icons()
-	row := Row{
-		Kind: RowTab, Depth: 1, IsLast: true,
-		Candidate: source.Candidate{Label: "deploy", Path: "/svc", Meta: map[string]string{"tab_number": "3"}},
-	}
-	primary, _ := m.rowPrimaryText(row)
-	want := wantRowPrimary(m, row, set.TabIcon+" ", "3 deploy · /svc")
-	if primary != want {
-		t.Errorf("rowPrimaryText(tab, number+label) = %q, want %q", primary, want)
+	for _, tc := range []struct {
+		name string
+		row  Row
+		icon string
+		want string
+	}{
+		{"tab label equals number", Row{Kind: RowTab, Depth: 1, IsLast: true, Candidate: source.Candidate{Label: "1", Path: "/svc", Meta: map[string]string{"tab_number": "1"}}}, set.TabIcon + " ", "1"},
+		{"tab number and label", Row{Kind: RowTab, Depth: 1, IsLast: true, Candidate: source.Candidate{Label: "deploy", Path: "/svc", Meta: map[string]string{"tab_number": "3"}}}, set.TabIcon + " ", "3 deploy"},
+		{"tab without number", Row{Kind: RowTab, Depth: 1, IsLast: true, Candidate: source.Candidate{Label: "deploy", Path: "/svc"}}, set.TabIcon + " ", "deploy"},
+		{"pane label", Row{Kind: RowPane, Depth: 2, IsLast: true, AncestorIsLast: true, Candidate: source.Candidate{Label: "worker", Path: "/srv/api", Meta: map[string]string{"pane_id": "w4W:p1"}}}, "", "worker"},
+		{"pane without label shows its path, filename first", Row{Kind: RowPane, Depth: 2, IsLast: true, AncestorIsLast: true, Candidate: source.Candidate{Path: "/srv/api"}}, "", "api"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			primary, _ := m.rowPrimaryText(tc.row)
+			if want := wantRowPrimary(m, tc.row, tc.icon, tc.want); primary != want {
+				t.Errorf("rowPrimaryText = %q, want %q", primary, want)
+			}
+			if strings.Contains(primary, "w4W:p1") || strings.Contains(primary, " · ") {
+				t.Errorf("rowPrimaryText = %q, must not carry a pane id or a path suffix", primary)
+			}
+		})
 	}
 }
 
-func TestRowPrimaryText_RowTab_NoNumber(t *testing.T) {
+// TestRowView_TabAndPaneSecondary proves tree children never carry the
+// parent workspace's context; only a pane shown by its path fallback is
+// split filename-first, and titles keep their start when truncated.
+func TestRowView_TabAndPaneSecondary(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
-	set := m.icons()
-	row := Row{Kind: RowTab, Depth: 1, IsLast: true, Candidate: source.Candidate{Label: "deploy", Path: "/svc"}}
-	primary, _ := m.rowPrimaryText(row)
-	want := wantRowPrimary(m, row, set.TabIcon+" ", "deploy · /svc")
-	if primary != want {
-		t.Errorf("rowPrimaryText(tab, no number) = %q, want %q", primary, want)
-	}
-}
-
-func TestRowPrimaryText_RowPane_HumanLabelDotPath(t *testing.T) {
-	t.Parallel()
-	m := newRenderTestModel(ThemeMocha, FocusList)
-	row := Row{
-		Kind: RowPane, Depth: 2, IsLast: true, AncestorIsLast: true,
-		Candidate: source.Candidate{
-			Label: "worker", Path: "/srv/api", Meta: map[string]string{"pane_id": "w4W:p1"},
-		},
-	}
-	primary, _ := m.rowPrimaryText(row)
-	want := wantRowPrimary(m, row, "", "worker · /srv/api")
-	if primary != want {
-		t.Errorf("rowPrimaryText(pane) = %q, want %q", primary, want)
-	}
-	if strings.Contains(primary, "w4W:p1") {
-		t.Errorf("rowPrimaryText(pane) must not render stable pane ID as a label: %q", primary)
-	}
-}
-
-func TestRowPrimaryText_RowPane_EmptyLabelShowsPathOnly(t *testing.T) {
-	t.Parallel()
-	m := newRenderTestModel(ThemeMocha, FocusList)
-	row := Row{Kind: RowPane, Depth: 2, IsLast: true, AncestorIsLast: true, Candidate: source.Candidate{Path: "/srv/api"}}
-	primary, _ := m.rowPrimaryText(row)
-	want := wantRowPrimary(m, row, "", "/srv/api")
-	if primary != want {
-		t.Errorf("rowPrimaryText(pane, no label) = %q, want %q", primary, want)
-	}
-}
-
-// TestRowSecondaryText_RowPane_AlwaysEmpty proves a RowPane's secondary text
-// (the old "pane-id · in <workspace>" trailing dim text) is gone entirely —
-// folded into the primary text instead.
-func TestRowSecondaryText_RowPane_AlwaysEmpty(t *testing.T) {
-	t.Parallel()
-	m := newRenderTestModel(ThemeMocha, FocusList)
-	row := Row{
-		Kind: RowPane,
-		Candidate: source.Candidate{
-			Label: "p1", Path: "/srv/api",
-			Meta: map[string]string{"workspace_label": "backend"},
-		},
-	}
-	if got := m.rowSecondaryText(row); got != "" {
-		t.Errorf("rowSecondaryText(pane) = %q, want empty (no secondary for RowPane anymore)", got)
-	}
-}
-
-// TestRowSecondaryText_RowTab_IsEmpty proves a tab's parent workspace context
-// is not rendered as the duplicated trailing "in <path>" content.
-func TestRowSecondaryText_RowTab_IsEmpty(t *testing.T) {
-	t.Parallel()
-	m := newRenderTestModel(ThemeMocha, FocusList)
-	row := Row{
-		Kind:      RowTab,
-		Candidate: source.Candidate{Label: "api", Meta: map[string]string{"workspace_label": "backend"}},
-	}
-	if got := m.rowSecondaryText(row); got != "" {
-		t.Errorf("rowSecondaryText(tab) = %q, want empty (no trailing workspace context)", got)
+	m.homeDir = "/home/dev"
+	for _, tc := range []struct {
+		row       Row
+		secondary string
+		keepStart bool
+	}{
+		{Row{Kind: RowPane, Candidate: source.Candidate{Label: "p1", Path: "/srv/api", Meta: map[string]string{"workspace_label": "backend"}}}, "", true},
+		{Row{Kind: RowTab, Candidate: source.Candidate{Label: "api", Meta: map[string]string{"workspace_label": "backend"}}}, "", true},
+		{Row{Kind: RowPane, Depth: 2, Candidate: source.Candidate{Path: "/home/dev/allsafe/ECORP/tech/whiterose-db"}}, "~/allsafe/ECORP/tech", false},
+	} {
+		v := m.buildRowView(tc.row)
+		if v.secondary != tc.secondary || v.keepStart != tc.keepStart {
+			t.Errorf("row %q: secondary %q keepStart %v, want %q %v", v.primary, v.secondary, v.keepStart, tc.secondary, tc.keepStart)
+		}
 	}
 }
 
@@ -440,28 +362,9 @@ func TestRenderRowLine_LeadingBlankCellIsStable(t *testing.T) {
 	}
 }
 
-// TestPreviewPane_BorderPaddingUnchanged proves theme.go's shared
-// borderStyle/focusedBorderStyle horizontal padding (Padding(0, 1)) — used
-// by BOTH the list and preview panes via paneBoxStyle — is untouched by
-// TRL-1: the actual cursor-gutter width comes entirely from
-// render.go's list-exclusive gutter/marker reservation (rowLineParts,
-// renderSelectedFromParts/renderUnselectedFromParts), which the preview pane
-// never invokes at all, so the preview pane's own leading padding can never
-// regress from this change.
-func TestPreviewPane_BorderPaddingUnchanged(t *testing.T) {
-	t.Parallel()
-	m := newRenderTestModel(ThemeMocha, FocusList)
-	if got := m.styles.borderStyle.GetPaddingLeft(); got != 1 {
-		t.Errorf("borderStyle left padding = %d, want 1 (unchanged, shared with preview, never zeroed)", got)
-	}
-	if got := m.styles.focusedBorderStyle.GetPaddingLeft(); got != 1 {
-		t.Errorf("focusedBorderStyle left padding = %d, want 1 (unchanged)", got)
-	}
-}
-
 // TestKindPrefix_DepthZero_FlatScopeRowsEmptyPrefix proves that depth-zero
 // pane/tab rows (such as synthesized flat agent rows) get an empty kindPrefix
-// with none of TreeVertical, TreeMid, TreeLast, and no ActiveMarker slot padding,
+// with none of TreeVertical, TreeMid or TreeLast,
 // identical to a top-level RowCandidate.
 func TestKindPrefix_DepthZero_FlatScopeRowsEmptyPrefix(t *testing.T) {
 	t.Parallel()
@@ -487,17 +390,5 @@ func TestKindPrefix_DepthZero_FlatScopeRowsEmptyPrefix(t *testing.T) {
 				t.Errorf("kindPrefix(%+v) = %q, must not contain tree glyphs", tt.row, got)
 			}
 		})
-	}
-}
-
-// TestChromeRows_EqualsPreviewChromeRows proves chromeRows (the list pane's
-// vertical chrome budget) matches previewChromeRows (the preview pane's
-// vertical chrome budget). Both panes share the same border top+bottom overhead
-// (2 rows). Divergence causes an off-by-one height mismatch between the list
-// and preview panes.
-func TestChromeRows_EqualsPreviewChromeRows(t *testing.T) {
-	t.Parallel()
-	if chromeRows != previewChromeRows {
-		t.Errorf("chromeRows (%d) != previewChromeRows (%d): panes have mismatched vertical chrome budgets", chromeRows, previewChromeRows)
 	}
 }

@@ -48,12 +48,12 @@ func TestWorktreeRowPresentationAndSearch(t *testing.T) {
 	}
 	m := newRenderTestModel(ThemePlain, FocusList)
 	primary, _ := m.rowDisplayText(rows[0])
-	if !strings.Contains(primary, "") || !strings.Contains(primary, "feat/super-long-branch") {
-		t.Fatalf("worktree row = %q, want branch icon and name", primary)
+	if primary != "\ue725  api" || m.rowAccessoryText(rows[0]) != "feat/super-long-branch" {
+		t.Fatalf("worktree row = %q + accessory %q, want the branch icon, the name and the branch accessory", primary, m.rowAccessoryText(rows[0]))
 	}
 	line := stripANSI(m.renderRowLine(rows[0], false, 20))
-	if lipglossWidth(line) > 20 || !strings.Contains(line, "") {
-		t.Fatalf("truncated row = %q (width %d), want icon within width 20", line, lipglossWidth(line))
+	if lipglossWidth(line) != 20 || !strings.Contains(line, "\ue725  api") {
+		t.Fatalf("narrow row = %q (width %d), want the icon and name within width 20 (the branch gives way)", line, lipglossWidth(line))
 	}
 }
 

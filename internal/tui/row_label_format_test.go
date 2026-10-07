@@ -226,12 +226,12 @@ func TestRowPrimaryText_DefaultLabelFormatsAreLabelFirst(t *testing.T) {
 		{
 			name: "tab number matching label renders once",
 			row:  tab,
-			want: wantRowPrimary(m, tab, m.icons().TabIcon+" ", "3 · /srv/tab"),
+			want: wantRowPrimary(m, tab, m.icons().TabIcon+" ", "3"),
 		},
 		{
 			name: "pane",
 			row:  pane,
-			want: wantRowPrimary(m, pane, "", "editor · /srv/pane"),
+			want: wantRowPrimary(m, pane, "", "editor"),
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -250,26 +250,33 @@ func TestRowPrimaryText_DefaultLabelFormatsAreLabelFirst(t *testing.T) {
 func TestRowPrimaryText_DefaultDirectoryLabelsUseTildeAndFallback(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
+	m.homeDir = "/home/dev"
 	for _, tt := range []struct {
-		name   string
-		source string
-		label  string
-		path   string
-		want   string
+		name          string
+		source        string
+		label         string
+		path          string
+		want, wantSec string
 	}{
-		{name: "zoxide relative label", source: config.SourceZoxide, label: "~/Proyectos/shep", path: "/workspace/Proyectos/shep", want: "~/Proyectos/shep"},
-		{name: "projects relative label", source: config.SourceProjects, label: "~/Proyectos/shep", path: "/workspace/Proyectos/shep", want: "~/Proyectos/shep"},
-		{name: "zoxide empty label fallback", source: config.SourceZoxide, path: "/opt/shep", want: "/opt/shep"},
-		{name: "projects empty label fallback", source: config.SourceProjects, path: "/opt/shep", want: "/opt/shep"},
+		{name: "zoxide relative label", source: config.SourceZoxide, label: "~/Proyectos/shep", path: "/workspace/Proyectos/shep", want: "shep", wantSec: "~/Proyectos"},
+		{name: "projects relative label", source: config.SourceProjects, label: "~/Proyectos/shep", path: "/workspace/Proyectos/shep", want: "shep", wantSec: "~/Proyectos"},
+		{name: "zoxide empty label fallback", source: config.SourceZoxide, path: "/opt/shep", want: "shep", wantSec: "/opt"},
+		{name: "projects empty label fallback", source: config.SourceProjects, path: "/opt/shep", want: "shep", wantSec: "/opt"},
+		{name: "fallback path under home is abbreviated", source: config.SourceZoxide, path: "/home/dev/Proyectos/shep", want: "shep", wantSec: "~/Proyectos"},
+		{name: "home itself", source: config.SourceZoxide, path: "/home/dev", want: "~"},
+		{name: "a sibling of home is not abbreviated", source: config.SourceZoxide, path: "/home/devops/x", want: "x", wantSec: "/home/devops"},
+		{name: "directly under home", source: config.SourceZoxide, path: "/home/dev/notes", want: "notes", wantSec: "~"},
+		{name: "directly under root", source: config.SourceZoxide, path: "/tmp", want: "tmp", wantSec: "/"},
+		{name: "one trailing slash is ignored", source: config.SourceZoxide, label: "~/src/", path: "/x", want: "src", wantSec: "~"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			row := Row{Kind: RowCandidate, Candidate: source.Candidate{Source: tt.source, Label: tt.label, Path: tt.path}}
-			got, _ := m.rowPrimaryText(row)
-			if got != tt.want {
-				t.Fatalf("rowPrimaryText() = %q, want %q", got, tt.want)
+			got, secondary := m.rowDisplayText(row)
+			if got != tt.want || secondary != tt.wantSec {
+				t.Fatalf("rowDisplayText() = %q + %q, want %q + %q", got, secondary, tt.want, tt.wantSec)
 			}
-			if strings.Contains(got, "/workspace/") {
-				t.Fatalf("row leaked absolute path: %q", got)
+			if strings.Contains(got+secondary, "/workspace/") || strings.Contains(got+secondary, "/home/dev/") {
+				t.Fatalf("row leaked an absolute path: %q + %q", got, secondary)
 			}
 		})
 	}
@@ -307,15 +314,15 @@ func TestRowPrimaryText_CustomSourceDefaultFormatIsLabelOnly(t *testing.T) {
 // TestRowPrimaryText_UndeclaredSourceKeepsPathOnlyFallback proves a source
 // name absent from Layout.LabelFormats.CustomSources (not a declared
 // [[sources.custom]] entry — e.g. a direct --path candidate) keeps the
-// historical path-only default, unaffected by the custom sources feature.
+// historical path-only default (shown filename first), unaffected by the
+// custom sources feature.
 func TestRowPrimaryText_UndeclaredSourceKeepsPathOnlyFallback(t *testing.T) {
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	row := Row{Kind: RowCandidate, Candidate: source.Candidate{
-		Source: "path", Label: "backend", Path: "/srv/backend", Icon: "◆",
+		Source: "path", Label: "label", Path: "/srv/backend", Icon: "◆",
 	}}
-	got, _ := m.rowPrimaryText(row)
-	if want := "◆ /srv/backend"; got != want {
-		t.Errorf("rowPrimaryText() = %q, want %q", got, want)
+	if got, secondary := m.rowDisplayText(row); got != "◆ backend" || secondary != "/srv" {
+		t.Errorf("rowDisplayText() = %q + %q, want the path, filename first", got, secondary)
 	}
 }
 
@@ -326,9 +333,8 @@ func TestRowPrimaryText_InvalidRuntimeFormatFallsBackToPath(t *testing.T) {
 		Source: config.SourceZoxide, Label: "cache", Path: "/srv/cache", Icon: "◆",
 	}}
 
-	got, _ := m.rowPrimaryText(row)
-	if want := "◆ /srv/cache"; got != want {
-		t.Errorf("rowPrimaryText() = %q, want safe fallback %q", got, want)
+	if got, secondary := m.rowDisplayText(row); got != "◆ cache" || secondary != "/srv" {
+		t.Errorf("rowDisplayText() = %q + %q, want the safe path fallback, filename first", got, secondary)
 	}
 }
 
@@ -344,9 +350,8 @@ func TestRowPrimaryText_EmptyRenderedLabelFallsBackToPath(t *testing.T) {
 		Source: config.SourceWorkspaces, Label: "", Path: "/srv/unnamed", Icon: "◆",
 	}}
 
-	got, _ := m.rowPrimaryText(row)
-	if want := "◆ /srv/unnamed"; got != want {
-		t.Errorf("rowPrimaryText() = %q, want safe fallback %q", got, want)
+	if got, secondary := m.rowDisplayText(row); got != "◆ unnamed" || secondary != "/srv" {
+		t.Errorf("rowDisplayText() = %q + %q, want the safe path fallback, filename first", got, secondary)
 	}
 }
 
@@ -373,29 +378,32 @@ func TestRowPrimaryText_SessionsUsesConfiguredFormatAndStatusSuffixes(t *testing
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	m.layout.LabelFormats = LabelFormats{Sessions: "session={{.Label}}"}
 	for _, tt := range []struct {
-		name string
-		row  Row
-		want string
+		name          string
+		row           Row
+		want, wantAcc string
 	}{
 		{
 			name: "running default",
 			row: Row{Kind: RowCandidate, Candidate: source.Candidate{
 				Source: config.SourceSessions, Label: "alpha", Icon: "S", Meta: map[string]string{"running": "true", "default": "true"},
 			}},
-			want: "S session=alpha (running, default)",
+			want: "S session=alpha", wantAcc: "running · default",
 		},
 		{
 			name: "stopped non-default",
 			row: Row{Kind: RowCandidate, Candidate: source.Candidate{
 				Source: config.SourceSessions, Label: "beta", Icon: "S", Meta: map[string]string{"running": "false", "default": "false"},
 			}},
-			want: "S session=beta (stopped)",
+			want: "S session=beta", wantAcc: "stopped",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got, _ := m.rowPrimaryText(tt.row)
 			if got != tt.want {
 				t.Errorf("rowPrimaryText() = %q, want %q", got, tt.want)
+			}
+			if acc := m.rowAccessoryText(tt.row); acc != tt.wantAcc {
+				t.Errorf("accessories = %q, want the session state %q outside the template", acc, tt.wantAcc)
 			}
 		})
 	}

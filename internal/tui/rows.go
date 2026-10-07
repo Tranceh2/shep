@@ -63,6 +63,8 @@ type rowBuildInput struct {
 	sourceOrder     []string
 	rankingSnapshot ranking.Snapshot
 	ranked          bool
+	// matcher is query parsed once for the pass; buildRows fills it in.
+	matcher *queryMatcher
 }
 
 // effectiveSourceOrder returns in.sourceOrder when non-empty, else
@@ -123,13 +125,38 @@ func candidateFields(c source.Candidate) fuzzy.CandidateFields {
 	}
 }
 
-func extendedMatch(query string, c source.Candidate, target string) (int, []int, bool) {
+// queryMatcher is the query parsed once for a whole filter pass: every
+// candidate and child row of one buildRows call is matched against the same
+// parse, instead of re-parsing the query (and recompiling its regexes) per
+// row on every keystroke.
+type queryMatcher struct {
+	raw string
+	eq  fuzzy.ExtendedQuery
+	// extended reports a query using more than one plain fuzzy term — any
+	// operator, field, negation or second term — which candidateLayer ranks
+	// through the parser instead of the label-first fuzzy layers.
+	extended bool
+}
+
+func newQueryMatcher(query string) *queryMatcher {
+	q := &queryMatcher{raw: query}
 	if query == "" {
+		return q
+	}
+	q.eq = fuzzy.ParseExtendedQuery(query)
+	eq := q.eq
+	q.extended = len(eq.Clauses) > 1 || (len(eq.Clauses) == 1 && len(eq.Clauses[0].Alternatives) > 1) ||
+		len(eq.Terms) > 1 || (len(eq.Terms) == 1 && (eq.Terms[0].Kind != fuzzy.TermFuzzy || eq.Terms[0].Inverse))
+	return q
+}
+
+// match scores c's target text (with its structured fields) against the
+// query; an empty query matches everything.
+func (q *queryMatcher) match(c source.Candidate, target string) (int, []int, bool) {
+	if q.raw == "" {
 		return 0, nil, true
 	}
-	eq := fuzzy.ParseExtendedQuery(query)
-	score, indexes, matched := eq.MatchCandidate(target, candidateFields(c))
-	return score, indexes, matched
+	return q.eq.MatchCandidate(target, candidateFields(c))
 }
 
 // candidateHaystack is the searchable "label path" text for one candidate.
@@ -191,21 +218,25 @@ func candidateMetadataHaystack(c source.Candidate, kind RowKind) string {
 // metadata-only match never inflates an original-domain group's aggregate
 // score; it does not impose a global ordering tier.
 func matchRow(query string, c source.Candidate, kind RowKind) (score int, indexes []int, matched bool, original bool) {
-	if query == "" {
+	return newQueryMatcher(query).matchRow(c, kind)
+}
+
+// matchRow is matchRow with the query already parsed (see queryMatcher).
+func (q *queryMatcher) matchRow(c source.Candidate, kind RowKind) (score int, indexes []int, matched bool, original bool) {
+	if q.raw == "" {
 		return 0, nil, true, true
 	}
-	haystack := candidateHaystack(c)
-	if s, idx, ok := extendedMatch(query, c, haystack); ok {
+	if s, idx, ok := q.match(c, candidateHaystack(c)); ok {
 		return s, idx, true, true
 	}
-	if _, s, ok := source.MatchAlias(query, c.Aliases); ok {
+	if _, s, ok := source.MatchAlias(q.raw, c.Aliases); ok {
 		return s, nil, true, false
 	}
 	meta := candidateMetadataHaystack(c, kind)
 	if meta == "" {
 		return 0, nil, false, false
 	}
-	if s, _, ok := extendedMatch(query, c, meta); ok {
+	if s, _, ok := q.match(c, meta); ok {
 		return s, nil, true, false
 	}
 	return 0, nil, false, false
@@ -216,12 +247,15 @@ func matchRow(query string, c source.Candidate, kind RowKind) (score int, indexe
 // direct-or-descendant fuzzy match, expands Herdr workspace children (tabs
 // then their panes) when relevant, and returns the final ordered []Row to
 // render — a single flat list, source-differentiated by icon/color only
-// (see rowDisplayText), with no divider/header rows at all.
+// (see buildRowView), with no divider/header rows at all.
 //
 // An empty query uses the caller's pre-ranked candidate order. A non-empty query
 // score-sorts visible candidate groups, preserving their tree context, by score
 // descending. Score ties retain configured source order and original provider order.
 func buildRows(in rowBuildInput) []Row {
+	if in.matcher == nil {
+		in.matcher = newQueryMatcher(in.query)
+	}
 	if in.ranked {
 		var out []Row
 		for _, candidate := range in.candidates {
@@ -238,7 +272,14 @@ func buildRows(in rowBuildInput) []Row {
 	}
 	sortScoredRowGroups(groups, in.query)
 
+	total := 0
+	for _, group := range groups {
+		total += len(group.rows)
+	}
 	var out []Row
+	if total > 0 {
+		out = make([]Row, 0, total)
+	}
 	for _, group := range groups {
 		out = append(out, group.rows...)
 	}
@@ -306,13 +347,12 @@ func sourceRank(order []string, sourceName string) int {
 	return len(order)
 }
 
-func candidateLayer(query string, c source.Candidate, kind RowKind) int {
+func (q *queryMatcher) candidateLayer(c source.Candidate, kind RowKind) int {
+	query := q.raw
 	if query == "" {
 		return 0
 	}
-	eq := fuzzy.ParseExtendedQuery(query)
-	isExt := len(eq.Clauses) > 1 || (len(eq.Clauses) == 1 && len(eq.Clauses[0].Alternatives) > 1) ||
-		len(eq.Terms) > 1 || (len(eq.Terms) == 1 && (eq.Terms[0].Kind != fuzzy.TermFuzzy || eq.Terms[0].Inverse))
+	eq, isExt := q.eq, q.extended
 
 	label := strings.TrimSpace(c.Label)
 	path := c.Path
@@ -352,13 +392,13 @@ func candidateLayer(query string, c source.Candidate, kind RowKind) int {
 	return 0
 }
 
-func groupLayer(query string, rows []Row) int {
+func (q *queryMatcher) groupLayer(rows []Row) int {
 	layer := 0
 	for _, row := range rows {
 		if row.Match == MatchNone {
 			continue
 		}
-		rowLayer := candidateLayer(query, row.Candidate, row.Kind)
+		rowLayer := q.candidateLayer(row.Candidate, row.Kind)
 		if rowLayer > layer {
 			layer = rowLayer
 		}
@@ -378,7 +418,7 @@ func visibleGroupRows(in rowBuildInput, groupSource string) []scoredRowGroup {
 		if !ok {
 			continue
 		}
-		layer := groupLayer(in.query, rows)
+		layer := in.matcher.groupLayer(rows)
 		if layer == 0 && original {
 			layer = ranking.LayerPathOrMeta
 		}
@@ -400,8 +440,18 @@ func visibleGroupRows(in rowBuildInput, groupSource string) []scoredRowGroup {
 // only via the metadata fallback returns original=false so it can be shown
 // but never reorders an original-domain group.
 func buildCandidateRow(in rowBuildInput, c source.Candidate) ([]Row, int, bool, bool) {
-	selfScore, selfMatchedIndexes, selfMatch, selfOriginal := matchRow(in.query, c, RowCandidate)
-	children, descMatch, descScore, descOriginal := expandedChildren(in, c)
+	selfScore, selfMatchedIndexes, selfMatch, selfOriginal := in.matcher.matchRow(c, RowCandidate)
+	// A workspace that matches the query by itself stays collapsed unless the
+	// user expanded it: typing a common fragment must not unfold every open
+	// workspace into tabs and panes. It keeps its own score; its descendants
+	// neither show nor count. Only a workspace visible through descendants
+	// alone opens, and only along the matching branch.
+	var children []Row
+	var descMatch, descOriginal bool
+	var descScore int
+	if in.query == "" || !selfMatch || in.expandedWorkspaces[c.Meta["workspace_id"]] {
+		children, descMatch, descScore, descOriginal = expandedChildren(in, c)
+	}
 
 	if in.query != "" && !selfMatch && !descMatch {
 		return nil, 0, false, false
@@ -467,9 +517,12 @@ func aggregateScore(groupOriginal bool, selfScore int, selfMatch, selfOriginal b
 // immediately: only Herdr workspaces can have tree-expand children.
 //
 // A workspace's children are shown when EITHER the query is non-empty
-// (matching descendants must always be reachable) OR the user has manually
-// expanded it via toggleExpand at an empty query (progressive disclosure:
-// an empty query never dumps every workspace's tabs/panes by default).
+// (matching descendants must always be reachable; buildCandidateRow keeps a
+// directly matching workspace collapsed) OR the user has manually expanded
+// it (progressive disclosure: an empty query never dumps every workspace's
+// tabs/panes by default). A workspace the user expanded during a query shows
+// ALL its children, the matching ones marked MatchDirect: expanding a
+// workspace that matched by itself must show its tree, not an empty branch.
 func expandedChildren(in rowBuildInput, c source.Candidate) ([]Row, bool, int, bool) {
 	if c.Source != config.SourceHerdr {
 		return nil, false, 0, false
@@ -479,27 +532,28 @@ func expandedChildren(in rowBuildInput, c source.Candidate) ([]Row, bool, int, b
 	if !ok {
 		return nil, false, 0, false
 	}
-	expand := in.query != "" || in.expandedWorkspaces[wsID]
-	if !expand {
+	manual := in.expandedWorkspaces[wsID]
+	if in.query == "" && !manual {
 		return nil, false, 0, false
 	}
+	showAll := in.query == "" || manual
 
 	var tabGroups []scoredRowGroup
 	descMatch := false
 	descScore := 0
 	descOriginal := false
 	for _, tc := range wc.Tabs {
-		tabScore, tabMatchedIndexes, tabSelf, tabOriginal := matchRow(in.query, tc.Tab, RowTab)
+		tabScore, tabMatchedIndexes, tabSelf, tabOriginal := in.matcher.matchRow(tc.Tab, RowTab)
 		var paneGroups []scoredRowGroup
 		tabDescMatch := false
 		tabDescOriginal := false
 		for _, p := range tc.Panes {
-			paneScore, paneMatchedIndexes, paneSelf, paneOriginal := matchRow(in.query, p, RowPane)
-			if in.query != "" && !paneSelf {
+			paneScore, paneMatchedIndexes, paneSelf, paneOriginal := in.matcher.matchRow(p, RowPane)
+			if !paneSelf && !showAll {
 				continue // only matching descendants are shown (non-negotiable)
 			}
 			paneMatch := MatchNone
-			if in.query != "" {
+			if in.query != "" && paneSelf {
 				paneMatch = MatchDirect
 				tabDescMatch = true
 				if paneOriginal {
@@ -512,19 +566,20 @@ func expandedChildren(in rowBuildInput, c source.Candidate) ([]Row, bool, int, b
 				ID: rowIdentity(p), Action: RowActionFocusTab,
 			}}
 			paneGroups = append(paneGroups, scoredRowGroup{
-				rows: paneRows, layer: groupLayer(in.query, paneRows), isOpen: true,
+				rows: paneRows, layer: in.matcher.groupLayer(paneRows), isOpen: true,
 				score: paneScore, sourceRank: 0, usage: in.rankingSnapshot.UsageFor(p),
 				original: in.query == "" || paneOriginal,
 			})
 		}
-		if in.query != "" && !tabSelf && !tabDescMatch {
+		if !tabSelf && !tabDescMatch && !showAll {
 			continue // sibling tab with no matching pane and no self match: excluded
 		}
 		tabMatch := MatchNone
 		if in.query != "" {
-			if tabSelf {
+			switch {
+			case tabSelf:
 				tabMatch = MatchDirect
-			} else {
+			case tabDescMatch:
 				tabMatch = MatchDescendant
 			}
 		}
@@ -554,7 +609,7 @@ func expandedChildren(in rowBuildInput, c source.Candidate) ([]Row, bool, int, b
 			}
 		}
 		tabGroups = append(tabGroups, scoredRowGroup{
-			rows: rows, layer: groupLayer(in.query, rows), isOpen: true,
+			rows: rows, layer: in.matcher.groupLayer(rows), isOpen: true,
 			score: aggScore, sourceRank: 0, usage: in.rankingSnapshot.UsageFor(tc.Tab),
 			original: tabGroupOriginal,
 		})

@@ -1,0 +1,16 @@
+  all   agents
+ ❯  Search workspaces, projects, folders           20 │ repo-01                              zoxide
+ ─────────────────────────────────────────────────────┼────────────────────────────────────────────
+   󰳆  billing                                       ◉ │ ~/src/repo-01
+     main                          running · default ┃
+     team                                        ★ › ┃
+     api-fix                              fix/parser ┃
+     archive  ~/old                          missing ┃
+     shep  ~/Proyectos                               ┃
+     whiterose-db  ~/allsafe/ECORP/platforms         ┃
+     repo-00  ~/src                                  ┃
+ ❯   repo-01  ~/src                                  │
+     repo-02  ~/src                                  │
+     repo-03  ~/src                                  │
+     repo-04  ~/src                                  │
+ enter open · tab agents · ? help · esc quit

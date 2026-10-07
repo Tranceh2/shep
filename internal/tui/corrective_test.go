@@ -25,57 +25,50 @@ import (
 // status word) that shares the model's single spinner tick loop, and (5) the
 // full path restored in the footer.
 
-// === 1. Header carries the redesign's orientation line, never lowercase brand text ===
+// === 1. The chrome carries no brand and no pane boxes ===
 
-// TestRenderHeader_NoBrandText proves the header never renders the lowercase
-// "shep" brand mark — the redesign reinstates a small uppercase "SHEP
-//
-//	Switch workspace" orientation line (a text label, not a logo) plus the
-//
-// search prompt line and the right-aligned count.
-func TestRenderHeader_NoBrandText(t *testing.T) {
+// TestPromptRow_NoBrandCompactCount proves the borderless chrome: no brand
+// mark (Herdr's popup frame already names the plugin), the prompt glyph and
+// the all view's placeholder on the prompt row, and the compact count
+// ("2", never "2 candidates") right-aligned on the same row.
+func TestPromptRow_NoBrandCompactCount(t *testing.T) {
 	t.Parallel()
 	m := NewModelWithLayout(
 		[]source.Candidate{zoxideCandidate("alpha", "/a"), zoxideCandidate("beta", "/b")},
 		nil, Layout{Theme: ThemeMocha},
 	)
 	m, _ = update(t, m, sizeMsg(120, 36))
-	plain := stripNonSGRANSI(m.renderHeader(120))
-	if strings.Contains(plain, "shep") {
-		t.Errorf("header must not contain the lowercase brand mark \"shep\": %q", plain)
+	prompt := promptText(m)
+	if !strings.HasPrefix(prompt, "❯ ") || !strings.Contains(prompt, "Search workspaces, projects, folders") {
+		t.Errorf("prompt row = %q, want the ❯ prompt and the all-view placeholder", prompt)
 	}
-	if !strings.Contains(plain, "SHEP") || !strings.Contains(plain, "all") {
-		t.Errorf("header missing the wide orientation line \"SHEP\": %q", plain)
+	if !strings.HasSuffix(prompt, " 2") || strings.Contains(prompt, "candidates") {
+		t.Errorf("prompt row = %q, want the compact count \"2\" right-aligned", prompt)
 	}
-	if strings.Contains(plain, "[/]") {
-		t.Errorf("header must not contain misleading \"[/]\" keycap: %q", plain)
-	}
-	if !strings.Contains(plain, "⌕ type to filter…") {
-		t.Errorf("header missing the \"⌕ type to filter…\" prompt: %q", plain)
-	}
-	if !strings.Contains(plain, "2 candidates") {
-		t.Errorf("header missing count \"2 candidates\": %q", plain)
+	if strings.Contains(prompt, "[/]") || strings.Contains(prompt, "⌕") {
+		t.Errorf("prompt row = %q, must not carry the old keycap or search glyph", prompt)
 	}
 }
 
-// TestView_HeaderLineHasNoBrand proves the full View() output's header lines
-// (everything before the first pane border) never contain the lowercase brand
-// mark either — an end-to-end check, not just the isolated renderHeader unit.
-func TestView_HeaderLineHasNoBrand(t *testing.T) {
+// TestView_ChromeRowsHaveNoBrandOrBoxes proves, end to end, that the chrome
+// rows above the body (tab strip, prompt row, rule) never show a brand mark
+// and that no rounded pane box is drawn anywhere in the frame.
+func TestView_ChromeRowsHaveNoBrandOrBoxes(t *testing.T) {
 	t.Parallel()
 	m := NewModelWithLayout([]source.Candidate{zoxideCandidate("alpha", "/a")}, nil, Layout{Theme: ThemeMocha})
 	m, _ = update(t, m, sizeMsg(120, 36))
-	view := stripNonSGRANSI(m.View())
-	firstBorder := strings.Index(view, "╭")
-	if firstBorder < 0 {
-		t.Fatal("no pane border found in view")
+	lines := viewLines(m)
+	chrome := strings.Join(lines[:3], "\n")
+	if strings.Contains(strings.ToLower(chrome), "shep") {
+		t.Errorf("chrome rows must not carry a brand mark: %q", chrome)
 	}
-	header := view[:firstBorder]
-	if strings.Contains(header, "shep") {
-		t.Errorf("header lines must not contain \"shep\": %q", header)
+	if !strings.Contains(lines[0], " all ") || !strings.Contains(lines[0], " agents ") {
+		t.Errorf("tab strip row = %q, want the all and agents tabs", lines[0])
 	}
-	if !strings.Contains(header, "SHEP") || !strings.Contains(header, "all") {
-		t.Errorf("header lines missing the wide orientation line: %q", header)
+	for i, line := range lines {
+		if strings.ContainsAny(line, "╭╮╰╯") {
+			t.Errorf("line %d = %q, must not draw a pane box", i, line)
+		}
 	}
 }
 
@@ -183,11 +176,10 @@ func TestCursor_NeverLandsOnNonActionableRow(t *testing.T) {
 // === 4. Pane row primary/secondary + status icon (never a literal word) ===
 
 // TestRowDisplayText_PaneRow_PathPrimarySecondaryPaneID proves a RowPane's
-// primary contains both its pane id (Candidate.Label) and its path (unified
-// "<label> · <path>" layout, Change 2 — the old separate "pane-id" secondary
-// was folded into the primary and the secondary is now always empty), and
-// that no agent_status literal word ever appears in the rendered row text —
-// only an icon.
+// primary names the pane by its label (the default pane format no longer
+// repeats the path on every child), its secondary stays empty, and no
+// agent_status literal word ever appears in the rendered row text — only an
+// icon.
 func TestRowDisplayText_PaneRow_PathPrimarySecondaryPaneID(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
@@ -200,8 +192,8 @@ func TestRowDisplayText_PaneRow_PathPrimarySecondaryPaneID(t *testing.T) {
 			},
 		}
 		primary, secondary := m.rowDisplayText(row)
-		if !strings.Contains(primary, "/srv/api") {
-			t.Errorf("status=%q: primary = %q, want it to contain the path /srv/api", status, primary)
+		if strings.Contains(primary, "/srv/api") {
+			t.Errorf("status=%q: primary = %q, must not repeat the path", status, primary)
 		}
 		if !strings.Contains(primary, "p1") {
 			t.Errorf("status=%q: primary = %q, want it to contain the pane id \"p1\"", status, primary)
@@ -349,7 +341,7 @@ func TestRenderFooter_HasNoSelectedPathOrBrackets(t *testing.T) {
 	m := NewModelWithLayout([]source.Candidate{zoxideCandidate("alpha", "/home/dev/alpha")}, nil, Layout{Theme: ThemeMocha})
 	for _, size := range []struct{ width, height int }{{120, 36}, {60, 20}, {15, 20}} {
 		m, _ = update(t, m, sizeMsg(size.width, size.height))
-		footer := stripNonSGRANSI(m.renderFooter())
+		footer := footerText(m)
 		if strings.Contains(footer, "/home/dev/alpha") || strings.ContainsAny(footer, "[]") {
 			t.Errorf("footer at %dx%d = %q, must contain neither selected path nor brackets", size.width, size.height, footer)
 		}

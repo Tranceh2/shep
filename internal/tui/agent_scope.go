@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"iter"
 	"sort"
 	"strings"
 
@@ -51,7 +52,7 @@ var scopeRegistry = []scopeDefinition{
 	{
 		ID:          ScopeAll,
 		Name:        "all",
-		Placeholder: "type to filter…",
+		Placeholder: "Search workspaces, projects, folders",
 		FooterLabel: "all",
 		EmptyState: func(m Model) []string {
 			if m.loadingCandidates && len(m.baseFlatCandidates()) == 0 {
@@ -69,7 +70,7 @@ var scopeRegistry = []scopeDefinition{
 	{
 		ID:          ScopeAgents,
 		Name:        "agents",
-		Placeholder: "filter agents…",
+		Placeholder: "Search agents",
 		FooterLabel: "agents",
 		EmptyState: func(m Model) []string {
 			if len(m.layout.Tabs) > 0 && !(len(m.layout.Tabs) == 2 && m.layout.Tabs[0].ID == "all" && m.layout.Tabs[1].ID == "agents") {
@@ -173,7 +174,7 @@ func (m Model) tabPresentation() scopeDefinition {
 		if tab.Kind == TabGroup {
 			kind = "group"
 		}
-		return scopeDefinition{Name: tab.ID, Placeholder: "filter " + kind + "…", FooterLabel: tab.ID,
+		return scopeDefinition{Name: tab.ID, Placeholder: "Search " + tabName(tab), FooterLabel: tab.ID,
 			EmptyState: func(m Model) []string {
 				if tab.Kind == TabGroup && m.groupNeedsSnapshot() && m.snapshotUnavailable != nil {
 					return []string{"Group candidates unavailable", "Herdr snapshot unavailable: " + m.snapshotUnavailable.Error()}
@@ -232,8 +233,7 @@ type AgentCounts struct {
 // AgentCounts returns current agent counts from snapshot and live observations.
 func (m Model) AgentCounts() AgentCounts {
 	var counts AgentCounts
-	panes := m.allSnapshotPanes()
-	for _, p := range panes {
+	for p := range m.allSnapshotPanes() {
 		status := m.effectivePaneStatus(p)
 		if p.Agent == "" && (status == "" || status == "unknown") {
 			continue
@@ -253,18 +253,31 @@ func (m Model) AgentCounts() AgentCounts {
 	return counts
 }
 
-func (m Model) allSnapshotPanes() []source.Pane {
-	if m.startupSnapshot != nil && len(m.startupSnapshot.Panes) > 0 {
-		return m.startupSnapshot.Panes
-	}
-	if m.tree != nil {
-		var out []source.Pane
-		for _, tree := range m.tree.trees {
-			out = append(out, tree.Panes...)
+// allSnapshotPanes yields every known pane: the startup snapshot's when it
+// has any, else each tree's. It is an iterator rather than a slice because
+// the footer counts agents on every frame and must not copy the tree's panes
+// to do so.
+func (m Model) allSnapshotPanes() iter.Seq[source.Pane] {
+	return func(yield func(source.Pane) bool) {
+		if m.startupSnapshot != nil && len(m.startupSnapshot.Panes) > 0 {
+			for _, p := range m.startupSnapshot.Panes {
+				if !yield(p) {
+					return
+				}
+			}
+			return
 		}
-		return out
+		if m.tree == nil {
+			return
+		}
+		for _, tree := range m.tree.trees {
+			for _, p := range tree.Panes {
+				if !yield(p) {
+					return
+				}
+			}
+		}
 	}
-	return nil
 }
 
 func (m Model) effectivePaneStatus(p source.Pane) string {
@@ -342,6 +355,7 @@ func (m *Model) buildAgentRows() []Row {
 	currentID := m.currentPaneID()
 	priorID := m.priorAgentPaneID(candidates, currentID)
 
+	matcher := newQueryMatcher(m.query)
 	var matched []scoredAgent
 	for _, c := range candidates {
 		paneID := c.Meta["pane_id"]
@@ -361,7 +375,7 @@ func (m *Model) buildAgentRows() []Row {
 
 		if m.query != "" {
 			haystack := candidateHaystack(c) + " " + c.Meta["workspace_label"] + " " + c.Meta["agent"] + " " + c.Meta["agent_status"]
-			s, idxs, ok := extendedMatch(m.query, c, haystack)
+			s, idxs, ok := matcher.match(c, haystack)
 			if !ok {
 				continue
 			}
@@ -454,7 +468,7 @@ func (m Model) priorAgentPaneID(candidates []source.Candidate, currentID string)
 		}
 	}
 	if currentWorkspace == "" {
-		for _, p := range m.allSnapshotPanes() {
+		for p := range m.allSnapshotPanes() {
 			if p.ID == currentID {
 				currentWorkspace = p.WorkspaceID
 				break

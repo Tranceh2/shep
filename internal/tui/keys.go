@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"slices"
 	"strings"
 	"unicode"
@@ -29,6 +28,32 @@ func keyChord(msg tea.KeyMsg) string {
 		return ""
 	}
 	return msg.String()
+}
+
+// isDoubleEsc reports two Esc presses that reached the terminal in the same
+// read. Bubble Tea decodes "\x1b\x1b" as one alt-modified Esc ("alt+esc"),
+// so a quick double tap — the usual way to back out of a popup — would
+// otherwise match no binding and leave the picker open.
+func isDoubleEsc(msg tea.KeyMsg) bool {
+	return msg.Type == tea.KeyEscape && msg.Alt
+}
+
+// replayEsc applies n plain Esc presses in order, exactly as if they had
+// arrived one by one: each may close help, cancel a pending close
+// confirmation, clear the query or cancel the picker. It stops as soon as one
+// press quits, so a cancel is never followed by further state changes.
+func (m Model) replayEsc(n int) (tea.Model, tea.Cmd) {
+	esc := tea.KeyMsg{Type: tea.KeyEscape}
+	cmds := make([]tea.Cmd, 0, n)
+	for range n {
+		next, cmd := m.handleKey(esc)
+		m = next.(Model)
+		cmds = append(cmds, cmd)
+		if m.cancelled {
+			break
+		}
+	}
+	return m, tea.Batch(cmds...)
 }
 
 // queryInputRunes returns the runes a key contributes to the query, or nil
@@ -169,17 +194,20 @@ func scrollViewport(vp *viewport.Model, key string) bool {
 // handlePreviewFocusedKey). Every switch matches keyChord(msg), never the
 // raw String(), so a typing burst or a paste is always text, never a chord.
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if isDoubleEsc(msg) {
+		return m.replayEsc(2)
+	}
 	if m.closeConfirm != nil {
 		target := *m.closeConfirm
 		m.closeConfirm = nil
-		if keyChord(msg) == "y" {
+		if keyChord(msg) == keyChordConfirm {
 			return m.startClose(target)
 		}
-		m.closeStatus = "close cancelled"
+		m.closeStatus = infoStatus("close cancelled")
 		return m, nil
 	}
 	if !m.closePending {
-		m.closeStatus = ""
+		m.closeStatus = footerStatus{}
 	}
 	if m.focus == FocusHelp {
 		return m.handleHelpFocusedKey(msg)
@@ -252,16 +280,16 @@ func (m Model) togglePin() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if row.Kind != RowCandidate {
-		m.pinStatus = "child rows cannot be pinned"
+		m.pinStatus = errorStatus("child rows cannot be pinned")
 		return m, nil
 	}
 	if m.layout.PinToggler == nil {
-		m.pinStatus = "pinning unavailable"
+		m.pinStatus = errorStatus("pinning unavailable")
 		return m, nil
 	}
 	key := ranking.PinKey(row.Candidate)
 	if key == "" {
-		m.pinStatus = "row has no stable pin identity"
+		m.pinStatus = errorStatus("row has no stable pin identity")
 		return m, nil
 	}
 	if m.pinPending {
@@ -484,38 +512,51 @@ func (m Model) closeSelectedRow() (tea.Model, tea.Cmd) {
 	}
 	row, ok := m.currentRow()
 	if !ok {
-		m.closeStatus = "not an open Herdr item"
+		m.closeStatus = errorStatus("not an open Herdr item")
 		return m, nil
 	}
-	target := closeTarget{label: row.Candidate.Label}
-	switch {
-	case row.Kind == RowPane && (row.Candidate.Source == config.SourceHerdr || row.Candidate.Source == config.SourceAgents),
-		row.Kind == RowCandidate && row.Candidate.Source == config.SourceAgents:
-		target.kind, target.id = "pane", row.Candidate.Meta["pane_id"]
-	case row.Kind == RowTab && row.Candidate.Source == config.SourceHerdr:
-		target.kind, target.id = "tab", row.Candidate.Meta["tab_id"]
-	case row.Kind == RowCandidate && row.Candidate.Source == config.SourceHerdr:
-		target.kind, target.id = "workspace", row.Candidate.Meta["workspace_id"]
-	}
-	if target.id == "" {
-		m.closeStatus = "not an open Herdr item"
+	target, ok := closeTargetFor(row)
+	if !ok {
+		m.closeStatus = errorStatus("not an open Herdr item")
 		return m, nil
 	}
 	if m.layout.Closer == nil {
-		m.closeStatus = "Herdr close unavailable"
+		m.closeStatus = errorStatus("Herdr close unavailable")
 		return m, nil
 	}
 	if slices.Contains(m.layout.ConfirmClose, target.kind) {
 		m.closeConfirm = &target
-		m.closeStatus = fmt.Sprintf("close %s %q? y/n", target.kind, target.label)
+		m.closeStatus = footerStatus{}
 		return m, nil
 	}
 	return m.startClose(target)
 }
 
+// closeTargetFor resolves what ctrl+x would close on row: an open Herdr pane
+// (a tree pane row or an agent row), tab or workspace. Tree rows are
+// synthesized under an open workspace with no Source of their own (see
+// synthesizeWorkspaceChildren) and are recognized by the workspace id they
+// carry. ok is false for every other row; closeSelectedRow refuses it and
+// the footer leaves the close hint out.
+func closeTargetFor(row Row) (closeTarget, bool) {
+	c := row.Candidate
+	herdrChild := c.Source == config.SourceHerdr || (c.Source == "" && c.Meta["workspace_id"] != "")
+	target := closeTarget{label: c.Label}
+	switch {
+	case row.Kind == RowPane && (herdrChild || c.Source == config.SourceAgents),
+		row.Kind == RowCandidate && c.Source == config.SourceAgents:
+		target.kind, target.id = "pane", c.Meta["pane_id"]
+	case row.Kind == RowTab && herdrChild:
+		target.kind, target.id = "tab", c.Meta["tab_id"]
+	case row.Kind == RowCandidate && c.Source == config.SourceHerdr:
+		target.kind, target.id = "workspace", c.Meta["workspace_id"]
+	}
+	return target, target.id != ""
+}
+
 func (m Model) startClose(target closeTarget) (tea.Model, tea.Cmd) {
 	m.closePending = true
-	m.closeStatus = "closing " + target.kind + "..."
+	m.closeStatus = infoStatus("closing " + target.kind + "...")
 	closer, ctx := m.layout.Closer, m.renderCtx
 	return m, func() tea.Msg {
 		result := closer(ctx, target.kind, target.id)

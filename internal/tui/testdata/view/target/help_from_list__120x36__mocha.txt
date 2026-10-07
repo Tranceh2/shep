@@ -1,36 +1,36 @@
-╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ Navigation                                                                                                           │
-│   up/down, ctrl+j/ctrl+k    move the cursor                                                                          │
-│   ctrl+d/ctrl+u             move half a page                                                                         │
-│   left/right                collapse/expand a workspace's tabs/panes                                                 │
-│   enter                     open the highlighted row                                                                 │
-│   ctrl+f                    pin/unpin the highlighted top-level candidate                                            │
-│   tab / shift+tab           switch between all and agents filter                                                     │
-│   backspace                 delete the last query character                                                          │
-│   ctrl+w, alt+backspace     delete the last query word                                                               │
-│                                                                                                                      │
-│ Preview (while focused)                                                                                              │
-│   up/down, ctrl+j/ctrl+k    scroll one line                                                                          │
-│   pgup/pgdown               scroll one page                                                                          │
-│   home/end                  jump to top/bottom                                                                       │
-│   any letter                return to the list and search                                                            │
-│                                                                                                                      │
-│ Herdr                                                                                                                │
-│   ctrl+t                    open in a new tab of the current workspace (list or preview focus)                       │
-│   ctrl+p                    open in a new pane of the current workspace (list or preview focus)                      │
-│   ctrl+x                    close the highlighted open Herdr pane, tab, or workspace (y/n if configured)             │
-│                                                                                                                      │
-│ Layout                                                                                                               │
-│   ctrl+l                    toggle layout: auto / landscape (list focus only)                                        │
-│                                                                                                                      │
-│ Help (this screen)                                                                                                   │
-│   up/down, ctrl+j/ctrl+k    scroll one line                                                                          │
-│   pgup/pgdown               scroll one page                                                                          │
-│   home/end                  jump to top/bottom                                                                       │
-│   ?, esc                    close help and return to what you were doing                                             │
-│                                                                                                                      │
-│ Session                                                                                                              │
-│   esc, ctrl+c, ctrl+g       cancel the picker                                                                        │
-│                                                                                                                      │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-enter open   tab agents   ? help   esc quit
+  all   agents
+ Keyboard & search
+ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Navigate                                                     Search syntax
+   ↑/↓, ctrl+k/ctrl+j     move                                  api web         both terms (space is AND)
+   ctrl+u/ctrl+d          half page up/down                     api|web         either term (OR)
+   pgup/pgdn              scroll the preview                    'api            exact text, closing quote optional
+   ←/→                    collapse/expand                       "api gw"        exact phrase ('api gw' too)
+   tab/shift+tab          next/previous view                    ^back           starts with
+                                                                end$            ends with
+ Act                                                            ^shep$          the whole text is exactly
+   enter                  open the highlighted row              /v[0-9]+/       regular expression
+   ctrl+t                 open as a tab here                    !test           exclude matches
+   ctrl+p                 open as a pane here                   !^tmp           negation works with every form
+   ctrl+f                 pin/unpin                             status:working  agent status: idle working blocked done
+   ctrl+x                 close the open Herdr item (y/n                        unknown
+                          when configured)                      agent:claude    agent name contains
+                                                                source:zoxide   source: herdr workspaces zoxide
+ Search                                                                         projects sessions agents, or a custom
+   type                   filter the list                                       name
+   backspace              delete a character                    path:allsafe    path contains
+   ctrl+w, alt+backspace  delete a word                         s:blocked       short forms s: a: src: p:
+   esc                    clear search, then quit
+
+ Layout
+   ctrl+l                 auto/landscape layout
+
+ Session
+   ctrl+c, ctrl+g         quit
+
+
+
+
+
+
+ esc close · ↑↓ scroll

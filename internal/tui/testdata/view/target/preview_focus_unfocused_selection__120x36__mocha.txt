@@ -1,36 +1,36 @@
-SHEP  ● all   agents                                                                                        7 candidates
-⌕ type to filter…
-╭────────────────────────────────────────────────────────────────╮ ╭ PREVIEW · backend ────────────────────────────────╮
-│   backend                                                      │ │ label  backend                                    │
-│   frontend                                                     │ │ path   /srv/backend                               │
-│   notes                                                        │ │                                                   │
-│   tmp                                                          │ │                                                   │
-│   Downloads                                                    │ │                                                   │
-│   shep                                                         │ │                                                   │
-│   dotfiles                                                     │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-╰────────────────────────────────────────────────────────────────╯ ╰───────────────────────────────────────────────────╯
-enter open   tab agents   ? help   esc quit
+  all   agents
+ ❯  Search workspaces, projects, folders                       7 │ backend                                    workspace
+ ────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────
+   backend                                                       │ /srv/backend
+   frontend                                                      │
+   notes                                                         │
+   tmp                                                           │
+   Downloads                                                     │
+   shep                                                          │
+   dotfiles                                                      │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+ enter open · tab agents · ? help · esc quit

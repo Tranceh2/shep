@@ -4,12 +4,12 @@ import "github.com/tranceh2/shep/internal/source"
 
 // RowKind identifies what a rendered picker row represents. The picker's
 // visible list is a flat []Row (see buildRows), not a flat []source.Candidate:
-// Row adds the hierarchy/match-provenance information renderList and
+// Row adds the hierarchy/match-provenance information listLines and
 // handleKey need without re-deriving it from scratch on every keystroke.
 //
 // Corrective round: group headers (the old RowGroupHeader divider rows) were
 // removed entirely — the list is a single flat sequence, differentiated only
-// by each row's icon/color per source (see rowDisplayText/kindPrefix). Every
+// by each row's icon/color per source (see buildRowView/kindPrefix). Every
 // row is now selectable by construction; there is no non-actionable row kind
 // left to skip.
 type RowKind int
@@ -42,13 +42,13 @@ const (
 	// MatchDescendant means the row itself did not match, but is shown
 	// because one of its descendants did (a workspace shown for a matching
 	// tab/pane; a tab shown for a matching pane). Rendered with a distinct,
-	// muted "via ..." indicator (see renderRowText) so a descendant-only
+	// muted style (see rowView.descendant) so a descendant-only
 	// match is never confused with a direct one.
 	MatchDescendant
 )
 
 // Row is one entry in the picker's visible, flat, progressively disclosed
-// list — the single vocabulary buildRows/renderList/handleKey operate on.
+// list — the single vocabulary buildRows/listLines/handleKey operate on.
 type Row struct {
 	Kind      RowKind
 	Candidate source.Candidate

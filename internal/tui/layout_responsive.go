@@ -9,12 +9,17 @@ const (
 	modeListOnly = "list-only"
 )
 
-// wideBreakpoint is the terminal width at/below which the AUTO responsive mode
-// drops to list-only: it equals minPreviewWidth, the floor below which a
-// side-by-side preview pane is too cramped to be useful. Tied to a named
-// render constraint (not a bare literal) so a future change to minPreviewWidth
-// deliberately reconsiders the breakpoint too.
-const wideBreakpoint = minPreviewWidth
+// wideBreakpoint is the terminal width from which the AUTO responsive mode
+// shows the preview column. The borderless grid spends only the divider and
+// the side margins on chrome, so at 80 columns the list keeps its
+// minListColumns floor and the preview still gets a useful column; below it a
+// side-by-side preview only starves the list.
+const wideBreakpoint = 80
+
+// minPreviewHeight is the terminal height below which the preview column is
+// hidden: with the four chrome rows taken, a shorter terminal leaves too few
+// body rows to show a list and a preview side by side.
+const minPreviewHeight = 12
 
 // hysteresisMargin is the extra width a resize must cross BACK OUT of a mode
 // by before the auto mode reverts, so a terminal resized to exactly the
@@ -63,7 +68,7 @@ func autoWidthMode(width int, prev string) string {
 }
 
 // heightForcesListOnly reports whether m's reported terminal height is too
-// short for the preview pane's own minimum floor (minPreviewHeight) — the
+// short for the preview column's own minimum floor (minPreviewHeight) — the
 // safety net the original picker applied unconditionally, now folded into the
 // responsive mode computation so it composes with both auto and a user-forced
 // orientation.

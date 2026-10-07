@@ -93,8 +93,7 @@ func TestResolveTheme_PlainIsNoColor(t *testing.T) {
 		{"labelStyle", s.labelStyle},
 		{"previewLoadingStyle", s.previewLoadingStyle},
 		{"previewErrStyle", s.previewErrStyle},
-		{"borderStyle", s.borderStyle},
-		{"focusedBorderStyle", s.focusedBorderStyle},
+		{"ruleStyle", s.ruleStyle},
 		{"statusIdleStyle", s.statusIdleStyle},
 		{"statusWorkingStyle", s.statusWorkingStyle},
 		{"statusBlockedStyle", s.statusBlockedStyle},
@@ -107,6 +106,14 @@ func TestResolveTheme_PlainIsNoColor(t *testing.T) {
 		{"cursorGutterUnfocusedStyle", s.cursorGutterUnfocusedStyle},
 		{"cursorSurfaceUnfocusedStyle", s.cursorSurfaceUnfocusedStyle},
 		{"rowDescendantStyle", s.rowDescendantStyle},
+		{"tabActiveStyle", s.tabActiveStyle},
+		{"tabActiveBlockedStyle", s.tabActiveBlockedStyle},
+		{"promptStyle", s.promptStyle},
+		{"queryTextStyle", s.queryTextStyle},
+		{"queryCursorStyle", s.queryCursorStyle},
+		{"placeholderStyle", s.placeholderStyle},
+		{"titleStyle", s.titleStyle},
+		{"warnStyle", s.warnStyle},
 	}
 	for _, e := range styles {
 		if fg := e.st.GetForeground(); fg != noColor {
@@ -299,8 +306,8 @@ func TestStyleRoles_CursorGutter(t *testing.T) {
 
 // TestStyleRoles_CursorSurface proves the focused selection surface carries a
 // selectedSurface background and the unfocused variant an unfocusedSurface
-// background; plain uses faint for both (the closest structural attribute to a
-// tinted row background).
+// background; plain has no surface at all, so the selection is never dimmer
+// than its neighbours (its prominence is the bold gutter and primary).
 func TestStyleRoles_CursorSurface(t *testing.T) {
 	t.Parallel()
 	for _, th := range allColorThemes() {
@@ -316,11 +323,11 @@ func TestStyleRoles_CursorSurface(t *testing.T) {
 		}
 	}
 	s := newPalette(themes[ThemePlain])
-	if !s.cursorSurfaceStyle.GetFaint() {
-		t.Error("plain cursorSurfaceStyle not faint, want faint (surface fallback)")
+	if s.cursorSurfaceStyle.GetFaint() || s.cursorSurfaceUnfocusedStyle.GetFaint() {
+		t.Error("plain selection surfaces must never be faint")
 	}
-	if !s.cursorSurfaceUnfocusedStyle.GetFaint() {
-		t.Error("plain cursorSurfaceUnfocusedStyle not faint, want faint (surface fallback)")
+	if !s.cursorGutterStyle.GetBold() || !s.rowSelected.primary.GetBold() || s.rowSelected.primary.GetFaint() {
+		t.Error("plain selection must be bold (gutter and primary) and never faint")
 	}
 }
 
@@ -397,7 +404,7 @@ func TestStatusStyle_Colors(t *testing.T) {
 //	rowStyle          = text           (labels/main content — muted is never
 //	                                   the primary-label role)
 //	labelStyle        = muted          (paths/metadata inside previews)
-//	previewRuleStyle  = rule           (the thin heading rule line)
+//	ruleStyle         = rule           (rules, divider, heading rule lines)
 //	pinStyle          = warn           (the pinned marker)
 //
 // Plain keeps the same structure with structural attributes only.
@@ -423,8 +430,8 @@ func TestStyleRoles_RedesignRoleBindings(t *testing.T) {
 		if fg := s.labelStyle.GetForeground(); fg != lipgloss.Color(th.Muted) {
 			t.Errorf("%s: labelStyle fg = %#v, want muted (paths/metadata)", th.Name, fg)
 		}
-		if fg := s.previewRuleStyle.GetForeground(); fg != lipgloss.Color(th.Rule) {
-			t.Errorf("%s: previewRuleStyle fg = %#v, want rule %q", th.Name, fg, th.Rule)
+		if fg := s.ruleStyle.GetForeground(); fg != lipgloss.Color(th.Rule) {
+			t.Errorf("%s: ruleStyle fg = %#v, want rule %q", th.Name, fg, th.Rule)
 		}
 		if fg := s.pinStyle.GetForeground(); fg != lipgloss.Color(th.Warn) {
 			t.Errorf("%s: pinStyle fg = %#v, want warn %q", th.Name, fg, th.Warn)
@@ -447,8 +454,8 @@ func TestStyleRoles_RedesignRoleBindings(t *testing.T) {
 	if s.pinStyle.GetBold() || s.pinStyle.GetItalic() {
 		t.Error("plain pinStyle must stay visually plain")
 	}
-	if fg := s.previewRuleStyle.GetForeground(); fg != (lipgloss.NoColor{}) {
-		t.Errorf("plain previewRuleStyle fg = %#v, want no color (faint is the structural rule)", fg)
+	if fg := s.ruleStyle.GetForeground(); fg != (lipgloss.NoColor{}) || !s.ruleStyle.GetFaint() {
+		t.Errorf("plain ruleStyle fg = %#v, want no color and faint (the structural rule)", fg)
 	}
 }
 
@@ -482,5 +489,45 @@ func TestStyleRoles_PlainNeverColorsPrimaryLabels(t *testing.T) {
 	}
 	if fg := s.queryStyle.GetForeground(); fg != noColor {
 		t.Errorf("plain queryStyle fg = %#v, want no color", fg)
+	}
+}
+
+// TestStyleRoles_ChromeRoleBindings proves the grid chrome binds the
+// approved roles in every color flavor — active tab on the selected surface
+// in the accent, prompt glyph accent bold, query text bold in the text
+// role, cursor block an accent background, placeholder muted italic — and
+// that the plain theme keeps each one distinguishable without color.
+func TestStyleRoles_ChromeRoleBindings(t *testing.T) {
+	t.Parallel()
+	for _, th := range allColorThemes() {
+		s := newPalette(th)
+		if s.tabActiveStyle.GetBackground() != lipgloss.Color(th.SelectedSurface) || s.tabActiveStyle.GetForeground() != lipgloss.Color(th.Accent) || !s.tabActiveStyle.GetBold() {
+			t.Errorf("%s: tabActiveStyle = %v, want selected surface + accent + bold", th.Name, s.tabActiveStyle)
+		}
+		if s.tabActiveBlockedStyle.GetForeground() != lipgloss.Color(th.Err) || s.tabActiveBlockedStyle.GetBackground() != lipgloss.Color(th.SelectedSurface) {
+			t.Errorf("%s: tabActiveBlockedStyle = %v, want the err role on the selected surface", th.Name, s.tabActiveBlockedStyle)
+		}
+		if s.promptStyle.GetForeground() != lipgloss.Color(th.Accent) || !s.promptStyle.GetBold() {
+			t.Errorf("%s: promptStyle = %v, want accent + bold", th.Name, s.promptStyle)
+		}
+		if s.queryTextStyle.GetForeground() != lipgloss.Color(th.Text) || !s.queryTextStyle.GetBold() {
+			t.Errorf("%s: queryTextStyle = %v, want text + bold", th.Name, s.queryTextStyle)
+		}
+		if s.queryCursorStyle.GetBackground() != lipgloss.Color(th.Accent) {
+			t.Errorf("%s: queryCursorStyle = %v, want an accent background", th.Name, s.queryCursorStyle)
+		}
+		if s.placeholderStyle.GetForeground() != lipgloss.Color(th.Muted) || !s.placeholderStyle.GetItalic() {
+			t.Errorf("%s: placeholderStyle = %v, want muted + italic", th.Name, s.placeholderStyle)
+		}
+		if s.warnStyle.GetForeground() != lipgloss.Color(th.Warn) {
+			t.Errorf("%s: warnStyle = %v, want the warn role", th.Name, s.warnStyle)
+		}
+	}
+	plain := newPalette(themes[ThemePlain])
+	if !plain.tabActiveStyle.GetReverse() || !plain.queryCursorStyle.GetReverse() {
+		t.Error("plain active tab and query cursor must be reverse video (distinguishable without color)")
+	}
+	if !plain.tabActiveBlockedStyle.GetUnderline() {
+		t.Error("plain blocked active tab must add an underline to the active treatment")
 	}
 }

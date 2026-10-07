@@ -45,7 +45,7 @@ I'm sharing it in case someone else in the Herdr or terminal community finds it 
 - **[zoxide](https://github.com/ajeetdsouza/zoxide)** — optional; enabled by default to surface your most frequent directories.
 - **[fzf](https://github.com/junegunn/fzf)** — optional external selector fallback.
 - **Nerd Font** — required for the built-in source icons to render correctly; without it, those glyphs appear as replacement boxes. Herdr itself already assumes Nerd Fonts. On terminals that cannot render Unicode, `[tui].icons = "ascii"` remains available for the picker's own semantic markers (status, tree, and search prompt); it does not affect per-source icons, which are raw configured strings.
-- **[lsd](https://github.com/lsd-rs/lsd)** or **[eza](https://github.com/eza-community/eza)** — optional; used for syntax-colored directory previews (falls back to `ls -la`).
+- **[lsd](https://github.com/lsd-rs/lsd)** or **[eza](https://github.com/eza-community/eza)** — optional; used for colored, compact directory previews (names only, directories first; falls back to `ls -1Ap`).
 
 ---
 
@@ -268,6 +268,31 @@ the full recovery and refusal taxonomy.
 
 ---
 
+## Reading the Picker
+
+The picker is one grid with a single frame (Herdr's popup border when it runs as a plugin): views on top, the search prompt and the list on the left, the preview on the right, and the shortcuts that apply to the selected row at the bottom.
+
+```text
+ all   agents   kube-contexts
+ ❯ api█                               12/651 │ api-gateway                    project
+ ────────────────────────────────────────────┼──────────────────────────────────────────
+ ❯ 󰳆  payments                             ⠋ │ ~/work/api-gateway
+     api-gateway  ~/work                     │ on main · 2 changes
+     Kubernetes                            › │
+                                             │ Files ───────────────────────────────────
+ enter open · tab agents · ctrl+f pin · ? help · esc clear
+```
+
+- **Views** (`tab` / `shift+tab`) stay visible at every width; the active one is highlighted.
+- **Prompt**: what you typed, the cursor, and `matches/total` (just the total when nothing is typed). `?` opens the shortcut and search-syntax cheat sheet.
+- **Rows** show the name first and the parent folder dimmed, so the part you scan for survives narrow widths; the parent shrinks before the name does. Paths under your home directory are shown with `~`.
+- **Icons are colored by source**: open Herdr workspaces green, configured workspaces lavender, zoxide blue, projects and worktrees peach, sessions teal, agents mauve, custom sources sky.
+- **Right-hand markers**: the most urgent agent state of an open workspace (`⠋` working, `◉` blocked, `●` done, a dim `✓` when idle), `★` pinned, `›` a group that opens its own picker, `current` for where you are now, and the branch of a worktree.
+- **Preview**: the title row names the selection and its kind; below come its `~` path, a one-line summary (agent state with tab and pane counts, or the git branch with its changes), then sections such as Tabs, Files, your custom commands and, last, the newest lines of the active pane.
+- The divider between list and preview doubles as the list's scroll bar.
+
+---
+
 ## Keybindings Reference
 
 | Key | Context | Action |
@@ -284,6 +309,7 @@ the full recovery and refusal taxonomy.
 | `Ctrl+X` | List | Close the highlighted open Herdr pane, tab, or workspace (with confirmation if configured) |
 | `Ctrl+L` | List | Cycle layout override between auto and landscape |
 | `Backspace` | List | Delete the last query character |
+| `Ctrl+W` / `Alt+Backspace` | List | Delete the last query word |
 | `?` | List | Open the in-app help overlay (`?` / `Esc` closes it) |
 | `Esc` | List | Clear search query; quit if query is already empty |
 | `Ctrl+C` / `Ctrl+G` | Global | Cancel and exit |

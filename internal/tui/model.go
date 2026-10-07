@@ -35,6 +35,8 @@ package tui
 import (
 	"context"
 	"errors"
+	"os"
+	"slices"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -134,10 +136,10 @@ func (f LabelFormats) withDefaults() LabelFormats {
 		f.Agents = defaultLabelOnlyFormat
 	}
 	if f.Tab == "" {
-		f.Tab = defaultLabelWithPathFormat
+		f.Tab = defaultLabelOnlyFormat
 	}
 	if f.Pane == "" {
-		f.Pane = defaultLabelWithPathFormat
+		f.Pane = defaultLabelWithPathFallbackFormat
 	}
 	return f
 }
@@ -181,6 +183,10 @@ type Layout struct {
 	AckClearer      AckClearer
 	InitialScope    FilterScope
 	InitialTab      string
+	// HomeDir is the home directory displayed paths under it are shown
+	// relative to ("~/..."). Empty resolves os.UserHomeDir once at
+	// construction; tests set it for deterministic output.
+	HomeDir string
 }
 
 // Orientation values for Layout.Orientation. The empty string means "auto":
@@ -223,6 +229,15 @@ type Model struct {
 	// NewModel/NewModelWithLayout model (no tree, no children ever
 	// synthesized — see fetchAllChildren).
 	baseCandidates []source.Candidate
+	// allTab is the all tab's candidate set while [tui].tabs is configured:
+	// the enabled sources' results, deduplicated in source order.
+	// Deduplication resolves symlinks and stats directories, so it runs only
+	// where those results change (see rebuildAllTab); frames and keystrokes
+	// read this slice and never touch the disk.
+	allTab []source.Candidate
+	// dedupFn deduplicates candidates; nil means resolver.Dedup. Tests count
+	// its calls to prove no frame or keystroke pays for it.
+	dedupFn func([]source.Candidate) []source.Candidate
 	// tree fetches/caches a Herdr workspace's tabs+panes so buildRows can
 	// synthesize RowTab/RowPane children. nil means tree-expand is
 	// inactive: every group's candidates render flat with no descendants.
@@ -234,6 +249,15 @@ type Model struct {
 	rows          []Row
 	cursor        int  // index into rows
 	cursorTouched bool // true only after explicit user navigation
+	// listOffset is the first row of the list window. It follows the cursor
+	// with a scroll-off margin (see ensureCursorVisible) instead of
+	// re-centering on every move, and resets with the cursor on a new query.
+	listOffset int
+	// rowWindow caches the display models of the rows in the list window
+	// across frames (see syncRowWindow).
+	rowWindow rowWindow
+	// homeDir abbreviates displayed paths to "~" (see Layout.HomeDir).
+	homeDir string
 
 	query            string
 	lastAppliedQuery string
@@ -258,7 +282,7 @@ type Model struct {
 	snapshotUnavailable error
 	layout              Layout
 	theme               Theme
-	styles              styleSet
+	styles              *styleSet
 
 	// currentPane is the Herdr pane shep is running inside, queried once by
 	// the caller and threaded in via WithCurrentPane. nil means "no current
@@ -285,11 +309,13 @@ type Model struct {
 	// pinStatus is the truthful, short feedback shown in the footer.
 	pinPending          bool
 	pinKey              string
-	pinStatus           string
+	pinStatus           footerStatus
 	closePending        bool
 	closeRefreshPending bool
-	closeConfirm        *closeTarget
-	closeStatus         string
+	// closeConfirm is the close awaiting its y/n answer; the footer renders
+	// the question from it. closeStatus is the close flow's latest message.
+	closeConfirm *closeTarget
+	closeStatus  footerStatus
 
 	// renderer produces the preview pane content asynchronously for a
 	// RowCandidate row. nil degrades to a built-in label/path/source
@@ -355,6 +381,14 @@ type Model struct {
 	// background.
 	spinner        spinner.Model
 	spinnerRunning bool
+	// spinnerFrame counts the spinner's advances, so the preview memo knows
+	// when a drawn spinner frame went stale (see previewMemo).
+	spinnerFrame int
+
+	// preview memoizes the preview body; helpKey records what the help
+	// viewport's content was built for (see syncViewport/syncHelpViewport).
+	preview previewMemo
+	helpKey helpKey
 
 	producers          []SourceProducer
 	pendingProducers   map[int]bool
@@ -531,6 +565,10 @@ func newModelWithLayout(candidates []source.Candidate, renderer preview.Renderer
 	}
 	theme := resolveTheme(layout.Theme)
 	styles := newPalette(theme)
+	home := layout.HomeDir
+	if home == "" {
+		home, _ = os.UserHomeDir()
+	}
 	var snapshot ranking.Snapshot
 	if len(snapshots) > 0 {
 		snapshot = snapshots[0]
@@ -550,7 +588,8 @@ func newModelWithLayout(candidates []source.Candidate, renderer preview.Renderer
 		groupCandidates:    make(map[string][]source.Candidate),
 		groupLoading:       make(map[string]bool),
 		groupErrors:        make(map[string]error),
-		spinner:            spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(styles.previewLoadingStyle)),
+		homeDir:            home,
+		spinner:            spinner.New(spinner.WithSpinner(loadingSpinner(layout.Icons)), spinner.WithStyle(styles.previewLoadingStyle)),
 		// mode starts "" (unknown/not yet sized): View treats "" the same
 		// as modeWide (side-by-side, using the same width<=0 fallback
 		// splitSizes already applies) until the first real
@@ -571,6 +610,17 @@ func newModelWithLayout(candidates []source.Candidate, renderer preview.Renderer
 	m.applyFilter()
 	m.refreshPreviewLoadingFlag()
 	return m
+}
+
+// loadingSpinner picks the shared spinner's frames for the icon tier: the
+// Braille MiniDot frames, or ASCII line frames ("|/-\\") under the ASCII
+// tier, whose loading indicators must stay 7-bit. Working status glyphs use
+// IconSet.StatusWorking under that tier instead (see statusGlyph).
+func loadingSpinner(icons string) spinner.Spinner {
+	if resolveIconSetName(icons) == IconsASCII {
+		return spinner.Line
+	}
+	return spinner.MiniDot
 }
 
 // Selected returns the chosen candidate and ok=true after enter is pressed.
@@ -637,6 +687,7 @@ func (m Model) ChosenTarget() string { return m.chosenTarget }
 // before driving it.
 func (m Model) WithCurrentPane(p *source.Pane) Model {
 	m.currentPane = p
+	m.invalidateRowWindow() // the active-focus marker may move
 	return m
 }
 
@@ -681,6 +732,7 @@ func (m Model) WithSnapshotRefresh(driver SnapshotDriver, snapshot source.Snapsh
 		m.currentPane = nil
 	}
 	m.lastSnapshotAt = time.Now()
+	m.invalidateRowWindow()
 	return m
 }
 
@@ -759,9 +811,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.closePending {
 			m.closePending = false
 			if msg.Err != nil {
-				m.closeStatus = "close failed: " + msg.Err.Error()
+				m.closeStatus = errorStatus("close failed: " + msg.Err.Error())
 			} else {
-				m.closeStatus = "closed " + msg.Kind
+				m.closeStatus = successStatus("closed " + msg.Kind)
 				// Reuse the TTL-gated snapshot owner; expire it only after a successful
 				// close so a fresh snapshot cannot leave the closed row visible.
 				if m.snapshotDriver != nil {
@@ -783,6 +835,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		next, cmd = m.handleKey(msg)
 		m = next.(Model)
 	}
+	m.ensureCursorVisible()
+	m.syncRowWindow()
 	m.syncViewport()
 	m.syncHelpViewport()
 	return m, cmd
@@ -913,15 +967,48 @@ func (m *Model) rebuildCandidatesFromSources() {
 			all = append(all, cands...)
 		}
 	}
+	tabOnly := false
 	for src, cands := range m.candidatesBySource {
 		if !seenSources[src] && len(cands) > 0 {
 			all = append(all, cands...)
+			tabOnly = true
 		}
 	}
 
-	deduped := resolver.Dedup(all)
+	deduped := m.dedup(all)
 	m.baseCandidates = deduped
 	m.candidates = deduped
+	if tabOnly {
+		m.rebuildAllTab()
+	} else {
+		// Every source with results is enabled, in order: the all tab's
+		// deduplication would repeat this one exactly.
+		m.allTab = deduped
+	}
+}
+
+// rebuildAllTab recomputes allTab from the enabled sources' results. Callers
+// are the Update handlers that replace those results; it deduplicates, so it
+// must never run while rendering or filtering.
+func (m *Model) rebuildAllTab() {
+	if len(m.layout.Tabs) == 0 || m.candidatesBySource == nil {
+		m.allTab = nil // read only while tabs are configured
+		return
+	}
+	var enabled []source.Candidate
+	for _, name := range m.resolvedSourceOrder() {
+		enabled = append(enabled, m.candidatesBySource[name]...)
+	}
+	m.allTab = m.dedup(enabled)
+}
+
+// dedup collapses candidates that name the same directory (see
+// resolver.Dedup). It touches the filesystem.
+func (m *Model) dedup(candidates []source.Candidate) []source.Candidate {
+	if m.dedupFn != nil {
+		return m.dedupFn(candidates)
+	}
+	return resolver.Dedup(candidates)
 }
 
 func waitForStatusCmd(ctx context.Context, events <-chan StatusEvent) tea.Cmd {
@@ -990,6 +1077,9 @@ func (m Model) handlePaneStatus(msg paneStatusMsg) (Model, tea.Cmd) {
 	if m.tree != nil {
 		m.tree.UpdatePaneAgentStatus(msg.PaneID, status)
 	}
+	// Status glyphs (a pane's own, a workspace's aggregate) live in the row
+	// display models; rows below may also be patched in place.
+	m.invalidateRowWindow()
 
 	var clearCmd tea.Cmd
 	if (m.rankingSnapshot.IsPaneAcknowledged(msg.PaneID, "blocked") && status != "blocked") ||
@@ -1030,6 +1120,9 @@ func (m Model) handlePaneStatus(msg paneStatusMsg) (Model, tea.Cmd) {
 	}
 	m.candidates = updateAgents(m.candidates)
 	m.baseCandidates = updateAgents(m.baseCandidates)
+	// A status is not part of deduplication's identity, so patching the
+	// stored set equals deduplicating the patched results, without the I/O.
+	m.allTab = updateAgents(m.allTab)
 	for name, candidates := range m.candidatesBySource {
 		m.candidatesBySource[name] = updateAgents(candidates)
 	}
@@ -1052,7 +1145,7 @@ func (m Model) handlePaneStatus(msg paneStatusMsg) (Model, tea.Cmd) {
 		if selectedAgent {
 			previewCmd = m.syncPreviewAfterSelectionChange()
 		}
-		return m, tea.Batch(filterCmd, previewCmd, clearCmd, waitForStatusCmd(m.renderCtx, m.liveStatusEvents))
+		return m, tea.Batch(filterCmd, previewCmd, clearCmd, m.maybeStartSpinner(), waitForStatusCmd(m.renderCtx, m.liveStatusEvents))
 	}
 	for i := range m.rows {
 		if m.rows[i].Kind == RowPane && m.rows[i].Candidate.Meta["pane_id"] == msg.PaneID {
@@ -1064,7 +1157,9 @@ func (m Model) handlePaneStatus(msg paneStatusMsg) (Model, tea.Cmd) {
 			m.rows[i].Candidate.Meta = meta
 		}
 	}
-	return m, tea.Batch(clearCmd, waitForStatusCmd(m.renderCtx, m.liveStatusEvents))
+	// A status that turns working (a pane's own glyph or its workspace's
+	// aggregate) needs the shared spinner ticking.
+	return m, tea.Batch(clearCmd, m.maybeStartSpinner(), waitForStatusCmd(m.renderCtx, m.liveStatusEvents))
 }
 
 // degradeFocusIfPreviewUnavailable corrects m.focus/m.prevFocus after a
@@ -1133,14 +1228,14 @@ func (m Model) handlePanePreviewResponse(msg panePreviewMsg) Model {
 func (m Model) handlePinToggleResult(msg PinToggleResultMsg) (Model, tea.Cmd) {
 	m.pinPending = false
 	if msg.Err != nil {
-		m.pinStatus = "pin update failed: " + msg.Err.Error()
+		m.pinStatus = errorStatus("pin update failed: " + msg.Err.Error())
 		return m, nil
 	}
 	m.rankingSnapshot = m.rankingSnapshot.WithPinned(msg.Key, msg.Pinned)
 	if msg.Pinned {
-		m.pinStatus = "pinned"
+		m.pinStatus = successStatus("pinned")
 	} else {
-		m.pinStatus = "unpinned"
+		m.pinStatus = successStatus("unpinned")
 	}
 	filterCmd := m.applyFilter()
 	return m, filterCmd
@@ -1218,6 +1313,13 @@ func (m Model) handleSnapshotResponse(msg snapshotResponseMsg) (Model, tea.Cmd) 
 		m.candidates = m.baseCandidates
 		if m.candidatesBySource != nil {
 			m.candidatesBySource[config.SourceAgents] = agentReplacement
+		}
+	}
+	// The all tab's set changes only when a refreshed source is enabled.
+	for _, name := range []string{config.SourceHerdr, config.SourceAgents} {
+		if m.snapshotRefreshesSource(name) && slices.Contains(m.resolvedSourceOrder(), name) {
+			m.rebuildAllTab()
+			break
 		}
 	}
 	if pane, ok := source.ResolveFocusedPane(msg.snapshot); ok {
@@ -1390,6 +1492,9 @@ func (m Model) handleSpinnerTick(msg spinner.TickMsg) (Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	m.spinner, cmd = m.spinner.Update(msg)
+	if cmd != nil { // the spinner accepted the tick and advanced its frame
+		m.spinnerFrame++
+	}
 	return m, cmd
 }
 

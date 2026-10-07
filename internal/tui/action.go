@@ -35,28 +35,28 @@ const (
 // The wording is deliberately TRUTHFUL and generic: focus-or-create is
 // resolved later at the command layer, so a candidate row promises neither;
 // a pane row focuses its CONTAINING tab (Herdr has no per-pane focus command).
+// Footer labels are short lowercase verbs (the footer is scanned, not read);
+// the help texts spell the action out in full.
 const (
 	// footerLabelOpen is the truthful generic verb for a top-level candidate
-	// row: it opens the destination (focus-or-create resolved later), without
-	// promising creation or focusing an existing workspace.
+	// or session row: it opens the destination (focus-or-create resolved
+	// later, attach for a session), without promising creation or focusing
+	// an existing workspace.
 	footerLabelOpen = "open"
 	// helpLabelOpen matches the pre-existing help-overlay Enter description
 	// for a candidate row; kept verbatim so the approved help body is stable.
 	helpLabelOpen = "open the highlighted row"
 	// footerLabelFocusTab is the tab-row Enter verb; it matches
 	// internal/herdr.Driver.FocusTab, the call Enter dispatches for a RowTab.
-	footerLabelFocusTab = "Focus tab"
+	footerLabelFocusTab = "focus tab"
 	// helpLabelFocusTab describes the RowTab Enter action for the help overlay.
 	helpLabelFocusTab = "focus the already-open tab"
-	// footerLabelFocusContainingTab is the pane-row Enter verb. Herdr exposes
-	// no per-pane focus command, so a pane row focuses the tab that CONTAINS
-	// it — the truthful action, never "focus pane".
-	footerLabelFocusContainingTab = "Focus containing tab"
+	// footerLabelFocus is the pane/agent-row Enter verb. Herdr exposes no
+	// per-pane focus command, so the row focuses the tab that CONTAINS the
+	// pane — the help text says so; the footer never claims "focus pane".
+	footerLabelFocus = "focus"
 	// helpLabelFocusContainingTab describes the RowPane Enter action.
 	helpLabelFocusContainingTab = "focus the tab containing this pane"
-	// footerLabelOpenSession is the session-row Enter verb: attach-oriented
-	// open wording, never "create".
-	footerLabelOpenSession = "open session"
 	// helpLabelOpenSession describes the session-row Enter action.
 	helpLabelOpenSession = "open the highlighted session"
 )
@@ -82,13 +82,13 @@ func rowActionDescriptor(r Row) rowActionDescriptorResult {
 	case RowTab:
 		return rowActionDescriptorResult{Action: RowActionFocusTab, FooterLabel: footerLabelFocusTab, HelpText: helpLabelFocusTab}
 	case RowPane:
-		return rowActionDescriptorResult{Action: RowActionFocusTab, FooterLabel: footerLabelFocusContainingTab, HelpText: helpLabelFocusContainingTab}
+		return rowActionDescriptorResult{Action: RowActionFocusTab, FooterLabel: footerLabelFocus, HelpText: helpLabelFocusContainingTab}
 	default: // RowCandidate
 		if r.Candidate.Source == config.SourceSessions {
-			return rowActionDescriptorResult{Action: RowActionOpen, FooterLabel: footerLabelOpenSession, HelpText: helpLabelOpenSession}
+			return rowActionDescriptorResult{Action: RowActionOpen, FooterLabel: footerLabelOpen, HelpText: helpLabelOpenSession}
 		}
 		if r.Candidate.Source == config.SourceAgents {
-			return rowActionDescriptorResult{Action: RowActionFocusTab, FooterLabel: footerLabelFocusContainingTab, HelpText: helpLabelFocusContainingTab}
+			return rowActionDescriptorResult{Action: RowActionFocusTab, FooterLabel: footerLabelFocus, HelpText: helpLabelFocusContainingTab}
 		}
 		return rowActionDescriptorResult{Action: RowActionOpen, FooterLabel: footerLabelOpen, HelpText: helpLabelOpen}
 	}

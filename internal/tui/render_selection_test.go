@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/tranceh2/shep/internal/config"
+	"github.com/tranceh2/shep/internal/ranking"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -33,21 +34,78 @@ func renderRowLineText(s string) string {
 	return stripNonSGRANSI(s)
 }
 
-func TestRenderHeader_LongTabsKeepsActiveVisibleAndBounded(t *testing.T) {
+// TestRenderTabStrip_LongTabsKeepsActiveVisibleAndBounded proves a tab
+// strip too long for its row keeps the active tab whole, stays within the
+// row, and marks the hidden tabs on both sides with the overflow glyph.
+func TestRenderTabStrip_LongTabsKeepsActiveVisibleAndBounded(t *testing.T) {
 	tabs := []TabDefinition{{ID: "all", Kind: TabAll}}
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		tabs = append(tabs, TabDefinition{ID: "group" + string(rune('a'+i)), Kind: TabGroup, Label: "Engineering Operations Very Long Group " + string(rune('a'+i))})
 	}
 	m := NewModelWithLayout(nil, nil, Layout{Tabs: tabs})
-	m.activeTab = "groupg"
-	header := m.renderHeader(100)
-	for _, line := range strings.Split(header, "\n") {
-		if width := lipgloss.Width(line); width > 100 {
-			t.Fatalf("header line width = %d, want <= 100: %q", width, line)
-		}
+	m.activeTab = "groupd"
+	strip := m.renderTabStrip(100)
+	if strings.Contains(strip, "\n") || lipgloss.Width(strip) != 100 {
+		t.Fatalf("tab strip width = %d, want exactly one 100-cell row: %q", lipgloss.Width(strip), strip)
 	}
-	if !strings.Contains(header, "● Engineering Operations Very Long Group g") {
-		t.Fatalf("active tab missing from header: %q", header)
+	if !strings.Contains(strip, " Engineering Operations Very Long Group d ") {
+		t.Fatalf("active tab missing from the strip: %q", strip)
+	}
+	if plain := strings.TrimSpace(strip); !strings.HasPrefix(plain, "…") || !strings.HasSuffix(plain, "…") {
+		t.Errorf("tab strip = %q, want overflow markers for the tabs hidden on both sides", strip)
+	}
+}
+
+// TestRenderTabStrip_NarrowShowsActiveTab proves the tab strip is shown at
+// every width: at 72 columns (list-only) the active view is still named, and
+// a strip that fits shows every tab padded with no overflow marker.
+func TestRenderTabStrip_NarrowShowsActiveTab(t *testing.T) {
+	t.Parallel()
+	tabs := []TabDefinition{
+		{ID: "all", Kind: TabAll}, {ID: "agents", Kind: TabAgents},
+		{ID: "projects", Kind: TabSource}, {ID: "zoxide", Kind: TabSource},
+		{ID: "team", Kind: TabGroup, Label: "Platform engineering"},
+	}
+	m := NewModelWithLayout(nil, nil, Layout{Tabs: tabs, Theme: ThemeMocha})
+	m, _ = update(t, m, sizeMsg(72, 20))
+	m.activeTab = "zoxide"
+	line := viewLines(m)[0]
+	if !strings.Contains(line, " zoxide ") {
+		t.Errorf("tab strip at 72 columns = %q, want the active tab", line)
+	}
+	if got := strings.TrimSpace(line); got != "all   agents   projects   zoxide   Platform engineering" {
+		t.Errorf("tab strip = %q, want every tab padded and separated by one space", got)
+	}
+
+	m.activeTab = "team"
+	if got := strings.TrimSpace(m.renderTabStrip(34)); got != "…  zoxide   Platform engineering" {
+		t.Errorf("narrow tab strip = %q, want the active tab with the hidden tabs marked", got)
+	}
+}
+
+// TestTabStripWindow_GrowsAroundActive proves the overflow window: it keeps
+// the active tab, grows toward the next tab first, reserves room for the
+// overflow markers it needs, and falls back to the active tab alone.
+func TestTabStripWindow_GrowsAroundActive(t *testing.T) {
+	t.Parallel()
+	widths := []int{5, 8, 6, 10, 7}
+	for _, tc := range []struct {
+		name           string
+		active, budget int
+		lo, hi         int
+	}{
+		{"everything fits", 2, 40, 0, 5},
+		{"next tab first", 2, 22, 2, 4},
+		{"first tab grows right", 0, 20, 0, 2},
+		{"last tab grows left", 4, 20, 3, 5},
+		{"active alone", 3, 4, 3, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lo, hi := tabStripWindow(widths, tc.active, tc.budget, 1)
+			if lo != tc.lo || hi != tc.hi {
+				t.Errorf("tabStripWindow(active %d, budget %d) = [%d,%d), want [%d,%d)", tc.active, tc.budget, lo, hi, tc.lo, tc.hi)
+			}
+		})
 	}
 }
 
@@ -269,31 +327,45 @@ func TestRenderRowLine_MarkerGutterContract(t *testing.T) {
 	}
 }
 
-// Expected values here account for the two-cell marker gutter: every row
-// reserves exactly cursorPrefixWidth cells before its label content.
-//
-// Candidates here set Path (not Label) so composeLabelPath renders the path
-// alone with no "<label> · " prefix — these cases test PATH truncation in
-// isolation, independent of the label/path unification (Change 2).
-func TestRenderRowLine_LeftTruncatesPrimaryPath(t *testing.T) {
+// TestRenderRowLine_TruncationOrder proves how a row gives up width: the
+// filename-first parent path shrinks from the left down to
+// minSecondaryCells and is then dropped; the accessories go when the name
+// would otherwise shrink below minPrimaryCells; only then is the name itself
+// truncated, keeping its tail. Expected values include the two-cell gutter.
+func TestRenderRowLine_TruncationOrder(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
+	pinned := func(path string) Row {
+		c := source.Candidate{Path: path, Source: config.SourceZoxide, Missing: true}
+		m.rankingSnapshot = m.rankingSnapshot.WithPinned(ranking.PinKey(c), true)
+		return Row{Kind: RowCandidate, Candidate: c}
+	}
+	plain := Row{Kind: RowCandidate, Candidate: source.Candidate{Path: "/workspace/services/catalog/filename.go"}}
+	short := pinned("/srv/projects/shep")
+	long := pinned("/srv/a-very-long-name")
 	for _, tt := range []struct {
 		name  string
-		path  string
+		row   Row
 		width int
 		want  string
 	}{
-		{name: "long path preserves basename", path: "/workspace/services/catalog/filename.go", width: 12, want: "  …lename.go"},
-		{name: "short path is unchanged", path: "/api", width: 9, want: "  /api"},
-		{name: "path truncates at a tight inner width", path: "/svc/api", width: 9, want: "  …vc/api"},
-		{name: "path fits with room to spare", path: "/svc/api", width: 13, want: "  /svc/api"},
+		{"everything fits", short, 40, "  shep  /srv/projects" + strings.Repeat(" ", 10) + "missing ★"},
+		{"secondary shrinks from the left", plain, 40, "  filename.go  …rkspace/services/catalog"},
+		{"secondary keeps its minimum", plain, 21, "  filename.go  …talog"},
+		{"secondary below its minimum is dropped", plain, 20, "  filename.go"},
+		{"secondary shrinks beside accessories", short, 24, "  shep  …jects missing ★"},
+		{"secondary dropped before accessories", short, 23, "  shep" + strings.Repeat(" ", 8) + "missing ★"},
+		{"primary shrinks while it keeps its minimum beside accessories", long, 22, "  …long-name missing ★"},
+		{"accessories dropped before the primary goes below its minimum", long, 19, "  a-very-long-name"},
+		{"primary keeps its tail", plain, 12, "  …lename.go"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			row := Row{Kind: RowCandidate, Candidate: source.Candidate{Path: tt.path}}
-			got := strings.TrimRight(renderRowLineText(m.renderRowLine(row, false, tt.width)), " ")
-			if got != tt.want {
-				t.Errorf("renderRowLine(%q, width=%d) = %q, want %q", tt.path, tt.width, got, tt.want)
+			line := renderRowLineText(m.renderRowLine(tt.row, false, tt.width))
+			if got := ansi.StringWidth(line); got != tt.width {
+				t.Errorf("row width = %d, want %d", got, tt.width)
+			}
+			if got := strings.TrimRight(line, " "); got != tt.want {
+				t.Errorf("renderRowLine(width=%d) = %q, want %q", tt.width, got, tt.want)
 			}
 		})
 	}
@@ -325,7 +397,7 @@ func TestRenderRowLine_LeftTruncationMatchesCursorAtSameInnerWidth(t *testing.T)
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	row := Row{Kind: RowCandidate, Candidate: source.Candidate{Path: "/workspace/services/catalog/filename.go"}}
-	const width = 14
+	const width = 12
 
 	nonCursor := strings.TrimRight(renderRowLineText(m.renderRowLine(row, false, width)), " ")
 	nonCursor = strings.TrimPrefix(nonCursor, strings.Repeat(" ", cursorPrefixWidth))
@@ -419,7 +491,7 @@ func TestRenderRowLine_LeftTruncationPreservesTabTreeGlyph(t *testing.T) {
 
 	const width = 20
 	got := strings.TrimRight(renderRowLineText(m.renderRowLine(row, false, width)), " ")
-	// two-cell marker gutter + kindPrefix's activeSlot/tree glyph + the tab icon — the
+	// two-cell marker gutter + kindPrefix's tree glyph + the tab icon — the
 	// whole thing is the row's protected fixed prefix; only the label/path body
 	// after it may be truncated.
 	wantPrefix := strings.Repeat(" ", cursorPrefixWidth) + m.kindPrefix(row) + set.TabIcon + " "
@@ -560,21 +632,19 @@ func TestRenderRowLine_SelectionVisibleInPlain(t *testing.T) {
 }
 
 // TestRenderRowLine_ASCIIEmitsNoUnicodeOnlyGlyphs proves the ASCII icon tier
-// never renders a Unicode-only glyph in redesigned affordances (the pin
-// marker degrades to "*").
+// never renders a Unicode-only glyph in the row affordances: the pin star
+// degrades to "*" and the group chevron to ">".
 func TestRenderRowLine_ASCIIEmitsNoUnicodeOnlyGlyphs(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModelWidth(ThemeMocha, 120)
 	m.layout.Icons = IconsASCII
-	row := Row{Kind: RowCandidate, Candidate: source.Candidate{Path: "/a", Source: config.SourceProjects}}
-	got := stripNonSGRANSI(m.renderRowLine(row, false, 120))
-	if strings.Contains(got, "•") {
-		t.Errorf("ASCII pinned-marker check: row = %q, • must not leak (the pinned glyph is * under ASCII)", got)
+	group := source.Candidate{Label: "team", Path: "/a", Source: config.SourceWorkspaces, Meta: map[string]string{"group": "true"}}
+	m.rankingSnapshot = m.rankingSnapshot.WithPinned(ranking.PinKey(group), true)
+	got := stripNonSGRANSI(m.renderRowLine(Row{Kind: RowCandidate, Candidate: group}, false, 120))
+	if reNonASCII.MatchString(got) {
+		t.Errorf("ASCII row = %q, contains a non-ASCII glyph", got)
 	}
-	if glyph := pinBadge(true); glyph != "*" {
-		t.Errorf("pinBadge(ASCII) = %q, want \"*\"", glyph)
-	}
-	if glyph := pinBadge(false); glyph != "•" {
-		t.Errorf("pinBadge(unicode) = %q, want \"•\"", glyph)
+	if !strings.HasSuffix(strings.TrimRight(got, " "), "* >") {
+		t.Errorf("ASCII row = %q, want the * pin and > group accessories", got)
 	}
 }

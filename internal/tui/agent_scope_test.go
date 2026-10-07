@@ -2,14 +2,20 @@ package tui
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/ranking"
+	"github.com/tranceh2/shep/internal/resolver"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -29,8 +35,8 @@ func TestConfiguredTabs_FilterAndNavigation(t *testing.T) {
 	if len(m.rows) != 1 || m.rows[0].Candidate.Label != "review item" {
 		t.Fatalf("custom source rows = %+v", m.rows)
 	}
-	if !strings.Contains(m.footerHints(), "projects") {
-		t.Errorf("footer = %q", m.footerHints())
+	if !hasHint(m.footerHints(), keyBindingTab.footerChord, "projects") {
+		t.Errorf("footer = %q, want the next tab named in the tab hint", footerText(m))
 	}
 	next, _ := m.cycleScopeForward()
 	m = next.(Model)
@@ -918,7 +924,8 @@ func TestAgentScope_RowPrimaryText_SessionNameAndStatusIconOnly(t *testing.T) {
 		t.Errorf("prefixRunes = %d, want %d", prefixRunes, wantPrefix)
 	}
 
-	// Nested tree pane row (Depth: 2) continues to use formats.Pane
+	// Nested tree pane row (Depth: 2) uses formats.Pane: its label, or its
+	// path when it has none — never the agents format.
 	nestedTreeRow := Row{
 		Kind:   RowPane,
 		Depth:  2,
@@ -932,11 +939,12 @@ func TestAgentScope_RowPrimaryText_SessionNameAndStatusIconOnly(t *testing.T) {
 		},
 	}
 	nestedPrimary, _ := m.rowPrimaryText(nestedTreeRow)
-	if !strings.Contains(nestedPrimary, "/srv/ws1/src") {
-		t.Errorf("nested tree pane primary %q should contain path", nestedPrimary)
+	if !strings.HasSuffix(nestedPrimary, m.agentStatusIcon("idle")+" p1") {
+		t.Errorf("nested tree pane primary %q should end with its status glyph and label", nestedPrimary)
 	}
-	if !strings.Contains(nestedPrimary, "·") {
-		t.Errorf("nested tree pane primary %q should contain separator \"·\"", nestedPrimary)
+	nestedTreeRow.Candidate.Label = ""
+	if nestedPrimary, secondary := m.rowDisplayText(nestedTreeRow); !strings.HasSuffix(nestedPrimary, " src") || secondary != "/srv/ws1" {
+		t.Errorf("unlabeled nested tree pane = %q + %q, want its path, filename first", nestedPrimary, secondary)
 	}
 }
 
@@ -1079,10 +1087,9 @@ func TestAgentScope_LiveTransitionInvalidatesAckAndRestoresNewAttention(t *testi
 		t.Errorf("in-memory ack for p1 was not cleared on transition to working")
 	}
 
-	// Execute cmd if any to test AckClearer callback
-	if cmd != nil {
-		_ = cmd()
-	}
+	// Execute cmd (and every command of a batch) to test the AckClearer
+	// callback; the spinner tick it may also carry is not run.
+	runBatch(cmd)
 	if clearedPane != "p1" {
 		t.Errorf("AckClearer was not called with p1, got %q", clearedPane)
 	}
@@ -1710,5 +1717,143 @@ func TestAgentScope_SnapshotRefreshFillsEmptyAgentsSliceAndKeepsIcon(t *testing.
 	m.applyFilter()
 	if len(m.rows) != 1 || m.rows[0].Candidate.Icon != sourceIcon {
 		t.Fatalf("all view after refresh = %+v, want configured icon", m.rows)
+	}
+}
+
+// allTabFixture streams per-source results into a model with configured tabs
+// (all, agents and a tab-only custom source) the way `shep open` does, over
+// real directories: projects reports zoxide's directory through a symlink,
+// so deduplication has to resolve it on disk under root. dedups counts
+// deduplications.
+func allTabFixture(t *testing.T, order []string) (m Model, snap source.Snapshot, root string, dedups *int) {
+	t.Helper()
+	root = t.TempDir()
+	for _, dir := range []string{"api", "web", "work"} {
+		if err := os.Mkdir(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(root, "api"), filepath.Join(root, "api-link")); err != nil {
+		t.Fatal(err)
+	}
+	snap = source.Snapshot{
+		Workspaces: []source.Workspace{{ID: "w1", Label: "api"}},
+		Tabs:       []source.Tab{{ID: "w1:t1", WorkspaceID: "w1", Label: "editor", Number: 1, PaneCount: 1}},
+		Panes:      []source.Pane{{ID: "p1", WorkspaceID: "w1", TabID: "w1:t1", CWD: filepath.Join(root, "api"), Agent: "claude", AgentStatus: "working"}},
+	}
+	m = NewModelWithProducers(nil, "", nil, context.Background(), Layout{SourceOrder: order, Tabs: []TabDefinition{
+		{ID: "all", Kind: TabAll},
+		{ID: "agents", Kind: TabAgents},
+		{ID: "review", Kind: TabCustomSource},
+	}})
+	dedups = new(int)
+	m.dedupFn = func(c []source.Candidate) []source.Candidate {
+		*dedups++
+		return resolver.Dedup(c)
+	}
+	m, _ = update(t, m, sizeMsg(120, 30))
+	results := []SourceResultMsg{
+		{Source: config.SourceHerdr, Candidates: source.HerdrCandidates(snap), Tree: NewTreeExpanderFromSnapshot(snap), Snapshot: &snap,
+			SnapshotSources: []string{config.SourceHerdr, config.SourceAgents}},
+		{Source: config.SourceWorkspaces, Candidates: []source.Candidate{workspaceEntryCandidate("work", filepath.Join(root, "work"))}},
+		{Source: config.SourceZoxide, Candidates: []source.Candidate{zoxideCandidate("~/api", filepath.Join(root, "api")), zoxideCandidate("~/web", filepath.Join(root, "web"))}},
+		{Source: config.SourceProjects, Candidates: []source.Candidate{projectCandidate("~/api", filepath.Join(root, "api-link"))}},
+		// Tab-only: it must neither join all nor suppress zoxide's "~/web".
+		{Source: "review", Candidates: []source.Candidate{{Source: "review", Label: "~/web", Path: filepath.Join(root, "web")}}},
+		{Source: config.SourceAgents, Candidates: source.AgentCandidates(snap)},
+	}
+	for _, msg := range results {
+		m, _ = update(t, m, msg)
+	}
+	return m, snap, root, dedups
+}
+
+// freshAllTab deduplicates the enabled sources' current results from scratch.
+func freshAllTab(m Model) []source.Candidate {
+	var enabled []source.Candidate
+	for _, name := range m.resolvedSourceOrder() {
+		enabled = append(enabled, m.candidatesBySource[name]...)
+	}
+	return resolver.Dedup(enabled)
+}
+
+// TestAllTab_StoredSetMatchesAFreshDedup proves the all tab's stored set is
+// exactly what deduplicating the enabled sources would produce, after every
+// kind of update that replaces their results: streamed source results, a
+// live agent status, and a snapshot refresh, in either source order.
+func TestAllTab_StoredSetMatchesAFreshDedup(t *testing.T) {
+	t.Parallel()
+	enabled := []string{config.SourceHerdr, config.SourceWorkspaces, config.SourceZoxide, config.SourceProjects, config.SourceAgents}
+	for _, order := range [][]string{enabled, {config.SourceAgents, config.SourceProjects, config.SourceZoxide, config.SourceWorkspaces, config.SourceHerdr}} {
+		m, snap, _, _ := allTabFixture(t, order)
+		check := func(step string) {
+			t.Helper()
+			if want := freshAllTab(m); !reflect.DeepEqual(m.allTab, want) {
+				t.Fatalf("order %v, after %s: stored all tab\n%+v\nwant a fresh dedup\n%+v", order, step, m.allTab, want)
+			}
+		}
+		check("source results")
+		for _, c := range m.allTab {
+			if c.Source == "review" {
+				t.Fatalf("order %v: the tab-only source joined all: %+v", order, c)
+			}
+		}
+		if survivor := m.allTab[slices.IndexFunc(m.allTab, func(c source.Candidate) bool { return c.Label == "~/api" })]; survivor.Source != order[slices.IndexFunc(order, func(s string) bool { return s == config.SourceZoxide || s == config.SourceProjects })] {
+			t.Errorf("order %v: the symlinked duplicate kept %s, want the first enabled source's", order, survivor.Source)
+		}
+
+		m, _ = update(t, m, paneStatusMsg{PaneID: "p1", WorkspaceID: "w1", TabID: "w1:t1", Status: "blocked"})
+		check("a live agent status")
+		agent := slices.IndexFunc(m.allTab, func(c source.Candidate) bool { return c.Source == config.SourceAgents })
+		if agent < 0 || m.allTab[agent].Meta["agent_status"] != "blocked" {
+			t.Errorf("order %v: the stored agent row missed the live status", order)
+		}
+
+		refreshed := snap
+		refreshed.Workspaces = append(slices.Clone(snap.Workspaces), source.Workspace{ID: "w2", Label: "web"})
+		refreshed.Tabs = append(slices.Clone(snap.Tabs), source.Tab{ID: "w2:t1", WorkspaceID: "w2", Label: "shell", Number: 1, PaneCount: 1})
+		refreshed.Panes = append(slices.Clone(snap.Panes), source.Pane{ID: "p2", WorkspaceID: "w2", TabID: "w2:t1", CWD: m.candidatesBySource[config.SourceZoxide][1].Path, Agent: "codex", AgentStatus: "idle"})
+		m, _ = update(t, m, snapshotResponseMsg{seq: m.snapshotSeq, snapshot: refreshed})
+		check("a snapshot refresh")
+		if !slices.ContainsFunc(m.allTab, func(c source.Candidate) bool { return c.Meta["workspace_id"] == "w2" }) {
+			t.Errorf("order %v: the refreshed workspace is missing from all", order)
+		}
+	}
+}
+
+// TestView_ConfiguredTabsNeverDeduplicates proves neither a frame nor a
+// keystroke deduplicates with configured tabs, while the prompt still counts
+// the deduplicated all tab. The directories are deleted before the frames:
+// a frame that resolved paths on disk again would no longer collapse the
+// symlinked duplicate and would count one more candidate.
+func TestView_ConfiguredTabsNeverDeduplicates(t *testing.T) {
+	t.Parallel()
+	m, _, root, dedups := allTabFixture(t, nil)
+	if *dedups == 0 {
+		t.Fatal("setup: source results must deduplicate through the seam")
+	}
+	want := len(freshAllTab(m))
+	if total := m.resultCount().total; total != want {
+		t.Fatalf("all tab total = %d, want the deduplicated %d", total, want)
+	}
+	if !strings.Contains(promptText(m), strconv.Itoa(want)) {
+		t.Errorf("prompt %q does not count the %d deduplicated candidates", promptText(m), want)
+	}
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatal(err)
+	}
+	before := *dedups
+	for _, msg := range []tea.Msg{
+		spinner.TickMsg{ID: m.spinner.ID()}, key("a"), key("p"), key("backspace"), key("down"),
+		key("ctrl+t"), key("ctrl+t"), key("ctrl+t"), key("esc"),
+	} {
+		m, _ = update(t, m, msg)
+		_ = m.View()
+	}
+	if *dedups != before {
+		t.Errorf("frames and keystrokes deduplicated %d times, want none", *dedups-before)
+	}
+	if m.ActiveTab() != "all" || m.resultCount().total != want || !strings.Contains(promptText(m), strconv.Itoa(want)) {
+		t.Errorf("back on %q the total is %d (prompt %q), want %d", m.ActiveTab(), m.resultCount().total, promptText(m), want)
 	}
 }

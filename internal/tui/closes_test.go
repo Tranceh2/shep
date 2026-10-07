@@ -18,8 +18,9 @@ func closeKey() tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyCtrlX} }
 func TestCloseFooterUsesSharedKeyBinding(t *testing.T) {
 	m := NewModelWithLayout([]source.Candidate{{Source: config.SourceHerdr, Meta: map[string]string{"workspace_id": "w1"}}}, nil, Layout{Closer: func(context.Context, string, string) CloseResultMsg { return CloseResultMsg{} }})
 	m, _ = update(t, m, sizeMsg(120, 36))
-	if !strings.Contains(m.footerHints(), renderKeycap(m.styles, keyBindingClose.footerChord, keyBindingClose.footerLabel)) || !strings.Contains(m.helpBodyText(), renderHelpLine(keyBindingClose)) {
-		t.Fatalf("footer=%q help=%q", m.footerHints(), m.helpBodyText())
+	help := stripNonSGRANSI(m.helpBodyText(160))
+	if !hasHint(m.footerHints(), keyBindingClose.footerChord, keyBindingClose.footerLabel) || !strings.Contains(help, keyBindingClose.chord) || !strings.Contains(help, keyBindingClose.help) {
+		t.Fatalf("footer=%q help=%q", footerText(m), help)
 	}
 }
 
@@ -55,11 +56,12 @@ func TestCloseFeedbackClearsOnNextKey(t *testing.T) {
 				if cmd != nil {
 					m, _ = update(t, m, cmd())
 				}
-				if got := m.footerHints(); got != tc.want {
-					t.Fatalf("status = %q, want %q", got, tc.want)
+				// Problems replace the hints; success is right-aligned beside them.
+				if got := footerText(m); !strings.HasSuffix(got, tc.want) {
+					t.Fatalf("status = %q, want it to end with %q", got, tc.want)
 				}
 				m, _ = update(t, m, action.key)
-				if got := m.footerHints(); strings.Contains(got, tc.want) || !strings.Contains(got, "? help") {
+				if got := footerText(m); strings.Contains(got, tc.want) || !strings.Contains(got, "? help") {
 					t.Fatalf("next key left status in footer: %q", got)
 				}
 				if action.name == "type" && m.query != "z" {
@@ -82,32 +84,32 @@ func TestClosePendingStatusSurvivesNonKeyUpdatesAndOverlappingKey(t *testing.T) 
 		t.Fatal("no close command")
 	}
 	m, _ = update(t, m, sizeMsg(120, 36))
-	if got := m.footerHints(); got != "closing tab..." {
+	if got := footerText(m); got != "closing tab..." {
 		t.Fatalf("in flight: %q", got)
 	}
 	m, second := update(t, m, closeKey())
-	if second != nil || m.footerHints() != "closing tab..." {
+	if second != nil || footerText(m) != "closing tab..." {
 		t.Fatal("overlapping key cleared in-flight feedback")
 	}
 	m, _ = update(t, m, cmd())
-	if m.footerHints() != "closed tab" {
-		t.Fatal("completion message missing")
+	if !strings.HasSuffix(footerText(m), "closed tab") {
+		t.Fatalf("completion message missing: %q", footerText(m))
 	}
 
 	m = NewModelWithLayout(nil, nil, Layout{ConfirmClose: []string{"tab"}, Closer: func(context.Context, string, string) CloseResultMsg { return CloseResultMsg{} }})
 	m.rows = []Row{row}
 	m, _ = update(t, m, closeKey())
-	prompt := m.footerHints()
+	prompt := footerText(m)
 	m, _ = update(t, m, sizeMsg(120, 36))
-	if m.footerHints() != prompt || m.closeConfirm == nil {
+	if footerText(m) != prompt || m.closeConfirm == nil {
 		t.Fatal("resize cleared confirmation")
 	}
 	m, _ = update(t, m, tea.KeyMsg{Type: tea.KeyEsc})
-	if m.cancelled || m.closeConfirm != nil || m.footerHints() != "close cancelled" {
+	if m.cancelled || m.closeConfirm != nil || footerText(m) != "close cancelled" {
 		t.Fatal("esc did not only cancel prompt")
 	}
 	m, _ = update(t, m, tea.KeyMsg{Type: tea.KeyDown})
-	if strings.Contains(m.footerHints(), "close cancelled") {
+	if strings.Contains(footerText(m), "close cancelled") {
 		t.Fatal("cancellation feedback persisted")
 	}
 }
@@ -147,8 +149,8 @@ func TestCloseRowKindsAndNoOps(t *testing.T) {
 			m.cursor = 0
 			m, cmd := update(t, m, closeKey())
 			if tc.kind == "" {
-				if cmd != nil || calls != 0 || !strings.Contains(m.footerHints(), "not an open Herdr item") {
-					t.Fatalf("no-op cmd=%v calls=%d footer=%q", cmd, calls, m.footerHints())
+				if cmd != nil || calls != 0 || !strings.Contains(footerText(m), "not an open Herdr item") {
+					t.Fatalf("no-op cmd=%v calls=%d footer=%q", cmd, calls, footerText(m))
 				}
 				return
 			}
@@ -164,8 +166,8 @@ func TestCloseRowKindsAndNoOps(t *testing.T) {
 				t.Fatal("overlapping close")
 			}
 			m, _ = update(t, m, result)
-			if m.closePending || !strings.Contains(m.footerHints(), "closed "+tc.kind) {
-				t.Fatalf("status=%q", m.footerHints())
+			if m.closePending || !strings.Contains(footerText(m), "closed "+tc.kind) {
+				t.Fatalf("status=%q", footerText(m))
 			}
 		})
 	}
@@ -201,7 +203,7 @@ func TestCloseRefreshRemovesAgentFromAgentsAndSourceTabs(t *testing.T) {
 			}
 			m, cmd := update(t, m, closeKey())
 			if cmd == nil {
-				t.Fatalf("close unavailable: row=%+v status=%q", m.rows[m.cursor], m.closeStatus)
+				t.Fatalf("close unavailable: row=%+v status=%q", m.rows[m.cursor], m.closeStatus.text)
 			}
 			m, refresh := update(t, m, cmd())
 			m, next := update(t, m, refresh())
@@ -280,7 +282,7 @@ func TestCloseConfirmationAndUnavailable(t *testing.T) {
 		}})
 		m.rows = []Row{row}
 		m, cmd := update(t, m, closeKey())
-		if cmd != nil || !strings.Contains(m.footerHints(), "close workspace") {
+		if cmd != nil || !strings.Contains(footerText(m), "close workspace") {
 			t.Fatal("missing prompt")
 		}
 		m, cmd = update(t, m, key)
@@ -300,8 +302,8 @@ func TestCloseConfirmationAndUnavailable(t *testing.T) {
 	m = NewModelWithLayout(nil, nil, Layout{})
 	m.rows = []Row{row}
 	m, cmd = update(t, m, closeKey())
-	if cmd != nil || !strings.Contains(m.footerHints(), "unavailable") {
-		t.Fatalf("nil closer: %q", m.footerHints())
+	if cmd != nil || !strings.Contains(footerText(m), "unavailable") {
+		t.Fatalf("nil closer: %q", footerText(m))
 	}
 }
 
@@ -322,7 +324,7 @@ func TestCloseSuccessForcesSnapshotRefreshAndFailureDoesNot(t *testing.T) {
 		}
 		m, refresh := update(t, m, cmd())
 		if fail {
-			if refresh != nil || driver.calls != 0 || !strings.Contains(m.footerHints(), "workspace_group_close_required") || len(m.rows) == 0 {
+			if refresh != nil || driver.calls != 0 || !strings.Contains(footerText(m), "workspace_group_close_required") || len(m.rows) == 0 {
 				t.Fatal("error changed list or refreshed")
 			}
 			continue
@@ -334,5 +336,58 @@ func TestCloseSuccessForcesSnapshotRefreshAndFailureDoesNot(t *testing.T) {
 		if driver.calls != 1 || len(m.rows) != 0 || m.cancelled {
 			t.Fatalf("snapshot calls=%d rows=%d cancelled=%v", driver.calls, len(m.rows), m.cancelled)
 		}
+	}
+}
+
+// TestCloseTargetFor_TreeRows proves expanded tree children, which are
+// synthesized under an open workspace without a Source of their own, close
+// as their tab or pane; rows that are not open Herdr items stay refused.
+func TestCloseTargetFor_TreeRows(t *testing.T) {
+	t.Parallel()
+	tab := Row{Kind: RowTab, Depth: 1, Candidate: source.Candidate{Label: "api", Meta: map[string]string{"workspace_id": "w1", "tab_id": "w1:t1"}}}
+	pane := Row{Kind: RowPane, Depth: 2, Candidate: source.Candidate{Label: "zsh", Meta: map[string]string{"workspace_id": "w1", "tab_id": "w1:t1", "pane_id": "w1:p1"}}}
+	for _, tc := range []struct {
+		name     string
+		row      Row
+		kind, id string
+	}{
+		{"tree tab", tab, "tab", "w1:t1"},
+		{"tree pane", pane, "pane", "w1:p1"},
+		{"zoxide row", Row{Kind: RowCandidate, Candidate: zoxideCandidate("a", "/a")}, "", ""},
+		{"tab without a workspace", Row{Kind: RowTab, Candidate: source.Candidate{Meta: map[string]string{"tab_id": "t9"}}}, "", ""},
+		{"custom source tab-like row", Row{Kind: RowTab, Candidate: source.Candidate{Source: "prs", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1"}}}, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target, ok := closeTargetFor(tc.row)
+			if ok != (tc.kind != "") || target.kind != tc.kind || target.id != tc.id {
+				t.Errorf("closeTargetFor = %+v, %v; want %s %s", target, ok, tc.kind, tc.id)
+			}
+		})
+	}
+
+	closer := func(_ context.Context, kind, id string) CloseResultMsg { return CloseResultMsg{Kind: kind, ID: id} }
+	m := NewModelWithLayout(nil, nil, Layout{Closer: closer, ConfirmClose: []string{"tab"}})
+	m.rows = []Row{tab}
+	if !hasHint(m.footerHints(), keyChordClose, keyBindingClose.footerLabel) {
+		t.Errorf("tree tab footer = %q, want ctrl+x close", footerText(m))
+	}
+	m, cmd := update(t, m, closeKey())
+	if cmd != nil || m.closeConfirm == nil || !strings.Contains(footerText(m), `close tab "api"?`) {
+		t.Fatalf("tree tab close must ask first: cmd=%v footer=%q", cmd != nil, footerText(m))
+	}
+	m, cmd = update(t, m, plainKeyMsg('y'))
+	if cmd == nil {
+		t.Fatal("confirming did not close the tab")
+	}
+	if got := cmd().(CloseResultMsg); got.Kind != "tab" || got.ID != "w1:t1" {
+		t.Errorf("close result = %+v, want tab w1:t1", got)
+	}
+
+	m = NewModelWithLayout(nil, nil, Layout{Closer: closer})
+	m.rows = []Row{pane}
+	if _, cmd = update(t, m, closeKey()); cmd == nil {
+		t.Fatal("tree pane close did not start")
+	} else if got := cmd().(CloseResultMsg); got.Kind != "pane" || got.ID != "w1:p1" {
+		t.Errorf("close result = %+v, want pane w1:p1", got)
 	}
 }

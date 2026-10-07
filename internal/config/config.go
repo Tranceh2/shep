@@ -839,7 +839,6 @@ func normalizePreview(p *PreviewConfig) {
 // distinguish an omitted source preview from an explicitly configured list.
 func normalizeLabelFormats(s *SourcesConfig) {
 	const (
-		labelWithPath         = "{{if .Label}}{{.Label}} · {{end}}{{.Path}}"
 		labelWithPathFallback = "{{if .Label}}{{.Label}}{{else}}{{.Path}}{{end}}"
 		labelOnly             = "{{.Label}}"
 	)
@@ -847,11 +846,15 @@ func normalizeLabelFormats(s *SourcesConfig) {
 	if s.Herdr.LabelFormat == "" {
 		s.Herdr.LabelFormat = labelOnly
 	}
+	// Tree children name their tab or pane instead of repeating the
+	// workspace path on every row; a pane without a label shows its path.
+	// The picker prefixes a tab's label with its number (see the TUI's
+	// tabLabelPortion), so the tab default is the bare label.
 	if s.Herdr.TabLabelFormat == "" {
-		s.Herdr.TabLabelFormat = labelWithPath
+		s.Herdr.TabLabelFormat = labelOnly
 	}
 	if s.Herdr.PaneLabelFormat == "" {
-		s.Herdr.PaneLabelFormat = labelWithPath
+		s.Herdr.PaneLabelFormat = labelWithPathFallback
 	}
 	if s.Sessions.LabelFormat == "" {
 		s.Sessions.LabelFormat = labelOnly

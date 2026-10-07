@@ -97,8 +97,8 @@ func TestQueryInput_BurstSpellingAChordIsText(t *testing.T) {
 			if m.focus != FocusList {
 				t.Errorf("focus %v, burst %q: focus = %v, want FocusList", focus, text, m.focus)
 			}
-			if m.cancelled || m.hasSelected || m.activeTab != startTab || m.closeConfirm != nil || m.closePending || m.closeStatus != "" {
-				t.Errorf("focus %v, burst %q acted as a chord: cancelled=%v selected=%v tab=%q->%q close=%q", focus, text, m.cancelled, m.hasSelected, startTab, m.activeTab, m.closeStatus)
+			if m.cancelled || m.hasSelected || m.activeTab != startTab || m.closeConfirm != nil || m.closePending || m.closeStatus != (footerStatus{}) {
+				t.Errorf("focus %v, burst %q acted as a chord: cancelled=%v selected=%v tab=%q->%q close=%q", focus, text, m.cancelled, m.hasSelected, startTab, m.activeTab, m.closeStatus.text)
 			}
 		}
 	}
@@ -337,4 +337,71 @@ func TestQueryEditHelpers(t *testing.T) {
 	if got := queryInputRunes(tea.KeyMsg{Type: tea.KeySpace}); string(got) != " " {
 		t.Errorf("queryInputRunes(space) = %q, want \" \"", string(got))
 	}
+}
+
+// keyDoubleEsc is two Esc presses delivered in one read: Bubble Tea decodes
+// "\x1b\x1b" as an alt-modified Esc.
+var keyDoubleEsc = tea.KeyMsg{Type: tea.KeyEscape, Alt: true}
+
+// TestDoubleEsc_ActsAsTwoPresses proves a quick double tap of Esc behaves
+// exactly like two separate presses instead of matching nothing (the picker
+// used to stay open inside the Herdr popup).
+func TestDoubleEsc_ActsAsTwoPresses(t *testing.T) {
+	t.Parallel()
+	if got := keyDoubleEsc.String(); got != "alt+esc" {
+		t.Fatalf("double Esc spelling = %q, want \"alt+esc\"", got)
+	}
+
+	t.Run("empty query cancels", func(t *testing.T) {
+		t.Parallel()
+		next, _ := queryInputModel().handleKey(keyDoubleEsc)
+		if !next.(Model).Cancelled() {
+			t.Fatal("double Esc on an empty query did not cancel")
+		}
+	})
+
+	t.Run("query is cleared, then the picker cancels", func(t *testing.T) {
+		t.Parallel()
+		m := queryInputModel()
+		m.query = "shep"
+		next, _ := m.handleKey(keyDoubleEsc)
+		got := next.(Model)
+		if !got.Cancelled() {
+			t.Fatal("double Esc with a query did not cancel after clearing it")
+		}
+	})
+
+	t.Run("help closes, then the query clears", func(t *testing.T) {
+		t.Parallel()
+		m := queryInputModel()
+		m.query = "shep"
+		m.prevFocus = FocusList
+		m.focus = FocusHelp
+		next, _ := m.handleKey(keyDoubleEsc)
+		got := next.(Model)
+		if got.focus != FocusList {
+			t.Fatalf("focus = %v, want FocusList after help closed", got.focus)
+		}
+		if got.query != "" {
+			t.Fatalf("query = %q, want cleared by the second press", got.query)
+		}
+		if got.Cancelled() {
+			t.Fatal("double Esc from help must not cancel the picker")
+		}
+	})
+
+	t.Run("a pending close confirmation is cancelled first", func(t *testing.T) {
+		t.Parallel()
+		m := queryInputModel()
+		m.query = "shep"
+		m.closeConfirm = &closeTarget{kind: "tab", id: "t1", label: "api"}
+		next, _ := m.handleKey(keyDoubleEsc)
+		got := next.(Model)
+		if got.closeConfirm != nil {
+			t.Fatal("double Esc left the close confirmation pending")
+		}
+		if got.query != "" || got.Cancelled() {
+			t.Fatalf("query = %q, cancelled = %v; want cleared and still open", got.query, got.Cancelled())
+		}
+	})
 }

@@ -1072,18 +1072,15 @@ func TestLoad_LabelFormatsDefault(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 
-	const (
-		labelWithPath         = "{{if .Label}}{{.Label}} · {{end}}{{.Path}}"
-		labelWithPathFallback = "{{if .Label}}{{.Label}}{{else}}{{.Path}}{{end}}"
-	)
+	const labelWithPathFallback = "{{if .Label}}{{.Label}}{{else}}{{.Path}}{{end}}"
 	cases := []struct {
 		field string
 		got   string
 		want  string
 	}{
 		{"sources.herdr.label_format", cfg.Sources.Herdr.LabelFormat, "{{.Label}}"},
-		{"sources.herdr.tab_label_format", cfg.Sources.Herdr.TabLabelFormat, labelWithPath},
-		{"sources.herdr.pane_label_format", cfg.Sources.Herdr.PaneLabelFormat, labelWithPath},
+		{"sources.herdr.tab_label_format", cfg.Sources.Herdr.TabLabelFormat, "{{.Label}}"},
+		{"sources.herdr.pane_label_format", cfg.Sources.Herdr.PaneLabelFormat, labelWithPathFallback},
 		{"sources.sessions.label_format", cfg.Sources.Sessions.LabelFormat, "{{.Label}}"},
 		{"sources.workspaces.label_format", cfg.Sources.Workspaces.LabelFormat, "{{.Label}}"},
 		{"sources.zoxide.label_format", cfg.Sources.Zoxide.LabelFormat, labelWithPathFallback},

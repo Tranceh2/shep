@@ -130,7 +130,7 @@ func TestRowAction_SelectedActionTracksCurrentRow(t *testing.T) {
 // TestRowActionDescriptor_TruthfulPerRowKind proves rowActionDescriptor
 // derives a truthful, row-kind-explicit Enter label and matching Action for
 // every row kind (SPEC-NAV-1.1–1.6). The label must never promise "create" or
-// "focus existing" for a top-level candidate, must read "Focus tab" for a
+// "focus existing" for a top-level candidate, must read "focus tab" for a
 // synthesized tab row (matching driver.FocusTab), and must describe focusing
 // the CONTAINING tab for a pane row — never per-pane focus.
 func TestRowActionDescriptor_TruthfulPerRowKind(t *testing.T) {
@@ -155,7 +155,7 @@ func TestRowActionDescriptor_TruthfulPerRowKind(t *testing.T) {
 			name:           "SPEC-NAV-1.2 session row",
 			row:            Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "alpha", Source: config.SourceSessions, Meta: map[string]string{"session_name": "alpha"}}},
 			wantAction:     RowActionOpen,
-			mustNotContain: []string{"create", "Focus tab"},
+			mustNotContain: []string{"create", "focus tab"},
 		},
 		{
 			name:            "SPEC-NAV-1.3 zoxide path row",
@@ -165,10 +165,10 @@ func TestRowActionDescriptor_TruthfulPerRowKind(t *testing.T) {
 			mustNotContain:  []string{"create", "focus existing"},
 		},
 		{
-			name:            "SPEC-NAV-1.5 synthesized tab row reads Focus tab",
+			name:            "SPEC-NAV-1.5 synthesized tab row reads focus tab",
 			row:             Row{Kind: RowTab, Action: RowActionFocusTab, Candidate: source.Candidate{Label: "api", Meta: map[string]string{"tab_id": "t1"}}},
 			wantAction:      RowActionFocusTab,
-			wantFooterExact: "Focus tab",
+			wantFooterExact: "focus tab",
 		},
 		{
 			name:       "SPEC-NAV-1.6 synthesized pane row focuses containing tab",
@@ -183,7 +183,7 @@ func TestRowActionDescriptor_TruthfulPerRowKind(t *testing.T) {
 			name:            "agents candidate row focuses containing tab",
 			row:             Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "pi", Source: config.SourceAgents, Meta: map[string]string{"pane_id": "p1", "tab_id": "t1"}}},
 			wantAction:      RowActionFocusTab,
-			wantFooterExact: "Focus containing tab",
+			wantFooterExact: "focus",
 			mustNotContain:  []string{"focus pane", "create"},
 		},
 	}

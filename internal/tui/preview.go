@@ -153,7 +153,8 @@ func (m Model) readPane(ctx context.Context, paneID string, lines int) (string, 
 const panePreviewMaxLines = 200
 
 // maybeStartSpinner issues the spinner's first Tick only on the false->true
-// edge of "something needs it" — either the preview render is loading, or at
+// edge of "something needs it" — the preview render is loading, producers
+// are still streaming candidates (the prompt count's loading frame), or at
 // least one currently VISIBLE row is a pane with agent_status=="working"
 // (the corrective-round icon animation). spinnerRunning guards against ever
 // having two live tick loops in flight regardless of which condition armed
@@ -167,22 +168,23 @@ func (m *Model) maybeStartSpinner() tea.Cmd {
 }
 
 // spinnerNeeded reports whether the shared spinner tick loop should be
-// running right now: a preview render in flight, or a visible working-status
-// pane row's icon animating. Shared by maybeStartSpinner (arm) and
-// handleSpinnerTick (de-arm) so both sides of the single-tick-loop invariant
-// agree on the same condition.
+// running right now: a preview render in flight, producers still loading
+// (the prompt row shows the spinner frame before its count), or a visible
+// working-status pane row's icon animating. Shared by maybeStartSpinner
+// (arm) and handleSpinnerTick (de-arm) so both sides of the single-tick-loop
+// invariant agree on the same condition.
 func (m Model) spinnerNeeded() bool {
-	return m.previewLoading || m.anyVisibleRowWorking()
+	return m.previewLoading || m.loadingCandidates || m.anyVisibleRowWorking()
 }
 
-// anyVisibleRowWorking reports whether at least one currently visible row
-// (m.rows) is a pane with agent_status=="working" — the condition that keeps
-// the shared spinner tick loop armed for the animated working-status icon
-// (see rowDisplayText/agentStatusIcon in render.go) even when no preview
+// anyVisibleRowWorking reports whether at least one row (m.rows) draws a
+// working status glyph — a pane or agent row's own, or an open workspace's
+// aggregate accessory (see rowShowsWorking) — the condition that keeps the
+// shared spinner tick loop armed for the animated glyph even when no preview
 // render is in flight.
 func (m Model) anyVisibleRowWorking() bool {
 	for _, r := range m.rows {
-		if r.Kind == RowPane && r.Candidate.Meta["agent_status"] == "working" {
+		if m.rowShowsWorking(r) {
 			return true
 		}
 	}

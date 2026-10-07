@@ -1,36 +1,36 @@
-SHEP  ● all   agents                                                                                        1 candidates
-⌕ type to filter…
-╭────────────────────────────────────────────────────────────────╮ ╭ PREVIEW · /srv/api ───────────────────────────────╮
-│   backend                                                      │ │ path   /srv/api                                   │
-│       └─ ◫ api · /srv/api                                      │ │ kind   herdr pane                                 │
-│ ❯       └─ /srv/api                                            │ │ tab    api                                        │
-│                                                                │ │                                                   │
-│                                                                │ │ Captured pane                                     │
-│                                                                │ │ ─────────────                                     │
-│                                                                │ │ ┌────────┐                                        │
-│                                                                │ │ │ pane 1 │                                        │
-│                                                                │ │ └────────┘                                        │
-│                                                                │ │ [31mred error line[0m                                    │
-│                                                                │ │ this is a very long line that is far wider than t │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-│                                                                │ │                                                   │
-╰────────────────────────────────────────────────────────────────╯ ╰───────────────────────────────────────────────────╯
-enter Focus containing tab   tab agents   ? help   esc quit
+  all   agents
+ ❯  Search workspaces, projects, folders                       1 │ api                                             pane
+ ────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────
+   backend                                                       │ /srv/api
+     └─ ◫ api                                                    │ in backend › api
+ ❯     └─ api  /srv                                              │
+                                                                 │ Pane ───────────────────────────────────────────────
+                                                                 │ ┌────────┐
+                                                                 │ │ pane 1 │
+                                                                 │ └────────┘
+                                                                 │ [31mred error line[0m
+                                                                 │ this is a very long line that is far wider than the
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+                                                                 │
+ enter focus · tab agents · ? help · esc quit

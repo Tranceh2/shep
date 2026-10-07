@@ -5,230 +5,175 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 	"github.com/tranceh2/shep/internal/config"
+	"github.com/tranceh2/shep/internal/fuzzy"
 	"github.com/tranceh2/shep/internal/source"
 )
 
-func TestAgentPresentation_SharedLeftTruncationAndHighlight(t *testing.T) {
+// maskedRunes returns the runes of text a highlight mask marks.
+func maskedRunes(text string, mask []bool) string {
+	var b strings.Builder
+	for i, r := range []rune(text) {
+		if i < len(mask) && mask[i] {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// TestAgentPresentation_RightTruncationAndHighlight proves agent titles keep
+// their start when truncated (the start of a sentence carries its meaning),
+// unlike every other row, and that a highlighted rune in the kept start keeps
+// its accent through truncation.
+func TestAgentPresentation_RightTruncationAndHighlight(t *testing.T) {
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	m.query = "sec"
-	row := Row{Kind: RowCandidate, Match: MatchDirect, MatchedIndexes: []int{0, 1, 2}, Candidate: source.Candidate{
-		Source: config.SourceAgents, Icon: "X ", Label: "security scan long title", Meta: map[string]string{"agent_status": "idle"},
+	agent := Row{Kind: RowCandidate, Match: MatchDirect, MatchedIndexes: []int{0, 1, 2}, Candidate: source.Candidate{
+		Source: config.SourceAgents, Icon: "X", Label: "security scan long title", Meta: map[string]string{"agent_status": "idle"},
 	}}
-	parts := m.rowLineParts(row)
-	if !parts[0].rendered {
-		t.Fatal("agent match did not enable highlighting")
+	if v := m.buildRowView(agent); maskedRunes(v.primary, v.primaryHL) != "sec" || !v.keepStart {
+		t.Fatalf("agent view = %+v, want the title highlighted and kept from its start", v)
 	}
-	prefix := "X  " + m.agentStatusIcon("idle") + " "
-	width := len([]rune(prefix)) + 11 + cursorPrefixWidth
-	for _, cursor := range []bool{false, true} {
-		got := renderRowLineText(m.renderRowLine(row, cursor, width))
-		if !strings.Contains(got, prefix+"…long title") {
-			t.Errorf("cursor=%v rendered %q; want prefix and label ending with leading ellipsis", cursor, got)
-		}
-	}
-	row.Kind = RowPane // the agents tab derives pane rows from the snapshot
-	paneParts := m.rowLineParts(row)
-	if !paneParts[0].rendered {
-		t.Fatal("agents tab pane match did not enable highlighting")
-	}
-	if got := renderRowLineText(m.renderRowLine(row, true, width)); !strings.Contains(got, prefix+"…long title") {
-		t.Errorf("truncated agents tab cursor row = %q", got)
-	}
-	// A match discarded by left truncation cannot retain its accent; a
-	// surviving match in the title suffix must still be accented.
-	m.query = "title"
-	row.MatchedIndexes = []int{19, 20, 21, 22, 23}
-	parts = m.rowLineParts(Row{Kind: RowCandidate, Match: row.Match, MatchedIndexes: row.MatchedIndexes, Candidate: row.Candidate})
-	accent := m.styles.queryStyle.Render("t")
-	if got := parts[0].renderHighlighted(width-cursorPrefixWidth, lipgloss.Style{}, false); !strings.Contains(got, accent) {
-		t.Errorf("truncated highlighted row %q lost surviving accented match %q", got, accent)
-	}
-	// Identical prefixes isolate the truncation algorithm from status styling.
-	other := Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceProjects, Icon: "X ", Label: "security scan long title"}}
-	agent := Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceAgents, Icon: "X ", Label: other.Candidate.Label}}
+	prefix := "X " + m.agentStatusIcon("idle") + " "
+	width := cursorPrefixWidth + len([]rune(prefix)) + 11
 	for _, cursor := range []bool{false, true} {
 		got := renderRowLineText(m.renderRowLine(agent, cursor, width))
-		want := renderRowLineText(m.renderRowLine(other, cursor, width))
-		if got != want || !strings.Contains(got, "X  …") || !strings.HasSuffix(strings.TrimSpace(got), "title") {
-			t.Errorf("cursor=%v agent row = %q, other row = %q; want equal left truncation", cursor, got, want)
+		if !strings.HasSuffix(got, prefix+"security s…") {
+			t.Errorf("cursor=%v agent row = %q, want the title's start and a trailing ellipsis", cursor, got)
 		}
 	}
+	pane := agent
+	pane.Kind = RowPane // the agents tab derives flat pane rows from the snapshot
+	if got := renderRowLineText(m.renderRowLine(pane, true, width)); !strings.HasSuffix(got, prefix+"security s…") {
+		t.Errorf("agents tab pane row = %q, want the same right truncation", got)
+	}
+
+	other := Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceProjects, Icon: "X", Label: "security scan long title"}}
+	if got := renderRowLineText(m.renderRowLine(other, false, width-2)); !strings.HasSuffix(got, "X …long title") {
+		t.Errorf("project row = %q, want the label's tail behind a leading ellipsis", got)
+	}
+
+	// The surviving highlighted start keeps the accent after truncation.
+	_, mask := truncateMasked("security scan long title", m.buildRowView(agent).primaryHL, 11, true)
+	if got := maskedRunes("security s…", mask); got != "sec" {
+		t.Errorf("truncated mask highlights %q, want \"sec\"", got)
+	}
 }
 
-func TestHighlight_EmptyMatchedIndexesUsesBaseStyle(t *testing.T) {
+// TestHighlight_EmptyMatchedIndexesHasNoMask proves a direct match without
+// matched indexes renders no highlight.
+func TestHighlight_EmptyMatchedIndexesHasNoMask(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
-	row := Row{
-		Kind:      RowCandidate,
-		Candidate: zoxideCandidate("café", "/home/dev/café"),
-		Match:     MatchDirect,
-	}
-
-	parts := m.rowLineParts(row)
-	if len(parts) != 1 {
-		t.Fatalf("part count = %d, want 1", len(parts))
-	}
-	if parts[0].rendered {
-		t.Fatal("empty matched indexes rendered per-rune styling")
-	}
-	if got, want := parts[0].style.Render(parts[0].text), m.styles.rowStyle.Render("café"); got != want {
-		t.Errorf("base row styling = %q, want %q", got, want)
+	v := m.buildRowView(Row{Kind: RowCandidate, Candidate: zoxideCandidate("café", "/home/dev/café"), Match: MatchDirect})
+	if v.primary != "café" || v.primaryHL != nil {
+		t.Errorf("view = %q mask %v, want café without a highlight mask", v.primary, v.primaryHL)
 	}
 }
 
-func TestHighlight_MatchedRunesUseAccentStyle(t *testing.T) {
-	t.Parallel()
-	m := newRenderTestModel(ThemeMocha, FocusList)
-	m.query = "ha" // the visible provider label has the only meaningful match.
-	row := Row{
-		Kind:           RowCandidate,
-		Candidate:      zoxideCandidate("alpha", "/home/dev/alpha"),
-		Match:          MatchDirect,
-		MatchedIndexes: []int{0, 1},
-	}
-
-	parts := m.rowLineParts(row)
-	if len(parts) != 1 {
-		t.Fatalf("part count = %d, want 1", len(parts))
-	}
-	if !parts[0].rendered {
-		t.Fatal("matched runes were not rendered with per-rune styling")
-	}
-
-	// Rows are label-first now, so the visible text is the label "alpha" rather
-	// than the path, and the query accents the two runes it matches there. The
-	// point of this test is that those runes render with the accent style while
-	// the rest keeps the base style; asserting a single base-styled string would
-	// pass while proving nothing, because an uncolored profile renders every
-	// style identically.
-	base := m.styles.rowStyle
-	accent := m.styles.queryStyle
-	want := base.Render("a") + base.Render("l") + base.Render("p") +
-		accent.Render("h") + accent.Render("a")
-	// renderHighlighted (not a pre-rendered parts[0].text — rendering is now
-	// deferred to display time so truncation can protect the fixed prefix;
-	// see rowPart.renderHighlighted) with maxW<=0 renders the full,
-	// untruncated content.
-	if got := parts[0].renderHighlighted(0, lipgloss.Style{}, false); got != want {
-		t.Errorf("rendered matched runes = %q, want %q", got, want)
-	}
-}
-
-// TestHighlight_LabelMatchHighlightsTheVisibleLabel covers a query that matches
-// only the label. Rows are label-first now, so the label IS the visible text and
-// the match must be accented there. The old name said the opposite, describing
-// the era when a provider row rendered its path and a label-only match had no
-// rendered rune to accent.
-func TestHighlight_LabelMatchHighlightsTheVisibleLabel(t *testing.T) {
-	t.Parallel()
-	m := newRenderTestModel(ThemeMocha, FocusList)
-	m.query = "café" // matches the visible provider label.
-	cand := zoxideCandidate("café", "/home/dev/project")
-	rows := buildRows(rowBuildInput{query: m.query, candidates: []source.Candidate{cand}})
-	if len(rows) != 1 || rows[0].Match != MatchDirect {
-		t.Fatalf("setup: label-only query must keep a direct candidate row, got %+v", rows)
-	}
-
-	parts := m.rowLineParts(rows[0])
-	if len(parts) != 1 {
-		t.Fatalf("part count = %d, want 1", len(parts))
-	}
-	if !parts[0].rendered {
-		t.Fatal("a label match should highlight the visible label")
-	}
-	if got := parts[0].rawText; got != "café" {
-		t.Errorf("label-only match rendering: got %q, want %q", got, "café")
-	}
-}
-
-// TestHighlight_MatchUsesVisibleRowIndexes proves highlighting rescoring follows
-// the text the row actually renders for an ordinary provider candidate, rather
-// than the label+path fuzzy haystack used for ranking.
+// TestHighlight_MatchUsesVisibleRowIndexes proves highlighting rescores the
+// text the row shows — the label — rather than reusing the indexes scored
+// against the label+path haystack.
 func TestHighlight_MatchUsesVisibleRowIndexes(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
-	m.query = "com"
-	cand := zoxideCandidate("components", "/home/dev/components")
-
-	row := Row{
-		Kind:           RowCandidate,
-		Candidate:      cand,
-		Match:          MatchDirect,
-		MatchedIndexes: []int{0, 1, 2},
-	}
-
-	parts := m.rowLineParts(row)
-	if len(parts) != 1 {
-		t.Fatalf("part count = %d, want 1", len(parts))
-	}
-	if !parts[0].rendered {
-		t.Fatal("visible provider-path match was not highlighted")
-	}
-
-	rawRunes := []rune(parts[0].rawText)
-	// rawText excludes the one-cell external gutter. The visible label's "com"
-	// occupies indexes 0, 1, and 2.
-	wantHighlighted := map[int]bool{0: true, 1: true, 2: true}
-	for i, got := range parts[0].highlighted {
-		if want := wantHighlighted[i]; got != want {
-			t.Errorf("highlighted[%d] (rune %q) = %v, want %v — rawText=%q", i, string(rawRunes[i]), got, want, parts[0].rawText)
+	for _, tc := range []struct {
+		query, label, want string
+	}{
+		{"ha", "alpha", "ha"},
+		{"com", "components", "com"},
+		{"café", "café", "café"},
+	} {
+		m.query = tc.query
+		rows := buildRows(rowBuildInput{query: tc.query, candidates: []source.Candidate{zoxideCandidate(tc.label, "/home/dev/"+tc.label)}})
+		if len(rows) != 1 || rows[0].Match != MatchDirect {
+			t.Fatalf("setup: query %q must keep a direct row, got %+v", tc.query, rows)
 		}
-	}
-	if got, want := string(rawRunes[0:3]), "com"; got != want {
-		t.Fatalf("setup sanity: rawText[11:14] = %q, want %q", got, want)
-	}
-	if !strings.HasPrefix(parts[0].rawText, "components") {
-		t.Errorf("rawText = %q, want it to contain only the visible provider label", parts[0].rawText)
+		v := m.buildRowView(rows[0])
+		if got := maskedRunes(v.primary, v.primaryHL); v.primary != tc.label || got != tc.want {
+			t.Errorf("query %q: view %q highlights %q, want %q", tc.query, v.primary, got, tc.want)
+		}
 	}
 }
 
+// TestHighlight_NonDirectMatchesUseNoQueryStyle proves only direct matches
+// are highlighted; a descendant-only match renders in the descendant style.
 func TestHighlight_NonDirectMatchesUseNoQueryStyle(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
-
-	tests := []struct {
-		name      string
-		match     MatchKind
-		wantText  string
-		wantStyle string
-	}{
-		{
-			name:      "descendant match",
-			match:     MatchDescendant,
-			wantText:  "workspace",
-			wantStyle: m.styles.rowDescendantStyle.Render("workspace"),
-		},
-		{
-			name:      "non-match",
-			match:     MatchNone,
-			wantText:  "workspace",
-			wantStyle: m.styles.rowStyle.Render("workspace"),
-		},
+	m.query = "wk"
+	for _, match := range []MatchKind{MatchDescendant, MatchNone} {
+		v := m.buildRowView(Row{Kind: RowCandidate, Candidate: zoxideCandidate("workspace", "/home/dev/workspace"), Match: match, MatchedIndexes: []int{0, 2}})
+		if v.primaryHL != nil {
+			t.Errorf("match %v: highlight mask %v, want none", match, v.primaryHL)
+		}
+		if v.descendant != (match == MatchDescendant) {
+			t.Errorf("match %v: descendant = %v", match, v.descendant)
+		}
 	}
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			row := Row{
-				Kind:           RowCandidate,
-				Candidate:      zoxideCandidate("workspace", "/home/dev/workspace"),
-				Match:          tt.match,
-				MatchedIndexes: []int{0, 2},
-			}
+// TestHighlight_FilenameFirstMapsAcrossParentAndName proves a match spanning
+// the parent path and the name is scored on the whole displayed label and
+// mapped onto both parts; the separating "/" is not shown.
+func TestHighlight_FilenameFirstMapsAcrossParentAndName(t *testing.T) {
+	t.Parallel()
+	m := newRenderTestModel(ThemeMocha, FocusList)
+	m.homeDir = "/home/dev"
+	m.query = "proshep"
+	label := "~/Proyectos/shep"
+	rows := buildRows(rowBuildInput{query: m.query, candidates: []source.Candidate{zoxideCandidate("", "/home/dev/Proyectos/shep")}})
+	if len(rows) != 1 {
+		t.Fatalf("setup: want one direct row, got %+v", rows)
+	}
+	v := m.buildRowView(rows[0])
+	if v.primary != "shep" || v.secondary != "~/Proyectos" {
+		t.Fatalf("split = %q + %q, want shep + ~/Proyectos", v.primary, v.secondary)
+	}
+	_, indexes := fuzzy.Score(m.query, label)
+	sep := strings.LastIndex(label, "/")
+	for _, i := range indexes {
+		switch {
+		case i < sep && !v.secondaryHL[i]:
+			t.Errorf("parent rune %d (%q) not highlighted", i, string([]rune(label)[i]))
+		case i > sep && !v.primaryHL[i-sep-1]:
+			t.Errorf("name rune %d (%q) not highlighted", i, string([]rune(label)[i]))
+		}
+	}
+	if maskedRunes(v.primary, v.primaryHL) == "" || maskedRunes(v.secondary, v.secondaryHL) == "" {
+		t.Errorf("highlights = %q / %q, want matches in both parts", maskedRunes(v.secondary, v.secondaryHL), maskedRunes(v.primary, v.primaryHL))
+	}
+}
 
-			parts := m.rowLineParts(row)
-			if len(parts) != 1 {
-				t.Fatalf("part count = %d, want 1", len(parts))
-			}
-			if parts[0].rendered {
-				t.Fatal("non-direct row rendered with query accent styling")
-			}
-			if got := parts[0].text; got != tt.wantText {
-				t.Errorf("row text = %q, want %q", got, tt.wantText)
-			}
-			if got := parts[0].style.Render(parts[0].text); got != tt.wantStyle {
-				t.Errorf("row style = %q, want %q", got, tt.wantStyle)
-			}
-		})
+// TestWriteRuns_OneRenderPerStyleRun proves highlighted text renders as
+// style runs — one Render per run of equally styled runes, never one per
+// rune — and keeps the visible text unchanged. Not t.Parallel: it swaps
+// lipgloss's global color profile so styles are distinguishable.
+func TestWriteRuns_OneRenderPerStyleRun(t *testing.T) {
+	orig := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(orig) })
+
+	s := newPalette(themes[ThemeMocha])
+	base, hl := s.rowStyle, s.queryStyle
+	for _, tc := range []struct {
+		text string
+		mask []bool
+		want string
+	}{
+		{"alpha", []bool{false, false, false, true, true}, base.Render("alp") + hl.Render("ha")},
+		{"alpha", []bool{true, true, false, false, true}, hl.Render("al") + base.Render("ph") + hl.Render("a")},
+		{"café", []bool{false, false, false, true}, base.Render("caf") + hl.Render("é")},
+		{"alpha", nil, base.Render("alpha")},
+	} {
+		var b strings.Builder
+		writeRuns(&b, tc.text, tc.mask, base, hl)
+		if got := b.String(); got != tc.want {
+			t.Errorf("writeRuns(%q, %v) = %q, want %q", tc.text, tc.mask, got, tc.want)
+		}
+		if got := reSGR.ReplaceAllString(b.String(), ""); got != tc.text {
+			t.Errorf("writeRuns(%q) visible text = %q", tc.text, got)
+		}
 	}
 }

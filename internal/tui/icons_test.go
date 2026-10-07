@@ -24,9 +24,8 @@ var reNonASCII = regexp.MustCompile(`[^\x00-\x7F]`)
 // === resolveIconSet: default + explicit tiers ===
 
 // TestResolveIconSet_DefaultsToUnicode proves an empty configIcons (an unset
-// [tui].icons) resolves to the "unicode" tier, whose glyphs are byte-identical
-// to the picker's original hardcoded values — so leaving [tui].icons unset
-// never changes any existing rendered output.
+// [tui].icons) resolves to the "unicode" tier with its exact glyph table, so
+// a glyph change is always a deliberate, reviewed edit.
 func TestResolveIconSet_DefaultsToUnicode(t *testing.T) {
 	t.Parallel()
 	set := resolveIconSet("")
@@ -45,11 +44,19 @@ func TestResolveIconSet_DefaultsToUnicode(t *testing.T) {
 		TreeLast:      "└─",
 		TreeVertical:  "│ ",
 		TabIcon:       "◫",
-		ActiveMarker:  "◆",
-		SearchPrompt:  "⌕",
+		SearchPrompt:  "❯",
+
+		RuleHorizontal: "─",
+		RuleVertical:   "│",
+		RuleJunction:   "┼",
+		HintSeparator:  "·",
+		Overflow:       "…",
+		ScrollThumb:    "┃",
+		Pinned:         "★",
+		Group:          "›",
 	}
 	if set != want {
-		t.Errorf("resolveIconSet(\"\") = %+v, want %+v (must match the pre-Phase-8 hardcoded glyphs exactly)", set, want)
+		t.Errorf("resolveIconSet(\"\") = %+v, want %+v", set, want)
 	}
 }
 
@@ -80,8 +87,12 @@ func TestResolveIconSet_ASCII(t *testing.T) {
 		"StatusWorking": set.StatusWorking,
 		"ExpandOpen":    set.ExpandOpen, "ExpandClosed": set.ExpandClosed,
 		"TreeMid": set.TreeMid, "TreeLast": set.TreeLast,
-		"TreeVertical": set.TreeVertical, "TabIcon": set.TabIcon, "ActiveMarker": set.ActiveMarker,
-		"SearchPrompt": set.SearchPrompt,
+		"TreeVertical": set.TreeVertical, "TabIcon": set.TabIcon,
+		"SearchPrompt":   set.SearchPrompt,
+		"RuleHorizontal": set.RuleHorizontal, "RuleVertical": set.RuleVertical,
+		"RuleJunction": set.RuleJunction, "HintSeparator": set.HintSeparator,
+		"Overflow": set.Overflow, "ScrollThumb": set.ScrollThumb,
+		"Pinned": set.Pinned, "Group": set.Group,
 	}
 	for name, glyph := range fields {
 		if glyph == "" {
@@ -224,11 +235,11 @@ func TestKindPrefix_RowCandidateNeverGetsExpandGlyph(t *testing.T) {
 // siblings. Every RowTab/RowPane prefix is led by a fixed-width blank
 // active-marker slot (TRL-4) — m.currentPane is nil here, so isActiveFocusRow
 // is always false and the slot is blank space, never the glyph itself (see
-// TestKindPrefix_TreeGlyphColumnAlignsRegardlessOfActiveMarker in
+// TestKindPrefix_TreeGlyphColumnsAlign in
 // active_focus_test.go for the alignment proof against an active row).
 //
-// A RowPane's ancestor connector follows its fixed active-marker slot so it
-// shares the parent tab's branch column; its own glyph is one level deeper.
+// A RowPane's ancestor connector shares the parent tab's branch column; its
+// own glyph is one level deeper.
 func TestKindPrefix_TreeGlyphsRespectConfiguredIconSet(t *testing.T) {
 	t.Parallel()
 	for _, tier := range []string{IconsUnicode, IconsASCII} {
@@ -236,18 +247,17 @@ func TestKindPrefix_TreeGlyphsRespectConfiguredIconSet(t *testing.T) {
 			t.Parallel()
 			m := newRenderTestModelWithIcons(ThemeMocha, tier)
 			set := resolveIconSet(tier)
-			blankSlot := strings.Repeat(" ", lipgloss.Width(set.ActiveMarker+" "))
 			blankAncestor := strings.Repeat(" ", lipgloss.Width(set.TreeVertical))
 			tests := []struct {
 				name string
 				row  Row
 				want string
 			}{
-				{name: "non-last tab", row: Row{Kind: RowTab, Depth: 1}, want: "  " + blankSlot + set.TreeMid + " "},
-				{name: "last tab", row: Row{Kind: RowTab, Depth: 1, IsLast: true}, want: "  " + blankSlot + set.TreeLast + " "},
-				{name: "non-last pane, non-last ancestor", row: Row{Kind: RowPane, Depth: 2}, want: "  " + blankSlot + set.TreeVertical + set.TreeMid + " "},
-				{name: "last pane, non-last ancestor", row: Row{Kind: RowPane, Depth: 2, IsLast: true}, want: "  " + blankSlot + set.TreeVertical + set.TreeLast + " "},
-				{name: "ancestor is last sibling: blank ancestor column", row: Row{Kind: RowPane, Depth: 2, AncestorIsLast: true}, want: "  " + blankSlot + blankAncestor + set.TreeMid + " "},
+				{name: "non-last tab", row: Row{Kind: RowTab, Depth: 1}, want: "  " + set.TreeMid + " "},
+				{name: "last tab", row: Row{Kind: RowTab, Depth: 1, IsLast: true}, want: "  " + set.TreeLast + " "},
+				{name: "non-last pane, non-last ancestor", row: Row{Kind: RowPane, Depth: 2}, want: "  " + set.TreeVertical + set.TreeMid + " "},
+				{name: "last pane, non-last ancestor", row: Row{Kind: RowPane, Depth: 2, IsLast: true}, want: "  " + set.TreeVertical + set.TreeLast + " "},
+				{name: "ancestor is last sibling: blank ancestor column", row: Row{Kind: RowPane, Depth: 2, AncestorIsLast: true}, want: "  " + blankAncestor + set.TreeMid + " "},
 				{name: "candidate has no tree prefix", row: Row{Kind: RowCandidate, IsLast: true, AncestorIsLast: true}, want: ""},
 			}
 			for _, tt := range tests {
@@ -262,26 +272,22 @@ func TestKindPrefix_TreeGlyphsRespectConfiguredIconSet(t *testing.T) {
 }
 
 // TestRowDisplayText_TreePrefixDistinguishesLastTab proves the tree glyph
-// still distinguishes last siblings, and (Change 2) the primary text now
-// unifies to "<tab icon> <resolved label> · <path>" — the tab-number/label
-// dedup rule folds "3"+"deploy" into "3 deploy", while a bare number with no
-// distinct label collapses to just the number (no path in these cases, so
-// composeLabelPath's path-less body — but a path is threaded through where
-// the test cares about the label/tree-glyph interaction specifically).
+// still distinguishes last siblings, and the default tab format is the
+// label alone — the tab-number/label dedup rule folds "3"+"deploy" into
+// "3 deploy". A top-level candidate has no tree prefix.
 func TestRowDisplayText_TreePrefixDistinguishesLastTab(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModelWithIcons(ThemeMocha, IconsUnicode)
 	set := m.icons()
-	blankSlot := strings.Repeat(" ", lipgloss.Width(set.ActiveMarker+" "))
 	for _, tt := range []struct {
 		name string
 		row  Row
 		want string
 	}{
-		{name: "non-last", row: Row{Kind: RowTab, Depth: 1, Candidate: source.Candidate{Label: "deploy", Path: "/svc"}}, want: "  " + blankSlot + "├─ " + set.TabIcon + " deploy · /svc"},
-		{name: "last tab with number", row: Row{Kind: RowTab, Depth: 1, IsLast: true, Candidate: source.Candidate{Label: "deploy", Path: "/svc", Meta: map[string]string{"tab_number": "3"}}}, want: "  " + blankSlot + "└─ " + set.TabIcon + " 3 deploy · /svc"},
-		{name: "last tab without number", row: Row{Kind: RowTab, Depth: 1, IsLast: true, Candidate: source.Candidate{Label: "deploy", Path: "/svc"}}, want: "  " + blankSlot + "└─ " + set.TabIcon + " deploy · /svc"},
-		{name: "candidate without tree", row: Row{Kind: RowCandidate, IsLast: true, AncestorIsLast: true, Candidate: source.Candidate{Label: "workspace", Path: "/ws"}}, want: "/ws"},
+		{name: "non-last", row: Row{Kind: RowTab, Depth: 1, Candidate: source.Candidate{Label: "deploy", Path: "/svc"}}, want: "  " + "├─ " + set.TabIcon + " deploy"},
+		{name: "last tab with number", row: Row{Kind: RowTab, Depth: 1, IsLast: true, Candidate: source.Candidate{Label: "deploy", Path: "/svc", Meta: map[string]string{"tab_number": "3"}}}, want: "  " + "└─ " + set.TabIcon + " 3 deploy"},
+		{name: "last tab without number", row: Row{Kind: RowTab, Depth: 1, IsLast: true, Candidate: source.Candidate{Label: "deploy", Path: "/svc"}}, want: "  " + "└─ " + set.TabIcon + " deploy"},
+		{name: "candidate without tree", row: Row{Kind: RowCandidate, IsLast: true, AncestorIsLast: true, Candidate: source.Candidate{Label: "workspace", Path: "/srv/ws"}}, want: "ws"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			primary, _ := m.rowDisplayText(tt.row)
@@ -317,29 +323,55 @@ func TestRowDisplayText_RespectsConfiguredIconSetEndToEnd(t *testing.T) {
 	}
 }
 
-// TestSearchPrompt_RespectsConfiguredIconSet proves the search prompt in renderHeader
-// uses "⌕" for Unicode and ">" for ASCII tier, styled muted and not with keycap brackets.
+// TestSearchPrompt_RespectsConfiguredIconSet proves the prompt row's glyph
+// comes from the configured tier ("❯" Unicode, ">" ASCII), followed by the
+// cursor cell and the placeholder, with no keycap brackets.
 func TestSearchPrompt_RespectsConfiguredIconSet(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
 		icons      string
 		wantPrompt string
-		wantNo     string
 	}{
-		{IconsUnicode, "⌕", "[/]"},
-		{IconsASCII, ">", "[/]"},
+		{IconsUnicode, "❯"},
+		{IconsASCII, ">"},
 	} {
 		t.Run(tc.icons, func(t *testing.T) {
 			m := NewModelWithLayout([]source.Candidate{{Label: "a", Source: "zoxide"}}, nil, Layout{Icons: tc.icons, Theme: ThemeMocha})
-			header := stripNonSGRANSI(m.renderHeader(120))
-			if strings.Contains(header, tc.wantNo) {
-				t.Errorf("[%s] header contains %q, want no keycap brackets", tc.icons, tc.wantNo)
+			prompt := promptText(m)
+			if strings.Contains(prompt, "[/]") {
+				t.Errorf("[%s] prompt row contains keycap brackets: %q", tc.icons, prompt)
 			}
-			if !strings.Contains(header, tc.wantPrompt+" type to filter…") {
-				t.Errorf("[%s] header %q does not contain prompt %q with placeholder", tc.icons, header, tc.wantPrompt)
+			if !strings.HasPrefix(prompt, tc.wantPrompt+"  Search workspaces") {
+				t.Errorf("[%s] prompt row %q, want %q, the cursor cell and the placeholder", tc.icons, prompt, tc.wantPrompt)
 			}
 		})
+	}
+}
+
+// TestASCIITier_ChromeIsASCIIOnly proves the ASCII icon tier keeps every
+// chrome row (tab strip, prompt, rule, divider, footer) free of non-ASCII
+// glyphs, in wide and list-only layouts and in the help overlay. The
+// placeholder and the ellipsis inside truncated user text are excluded by
+// keeping every label short.
+func TestASCIITier_ChromeIsASCIIOnly(t *testing.T) {
+	t.Parallel()
+	for _, size := range []struct{ w, h int }{{120, 30}, {64, 20}} {
+		for _, help := range []bool{false, true} {
+			m := NewModelWithLayout([]source.Candidate{zoxideCandidate("alpha", "/a")}, nil, Layout{Icons: IconsASCII, Theme: ThemeMocha})
+			m, _ = update(t, m, sizeMsg(size.w, size.h))
+			if help {
+				m, _ = update(t, m, key("?"))
+			} else {
+				m, _ = update(t, m, key("a"))
+			}
+			lines := viewLines(m)
+			for _, i := range []int{0, 1, 2, 3, len(lines) - 1} {
+				if reNonASCII.MatchString(lines[i]) {
+					t.Errorf("%dx%d help=%v line %d = %q, contains a non-ASCII glyph", size.w, size.h, help, i, lines[i])
+				}
+			}
+		}
 	}
 }
 

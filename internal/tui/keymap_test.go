@@ -1,10 +1,12 @@
 package tui
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/tranceh2/shep/internal/config"
+	"github.com/tranceh2/shep/internal/fuzzy"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -17,29 +19,32 @@ import (
 // string literals — the drift this phase closes.
 
 // TestFooterHints_MatchSharedKeyBindingValues proves footerHints() builds
-// each segment from the shared keyBinding vars' footerChord/footerLabel
-// fields, not independent literals.
+// each hint from the shared keyBinding vars' footerChord/footerLabel fields,
+// not independent literals, and that the footer row renders them as
+// "key label" pairs joined by the shared separator.
 func TestFooterHints_MatchSharedKeyBindingValues(t *testing.T) {
 	t.Parallel()
 	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
 	m, _ = update(t, m, sizeMsg(120, 36))
-	got := m.footerHints()
 
-	want := strings.Join([]string{
-		renderKeycap(m.styles, keyBindingEnter.footerChord, keyBindingEnter.footerLabel),
-		renderKeycap(m.styles, keyBindingTab.footerChord, keyBindingTab.footerLabel),
-		renderKeycap(m.styles, keyBindingHelp.footerChord, keyBindingHelp.footerLabel),
-		renderKeycap(m.styles, keyBindingEsc.footerChord, keyBindingEsc.footerLabel),
-	}, footerSeparator)
-
-	if got != want {
-		t.Errorf("footerHints() = %q, want %q", got, want)
+	want := []footerHint{
+		{keyBindingEnter.footerChord, keyBindingEnter.footerLabel, hintPriorityEnter},
+		{keyBindingTab.footerChord, keyBindingTab.footerLabel, hintPriorityTab},
+		{keyBindingHelp.footerChord, keyBindingHelp.footerLabel, hintPriorityHelp},
+		{keyBindingEsc.footerChord, keyBindingEsc.footerLabel, hintPriorityEsc},
+	}
+	if got := m.footerHints(); !slices.Equal(got, want) {
+		t.Errorf("footerHints() = %+v, want %+v", got, want)
+	}
+	wantText := "enter open · tab agents · ? help · esc quit"
+	if got := footerText(m); got != wantText {
+		t.Errorf("footer row = %q, want %q", got, wantText)
 	}
 }
 
 // TestFooterHints_HerdrSegmentsMatchSharedKeyBindingValues proves the
-// conditional ctrl+t/ctrl+p footer segments (shown only when the current
-// pane + candidate support a workspace target) also come from the shared
+// conditional ctrl+t/ctrl+p footer hints (shown only when the current pane +
+// candidate support a workspace target) also come from the shared
 // keyBindingCtrlT/keyBindingCtrlP values.
 func TestFooterHints_HerdrSegmentsMatchSharedKeyBindingValues(t *testing.T) {
 	t.Parallel()
@@ -48,30 +53,29 @@ func TestFooterHints_HerdrSegmentsMatchSharedKeyBindingValues(t *testing.T) {
 	pane := source.Pane{ID: "p0"}
 	m = m.WithCurrentPane(&pane)
 
-	got := m.footerHints()
-	wantCtrlT := renderKeycap(m.styles, keyBindingCtrlT.footerChord, keyBindingCtrlT.footerLabel)
-	wantCtrlP := renderKeycap(m.styles, keyBindingCtrlP.footerChord, keyBindingCtrlP.footerLabel)
-	if !strings.Contains(got, wantCtrlT) {
-		t.Errorf("footerHints() = %q, missing shared ctrl+t hint %q", got, wantCtrlT)
+	hints := m.footerHints()
+	if !hasHint(hints, keyBindingCtrlT.footerChord, keyBindingCtrlT.footerLabel) {
+		t.Errorf("footerHints() = %+v, missing the shared ctrl+t hint", hints)
 	}
-	if !strings.Contains(got, wantCtrlP) {
-		t.Errorf("footerHints() = %q, missing shared ctrl+p hint %q", got, wantCtrlP)
+	if !hasHint(hints, keyBindingCtrlP.footerChord, keyBindingCtrlP.footerLabel) {
+		t.Errorf("footerHints() = %+v, missing the shared ctrl+p hint", hints)
 	}
 }
 
-// TestKeyMap_FooterBindingsRenderIdenticallyInHelpBody is the core
-// drift-guard: for every keyMap binding with a non-empty footerChord (i.e.
-// one that also appears in the footer), its help-overlay line — built via
-// renderHelpLine from that exact same keyBinding value — must be present
-// verbatim in helpBodyText(). Because footerHints() and helpBodyText() both
-// read from the identical keyBinding struct value, a future edit to a
-// shared chord or label can only be made once, in one place.
-func TestKeyMap_FooterBindingsRenderIdenticallyInHelpBody(t *testing.T) {
+// helpLines renders the cheat sheet at width as plain lines.
+func helpLines(m Model, width int) []string {
+	return strings.Split(stripNonSGRANSI(m.helpBodyText(width)), "\n")
+}
+
+// TestKeyMap_FooterBindingsAppearInHelpBody is the drift guard: every
+// cheat-sheet binding that also appears in the footer is shown in the help
+// with its chord and description, both read from the same keyBinding value
+// the footer uses, so a shared chord can only be edited in one place.
+func TestKeyMap_FooterBindingsAppearInHelpBody(t *testing.T) {
 	t.Parallel()
 	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
 	m, _ = update(t, m, sizeMsg(120, 36))
-	body := m.helpBodyText()
-
+	body := strings.Join(helpLines(m, 80), "\n")
 	var checked int
 	for _, section := range keyMap {
 		for _, b := range section.bindings {
@@ -79,9 +83,12 @@ func TestKeyMap_FooterBindingsRenderIdenticallyInHelpBody(t *testing.T) {
 				continue
 			}
 			checked++
-			line := renderHelpLine(b)
-			if !strings.Contains(body, line) {
-				t.Errorf("helpBodyText() missing line %q for footer-visible binding (chord=%q)", line, b.footerChord)
+			help := b.help
+			if b.chord == keyChordEnter {
+				help = m.enterHelpText()
+			}
+			if !strings.Contains(body, b.chord) || !strings.Contains(body, help) {
+				t.Errorf("help body is missing %q / %q", b.chord, help)
 			}
 		}
 	}
@@ -90,74 +97,122 @@ func TestKeyMap_FooterBindingsRenderIdenticallyInHelpBody(t *testing.T) {
 	}
 }
 
-// TestRenderHelpLine_PadsChordColumnTo28 proves renderHelpLine keeps the
-// help overlay's existing fixed-width key column (2-space indent + a
-// 26-column chord field) so refactoring the line-generation logic never
-// silently reflows the help body's layout.
-func TestRenderHelpLine_PadsChordColumnTo28(t *testing.T) {
+// TestHelpColumn_KeyWidthFromContent proves every description of a column
+// starts at the same cell: the indent, the column's widest keys, two spaces.
+func TestHelpColumn_KeyWidthFromContent(t *testing.T) {
 	t.Parallel()
-	cases := []struct {
-		chord string
-		help  string
-		want  string
-	}{
-		{chord: "enter", help: "open the highlighted row", want: "  enter                     open the highlighted row"},
-		{chord: "tab / shift+tab", help: "switch focus between list and preview", want: "  tab / shift+tab           switch focus between list and preview"},
-		{chord: "esc, ctrl+c, ctrl+g", help: "cancel the picker", want: "  esc, ctrl+c, ctrl+g       cancel the picker"},
-	}
-	for _, tc := range cases {
-		got := renderHelpLine(keyBinding{chord: tc.chord, help: tc.help})
-		if got != tc.want {
-			t.Errorf("renderHelpLine(chord=%q) = %q, want %q", tc.chord, got, tc.want)
+	m := NewModel(nil, nil)
+	sections := []helpSection{{"A", []keyBinding{{chord: "x", help: "one"}, {chord: "ctrl+long", help: "two"}}}}
+	lines := m.helpColumn(sections, 40, false)
+	want := []string{"A", "  x          one", "  ctrl+long  two"}
+	for i, line := range lines {
+		if got := strings.TrimRight(stripNonSGRANSI(line), " "); got != want[i] {
+			t.Errorf("line %d = %q, want %q", i, got, want[i])
 		}
 	}
 }
 
-// TestHelpBodyText_MatchesApprovedContent locks the full help body text so
-// this phase's refactor is proven byte-identical to the pre-refactor
-// hand-typed version (no accidental reflow of headings/blank lines).
-func TestHelpBodyText_MatchesApprovedContent(t *testing.T) {
+// TestHelpBodyText_CheatSheet proves the cheat sheet's content and layout:
+// the five shortcut sections and the search syntax, side by side from 100
+// columns and stacked below; arrows under the Unicode tier, spelled out
+// under ASCII; the Enter line following the highlighted row; and no
+// unreachable preview-focus or meta help sections.
+func TestHelpBodyText_CheatSheet(t *testing.T) {
 	t.Parallel()
 	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
 	m, _ = update(t, m, sizeMsg(120, 36))
 
-	want := strings.Join([]string{
-		m.styles.helpHeadingStyle.Render("Navigation"),
-		"  up/down, ctrl+j/ctrl+k    move the cursor",
-		"  ctrl+d/ctrl+u             move half a page",
-		"  left/right                collapse/expand a workspace's tabs/panes",
-		"  enter                     open the highlighted row",
-		"  ctrl+f                    pin/unpin the highlighted top-level candidate",
-		"  tab / shift+tab           switch between all and agents filter",
-		"  backspace                 delete the last query character",
-		"  ctrl+w, alt+backspace     delete the last query word",
-		"",
-		m.styles.helpHeadingStyle.Render("Preview (while focused)"),
-		"  up/down, ctrl+j/ctrl+k    scroll one line",
-		"  pgup/pgdown               scroll one page",
-		"  home/end                  jump to top/bottom",
-		"  any letter                return to the list and search",
-		"",
-		m.styles.helpHeadingStyle.Render("Herdr"),
-		"  ctrl+t                    open in a new tab of the current workspace (list or preview focus)",
-		"  ctrl+p                    open in a new pane of the current workspace (list or preview focus)",
-		"  ctrl+x                    close the highlighted open Herdr pane, tab, or workspace (y/n if configured)",
-		"",
-		m.styles.helpHeadingStyle.Render("Layout"),
-		"  ctrl+l                    toggle layout: auto / landscape (list focus only)",
-		"",
-		m.styles.helpHeadingStyle.Render("Help (this screen)"),
-		"  up/down, ctrl+j/ctrl+k    scroll one line",
-		"  pgup/pgdown               scroll one page",
-		"  home/end                  jump to top/bottom",
-		"  ?, esc                    close help and return to what you were doing",
-		"",
-		m.styles.helpHeadingStyle.Render("Session"),
-		"  esc, ctrl+c, ctrl+g       cancel the picker",
-	}, "\n")
+	wide := helpLines(m, 110)
+	if !strings.HasPrefix(wide[0], "Navigate") || !strings.Contains(wide[0], "Search syntax") {
+		t.Errorf("wide first line = %q, want Navigate beside Search syntax", wide[0])
+	}
+	narrow := helpLines(m, 90)
+	body := strings.Join(narrow, "\n")
+	order := []string{"Navigate", "Act", "Search", "Layout", "Session", "Search syntax"}
+	at := -1
+	for _, title := range order {
+		i := slices.Index(narrow, title)
+		if i <= at {
+			t.Errorf("section %q at line %d, want it after line %d (one column, shortcuts then syntax)", title, i, at)
+		}
+		at = i
+	}
+	for _, want := range []string{"↑/↓, ctrl+k/ctrl+j", "←/→", "enter", "open the highlighted row", "ctrl+t", "open as a tab here", "esc", "clear search, then quit", "ctrl+c, ctrl+g"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("help is missing %q", want)
+		}
+	}
+	for _, gone := range []string{"Preview (while focused)", "Help (this screen)", "any letter"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("help still shows %q", gone)
+		}
+	}
 
-	if got := m.helpBodyText(); got != want {
-		t.Errorf("helpBodyText() changed by the KeyMap refactor:\ngot:\n%s\nwant:\n%s", got, want)
+	m.rows = []Row{{Kind: RowTab, Candidate: source.Candidate{Label: "api", Meta: map[string]string{"tab_id": "t1"}}}}
+	if body := strings.Join(helpLines(m, 90), "\n"); !strings.Contains(body, helpLabelFocusTab) {
+		t.Errorf("help Enter line does not follow the tab row: %q", body)
+	}
+
+	ascii := NewModelWithLayout(nil, nil, Layout{Icons: IconsASCII})
+	asciiBody := strings.Join(helpLines(ascii, 110), "\n")
+	if reNonASCII.MatchString(asciiBody) || !strings.Contains(asciiBody, "up/down, ctrl+k/ctrl+j") || !strings.Contains(asciiBody, "left/right") {
+		t.Errorf("ASCII help = %q, want spelled-out arrows and ASCII only", asciiBody)
+	}
+}
+
+// TestSearchSyntax_DocumentedExamplesParse parses every documented search
+// syntax example with the real parser and checks it means what the help
+// says, so the cheat sheet can never lie about the parser.
+func TestSearchSyntax_DocumentedExamplesParse(t *testing.T) {
+	t.Parallel()
+	type want struct {
+		clauses, alternatives int
+		kind                  fuzzy.TermKind
+		inverse, exactFull    bool
+		field, pattern        string
+	}
+	expect := map[string]want{
+		"api web":        {clauses: 2, alternatives: 1, kind: fuzzy.TermFuzzy, pattern: "api"},
+		"api|web":        {clauses: 1, alternatives: 2, kind: fuzzy.TermFuzzy, pattern: "api"},
+		"'api":           {clauses: 1, alternatives: 1, kind: fuzzy.TermExact, pattern: "api"},
+		`"api gw"`:       {clauses: 1, alternatives: 1, kind: fuzzy.TermExact, pattern: "api gw"},
+		"^back":          {clauses: 1, alternatives: 1, kind: fuzzy.TermPrefix, pattern: "back"},
+		"end$":           {clauses: 1, alternatives: 1, kind: fuzzy.TermSuffix, pattern: "end"},
+		"^shep$":         {clauses: 1, alternatives: 1, kind: fuzzy.TermExact, exactFull: true, pattern: "shep"},
+		"/v[0-9]+/":      {clauses: 1, alternatives: 1, kind: fuzzy.TermRegex, pattern: "v[0-9]+"},
+		"!test":          {clauses: 1, alternatives: 1, kind: fuzzy.TermFuzzy, inverse: true, pattern: "test"},
+		"!^tmp":          {clauses: 1, alternatives: 1, kind: fuzzy.TermPrefix, inverse: true, pattern: "tmp"},
+		"status:working": {clauses: 1, alternatives: 1, kind: fuzzy.TermField, field: "status"},
+		"agent:claude":   {clauses: 1, alternatives: 1, kind: fuzzy.TermField, field: "agent"},
+		"source:zoxide":  {clauses: 1, alternatives: 1, kind: fuzzy.TermField, field: "source"},
+		"path:allsafe":   {clauses: 1, alternatives: 1, kind: fuzzy.TermField, field: "path"},
+		"s:blocked":      {clauses: 1, alternatives: 1, kind: fuzzy.TermField, field: "status"},
+	}
+	for _, b := range searchSyntax.bindings {
+		w, ok := expect[b.chord]
+		if !ok {
+			t.Errorf("documented example %q has no parse expectation: add one", b.chord)
+			continue
+		}
+		q := fuzzy.ParseExtendedQuery(b.chord)
+		if len(q.Clauses) != w.clauses || len(q.Clauses[0].Alternatives) != w.alternatives {
+			t.Errorf("%q: %d clauses / %d alternatives, want %d / %d", b.chord, len(q.Clauses), len(q.Clauses[0].Alternatives), w.clauses, w.alternatives)
+			continue
+		}
+		term := q.Clauses[0].Alternatives[0]
+		if term.Kind != w.kind || term.Inverse != w.inverse || term.ExactFull != w.exactFull || term.Field != w.field || (w.pattern != "" && term.Pattern != w.pattern) {
+			t.Errorf("%q parsed as %+v, want %+v", b.chord, term, w)
+		}
+	}
+	// The other short forms the help names parse to their fields too, and
+	// the 'phrase' alternative to the double quotes is an exact phrase.
+	for raw, field := range map[string]string{"a:x": "agent", "src:x": "source", "p:x": "path"} {
+		if term := fuzzy.ParseExtendedQuery(raw).Terms[0]; term.Kind != fuzzy.TermField || term.Field != field {
+			t.Errorf("%q parsed as %+v, want the %s field", raw, term, field)
+		}
+	}
+	if term := fuzzy.ParseExtendedQuery("'api gw'").Terms[0]; term.Kind != fuzzy.TermExact || term.Pattern != "api gw" {
+		t.Errorf("'api gw' parsed as %+v, want an exact phrase", term)
 	}
 }
 
@@ -165,19 +220,19 @@ func TestHelpBodyText_MatchesApprovedContent(t *testing.T) {
 
 // TestFooterHints_TabRowShowsFocusTabLabel proves SPEC-NAV-1.5: when a
 // synthesized tab row is highlighted, the footer's Enter hint reads
-// "Focus tab" (matching driver.FocusTab), not the generic "open" label.
+// "focus tab" (matching driver.FocusTab), not the generic "open" label.
 func TestFooterHints_TabRowShowsFocusTabLabel(t *testing.T) {
 	t.Parallel()
 	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
 	m, _ = update(t, m, sizeMsg(120, 36))
 	m.rows = []Row{{Kind: RowTab, Action: RowActionFocusTab, Candidate: source.Candidate{Label: "api", Meta: map[string]string{"tab_id": "t1"}}}}
 	m.cursor = 0
-	got := m.footerHints()
-	if !strings.Contains(got, "enter Focus tab") {
-		t.Errorf("footerHints() = %q, want it to contain the tab-row Enter hint \"enter Focus tab\"", got)
+	hints := m.footerHints()
+	if !hasHint(hints, keyChordEnter, footerLabelFocusTab) {
+		t.Errorf("footerHints() = %+v, want the tab-row Enter hint \"enter focus tab\"", hints)
 	}
-	if strings.Contains(got, "enter open") {
-		t.Errorf("footerHints() = %q, must not show the generic \"open\" label for a tab row", got)
+	if hasHint(hints, keyChordEnter, footerLabelOpen) {
+		t.Errorf("footerHints() = %+v, must not show the generic \"open\" label for a tab row", hints)
 	}
 }
 
@@ -188,18 +243,17 @@ func TestFooterHints_CandidateRowKeepsOpenLabel(t *testing.T) {
 	t.Parallel()
 	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
 	m, _ = update(t, m, sizeMsg(120, 36))
-	got := m.footerHints()
-	if !strings.Contains(got, "enter open") {
-		t.Errorf("footerHints() = %q, want the candidate-row \"open\" Enter hint", got)
+	if !hasHint(m.footerHints(), keyChordEnter, footerLabelOpen) {
+		t.Errorf("footerHints() = %+v, want the candidate-row \"open\" Enter hint", m.footerHints())
 	}
-	if strings.Contains(strings.ToLower(got), "create") {
-		t.Errorf("footerHints() = %q, must not promise \"create\"", got)
+	if got := footerText(m); strings.Contains(strings.ToLower(got), "create") {
+		t.Errorf("footer = %q, must not promise \"create\"", got)
 	}
 }
 
 // TestFooterHints_NoHighlightInertEnter proves SPEC-NAV-1.7: with no row
-// highlighted (empty rows), the footer Enter hint is inert/absent — it must
-// not describe opening/focusing anything, and no target hints appear.
+// highlighted (empty rows), the footer has no Enter hint at all — it must
+// not describe opening/focusing anything — and no target hints appear.
 func TestFooterHints_NoHighlightInertEnter(t *testing.T) {
 	t.Parallel()
 	m := NewModel(nil, nil)
@@ -207,14 +261,11 @@ func TestFooterHints_NoHighlightInertEnter(t *testing.T) {
 	if _, ok := m.currentRow(); ok {
 		t.Fatalf("setup: expected no highlighted row with a nil candidate set")
 	}
-	got := m.footerHints()
-	// No target hints when nothing is highlighted.
-	if strings.Contains(got, keyChordCtrlT) || strings.Contains(got, keyChordCtrlP) {
-		t.Errorf("footerHints() = %q, must not show target hints with no highlight", got)
-	}
-	// The Enter hint must not promise a row-specific action ("Focus tab").
-	if strings.Contains(got, "Focus tab") {
-		t.Errorf("footerHints() = %q, must not show a row-specific Enter action with no highlight", got)
+	hints := m.footerHints()
+	for _, chord := range []string{keyChordCtrlT, keyChordCtrlP, keyChordEnter} {
+		if hasHintKey(hints, chord) {
+			t.Errorf("footerHints() = %+v, must not offer %s with no highlight", hints, chord)
+		}
 	}
 }
 
@@ -230,8 +281,8 @@ func TestFooterHints_TargetHintsOnlyWhenEligibleAndPane(t *testing.T) {
 	eligible := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
 	eligible, _ = update(t, eligible, sizeMsg(120, 36))
 	eligible = eligible.WithCurrentPane(&pane)
-	if got := eligible.footerHints(); !strings.Contains(got, keyChordCtrlT) || !strings.Contains(got, keyChordCtrlP) {
-		t.Errorf("eligible+pane footerHints() = %q, want ctrl+t and ctrl+p hints", got)
+	if hints := eligible.footerHints(); !hasHintKey(hints, keyChordCtrlT) || !hasHintKey(hints, keyChordCtrlP) {
+		t.Errorf("eligible+pane footerHints() = %+v, want ctrl+t and ctrl+p hints", hints)
 	}
 
 	// Ineligible session candidate + pane: hints suppressed.
@@ -239,7 +290,7 @@ func TestFooterHints_TargetHintsOnlyWhenEligibleAndPane(t *testing.T) {
 	ineligible := NewModel([]source.Candidate{sess}, nil)
 	ineligible, _ = update(t, ineligible, sizeMsg(120, 36))
 	ineligible = ineligible.WithCurrentPane(&pane)
-	if got := ineligible.footerHints(); strings.Contains(got, keyChordCtrlT) || strings.Contains(got, keyChordCtrlP) {
-		t.Errorf("ineligible session row footerHints() = %q, must not show target hints", got)
+	if hints := ineligible.footerHints(); hasHintKey(hints, keyChordCtrlT) || hasHintKey(hints, keyChordCtrlP) {
+		t.Errorf("ineligible session row footerHints() = %+v, must not show target hints", hints)
 	}
 }

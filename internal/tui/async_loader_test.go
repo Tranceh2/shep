@@ -52,8 +52,8 @@ func TestModel_AsyncLoader_FirstFrameAvailableBeforeBlockedProducersComplete(t *
 	if strings.Contains(view, "[/]") {
 		t.Errorf("view = %q, want no [/] search keycap", view)
 	}
-	if !strings.Contains(view, "⌕") {
-		t.Errorf("view = %q, want it to contain search prompt ⌕", view)
+	if !strings.Contains(view, "❯") {
+		t.Errorf("view = %q, want it to contain the search prompt ❯", view)
 	}
 	if !strings.Contains(view, "loading") {
 		t.Errorf("view = %q, want it to contain loading indicator", view)
@@ -107,9 +107,13 @@ func TestModel_AsyncLoader_FastProducerAppearsWhileOthersBlocked(t *testing.T) {
 		t.Fatal("expected loadingCandidates to remain true while slow producer is pending")
 	}
 
-	header := m.renderHeader(80)
-	if !strings.Contains(header, "loading") {
-		t.Errorf("header = %q, want loading indicator", header)
+	// The prompt count keeps counting while the slow producer streams, with
+	// the shared spinner frame as the loading indicator.
+	if c := m.resultCount(); !c.loading || c.total != 1 {
+		t.Errorf("result count = %+v, want a loading tally of 1", c)
+	}
+	if prompt := m.renderPromptRow(m.geometry().ListWidth); !strings.Contains(prompt, m.spinner.View()+" ") {
+		t.Errorf("prompt row = %q, want the spinner frame before the count", prompt)
 	}
 }
 

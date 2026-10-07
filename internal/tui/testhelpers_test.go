@@ -3,8 +3,11 @@ package tui
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
+	"unicode/utf8"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/preview"
 	"github.com/tranceh2/shep/internal/source"
@@ -54,6 +57,106 @@ func treeFromFake(driver *fakeTreeDriver) *TreeExpander {
 		snapshot.Workspaces = append(snapshot.Workspaces, source.Workspace{ID: workspaceID})
 	}
 	return NewTreeExpanderFromSnapshot(snapshot)
+}
+
+// footerText is the footer row as the user reads it: plain text without the
+// row's padding, at the model's own content width.
+func footerText(m Model) string {
+	return strings.TrimSpace(stripNonSGRANSI(m.renderFooter(m.geometry().ContentWidth)))
+}
+
+// promptText is the prompt row (list column) as plain text without padding.
+func promptText(m Model) string {
+	return strings.TrimSpace(stripNonSGRANSI(m.renderPromptRow(m.geometry().ListWidth)))
+}
+
+// hasHint reports whether hints offers key with label.
+func hasHint(hints []footerHint, key, label string) bool {
+	return slices.ContainsFunc(hints, func(h footerHint) bool { return h.key == key && h.label == label })
+}
+
+// hasHintKey reports whether hints offers key under any label.
+func hasHintKey(hints []footerHint, key string) bool {
+	return slices.ContainsFunc(hints, func(h footerHint) bool { return h.key == key })
+}
+
+// viewLines renders m and splits the plain-text frame into its lines.
+func viewLines(m Model) []string {
+	return strings.Split(stripNonSGRANSI(m.View()), "\n")
+}
+
+// renderRowLine renders row as one list line of width cells, isCursor
+// selecting it: a single-row entry point into rowRenderer for tests.
+func (m Model) renderRowLine(row Row, isCursor bool, width int) string {
+	v := m.buildRowView(row)
+	r := m.newRowRenderer()
+	return r.render(&v, isCursor, width)
+}
+
+// rowPrimaryText returns the row's fixed prefix (tree prefix, icon, status
+// glyph) followed by its primary text, and the prefix's rune length.
+func (m Model) rowPrimaryText(row Row) (string, int) {
+	v := m.buildRowView(row)
+	prefix := v.indent + v.tree
+	if v.icon != "" {
+		prefix += v.icon + " "
+	}
+	if v.statusGlyph {
+		prefix += m.agentStatusIcon(v.status) + " "
+	}
+	return prefix + v.primary, utf8.RuneCountInString(prefix)
+}
+
+// rowDisplayText returns rowPrimaryText's text and the row's secondary
+// (filename-first parent) text, without accessories.
+func (m Model) rowDisplayText(row Row) (primary, secondary string) {
+	primary, _ = m.rowPrimaryText(row)
+	return primary, m.buildRowView(row).secondary
+}
+
+// rowAccessoryText returns the row's accessories as plain text, joined by
+// single spaces (status words are shown as their glyphs).
+func (m Model) rowAccessoryText(row Row) string {
+	v := m.buildRowView(row)
+	parts := make([]string, len(v.accessories))
+	for i, a := range v.accessories {
+		parts[i] = a.text
+		if a.role == accessoryStatus {
+			parts[i] = m.agentStatusIcon(a.text)
+		}
+	}
+	return stripNonSGRANSI(strings.Join(parts, " "))
+}
+
+// agentStatusIcon renders status as its glyph in the plain row's style.
+func (m Model) agentStatusIcon(status string) string {
+	set := m.icons()
+	return statusGlyph(&set, m.spinner, status, m.styles.statusStyle(status))
+}
+
+// previewBody composes the highlighted row's preview for a width x height
+// column as text: the fitted lines joined, their padding trimmed.
+func (m Model) previewBody(width, height int) string {
+	lines := m.composePreview(width, height, nil).lines
+	out := make([]string, len(lines))
+	for i, line := range lines {
+		out[i] = strings.TrimRight(line, " ")
+	}
+	return strings.Join(out, "\n")
+}
+
+// runBatch runs cmd and, when it is a tea.Batch, each command it carries.
+// Use it only for commands that do not block (a spinner's first Tick returns
+// at once; its later ticks wait on a timer).
+func runBatch(cmd tea.Cmd) {
+	if cmd == nil {
+		return
+	}
+	if batch, ok := cmd().(tea.BatchMsg); ok {
+		for _, c := range batch {
+			runBatch(c)
+		}
+	}
 }
 
 // stubRenderer returns a fixed Result; used where only "a Renderer is

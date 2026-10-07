@@ -99,12 +99,14 @@ func TestPinTopLevelRowUpdatesStateMarkerAndFooter(t *testing.T) {
 	if !m.rankingSnapshot.IsPinned(candidate) {
 		t.Fatal("successful pin did not update the immutable snapshot")
 	}
-	primary, _ := m.rowDisplayText(m.rows[0])
-	if !strings.Contains(primary, "•") {
-		t.Fatal("pinned row did not render the pin marker")
+	if acc := m.rowAccessoryText(m.rows[0]); !strings.Contains(acc, "★") {
+		t.Fatalf("pinned row accessories = %q, want the ★ pin", acc)
 	}
-	if !strings.Contains(m.footerHints(), "ctrl+f unpin") {
-		t.Fatalf("footer = %q, want contextual unpin hint", m.footerHints())
+	if primary, _ := m.rowDisplayText(m.rows[0]); strings.Contains(primary, "★") || strings.Contains(primary, "•") {
+		t.Fatalf("pinned row primary = %q, the pin must not prefix the label", primary)
+	}
+	if !strings.Contains(footerText(m), "ctrl+f unpin") {
+		t.Fatalf("footer = %q, want contextual unpin hint", footerText(m))
 	}
 }
 
@@ -124,8 +126,11 @@ func TestPinChildRowIsTruthfulNoOp(t *testing.T) {
 	if cmd != nil || called {
 		t.Fatal("child pin unexpectedly invoked persistence")
 	}
-	if !strings.Contains(m.pinStatus, "child rows") || !strings.Contains(m.footerHints(), "ctrl+f unavailable") {
-		t.Fatalf("child feedback was not truthful: footer=%q status=%q", m.footerHints(), m.pinStatus)
+	// The refusal is reported, and the footer never offers ctrl+f on a row
+	// it cannot pin (no "ctrl+f unavailable" hint).
+	footer := footerText(m)
+	if !strings.Contains(m.pinStatus.text, "child rows") || !strings.Contains(footer, m.pinStatus.text) || strings.Contains(footer, keyChordPin) {
+		t.Fatalf("child feedback was not truthful: footer=%q status=%q", footer, m.pinStatus.text)
 	}
 }
 
@@ -143,8 +148,8 @@ func TestPinPersistenceErrorPreservesStateAndShowsStatus(t *testing.T) {
 	if m.rankingSnapshot.IsPinned(candidate) {
 		t.Fatal("failed pin changed visible state")
 	}
-	if !strings.Contains(m.pinStatus, "pin update failed") {
-		t.Fatalf("status = %q, want visible persistence error", m.pinStatus)
+	if !strings.Contains(m.pinStatus.text, "pin update failed") {
+		t.Fatalf("status = %q, want visible persistence error", m.pinStatus.text)
 	}
 }
 

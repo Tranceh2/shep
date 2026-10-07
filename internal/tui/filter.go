@@ -6,7 +6,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/ranking"
-	"github.com/tranceh2/shep/internal/resolver"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -70,6 +69,7 @@ func (m *Model) applyFilter() tea.Cmd {
 	m.lastAppliedQuery = m.query
 	if queryChanged {
 		m.cursor = 0
+		m.listOffset = 0
 		m.cursorTouched = false
 		return m.maybeRefreshSnapshot()
 	}
@@ -109,22 +109,18 @@ func (m *Model) baseFlatCandidates() []source.Candidate {
 	return m.candidates
 }
 
-// allTabCandidates deduplicates only enabled sources. An independently
-// requested tab must not make its provider visible in all or suppress an
-// enabled provider's candidate with the same path.
-func (m *Model) allTabCandidates() []source.Candidate {
+// allTabCandidates returns the all tab's set while tabs are configured: the
+// enabled sources only, so an independently requested tab never makes its
+// provider visible in all or suppresses an enabled provider's candidate with
+// the same path. It reads the set rebuildAllTab stored, because
+// deduplicating touches the filesystem and this runs on every frame and
+// keystroke. A model built from a plain candidate list has no per-source
+// results to deduplicate and shows its base candidates.
+func (m Model) allTabCandidates() []source.Candidate {
 	if m.candidatesBySource == nil {
 		return m.baseFlatCandidates()
 	}
-	var enabled []source.Candidate
-	order := m.sourceOrder
-	if len(order) == 0 {
-		order = m.resolvedSourceOrder()
-	}
-	for _, name := range order {
-		enabled = append(enabled, m.candidatesBySource[name]...)
-	}
-	return resolver.Dedup(enabled)
+	return m.allTab
 }
 
 // fetchAllChildren keeps the legacy all-candidate helper for direct callers.
@@ -232,4 +228,15 @@ func (m Model) currentCandidate() (source.Candidate, bool) {
 		return source.Candidate{}, false
 	}
 	return row.Candidate, true
+}
+
+// resolvedSourceOrder returns m.sourceOrder when configured, else
+// defaultSourceOrder (rows.go) — the same fallback buildRows' own
+// effectiveSourceOrder applies, kept as a Model-level accessor for callers
+// that only have a Model, not a rowBuildInput.
+func (m Model) resolvedSourceOrder() []string {
+	if len(m.sourceOrder) > 0 {
+		return m.sourceOrder
+	}
+	return defaultSourceOrder
 }

@@ -45,6 +45,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/tranceh2/shep/internal/config"
+	"github.com/tranceh2/shep/internal/ranking"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -317,6 +319,45 @@ func goldenCandidates() []source.Candidate {
 	}
 }
 
+// accessoryCandidates is the rows_accessories_scrolled candidate set: two
+// open workspaces whose panes report agent states, a pinned group
+// workspace, a running default session, a worktree, a missing project and
+// enough zoxide directories under /home/dev to overflow the list.
+func accessoryCandidates() ([]source.Candidate, *TreeExpander, ranking.Snapshot) {
+	const (
+		herdrIcon     = "\U000f0cc6 "
+		workspaceIcon = "\ue615 "
+		zoxideIcon    = "\uf114 "
+		projectIcon   = "\ue702 "
+		sessionIcon   = "\uf120 "
+	)
+	api := herdrCandidate("api", "/home/dev/allsafe/api", "w1")
+	billing := herdrCandidate("billing", "/home/dev/allsafe/billing", "w2")
+	api.Icon, billing.Icon = herdrIcon, herdrIcon
+	team := source.Candidate{Label: "team", Path: "/home/dev/teams/platform", Icon: workspaceIcon, Source: config.SourceWorkspaces, Meta: map[string]string{"group": "true"}}
+	cands := []source.Candidate{
+		api, billing, team,
+		{Label: "main", Icon: sessionIcon, Source: config.SourceSessions, Meta: map[string]string{"session_name": "main", "running": "true", "default": "true"}},
+		{Label: "~/Proyectos/shep", Path: "/home/dev/Proyectos/shep", Icon: zoxideIcon, Source: config.SourceZoxide},
+		{Label: "~/allsafe/ECORP/platforms/whiterose-db", Path: "/home/dev/allsafe/ECORP/platforms/whiterose-db", Icon: zoxideIcon, Source: config.SourceZoxide},
+		{Label: "api-fix", Path: "/home/dev/trees/api-fix", Source: config.SourceProjects, Meta: map[string]string{"is_worktree": "true", "branch": "fix/parser"}},
+		{Label: "~/old/archive", Path: "/home/dev/old/archive", Icon: projectIcon, Source: config.SourceProjects, Missing: true},
+	}
+	for i := range 12 {
+		name := fmt.Sprintf("~/src/repo-%02d", i)
+		cands = append(cands, source.Candidate{Label: name, Path: "/home/dev" + name[1:], Icon: zoxideIcon, Source: config.SourceZoxide})
+	}
+	tree := NewTreeExpanderFromSnapshot(source.Snapshot{
+		Workspaces: []source.Workspace{{ID: "w1"}, {ID: "w2"}},
+		Tabs:       []source.Tab{{ID: "t1", WorkspaceID: "w1", Number: 1}, {ID: "t2", WorkspaceID: "w2", Number: 1}},
+		Panes: []source.Pane{
+			{ID: "p1", WorkspaceID: "w1", TabID: "t1", Agent: "claude", AgentStatus: "working"},
+			{ID: "p2", WorkspaceID: "w2", TabID: "t2", Agent: "codex", AgentStatus: "blocked"},
+		},
+	})
+	return cands, tree, ranking.Snapshot{}.WithPinned(ranking.PinKey(team), true)
+}
+
 // paneCaptureBuffer is the deterministic multi-line Herdr pane capture used
 // by pane_capture_present: printable box-drawing characters, one SGR color
 // sequence, one over-width long line (exercises wrap/overflow), and one
@@ -390,16 +431,18 @@ func goldenScenarios() []goldenScenario {
 			name: "mid_query_descendant_match", width: 120, height: 36, theme: ThemeMocha,
 			setup: func(t *testing.T) Model {
 				driver := &fakeTreeDriver{
-					tabs: []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}},
+					tabs: []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}, {ID: "t2", WorkspaceID: "w2", Label: "deploy"}},
 				}
 				tree := treeFromFake(driver)
 				m := NewModelWithTree(
-					[]source.Candidate{herdrCandidate("backend", "/srv/backend", "w1")},
+					[]source.Candidate{herdrCandidate("backend", "/srv/backend", "w1"), herdrCandidate("api-gateway", "/srv/gateway", "w2")},
 					nil, tree, Layout{Theme: ThemeMocha},
 				)
 				m, _ = update(t, m, sizeMsg(120, 36))
 				// "api" matches the synthesized tab but not the workspace
-				// itself -> the workspace is shown as a descendant-only match.
+				// itself -> the workspace is shown as a descendant-only match
+				// opened along that branch; "api-gateway" matches by itself
+				// and stays collapsed.
 				for _, r := range "api" {
 					m, _ = update(t, m, key(string(r)))
 				}
@@ -576,7 +619,20 @@ func goldenScenarios() []goldenScenario {
 				cands := []source.Candidate{
 					herdrCandidate("backend", "/srv/backend", "w1"),
 				}
-				m := NewModelWithLayout(cands, renderer, Layout{Theme: ThemeMocha})
+				cands[0].Meta["active_tab_id"] = "t1"
+				tree := NewTreeExpanderFromSnapshot(source.Snapshot{
+					Workspaces: []source.Workspace{{ID: "w1", Label: "backend"}},
+					Tabs: []source.Tab{
+						{ID: "t1", WorkspaceID: "w1", Label: "api", Number: 1, Focused: true},
+						{ID: "t2", WorkspaceID: "w1", Label: "tests", Number: 2},
+					},
+					Panes: []source.Pane{
+						{ID: "p1", WorkspaceID: "w1", TabID: "t1", Agent: "claude", AgentStatus: "working"},
+						{ID: "p2", WorkspaceID: "w1", TabID: "t1"},
+						{ID: "p3", WorkspaceID: "w1", TabID: "t2", Agent: "codex", AgentStatus: "idle"},
+					},
+				})
+				m := NewModelWithTree(cands, renderer, tree, Layout{Theme: ThemeMocha})
 				m, _ = update(t, m, sizeMsg(120, 36))
 				// Init dispatches the first render at seq 0; execute the Cmd
 				// and deliver its response.
@@ -589,7 +645,7 @@ func goldenScenarios() []goldenScenario {
 		},
 		{
 			// pane_capture_unavailable: a pane row with no capture delivered.
-			// Phase 4 omits the "Captured pane" section; identity remains.
+			// The preview omits the "Pane" section; location and meta remain.
 			name: "pane_capture_unavailable", width: 120, height: 36, theme: ThemeMocha,
 			setup: func(t *testing.T) Model {
 				driver := &fakeTreeDriver{
@@ -612,7 +668,7 @@ func goldenScenarios() []goldenScenario {
 				}
 				// Deliver an empty (no text, no error) panePreviewMsg so the
 				// capture resolves to nothing — the pane shows identity only
-				// (no Captured pane section). Going through Update ensures
+				// (no Pane section). Going through Update ensures
 				// syncViewport refreshes the viewport content.
 				m, _ = update(t, m, panePreviewMsg{seq: m.previewSeq, text: ""})
 				return m
@@ -621,7 +677,7 @@ func goldenScenarios() []goldenScenario {
 		{
 			// project_preview: a SourceProjects candidate with a renderer
 			// that emits identity + git + dir listing. Phase 4 recomposes:
-			// identity → git → Directory heading + long output last.
+			// location → git meta line → Files section.
 			name: "project_preview", width: 120, height: 36, theme: ThemeMocha,
 			setup: func(t *testing.T) Model {
 				renderer := phase4ProjectRenderer{}
@@ -640,7 +696,7 @@ func goldenScenarios() []goldenScenario {
 		{
 			// zoxide_preview: a SourceZoxide candidate with a renderer that
 			// emits identity + dir listing. Phase 4 recomposes: identity →
-			// Directory heading + long output last; full path visible.
+			// Files section; full path visible.
 			name: "zoxide_preview", width: 120, height: 36, theme: ThemeMocha,
 			setup: func(t *testing.T) Model {
 				renderer := phase4ZoxideRenderer{}
@@ -701,6 +757,56 @@ func goldenScenarios() []goldenScenario {
 				m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: ThemeMocha})
 				m, _ = update(t, m, sizeMsg(120, 36))
 				m.focus = FocusPreview
+				return m
+			},
+		},
+		{
+			// rows_accessories_scrolled: every row presentation at once —
+			// filename-first paths under a fake home, per-source icons, the
+			// aggregate agent status of open workspaces, pin/group/worktree/
+			// session/missing accessories — in a list long enough to scroll,
+			// with the cursor moved past the scroll-off margin so the window
+			// and the divider's scroll thumb have moved.
+			name: "rows_accessories_scrolled", width: 100, height: 16, theme: ThemeMocha,
+			setup: func(t *testing.T) Model {
+				cands, tree, pins := accessoryCandidates()
+				m := NewModelWithTree(cands, nil, tree, Layout{
+					Theme: ThemeMocha, HomeDir: "/home/dev", RankingSnapshot: pins,
+					SourceOrder: []string{config.SourceHerdr, config.SourceSessions, config.SourceWorkspaces, config.SourceProjects, config.SourceZoxide},
+				})
+				m, _ = update(t, m, sizeMsg(100, 16))
+				for range 9 {
+					m, _ = update(t, m, key("down"))
+				}
+				return m
+			},
+		},
+		{
+			// agents_view_pane: the agents tab with agents in several states;
+			// the highlighted agent's preview shows its placement, its status
+			// and the newest lines of its pane capture.
+			name: "agents_view_pane", width: 120, height: 24, theme: ThemeMocha,
+			setup: func(t *testing.T) Model {
+				snapshot := source.Snapshot{
+					Workspaces: []source.Workspace{{ID: "w1", Label: "whiterose-db"}, {ID: "w2", Label: "billing"}},
+					Tabs:       []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "editor", Number: 1}, {ID: "t2", WorkspaceID: "w2", Label: "api", Number: 1}},
+					Panes: []source.Pane{
+						{ID: "p1", WorkspaceID: "w1", TabID: "t1", CWD: "/home/dev/allsafe/whiterose-db", Agent: "claude", AgentStatus: "blocked", TerminalTitle: "Review the contract parser before release"},
+						{ID: "p2", WorkspaceID: "w2", TabID: "t2", CWD: "/home/dev/allsafe/billing", Agent: "codex", AgentStatus: "working", TerminalTitle: "Fix invoice rounding"},
+						{ID: "p3", WorkspaceID: "w2", TabID: "t2", CWD: "/home/dev/allsafe/billing", Agent: "opencode", AgentStatus: "idle", TerminalTitle: "opencode"},
+					},
+				}
+				driver := &fakeTreeDriver{tabs: snapshot.Tabs, panes: snapshot.Panes}
+				m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(snapshot), Layout{Theme: ThemeMocha, InitialTab: "agents", HomeDir: "/home/dev"}).
+					WithSnapshotRefresh(driver, snapshot, nil, nil)
+				m.startupSnapshot = &snapshot // as the streaming producer delivers it
+				m.applyFilter()
+				m, _ = update(t, m, sizeMsg(120, 24))
+				var capture []string
+				for i := range 30 {
+					capture = append(capture, fmt.Sprintf("step %02d: parsed clause %d", i, i*3))
+				}
+				m, _ = update(t, m, panePreviewMsg{seq: m.previewSeq, text: strings.Join(capture, "\n") + "\n\n"})
 				return m
 			},
 		},

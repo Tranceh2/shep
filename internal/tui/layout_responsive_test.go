@@ -2,9 +2,11 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
 )
@@ -105,17 +107,21 @@ func TestNextResponsiveMode_UnknownHeightNeverForcesListOnly(t *testing.T) {
 	}
 }
 
-// TestWideBreakpoint_EqualsMinPreviewWidth pins wideBreakpoint to the same
-// named render-constraint constant that hides the preview pane entirely
-// (minPreviewWidth): with the stacked layout removed, wide mode is worth
-// showing exactly when the terminal is wide enough for a usable preview pane
-// at all. A future change to minPreviewWidth must deliberately reconsider
-// wideBreakpoint too; this test documents that coupling instead of leaving it
-// an unexplained literal.
-func TestWideBreakpoint_EqualsMinPreviewWidth(t *testing.T) {
+// TestWideBreakpoint_KeepsBothColumnFloors pins wideBreakpoint to the
+// column floors it exists for: at the breakpoint (and at the bottom of its
+// hysteresis band) the default split still gives the list its
+// minListColumns floor and the preview a usable column, so promoting to wide
+// never produces a cramped list.
+func TestWideBreakpoint_KeepsBothColumnFloors(t *testing.T) {
 	t.Parallel()
-	if wideBreakpoint != minPreviewWidth {
-		t.Errorf("wideBreakpoint = %d, want minPreviewWidth(%d)", wideBreakpoint, minPreviewWidth)
+	for _, width := range []int{wideBreakpoint, wideBreakpoint - hysteresisMargin} {
+		g := computePickerGeometry(width, 30, modeWide, Layout{})
+		if g.ListWidth < minListColumns {
+			t.Errorf("width %d: list column = %d, want >= minListColumns (%d)", width, g.ListWidth, minListColumns)
+		}
+		if g.PreviewWidth < minPreviewColumns {
+			t.Errorf("width %d: preview column = %d, want >= minPreviewColumns (%d)", width, g.PreviewWidth, minPreviewColumns)
+		}
 	}
 }
 
@@ -174,9 +180,9 @@ func TestNextResponsiveMode_HeightBoundaryMatrix(t *testing.T) {
 // TestSurfaceDimensions_NeverNegativeAcrossBoundaries proves the list,
 // preview, and help surfaces never resolve to a negative usable dimension
 // at any breakpoint boundary or degenerate (0/1 row/col) terminal size, in
-// every reachable mode. previewPaneContentSize/paneContentWidth/
-// previewBodyHeight already clamp defensively; this test makes that
-// contract explicit and regression-checked rather than merely assumed.
+// every reachable mode. pickerGeometry and previewPaneContentSize clamp
+// defensively; this test makes that contract explicit and regression-checked
+// rather than merely assumed.
 func TestSurfaceDimensions_NeverNegativeAcrossBoundaries(t *testing.T) {
 	t.Parallel()
 	widths := []int{0, 1, 2, wideBreakpoint - 1, wideBreakpoint, 200}
@@ -187,9 +193,9 @@ func TestSurfaceDimensions_NeverNegativeAcrossBoundaries(t *testing.T) {
 			m := NewModel(nil, nil)
 			m, _ = update(t, m, sizeMsg(w, h))
 
-			// List pane inner content width (used by renderList).
-			if got := m.paneContentWidth(m.width); got < 0 {
-				t.Errorf("width=%d height=%d mode=%q: paneContentWidth = %d, want >= 0", w, h, m.mode, got)
+			// List column width and body rows (used by listLines).
+			if g := m.geometry(); g.ListWidth < 0 || g.ListInnerRows < 0 {
+				t.Errorf("width=%d height=%d mode=%q: list column = %dx%d, want both >= 0", w, h, m.mode, g.ListWidth, g.ListInnerRows)
 			}
 
 			// Preview pane inner content width/height (viewport.go).
@@ -198,9 +204,9 @@ func TestSurfaceDimensions_NeverNegativeAcrossBoundaries(t *testing.T) {
 				t.Errorf("width=%d height=%d mode=%q: previewPaneContentSize = (%d,%d), want both >= 0", w, h, m.mode, prevW, prevH)
 			}
 
-			// Help overlay viewport (help.go's own resolvedContentWidth/Height
-			// path — syncHelpViewport, exercised indirectly via Update, which
-			// runs it unconditionally every frame regardless of focus).
+			// Help overlay viewport (syncHelpViewport, exercised indirectly via
+			// Update, which runs it unconditionally every frame regardless of
+			// focus).
 			if m.helpViewport.Width < 0 || m.helpViewport.Height < 0 {
 				t.Errorf("width=%d height=%d mode=%q: helpViewport = (%d,%d), want both >= 0",
 					w, h, m.mode, m.helpViewport.Width, m.helpViewport.Height)
@@ -214,12 +220,12 @@ func TestSurfaceDimensions_NeverNegativeAcrossBoundaries(t *testing.T) {
 	}
 }
 
-// TestNextResponsiveMode_PreviewNamedWindow proves the redesign's named
-// preview window: the preview pane requires width >= minPreviewWidth (88)
-// AND height >= minPreviewHeight (12) — specifically 100x10 is forced
-// list-only (the old 100x10 wide-render finding), while 100x12 and all wide
-// fixtures keep wide, and 64-width terminals stay list-only. Hysteresis
-// behavior is unchanged (it only surrounds wideBreakpoint on the width axis).
+// TestNextResponsiveMode_PreviewNamedWindow proves the named preview
+// window: the preview column requires width >= wideBreakpoint (80) AND
+// height >= minPreviewHeight (12) — specifically 100x10 is forced list-only,
+// while 100x12 and all wide fixtures keep wide, and 64-width terminals stay
+// list-only. Hysteresis behavior is unchanged (it only surrounds
+// wideBreakpoint on the width axis).
 func TestNextResponsiveMode_PreviewNamedWindow(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -230,11 +236,12 @@ func TestNextResponsiveMode_PreviewNamedWindow(t *testing.T) {
 		// The named boundary matrix (turned UP to the named thresholds).
 		{"100x10 is short -> list-only", 100, 10, modeListOnly},
 		{"100x12 hits minPreviewHeight -> wide", 100, 12, modeWide},
-		{"88x30 hits minPreviewWidth -> wide", 88, 30, modeWide},
-		{"64x24 below minPreviewWidth -> list-only", 64, 24, modeListOnly},
+		{"80x30 hits wideBreakpoint -> wide", 80, 30, modeWide},
+		{"64x24 below wideBreakpoint -> list-only", 64, 24, modeListOnly},
+		{"72x20 below wideBreakpoint -> list-only", 72, 20, modeListOnly},
 		{"120x36 -> wide", 120, 36, modeWide},
-		{"88x11 -> list-only (height one under the floor)", 88, 11, modeListOnly},
-		{"87x30 -> list-only (width one under the floor)", 87, 30, modeListOnly},
+		{"80x11 -> list-only (height one under the floor)", 80, 11, modeListOnly},
+		{"79x30 -> list-only (width one under the floor)", 79, 30, modeListOnly},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -266,84 +273,63 @@ func TestNextResponsiveMode_ShortListOnlyKeepsHysteresis(t *testing.T) {
 	}
 }
 
-// TestPreviewPaneContentSize_HeaderBreakpointParity verifies that previewPaneContentSize
-// calculates the preview viewport height using exactly the same header/footer budget as View()
-// across widths 99 (single-line header) and 100 (two-line header).
-func TestPreviewPaneContentSize_HeaderBreakpointParity(t *testing.T) {
+// TestPreviewPaneContentSize_MatchesPreviewColumn proves the preview
+// viewport is sized to exactly the preview column's body cells: the column
+// width from the split, and every row below the four chrome rows.
+func TestPreviewPaneContentSize_MatchesPreviewColumn(t *testing.T) {
 	t.Parallel()
-
-	for _, w := range []int{99, 100, 120} {
+	for _, w := range []int{80, 99, 100, 118, 140} {
 		for _, h := range []int{12, 24, 36} {
 			m := Model{width: w, height: h, mode: modeWide}
-			headerLines := m.headerLineCount()
-			expectedPaneHeight := h - (headerLines + 1)
-			expectedInnerH := previewBodyHeight(expectedPaneHeight)
-
-			_, gotInnerH := m.previewPaneContentSize()
-			if gotInnerH != expectedInnerH {
-				t.Errorf("width=%d height=%d (headerLines=%d): previewPaneContentSize innerH = %d, want %d",
-					w, h, headerLines, gotInnerH, expectedInnerH)
+			g := m.geometry()
+			gotW, gotH := m.previewPaneContentSize()
+			if gotW != g.PreviewWidth || gotH != h-chromeRows {
+				t.Errorf("%dx%d: previewPaneContentSize = (%d,%d), want (%d,%d)", w, h, gotW, gotH, g.PreviewWidth, h-chromeRows)
+			}
+			if total := 2*g.Margin + g.ListWidth + dividerWidth + g.PreviewWidth; total != w {
+				t.Errorf("%dx%d: margins+list+divider+preview = %d, want the full width", w, h, total)
 			}
 		}
 	}
 }
 
-// TestPaneHeightParity_BelowAtAboveCapacity proves that listPane and previewPane
-// heights match exactly across candidate counts below, at, and above ListInnerRows capacity.
-func TestPaneHeightParity_BelowAtAboveCapacity(t *testing.T) {
+// TestBody_DividerStraightAtEveryCapacity proves the grid's columns never
+// drift: below, at and above the list's row capacity, every row from the
+// prompt row to the last body row carries the divider (the rule row its
+// junction; a body row the scroll thumb when the rows overflow) at the same
+// cell offset, and every line is exactly the terminal width.
+func TestBody_DividerStraightAtEveryCapacity(t *testing.T) {
 	t.Parallel()
-
-	widths := []int{90, 100, 120}
-	heights := []int{12, 16, 24, 36}
-
-	for _, w := range widths {
-		for _, h := range heights {
+	for _, w := range []int{80, 100, 120} {
+		for _, h := range []int{12, 16, 24, 36} {
 			g := computePickerGeometry(w, h, modeWide, Layout{})
-			innerRows := g.ListInnerRows
-
-			candidateCounts := []struct {
-				name  string
-				count int
-			}{
-				{"empty", 0},
-				{"below capacity", max(1, innerRows/2)},
-				{"at capacity", innerRows},
-				{"above capacity", innerRows + 10},
-			}
-
-			for _, cc := range candidateCounts {
-				t.Run(fmt.Sprintf("%dx%d_%s_%d", w, h, cc.name, cc.count), func(t *testing.T) {
-					cands := make([]source.Candidate, cc.count)
-					for i := 0; i < cc.count; i++ {
-						cands[i] = source.Candidate{
-							Label:  fmt.Sprintf("cand-%d", i),
-							Path:   fmt.Sprintf("/path/%d", i),
-							Source: config.SourceProjects,
-						}
+			col := g.Margin + g.ListWidth + 1
+			for _, count := range []int{0, max(1, g.ListInnerRows/2), g.ListInnerRows, g.ListInnerRows + 10} {
+				t.Run(fmt.Sprintf("%dx%d_%d", w, h, count), func(t *testing.T) {
+					cands := make([]source.Candidate, count)
+					for i := range count {
+						cands[i] = source.Candidate{Label: fmt.Sprintf("cand-%d-%s", i, strings.Repeat("x", i%40)), Path: fmt.Sprintf("/path/%d", i), Source: config.SourceProjects}
 					}
-
 					m := NewModel(cands, nil)
 					m, _ = update(t, m, sizeMsg(w, h))
-
-					listW, prevW := splitWidths(m.width, m.layout)
-					listPane := m.paneBoxStyle(g.PaneOuterHeight, m.focus == FocusList).Render(m.renderList(m.paneContentWidth(listW)))
-					previewStyle := m.paneBoxStyle(g.PaneOuterHeight, m.focus == FocusPreview)
-					previewPane := lipgloss.JoinVertical(
-						lipgloss.Left,
-						m.renderPreviewTopBorder(previewStyle, prevW, m.previewTopBorderText()),
-						previewStyle.BorderTop(false).Render(m.viewport.View()),
-					)
-
-					listH := lipgloss.Height(listPane)
-					prevH := lipgloss.Height(previewPane)
-
-					if listH != prevH {
-						t.Errorf("width=%d height=%d count=%d: listPane height (%d) != previewPane height (%d)",
-							w, h, cc.count, listH, prevH)
+					lines := viewLines(m)
+					if len(lines) != h {
+						t.Fatalf("View() has %d lines, want %d", len(lines), h)
 					}
-					if listH != g.PaneOuterHeight {
-						t.Errorf("width=%d height=%d count=%d: listPane height (%d) != PaneOuterHeight (%d)",
-							w, h, cc.count, listH, g.PaneOuterHeight)
+					for i, line := range lines {
+						if got := ansi.StringWidth(line); got != w {
+							t.Errorf("line %d width = %d, want %d: %q", i, got, w, line)
+						}
+						if i == 0 || i == h-1 {
+							continue
+						}
+						got := ansi.Cut(line, col, col+1)
+						switch {
+						case i == 2 && got != "┼":
+							t.Errorf("rule cell %d = %q, want the junction: %q", col, got, line)
+						case i == 1 && got != "│", i > 2 && got != "│" && (got != "┃" || count <= g.ListInnerRows):
+							t.Errorf("line %d cell %d = %q, want the divider (or the thumb when scrolling): %q", i, col, got, line)
+						}
 					}
 				})
 			}

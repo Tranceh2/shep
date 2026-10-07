@@ -90,7 +90,7 @@ func TestListHalfPageKeys(t *testing.T) {
 		} {
 			t.Run(tc.name+"/rows="+strconv.Itoa(visible), func(t *testing.T) {
 				m := NewModel(nil, nil)
-				m, _ = update(t, m, sizeMsg(120, visible+5))
+				m, _ = update(t, m, sizeMsg(120, visible+chromeRows))
 				if got := m.geometry().ListInnerRows; got != visible {
 					t.Fatalf("ListInnerRows = %d, want %d", got, visible)
 				}
@@ -264,7 +264,7 @@ func TestResize_ToListOnly_WithHelpOpenPrevFocusPreview_DegradesPrevFocus(t *tes
 // preview pane owns focus, up/down move the viewport's scroll offset
 // instead of the list cursor. The preview body for a RowCandidate is built
 // from the renderer's structured Result.Sections (see
-// preview_body.go:standardCandidatePreview), not the raw previewText field
+// preview_body.go:previewSectionBlocks), not the raw previewText field
 // (which only backs RowPane captures) — so the fixture must populate
 // previewSections with enough multiline content to overflow the viewport.
 func TestPreviewFocused_ArrowsScrollViewportNotCursor(t *testing.T) {
@@ -1028,7 +1028,7 @@ func TestHelpViewport_ScrollsAndRevealsHiddenContent(t *testing.T) {
 	if m.focus != FocusHelp {
 		t.Fatalf("setup: expected FocusHelp")
 	}
-	lines := strings.Split(m.helpBodyText(), "\n")
+	lines := strings.Split(m.helpBodyText(m.helpViewport.Width), "\n")
 	lastLine := lines[len(lines)-1]
 	if strings.Contains(m.helpViewport.View(), lastLine) {
 		t.Fatalf("setup: last help line %q already visible at top of a short viewport; test needs content taller than the viewport", lastLine)
