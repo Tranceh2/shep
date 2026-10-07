@@ -6,6 +6,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/ranking"
+	"github.com/tranceh2/shep/internal/resolver"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -203,6 +204,10 @@ func resolvedGeneration(seq int, snapshot source.Snapshot, resolve func([]source
 		resolve(msg.agents)
 	}
 	msg.agentPresentations = AgentPresentations(msg.agents)
+	msg.normalized = resolver.NormalizedPaths(msg.herdr)
+	for path, norm := range resolver.NormalizedPaths(msg.agents) {
+		msg.normalized[path] = norm
+	}
 	return msg
 }
 

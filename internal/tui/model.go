@@ -191,9 +191,13 @@ type Model struct {
 	// where those results change (see rebuildAllTab); frames and keystrokes
 	// read this slice and never touch the disk.
 	allTab []source.Candidate
-	// dedupFn deduplicates candidates; nil means resolver.Dedup. Tests count
-	// its calls to prove no frame or keystroke pays for it.
+	// dedupFn deduplicates candidates; nil means resolver.DedupWith over
+	// normalizePath. Tests count its calls to prove no frame or keystroke
+	// pays for it.
 	dedupFn func([]source.Candidate) []source.Candidate
+	// normalizedPaths caches the candidate paths producers normalized in
+	// their own goroutines (see normalizePath).
+	normalizedPaths map[string]string
 	// tree fetches/caches a Herdr workspace's tabs+panes so buildRows can
 	// synthesize RowTab/RowPane children. nil means tree-expand is
 	// inactive: every group's candidates render flat with no descendants.
@@ -382,6 +386,10 @@ type SourceResultMsg struct {
 	// of going stale in the all view. A message that leaves this empty keeps
 	// the historical herdr-only refresh ownership.
 	SnapshotSources []string
+	// NormalizedPaths maps the candidates' paths to their normalized form
+	// (see resolver.NormalizedPaths), computed in the producer's goroutine so
+	// deduplicating them never reads the filesystem in Update.
+	NormalizedPaths map[string]string
 	Renderer        preview.Renderer
 	CurrentPane     *source.Pane
 	RankingSnapshot *ranking.Snapshot
@@ -470,7 +478,9 @@ type snapshotResponseMsg struct {
 	// candidates; agentPresentations their presentations by pane id.
 	herdr, agents      []source.Candidate
 	agentPresentations map[string]*source.Presentation
-	err                error
+	// normalized maps herdr's and agents' paths to their normalized form.
+	normalized map[string]string
+	err        error
 }
 
 // AgentPresentations returns the presentations of agents, resolved agent
@@ -798,6 +808,7 @@ func (m Model) handleSourceResult(msg SourceResultMsg) (Model, tea.Cmd) {
 	if m.pendingProducers != nil {
 		delete(m.pendingProducers, msg.producerID)
 	}
+	m.addNormalizedPaths(msg.NormalizedPaths)
 	m.loadingCandidates = len(m.pendingProducers) > 0
 
 	if msg.RankingSnapshot != nil {
@@ -959,7 +970,31 @@ func (m *Model) dedup(candidates []source.Candidate) []source.Candidate {
 	if m.dedupFn != nil {
 		return m.dedupFn(candidates)
 	}
-	return resolver.Dedup(candidates)
+	return resolver.DedupWith(candidates, m.normalizePath)
+}
+
+// addNormalizedPaths records paths a producer normalized off the UI
+// goroutine.
+func (m *Model) addNormalizedPaths(paths map[string]string) {
+	if len(paths) == 0 {
+		return
+	}
+	if m.normalizedPaths == nil {
+		m.normalizedPaths = make(map[string]string, len(paths))
+	}
+	for path, norm := range paths {
+		m.normalizedPaths[path] = norm
+	}
+}
+
+// normalizePath is resolver.Normalize answered from the paths producers
+// normalized in their goroutines: only a path none of them reported resolves
+// its symlinks here, on the UI goroutine.
+func (m *Model) normalizePath(path string) (string, error) {
+	if norm, ok := m.normalizedPaths[path]; ok {
+		return norm, nil
+	}
+	return resolver.Normalize(path)
 }
 
 // liveStatusReadyMsg reports that the background status subscription is
@@ -1199,6 +1234,7 @@ func (m Model) handleSnapshotResponse(msg snapshotResponseMsg) (Model, tea.Cmd) 
 		return m, nil
 	}
 	m.snapshotRefreshing = false
+	m.addNormalizedPaths(msg.normalized)
 	if m.closeRefreshPending {
 		// A refresh that was already in flight when close completed can still
 		// contain the open row. Request a new generation through the same owner.

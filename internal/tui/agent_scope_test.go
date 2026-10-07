@@ -1870,3 +1870,31 @@ func TestView_ConfiguredTabsNeverDeduplicates(t *testing.T) {
 		t.Errorf("back on %q the total is %d (prompt %q), want %d", m.ActiveTab(), m.resultCount().total, promptText(m), want)
 	}
 }
+
+// TestDedup_UsesThePathsProducersNormalized proves deduplication in Update
+// reads the normalized paths a producer computed in its own goroutine
+// instead of resolving symlinks itself: two paths that do not exist collapse
+// because the producer reported both as one directory.
+func TestDedup_UsesThePathsProducersNormalized(t *testing.T) {
+	t.Parallel()
+	order := []string{config.SourceZoxide, config.SourceProjects}
+	m := NewModelWithProducers(nil, "", nil, context.Background(), Layout{SourceOrder: order})
+	m, _ = update(t, m, sizeMsg(120, 30))
+	gone := filepath.Join(t.TempDir(), "gone")
+	m, _ = update(t, m, SourceResultMsg{
+		Source:          config.SourceZoxide,
+		Candidates:      []source.Candidate{zoxideCandidate("~/fsociety", gone+"/a")},
+		NormalizedPaths: map[string]string{gone + "/a": "/srv/fsociety"},
+	})
+	m, _ = update(t, m, SourceResultMsg{
+		Source:          config.SourceProjects,
+		Candidates:      []source.Candidate{projectCandidate("~/fsociety", gone+"/b")},
+		NormalizedPaths: map[string]string{gone + "/b": "/srv/fsociety"},
+	})
+	if got := len(m.baseCandidates); got != 1 {
+		t.Fatalf("candidates = %d, want the two paths collapsed as one directory", got)
+	}
+	if got := m.baseCandidates[0].NormalizedPath; got != "/srv/fsociety" {
+		t.Fatalf("NormalizedPath = %q, want the producer's %q", got, "/srv/fsociety")
+	}
+}

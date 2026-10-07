@@ -650,9 +650,10 @@ func (a *App) buildProviderProducer(p source.Provider) tui.SourceProducer {
 		}
 		settings.Attach(cands)
 		return tui.SourceResultMsg{
-			Source:     p.Name(),
-			Candidates: cands,
-			Err:        err,
+			Source:          p.Name(),
+			Candidates:      cands,
+			NormalizedPaths: resolver.NormalizedPaths(cands),
+			Err:             err,
 		}
 	}
 }
@@ -737,6 +738,7 @@ func (a *App) buildSnapshotProducer(opts snapshotProducerOptions) tui.SourceProd
 			RendererForSnapshot: a.buildPreviewRendererForSnapshot,
 			AgentPresentations:  tui.AgentPresentations(agents),
 			SnapshotSources:     snapshotSources,
+			NormalizedPaths:     resolver.NormalizedPaths(cands),
 			Renderer:            renderer,
 			CurrentPane:         currentPane,
 		}

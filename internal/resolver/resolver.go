@@ -41,6 +41,22 @@ func Normalize(input string) (string, error) {
 	return pathutil.Normalize(input)
 }
 
+// NormalizedPaths maps every candidate path Normalize resolves to its
+// normalized form. Normalizing reads the filesystem (it resolves symlinks),
+// so a producer computes this in its own goroutine for DedupWith to reuse.
+func NormalizedPaths(candidates []source.Candidate) map[string]string {
+	out := make(map[string]string, len(candidates))
+	for _, c := range candidates {
+		if _, done := out[c.Path]; done {
+			continue
+		}
+		if norm, err := Normalize(c.Path); err == nil {
+			out[c.Path] = norm
+		}
+	}
+	return out
+}
+
 // Dedup normalises each candidate and removes duplicate candidates. Custom-source
 // candidates are actionable routes, so their stable ranking.Identity is the
 // deduplication key and filesystem path/label collisions are irrelevant. Other
@@ -53,6 +69,13 @@ func Normalize(input string) (string, error) {
 // This is an O(N^2) scan for path-backed non-custom source candidates because
 // SameDir depends on a Stat syscall. Custom-source identity lookup is O(1).
 func Dedup(candidates []source.Candidate) []source.Candidate {
+	return DedupWith(candidates, Normalize)
+}
+
+// DedupWith is Dedup normalizing paths with normalize, which must agree with
+// Normalize: a caller that normalized its paths ahead of time (see
+// NormalizedPaths) deduplicates without resolving symlinks again.
+func DedupWith(candidates []source.Candidate, normalize func(string) (string, error)) []source.Candidate {
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -60,7 +83,7 @@ func Dedup(candidates []source.Candidate) []source.Candidate {
 	nonCustomSourceLabelBuckets := make(map[string][]int, len(candidates))
 	customSourceIdentities := make(map[string]struct{}, len(candidates))
 	for _, c := range candidates {
-		norm, err := Normalize(c.Path)
+		norm, err := normalize(c.Path)
 		if err != nil {
 			// Keep unnormalisable candidates distinct by their raw path so a
 			// broken candidate does not silently swallow others.
