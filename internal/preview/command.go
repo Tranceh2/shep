@@ -13,7 +13,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/tranceh2/shep/internal/rowformat"
+	"github.com/tranceh2/shep/internal/tmpl"
 )
 
 const maxCapturedOutputBytes = 64 * 1024
@@ -101,19 +101,25 @@ func (w *cappedLineWriter) Len() int { return w.b.Len() }
 var _ io.Writer = (*cappedLineWriter)(nil)
 
 // ParseCommand splits a shell-style command string into argv, then renders
-// template actions per isolated token. This order keeps rendered values inside
-// one argv element; it deliberately performs no shell expansion or sh -c.
-func ParseCommand(cmd string, ctx rowformat.Context) ([]string, error) {
-	tokens, err := rowformat.Tokenize(cmd)
+// template actions per isolated token with engine. This order keeps rendered
+// values inside one argv element; it deliberately performs no shell expansion
+// or sh -c.
+func ParseCommand(engine *tmpl.Engine, cmd string, data tmpl.Data) ([]string, error) {
+	tokens, err := tmpl.Tokenize(cmd)
 	if err != nil {
 		return nil, err
 	}
 	if len(tokens) == 0 {
 		return nil, errors.New("empty preview command")
 	}
+	return renderArgv(engine, tokens, data)
+}
+
+// renderArgv renders every argv element as its own template.
+func renderArgv(engine *tmpl.Engine, tokens []string, data tmpl.Data) ([]string, error) {
 	out := make([]string, len(tokens))
 	for i, tok := range tokens {
-		rendered, err := rowformat.Render(tok, ctx)
+		rendered, err := engine.Render(tok, data)
 		if err != nil {
 			return nil, err
 		}

@@ -9,6 +9,7 @@ import (
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/ranking"
 	"github.com/tranceh2/shep/internal/source"
+	"github.com/tranceh2/shep/internal/tmpl"
 )
 
 // newRenderTestModel builds the minimal Model state renderRowLine reads
@@ -24,6 +25,7 @@ func newRenderTestModel(themeName string, focus Focus) Model {
 		focus:  focus,
 		width:  40,
 		height: 10,
+		layout: Layout{Templates: tmpl.New("")},
 	}
 }
 

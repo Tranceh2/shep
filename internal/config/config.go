@@ -23,7 +23,7 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 	"github.com/tranceh2/shep/internal/pathutil"
-	"github.com/tranceh2/shep/internal/rowformat"
+	"github.com/tranceh2/shep/internal/tmpl"
 	"github.com/tranceh2/shep/internal/workspacename"
 )
 
@@ -439,7 +439,7 @@ type PreviewConfig struct {
 }
 
 // PreviewCommand is one [preview.commands.<name>] entry: a shell-style
-// command with rowformat template actions such as {{.Path}}, executed safely
+// command with template actions such as {{.Path}}, executed safely
 // (argv-parsed, no
 // `sh -c`, timeout + line cap from the surrounding PreviewConfig).
 type PreviewCommand struct {
@@ -930,16 +930,19 @@ func normalizeSourcePreviews(s *SourcesConfig, userSetDefault bool) {
 // validate enforces every schema invariant that must fail Load fast rather
 // than surface as a confusing runtime error later.
 func validate(cfg *Config) error {
-	if err := validateWorkspaceNames(cfg); err != nil {
+	// Templates are validated with a representative home so the result never
+	// depends on the real $HOME of whoever loads the file.
+	engine := tmpl.New(tmpl.SampleHome)
+	if err := validateWorkspaceNames(cfg, engine); err != nil {
 		return err
 	}
-	if err := validateCustomSources(cfg.Sources.Custom); err != nil {
+	if err := validateCustomSources(cfg.Sources.Custom, engine); err != nil {
 		return err
 	}
 	if err := validateSources(cfg.General.SourceOrder, cfg.Sources.Custom); err != nil {
 		return err
 	}
-	if err := validateLabelFormats(cfg.Sources); err != nil {
+	if err := validateLabelFormats(cfg.Sources, engine); err != nil {
 		return err
 	}
 	if !isValidSelector(cfg.General.Selector) {
@@ -962,11 +965,11 @@ func validate(cfg *Config) error {
 	if err := validatePreview(cfg.Preview); err != nil {
 		return err
 	}
-	if err := validatePreviewCommandTemplates(cfg.Preview.Commands); err != nil {
+	if err := validatePreviewCommandTemplates(cfg.Preview.Commands, engine); err != nil {
 		return err
 	}
 	for i, customSource := range cfg.Sources.Custom {
-		if err := validateCustomSourcePreviewCommands(customSource, i, cfg.Preview.Commands); err != nil {
+		if err := validateCustomSourcePreviewCommands(customSource, i, cfg.Preview.Commands, engine); err != nil {
 			return err
 		}
 	}
@@ -982,9 +985,24 @@ func validate(cfg *Config) error {
 	return nil
 }
 
-func validateWorkspaceNames(cfg *Config) error {
+// directoryKinds are the template kinds of every candidate that can be
+// previewed or launched as a workspace: everything except the Herdr tab and
+// pane rows the picker nests under an open workspace.
+var directoryKinds = []string{
+	tmpl.KindWorkspace, tmpl.KindConfigured, tmpl.KindGroup, tmpl.KindFolder,
+	tmpl.KindProject, tmpl.KindWorktree, tmpl.KindSession, tmpl.KindAgent, tmpl.KindCustom,
+}
+
+// validateTemplate parses format and executes it against representative data
+// for every kind the field applies to, reporting "field: error".
+func validateTemplate(engine *tmpl.Engine, field, format string, kinds ...string) error {
+	return engine.Validate(field, format, tmpl.Samples(kinds...)...)
+}
+
+func validateWorkspaceNames(cfg *Config, engine *tmpl.Engine) error {
+	samples := tmpl.Samples(directoryKinds...)
 	if cfg.General.WorkspaceName != "" {
-		if err := workspacename.Validate("general.workspace_name", cfg.General.WorkspaceName); err != nil {
+		if err := workspacename.Validate(engine, "general.workspace_name", cfg.General.WorkspaceName, samples...); err != nil {
 			return err
 		}
 	}
@@ -993,31 +1011,32 @@ func validateWorkspaceNames(cfg *Config) error {
 			continue
 		}
 		field := fmt.Sprintf("wildcards[%d].workspace_name", i)
-		if err := workspacename.Validate(field, wildcard.WorkspaceName); err != nil {
+		if err := workspacename.Validate(engine, field, wildcard.WorkspaceName, samples...); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// validateLabelFormats verifies every source label template can render with
-// the shared rowformat context before the TUI starts.
-func validateLabelFormats(s SourcesConfig) error {
+// validateLabelFormats verifies every source label template against the
+// kinds of rows that source produces, before the TUI starts.
+func validateLabelFormats(s SourcesConfig, engine *tmpl.Engine) error {
 	formats := []struct {
 		field  string
 		format string
+		kinds  []string
 	}{
-		{"sources.herdr.label_format", s.Herdr.LabelFormat},
-		{"sources.herdr.tab_label_format", s.Herdr.TabLabelFormat},
-		{"sources.herdr.pane_label_format", s.Herdr.PaneLabelFormat},
-		{"sources.sessions.label_format", s.Sessions.LabelFormat},
-		{"sources.workspaces.label_format", s.Workspaces.LabelFormat},
-		{"sources.zoxide.label_format", s.Zoxide.LabelFormat},
-		{"sources.projects.label_format", s.Projects.LabelFormat},
-		{"sources.agents.label_format", s.Agents.LabelFormat},
+		{"sources.herdr.label_format", s.Herdr.LabelFormat, []string{tmpl.KindWorkspace}},
+		{"sources.herdr.tab_label_format", s.Herdr.TabLabelFormat, []string{tmpl.KindTab}},
+		{"sources.herdr.pane_label_format", s.Herdr.PaneLabelFormat, []string{tmpl.KindPane}},
+		{"sources.sessions.label_format", s.Sessions.LabelFormat, []string{tmpl.KindSession}},
+		{"sources.workspaces.label_format", s.Workspaces.LabelFormat, []string{tmpl.KindConfigured, tmpl.KindGroup}},
+		{"sources.zoxide.label_format", s.Zoxide.LabelFormat, []string{tmpl.KindFolder}},
+		{"sources.projects.label_format", s.Projects.LabelFormat, []string{tmpl.KindProject, tmpl.KindWorktree}},
+		{"sources.agents.label_format", s.Agents.LabelFormat, []string{tmpl.KindAgent}},
 	}
 	for _, f := range formats {
-		if err := validateRowFormat(f.field, f.format); err != nil {
+		if err := validateTemplate(engine, f.field, f.format, f.kinds...); err != nil {
 			return err
 		}
 	}
@@ -1025,16 +1044,17 @@ func validateLabelFormats(s SourcesConfig) error {
 }
 
 // validatePreviewCommandTemplates applies the same validation that runtime
-// command rendering will use: tokenize first, then render each argv token.
-func validatePreviewCommandTemplates(commands map[string]PreviewCommand) error {
+// command rendering will use: tokenize first, then render each argv token
+// for every kind of candidate a global preview command can run for.
+func validatePreviewCommandTemplates(commands map[string]PreviewCommand, engine *tmpl.Engine) error {
 	for name, command := range commands {
 		field := fmt.Sprintf("preview.commands.%s.command", name)
-		tokens, err := rowformat.Tokenize(command.Command)
+		tokens, err := tmpl.Tokenize(command.Command)
 		if err != nil {
 			return fmt.Errorf("%s: %w", field, err)
 		}
 		for _, token := range tokens {
-			if err := validateRowFormat(field, token); err != nil {
+			if err := validateTemplate(engine, field, token, directoryKinds...); err != nil {
 				return err
 			}
 		}
@@ -1042,7 +1062,7 @@ func validatePreviewCommandTemplates(commands map[string]PreviewCommand) error {
 	return nil
 }
 
-func validateCustomSourcePreviewCommands(customSource CustomSourceConfig, index int, global map[string]PreviewCommand) error {
+func validateCustomSourcePreviewCommands(customSource CustomSourceConfig, index int, global map[string]PreviewCommand, engine *tmpl.Engine) error {
 	for name, command := range customSource.PreviewCommands {
 		field := fmt.Sprintf("sources.custom[%d] (%q).preview_commands.%s", index, customSource.Name, name)
 		if strings.TrimSpace(name) == "" {
@@ -1064,7 +1084,7 @@ func validateCustomSourcePreviewCommands(customSource CustomSourceConfig, index 
 			if strings.IndexByte(arg, 0) >= 0 {
 				return fmt.Errorf("%s: command[%d] contains NUL", field, j)
 			}
-			if err := validateRowFormat(field+fmt.Sprintf(".command[%d]", j), arg); err != nil {
+			if err := validateTemplate(engine, field+fmt.Sprintf(".command[%d]", j), arg, tmpl.KindCustom); err != nil {
 				return err
 			}
 		}
@@ -1074,22 +1094,6 @@ func validateCustomSourcePreviewCommands(customSource CustomSourceConfig, index 
 		if command.MaxLines <= 0 {
 			return fmt.Errorf("%s: max_lines must be > 0", field)
 		}
-	}
-	return nil
-}
-
-func legacyTemplateSyntax(field string) string { return "{" + field + "}" }
-
-// validateRowFormat rejects stale placeholders before sharing rowformat's
-// parse-and-execute validation against an empty, field-complete context.
-func validateRowFormat(field, format string) error {
-	for _, placeholder := range []string{legacyTemplateSyntax("path"), legacyTemplateSyntax("label")} {
-		if strings.Contains(format, placeholder) {
-			return fmt.Errorf("%s: legacy placeholder %q is not supported; use {{.Path}} or {{.Label}}", field, placeholder)
-		}
-	}
-	if _, err := rowformat.Render(format, rowformat.Context{Meta: map[string]string{}}); err != nil {
-		return fmt.Errorf("%s: invalid template: %w", field, err)
 	}
 	return nil
 }
@@ -1149,7 +1153,7 @@ func validateCustomSourcePreviewNames(customSource CustomSourceConfig, index int
 	return nil
 }
 
-func validateCustomSources(customSources []CustomSourceConfig) error {
+func validateCustomSources(customSources []CustomSourceConfig, engine *tmpl.Engine) error {
 	seen := make(map[string]struct{}, len(customSources))
 	for i, customSource := range customSources {
 		name := strings.TrimSpace(customSource.Name)
@@ -1178,7 +1182,7 @@ func validateCustomSources(customSources []CustomSourceConfig) error {
 		if customSource.Timeout <= 0 {
 			return fmt.Errorf("sources.custom[%d] (%q): timeout must be > 0", i, name)
 		}
-		if err := validateRowFormat(fmt.Sprintf("sources.custom[%d].label_format", i), customSource.LabelFormat); err != nil {
+		if err := validateTemplate(engine, fmt.Sprintf("sources.custom[%d].label_format", i), customSource.LabelFormat, tmpl.KindCustom); err != nil {
 			return err
 		}
 	}

@@ -2,11 +2,12 @@ package preview
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/tranceh2/shep/internal/rowformat"
+	"github.com/tranceh2/shep/internal/tmpl"
 )
 
 // TestParseCommand tokenizes before rendering each template action. Rendered
@@ -14,29 +15,32 @@ import (
 func TestParseCommand(t *testing.T) {
 	t.Parallel()
 
+	engine := tmpl.New("/home/user")
 	cases := []struct {
 		name    string
 		cmd     string
-		ctx     rowformat.Context
+		data    tmpl.Data
 		want    []string
 		wantErr bool
 	}{
-		{name: "simple", cmd: "echo hi", ctx: rowformat.Context{Path: "/p"}, want: []string{"echo", "hi"}},
-		{name: "template path token renders", cmd: "git -C {{.Path}} log", ctx: rowformat.Context{Path: "/p/x"}, want: []string{"git", "-C", "/p/x", "log"}},
-		{name: "template path embedded in token renders", cmd: "ls {{.Path}}/sub", ctx: rowformat.Context{Path: "/p"}, want: []string{"ls", "/p/sub"}},
-		{name: "path and label shell metacharacters remain isolated", cmd: "printf {{.Path}} {{.Label}}", ctx: rowformat.Context{Path: "/has space/x;rm -rf ~", Label: "release candidate;$(touch nope)"}, want: []string{"printf", "/has space/x;rm -rf ~", "release candidate;$(touch nope)"}},
-		{name: "template syntax in path remains inert data", cmd: "echo {{.Path}}", ctx: rowformat.Context{Path: "{{.Label}}"}, want: []string{"echo", "{{.Label}}"}},
-		{name: "double quoted arg stays single", cmd: `git commit -m "a b c"`, ctx: rowformat.Context{Path: "/p"}, want: []string{"git", "commit", "-m", "a b c"}},
-		{name: "single quoted arg stays single", cmd: `echo 'x y'`, ctx: rowformat.Context{Path: "/p"}, want: []string{"echo", "x y"}},
-		{name: "unquoted template action with whitespace errors", cmd: "echo {{ .Path }}", ctx: rowformat.Context{Path: "/has space/x"}, wantErr: true},
-		{name: "quoted template action with whitespace succeeds", cmd: `echo "{{ .Path }}"`, ctx: rowformat.Context{Path: "/has space/x"}, want: []string{"echo", "/has space/x"}},
-		{name: "empty command errors", cmd: "   ", ctx: rowformat.Context{Path: "/p"}, wantErr: true},
-		{name: "unterminated quote errors", cmd: `echo "open`, ctx: rowformat.Context{Path: "/p"}, wantErr: true},
+		{name: "simple", cmd: "echo hi", data: tmpl.Data{Path: "/p"}, want: []string{"echo", "hi"}},
+		{name: "template path token renders", cmd: "git -C {{.Path}} log", data: tmpl.Data{Path: "/p/x"}, want: []string{"git", "-C", "/p/x", "log"}},
+		{name: "template path embedded in token renders", cmd: "ls {{.Path}}/sub", data: tmpl.Data{Path: "/p"}, want: []string{"ls", "/p/sub"}},
+		{name: "path and label shell metacharacters remain isolated", cmd: "printf {{.Path}} {{.Label}}", data: tmpl.Data{Path: "/has space/x;rm -rf ~", Label: "release candidate;$(touch nope)"}, want: []string{"printf", "/has space/x;rm -rf ~", "release candidate;$(touch nope)"}},
+		{name: "template syntax in path remains inert data", cmd: "echo {{.Path}}", data: tmpl.Data{Path: "{{.Label}}"}, want: []string{"echo", "{{.Label}}"}},
+		{name: "double quoted arg stays single", cmd: `git commit -m "a b c"`, data: tmpl.Data{Path: "/p"}, want: []string{"git", "commit", "-m", "a b c"}},
+		{name: "single quoted arg stays single", cmd: `echo 'x y'`, data: tmpl.Data{Path: "/p"}, want: []string{"echo", "x y"}},
+		{name: "shared functions and fields", cmd: `echo "{{ .Path | tilde | parent }}" {{.Kind}} {{.Branch}} {{.Meta.missing}}`, data: tmpl.Data{Path: "/home/user/src/api", Kind: tmpl.KindWorktree, Branch: "main"}, want: []string{"echo", "~/src", "worktree", "main", ""}},
+		{name: "unquoted template action with whitespace errors", cmd: "echo {{ .Path }}", data: tmpl.Data{Path: "/has space/x"}, wantErr: true},
+		{name: "quoted template action with whitespace succeeds", cmd: `echo "{{ .Path }}"`, data: tmpl.Data{Path: "/has space/x"}, want: []string{"echo", "/has space/x"}},
+		{name: "removed os alias errors", cmd: `echo {{.Path|osBase}}`, data: tmpl.Data{Path: "/p"}, wantErr: true},
+		{name: "empty command errors", cmd: "   ", data: tmpl.Data{Path: "/p"}, wantErr: true},
+		{name: "unterminated quote errors", cmd: `echo "open`, data: tmpl.Data{Path: "/p"}, wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := ParseCommand(tc.cmd, tc.ctx)
+			got, err := ParseCommand(engine, tc.cmd, tc.data)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected error, got %v", got)
@@ -47,9 +51,40 @@ func TestParseCommand(t *testing.T) {
 				t.Fatalf("parse: %v", err)
 			}
 			if !sliceEq(got, tc.want) {
-				t.Errorf("parse %q context=%+v: got %v want %v", tc.cmd, tc.ctx, got, tc.want)
+				t.Errorf("parse %q data=%+v: got %#v want %#v", tc.cmd, tc.data, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestParseCommand_TokenizesLikeTmpl keeps preview argv splitting identical
+// to tmpl.Tokenize, the tokenizer config validation uses, for template-free
+// input (where rendering is the identity).
+func TestParseCommand_TokenizesLikeTmpl(t *testing.T) {
+	t.Parallel()
+	engine := tmpl.New("")
+	for _, input := range []string{
+		"open /tmp/project",
+		`open "/Users/me/My Project"`,
+		"printf 'hello world'",
+		`cmd "" ''`,
+		"open\t/path\n--background",
+		`open "/Users/me/My Project`,
+	} {
+		want, wantErr := tmpl.Tokenize(input)
+		got, gotErr := ParseCommand(engine, input, tmpl.Data{})
+		if (gotErr != nil) != (wantErr != nil) {
+			t.Fatalf("%q: ParseCommand error = %v, Tokenize error = %v", input, gotErr, wantErr)
+		}
+		if gotErr != nil {
+			if gotErr.Error() != wantErr.Error() {
+				t.Errorf("%q: ParseCommand error = %q, Tokenize error = %q", input, gotErr, wantErr)
+			}
+			continue
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%q: ParseCommand = %#v, Tokenize = %#v", input, got, want)
+		}
 	}
 }
 

@@ -47,6 +47,7 @@ import (
 	"github.com/tranceh2/shep/internal/ranking"
 	"github.com/tranceh2/shep/internal/resolver"
 	"github.com/tranceh2/shep/internal/source"
+	"github.com/tranceh2/shep/internal/tmpl"
 )
 
 // SnapshotDriver is the small read-only Herdr boundary the picker needs after
@@ -187,6 +188,10 @@ type Layout struct {
 	// relative to ("~/..."). Empty resolves os.UserHomeDir once at
 	// construction; tests set it for deterministic output.
 	HomeDir string
+	// Templates renders the row label templates. The command layer passes
+	// the process's single engine; nil builds one for HomeDir at
+	// construction.
+	Templates *tmpl.Engine
 }
 
 // Orientation values for Layout.Orientation. The empty string means "auto":
@@ -568,6 +573,9 @@ func newModelWithLayout(candidates []source.Candidate, renderer preview.Renderer
 	home := layout.HomeDir
 	if home == "" {
 		home, _ = os.UserHomeDir()
+	}
+	if layout.Templates == nil {
+		layout.Templates = tmpl.New(home)
 	}
 	var snapshot ranking.Snapshot
 	if len(snapshots) > 0 {

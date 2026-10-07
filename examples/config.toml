@@ -58,9 +58,9 @@ icon = "󰳆 "
 preview = ["workspace", "active_pane", "agent_status"]
 
 # Agent titles come from Herdr; Herdr may already shorten terminal_title.
-# label_format can use .Meta.workspace_label, .Meta.workspace_id,
-# .Meta.tab_label, .Meta.tab_id, .Meta.pane_id, .Meta.agent,
-# .Meta.agent_status, .Meta.terminal_title, and .Meta.kind.
+# label_format can use .Agent, .AgentStatus, .TabLabel, .Workspace (the
+# Herdr workspace label) and every metadata key: .Meta.workspace_id,
+# .Meta.tab_id, .Meta.pane_id, .Meta.terminal_title, .Meta.kind...
 # Missing metadata keys render empty. The default row is title-only; the
 # status glyph is drawn separately from this source icon.
 [sources.agents]

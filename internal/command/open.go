@@ -407,6 +407,7 @@ func (a *App) pickerLayout(order []string, matches []source.Candidate) tui.Layou
 func (a *App) pickerLayoutForConfig(cfg *config.Config, order []string, matches []source.Candidate) tui.Layout {
 	layout := layoutFromConfigWithCustomSources(cfg.TUI, order, cfg.Sources.Custom, cfg.Sources)
 	layout.ConfirmClose = append([]string(nil), cfg.TUI.ConfirmClose...)
+	layout.Templates = a.templateEngine()
 	registry := a.withStartupSnapshot(source.NewRegistry(cfg, a.Probes(), a.Driver()))
 	providers := make(map[string]source.Provider)
 	for _, provider := range registry.Providers() {
@@ -507,7 +508,7 @@ func (a *App) buildPreviewRenderer() preview.Renderer {
 	if driver := a.Driver(); driver != nil {
 		opts = append(opts, preview.WithPaneReader(driver))
 	}
-	return preview.NewRenderer(cfg, a.Probes(), git, runner, opts...)
+	return preview.NewRenderer(cfg, a.templateEngine(), a.Probes(), git, runner, opts...)
 }
 
 func (a *App) buildPreviewRendererForSnapshot(snapshot source.Snapshot) preview.Renderer {
@@ -521,7 +522,7 @@ func (a *App) buildPreviewRendererForSnapshot(snapshot source.Snapshot) preview.
 	if driver := a.Driver(); driver != nil {
 		opts = append(opts, preview.WithPaneReader(driver))
 	}
-	return preview.NewRenderer(cfg, a.Probes(), git, runner, opts...)
+	return preview.NewRenderer(cfg, a.templateEngine(), a.Probes(), git, runner, opts...)
 }
 
 // cascadeFor builds the selector cascade for a [general].selector value.
@@ -1712,11 +1713,9 @@ func (a *App) workspaceLaunchRequest(cand source.Candidate) (source.WorkspaceLau
 	if format == "" {
 		format = cfg.General.WorkspaceName
 	}
-	context := workspacename.NewContext(cand.Path, normalized, cand.Label, cand.Source, cand.Meta)
-	if format == "" && !context.IsWorktree {
-		return source.WorkspaceLaunchRequest{Candidate: cand, WorkspaceName: workspacename.Name(normalized)}, nil
-	}
-	name, err := workspacename.Render("workspace name", format, context)
+	data := source.TemplateData(cand)
+	data.NormalizedPath = normalized
+	name, err := workspacename.Render(a.templateEngine(), "workspace name", format, data)
 	if err != nil {
 		return source.WorkspaceLaunchRequest{}, err
 	}

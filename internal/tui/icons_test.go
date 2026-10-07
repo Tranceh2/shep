@@ -111,7 +111,7 @@ func TestResolveIconSet_ASCII(t *testing.T) {
 // non-default tier without driving a full NewModelWithLayout construction.
 func newRenderTestModelWithIcons(themeName, icons string) Model {
 	m := newRenderTestModel(themeName, FocusList)
-	m.layout = Layout{Icons: icons}
+	m.layout.Icons = icons
 	return m
 }
 

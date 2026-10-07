@@ -10,8 +10,8 @@ import (
 
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/pathutil"
-	"github.com/tranceh2/shep/internal/rowformat"
 	"github.com/tranceh2/shep/internal/source"
+	"github.com/tranceh2/shep/internal/tmpl"
 )
 
 // Renderer turns one candidate into a preview Result. The same Renderer backs
@@ -65,11 +65,13 @@ type Section struct {
 // named section — hardcoded built-ins (identity, git, workspace, active_pane,
 // dir) or a declared [preview.commands.<name>] — with TTL caching.
 type defaultRenderer struct {
-	cfg    *config.Config
-	probes config.Probes
-	git    GitProvider
-	runner CommandRunner
-	reader PaneReader
+	cfg *config.Config
+	// templates renders [preview.commands] and custom-source preview argv.
+	templates *tmpl.Engine
+	probes    config.Probes
+	git       GitProvider
+	runner    CommandRunner
+	reader    PaneReader
 	// snapshot is copied at construction and never mutated. A fresh renderer is
 	// created for every successful Herdr generation replacement.
 	snapshot *source.Snapshot
@@ -110,20 +112,22 @@ func cloneSnapshot(snapshot source.Snapshot) source.Snapshot {
 
 // NewRenderer wires the production renderer from the full config (Workspaces
 // and Wildcards feed the preview-name precedence chain; Preview carries the
-// caps/commands/default), a binary probes snapshot, an optional GitProvider,
-// and an optional CommandRunner (used for both the "dir" built-in and any
-// declared preview.commands). A TTL cache (preview.cache_ttl) keeps cursor
-// revisits responsive.
-func NewRenderer(cfg *config.Config, probes config.Probes, git GitProvider, runner CommandRunner, opts ...RendererOption) Renderer {
+// caps/commands/default), the process's template engine (which renders
+// preview command arguments), a binary probes snapshot, an optional
+// GitProvider, and an optional CommandRunner (used for both the "dir"
+// built-in and any declared preview.commands). templates is required. A
+// TTL cache (preview.cache_ttl) keeps cursor revisits responsive.
+func NewRenderer(cfg *config.Config, templates *tmpl.Engine, probes config.Probes, git GitProvider, runner CommandRunner, opts ...RendererOption) Renderer {
 	if cfg == nil {
 		cfg = config.Defaults()
 	}
 	r := &defaultRenderer{
-		cfg:    cfg,
-		probes: probes,
-		git:    git,
-		runner: runner,
-		cache:  NewCache(time.Duration(cfg.Preview.CacheTTL)),
+		cfg:       cfg,
+		templates: templates,
+		probes:    probes,
+		git:       git,
+		runner:    runner,
+		cache:     NewCache(time.Duration(cfg.Preview.CacheTTL)),
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -545,12 +549,7 @@ func (r *defaultRenderer) renderCustomCommand(ctx context.Context, cmd config.Pr
 	if r.runner == nil {
 		return "", false
 	}
-	argv, err := ParseCommand(cmd.Command, rowformat.Context{
-		Path:  renderPath(cand),
-		Label: cand.Label,
-		Icon:  cand.Icon,
-		Meta:  cloneMeta(cand.Meta),
-	})
+	argv, err := ParseCommand(r.templates, cmd.Command, commandData(cand))
 	if err != nil {
 		return "", false
 	}
@@ -561,19 +560,9 @@ func (r *defaultRenderer) renderCustomSourceCommand(ctx context.Context, cmd con
 	if r.runner == nil || len(cmd.Command) == 0 || cmd.Command[0] == "" {
 		return "", false
 	}
-	rowContext := rowformat.Context{
-		Path:  renderPath(cand),
-		Label: cand.Label,
-		Icon:  cand.Icon,
-		Meta:  cloneMeta(cand.Meta),
-	}
-	argv := make([]string, len(cmd.Command))
-	for i, token := range cmd.Command {
-		value, err := rowformat.Render(token, rowContext)
-		if err != nil {
-			return "", false
-		}
-		argv[i] = value
+	argv, err := renderArgv(r.templates, cmd.Command, commandData(cand))
+	if err != nil {
+		return "", false
 	}
 	timeout := cmd.Timeout
 	maxLines := cmd.MaxLines
@@ -599,15 +588,13 @@ func (r *defaultRenderer) runCommand(ctx context.Context, argv []string, timeout
 	return out, true
 }
 
-func cloneMeta(meta map[string]string) map[string]string {
-	if meta == nil {
-		return nil
-	}
-	copy := make(map[string]string, len(meta))
-	for key, value := range meta {
-		copy[key] = value
-	}
-	return copy
+// commandData is the template data preview command arguments render with:
+// the candidate's shared data, except that .Path is the normalized path when
+// one is known (the same path the preview sections inspect).
+func commandData(cand source.Candidate) tmpl.Data {
+	data := source.TemplateData(cand)
+	data.Path = renderPath(cand)
+	return data
 }
 
 // boundedContext applies timeout to ctx when positive, mirroring the escape

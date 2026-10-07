@@ -22,11 +22,12 @@ source_order = ["herdr", "workspaces", "zoxide", "projects"]
 # selector picks the interactive picker for "shep open" after the direct
 # (exact / single-match) short-circuit. Valid values: builtin, fzf, auto.
 selector = "builtin"
-# workspace_name controls only newly created dynamic workspaces. It receives
-# Path, NormalizedPath, Label, Source, Branch, RepoName, IsWorktree, and
-# IsMainWorktree. Explicit workspace names and existing Herdr workspaces
-# bypass this policy.
-# workspace_name = '{{ .Path | osBase | lower }}'
+# workspace_name controls only newly created dynamic workspaces. Like every
+# template it receives the shared data (.Path, .NormalizedPath, .Label,
+# .Source, .Kind, .Branch, .RepoName, .IsWorktree, .IsMainWorktree, .Meta...)
+# and functions (base, dir, lower, tilde, name, parent...). Explicit
+# workspace names and existing Herdr workspaces bypass this policy.
+# workspace_name = '{{ .Path | base | lower }}'
 
 # [ranking] controls private local adaptive ordering. It stores only opaque
 # action/resource identities, bounded counts, and timestamps. It never stores
@@ -109,10 +110,10 @@ preview = ["workspace", "active_pane", "agent_status"]
 
 # [sources.agents] applies to the agents tab and agents in source/group tabs.
 # The default title-only label is {{.Label}}; the status marker is separate.
-# label_format also supports .Meta.workspace_label, .Meta.workspace_id,
-# .Meta.tab_label, .Meta.tab_id, .Meta.pane_id, .Meta.agent,
-# .Meta.agent_status, .Meta.terminal_title, and .Meta.kind. Missing keys
-# render empty. Herdr itself shortens terminal_title; Shep cannot recover
+# label_format also supports .Agent, .AgentStatus, .TabLabel, .Workspace
+# (the Herdr workspace label) and every metadata key: .Meta.workspace_id,
+# .Meta.tab_id, .Meta.pane_id, .Meta.terminal_title, .Meta.kind... Missing
+# keys render empty. Herdr itself shortens terminal_title; Shep cannot recover
 # any text Herdr omits.
 [sources.agents]
 icon = " "
@@ -302,7 +303,7 @@ command = "k9s"
 # preview override. Rules are scanned in declaration order; first match wins.
 # [[wildcards]]
 # pattern = "~/projects/kubernetes/**"
-# workspace_name = '✈️ {{ printf "%s/%s" (.Path | osDir | osBase) (.Path | osBase) }}'
+# workspace_name = '✈️ {{ printf "%s/%s" (.Path | dir | base) (.Path | base) }}'
 # template = "k8s"
 # preview = ["identity", "git", "recent_commits"]
 `

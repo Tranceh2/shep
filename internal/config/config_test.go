@@ -1108,37 +1108,55 @@ func TestLoad_RejectsInvalidLabelFormats(t *testing.T) {
 			name:   "malformed herdr label format",
 			doc:    "[sources.herdr]\nlabel_format = \"{{if .Label}}\"\n",
 			field:  "sources.herdr.label_format",
-			detail: "invalid template",
+			detail: "unexpected EOF",
 		},
 		{
 			name:   "unknown herdr tab field",
 			doc:    "[sources.herdr]\ntab_label_format = \"{{.Unknown}}\"\n",
 			field:  "sources.herdr.tab_label_format",
-			detail: "invalid template",
+			detail: "can't evaluate field Unknown",
 		},
 		{
-			name:   "legacy path in herdr pane format",
-			doc:    "[sources.herdr]\npane_label_format = \"pane " + legacyTemplateSyntax("path") + "\"\n",
+			name:   "unknown function in herdr pane format",
+			doc:    "[sources.herdr]\npane_label_format = \"pane {{ .Path | osBase }}\"\n",
 			field:  "sources.herdr.pane_label_format",
-			detail: "legacy placeholder",
+			detail: `function "osBase" not defined`,
 		},
 		{
-			name:   "legacy label in workspaces format",
-			doc:    "[sources.workspaces]\nlabel_format = \"" + legacyTemplateSyntax("label") + "\"\n",
+			name:   "unknown field in workspaces format",
+			doc:    "[sources.workspaces]\nlabel_format = \"{{.Nope}}\"\n",
 			field:  "sources.workspaces.label_format",
-			detail: "legacy placeholder",
+			detail: "can't evaluate field Nope",
 		},
 		{
 			name:   "malformed zoxide label format",
 			doc:    "[sources.zoxide]\nlabel_format = \"{{.Path\"\n",
 			field:  "sources.zoxide.label_format",
-			detail: "invalid template",
+			detail: "unclosed action",
 		},
 		{
 			name:   "unknown projects label field",
 			doc:    "[sources.projects]\nlabel_format = \"{{.Unknown}}\"\n",
 			field:  "sources.projects.label_format",
-			detail: "invalid template",
+			detail: "can't evaluate field Unknown",
+		},
+		{
+			name:   "unknown sessions label field",
+			doc:    "[sources.sessions]\nlabel_format = \"{{.Nope}}\"\n",
+			field:  "sources.sessions.label_format",
+			detail: "can't evaluate field Nope",
+		},
+		{
+			name:   "folder rows have no branch to slice",
+			doc:    "[sources.zoxide]\nlabel_format = \"{{ slice .Branch 0 3 }}\"\n",
+			field:  "sources.zoxide.label_format",
+			detail: "slice",
+		},
+		{
+			name:   "custom source label format",
+			doc:    "[[sources.custom]]\nname = \"prs\"\ncommand = [\"gh\"]\nlabel_format = \"{{.Nope}}\"\n",
+			field:  "sources.custom[0].label_format",
+			detail: "can't evaluate field Nope",
 		},
 	}
 	for _, tc := range cases {
@@ -1172,10 +1190,9 @@ func TestLoad_RejectsInvalidPreviewCommandTemplates(t *testing.T) {
 		command string
 		detail  string
 	}{
-		{name: "legacy path", command: "git -C " + legacyTemplateSyntax("path") + " status", detail: "legacy placeholder"},
-		{name: "legacy label", command: "echo " + legacyTemplateSyntax("label"), detail: "legacy placeholder"},
-		{name: "malformed action", command: "echo {{.Path", detail: "invalid template"},
-		{name: "unknown context field", command: "echo {{.Unknown}}", detail: "invalid template"},
+		{name: "malformed action", command: "echo {{.Path", detail: "unclosed action"},
+		{name: "unknown context field", command: "echo {{.Unknown}}", detail: "can't evaluate field Unknown"},
+		{name: "removed os alias", command: "echo {{.Path|osDir}}", detail: `function "osDir" not defined`},
 		{name: "unterminated quote", command: "echo \"{{.Path}}", detail: "unterminated quote"},
 	}
 	for _, tc := range cases {
@@ -1197,6 +1214,50 @@ func TestLoad_RejectsInvalidPreviewCommandTemplates(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestLoad_ValidatesTemplatesPerKind proves each label template is checked
+// against the rows its source actually produces: a template that only works
+// for worktrees is fine for projects but rejected for zoxide folders, and the
+// shared data and function set (tilde, name, parent, trimIcon, Kind, Meta)
+// is available everywhere.
+func TestLoad_ValidatesTemplatesPerKind(t *testing.T) {
+	t.Parallel()
+	valid := `[general]
+workspace_name = "{{ .Path | tilde | name }}"
+
+[sources.herdr]
+label_format = "{{ .Label | trimIcon | name }}"
+tab_label_format = "{{ .TabNumber }} {{ .TabLabel }} {{ .Workspace }}"
+pane_label_format = "{{ .Agent }} {{ .AgentStatus }} {{ .Path | parent }}"
+
+[sources.projects]
+label_format = "{{ if .IsWorktree }}{{ slice .Branch 0 3 }}{{ else }}{{ .Label }}{{ end }}"
+
+[sources.agents]
+label_format = "{{ .Agent }}: {{ .Label }} ({{ .Workspace | name }})"
+
+[sources.workspaces]
+label_format = "{{ if eq .Kind \"group\" }}[{{ .Label }}]{{ else }}{{ .Label }}{{ end }}"
+
+[preview.commands.meta]
+command = "echo {{.Meta.anything}} {{.Kind}} {{.Path|tilde}}"
+`
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(valid), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("Load(valid per-kind templates) = %v", err)
+	}
+
+	invalid := "[sources.zoxide]\nlabel_format = \"{{ slice .Branch 0 3 }}\"\n"
+	if err := os.WriteFile(path, []byte(invalid), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "sources.zoxide.label_format: template: shep:") {
+		t.Fatalf("Load(worktree-only template for zoxide) = %v, want a sources.zoxide.label_format template error", err)
 	}
 }
 
@@ -3166,7 +3227,7 @@ func TestLoad_WorkspaceNameFieldsAndOrderedWildcardSelector(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.toml")
 	const doc = `[general]
-workspace_name = '{{ .Path | osBase }}'
+workspace_name = '{{ .Path | base }}'
 
 [[wildcards]]
 pattern = "**/services/*"
@@ -3187,7 +3248,7 @@ path = "/srv/services/platform-api"
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if got, want := cfg.General.WorkspaceName, "{{ .Path | osBase }}"; got != want {
+	if got, want := cfg.General.WorkspaceName, "{{ .Path | base }}"; got != want {
 		t.Errorf("general.workspace_name = %q, want %q", got, want)
 	}
 	if got, want := cfg.Wildcards[0].WorkspaceName, "first"; got != want {
@@ -3210,7 +3271,9 @@ func TestLoad_RejectsInvalidWorkspaceNameFieldsWithScope(t *testing.T) {
 	}{
 		{name: "general parse", doc: "[general]\nworkspace_name = \"{{ .Unknown }}\"\n", want: "general.workspace_name"},
 		{name: "wildcard execute", doc: "[[wildcards]]\npattern = \"**\"\nworkspace_name = " + strconv.Quote(`{{ mustRegexMatch "[" .Path }}`) + "\n", want: "wildcards[0].workspace_name"},
-		{name: "wildcard blank", doc: "[[wildcards]]\npattern = \"**\"\nworkspace_name = " + strconv.Quote(`{{ "   " }}`) + "\n", want: "wildcards[0].workspace_name"},
+		{name: "wildcard blank", doc: "[[wildcards]]\npattern = \"**\"\nworkspace_name = " + strconv.Quote(`{{ "   " }}`) + "\n", want: "wildcards[0].workspace_name: output is blank"},
+		{name: "removed os alias", doc: "[general]\nworkspace_name = " + strconv.Quote(`{{ .Path | osBase }}`) + "\n", want: `general.workspace_name: template: shep:1: function "osBase" not defined`},
+		{name: "control character", doc: "[general]\nworkspace_name = " + strconv.Quote("a\tb") + "\n", want: "general.workspace_name: output contains control character U+0009"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

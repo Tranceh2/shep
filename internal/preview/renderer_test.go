@@ -13,7 +13,12 @@ import (
 
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
+	"github.com/tranceh2/shep/internal/tmpl"
 )
+
+// testTemplates is the engine every renderer under test renders preview
+// command arguments with; its home matches the paths the tests use.
+var testTemplates = tmpl.New("/home/user")
 
 // fakeGit is a deterministic GitProvider for renderer tests; no real processes.
 type fakeGit struct {
@@ -99,7 +104,7 @@ func cfgWithDefault(names ...string) *config.Config {
 // label, path, source and omits template when absent.
 func TestRender_IdentityLayout(t *testing.T) {
 	t.Parallel()
-	r := NewRenderer(cfgWithDefault(config.PreviewIdentity), config.Probes{}, nil, nil)
+	r := NewRenderer(cfgWithDefault(config.PreviewIdentity), testTemplates, config.Probes{}, nil, nil)
 	got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
 	want := "foo\npath: /p/foo\nsource: workspaces"
 	if got != want {
@@ -110,7 +115,7 @@ func TestRender_IdentityLayout(t *testing.T) {
 // TestRender_IdentityWithTemplate includes a matched template line.
 func TestRender_IdentityWithTemplate(t *testing.T) {
 	t.Parallel()
-	r := NewRenderer(cfgWithDefault(config.PreviewIdentity), config.Probes{}, nil, nil)
+	r := NewRenderer(cfgWithDefault(config.PreviewIdentity), testTemplates, config.Probes{}, nil, nil)
 	got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", "dev"))
 	want := "foo\npath: /p/foo\nsource: workspaces\ntemplate: dev"
 	if got != want {
@@ -147,7 +152,7 @@ func TestRender_SessionInfoRendersOnlyCandidateMetadata(t *testing.T) {
 			cfg := config.Defaults()
 			cfg.Sources.Sessions.Preview = []string{config.PreviewSessionInfo}
 			cand := source.Candidate{Path: "/must-not-be-read", Label: tt.meta["session_name"], Source: config.SourceSessions, Meta: tt.meta}
-			got := mustRender(t, NewRenderer(cfg, config.Probes{}, nil, nil), cand)
+			got := mustRender(t, NewRenderer(cfg, testTemplates, config.Probes{}, nil, nil), cand)
 			if got != tt.want {
 				t.Errorf("session preview = %q, want %q", got, tt.want)
 			}
@@ -199,7 +204,7 @@ func TestRender_SessionsPreviewOverridesPathBasedPreviews(t *testing.T) {
 			git := &fakeGit{summary: GitSummary{Branch: "main"}}
 			runner := &fakeRunner{}
 			pane := &fakePreviewDriver{currentPane: source.Pane{ID: "w1:p1", WorkspaceID: "w1", Focused: true}}
-			renderer := NewRenderer(cfg, config.Probes{Git: true}, git, runner, withFakeSnapshot(pane))
+			renderer := NewRenderer(cfg, testTemplates, config.Probes{Git: true}, git, runner, withFakeSnapshot(pane))
 			cand := source.Candidate{
 				Path:   sessionDir,
 				Label:  "alpha",
@@ -240,7 +245,7 @@ func TestRender_SessionsPreviewOverridesPathBasedPreviews(t *testing.T) {
 // separator and the git line renders "git: <summary>".
 func TestRender_IdentityAndGit(t *testing.T) {
 	t.Parallel()
-	r := NewRenderer(cfgWithDefault(config.PreviewIdentity, config.PreviewGit), config.Probes{Git: true},
+	r := NewRenderer(cfgWithDefault(config.PreviewIdentity, config.PreviewGit), testTemplates, config.Probes{Git: true},
 		&fakeGit{summary: GitSummary{Branch: "main", Dirty: 2}}, nil)
 	got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
 	want := "foo\npath: /p/foo\nsource: workspaces\n\ngit: main (2 changes)"
@@ -251,7 +256,7 @@ func TestRender_IdentityAndGit(t *testing.T) {
 
 func TestRender_WorktreeGitBadge(t *testing.T) {
 	t.Parallel()
-	r := NewRenderer(cfgWithDefault(config.PreviewGit), config.Probes{Git: true},
+	r := NewRenderer(cfgWithDefault(config.PreviewGit), testTemplates, config.Probes{Git: true},
 		&fakeGit{summary: GitSummary{Branch: "feat/auth", Dirty: 2}}, nil)
 	cand := candidate("api", "/trees/api", config.SourceProjects, "")
 	cand.Meta = map[string]string{"is_worktree": "true", "branch": "feat/auth", "head": "9fce23abcdef"}
@@ -270,7 +275,7 @@ func TestRender_WorktreeGitBadge(t *testing.T) {
 // of a blank success once the only configured section contributes nothing.
 func TestRender_WorktreeGitBadgeFallsBackToGitBranch(t *testing.T) {
 	t.Parallel()
-	r := NewRenderer(cfgWithDefault(config.PreviewGit), config.Probes{Git: true},
+	r := NewRenderer(cfgWithDefault(config.PreviewGit), testTemplates, config.Probes{Git: true},
 		&fakeGit{summary: GitSummary{Branch: "detached", Dirty: 0}}, nil)
 	cand := candidate("api", "/trees/api", config.SourceProjects, "")
 	cand.Meta = map[string]string{"is_worktree": "true"}
@@ -285,7 +290,7 @@ func TestRender_GitBypassed(t *testing.T) {
 
 	t.Run("git probe off", func(t *testing.T) {
 		t.Parallel()
-		r := NewRenderer(cfgWithDefault(config.PreviewGit), config.Probes{Git: false},
+		r := NewRenderer(cfgWithDefault(config.PreviewGit), testTemplates, config.Probes{Git: false},
 			&fakeGit{summary: GitSummary{Branch: "main"}}, nil)
 		got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
 		if strings.Contains(got, "git:") {
@@ -297,7 +302,7 @@ func TestRender_GitBypassed(t *testing.T) {
 	})
 	t.Run("git summary errors", func(t *testing.T) {
 		t.Parallel()
-		r := NewRenderer(cfgWithDefault(config.PreviewGit), config.Probes{Git: true},
+		r := NewRenderer(cfgWithDefault(config.PreviewGit), testTemplates, config.Probes{Git: true},
 			&fakeGit{err: errors.New("timeout")}, nil)
 		got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
 		if strings.Contains(got, "git:") {
@@ -314,7 +319,7 @@ func TestRender_GitBypassed(t *testing.T) {
 // blank preview.
 func TestRender_NoDefaultFallsBackToIdentity(t *testing.T) {
 	t.Parallel()
-	r := NewRenderer(config.Defaults(), config.Probes{}, nil, nil)
+	r := NewRenderer(config.Defaults(), testTemplates, config.Probes{}, nil, nil)
 	got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
 	if !strings.HasPrefix(got, "foo\npath:") {
 		t.Errorf("expected identity fallback, got %q", got)
@@ -340,7 +345,7 @@ func TestRender_CustomSourceLocalCommandsUseMetadataAndRemainScoped(t *testing.T
 		}},
 	}
 	runner := &fakeRunner{out: map[string]string{"kube-preview": "cluster ok", "other-preview": "other ok"}}
-	r := NewRenderer(cfg, config.Probes{}, nil, runner)
+	r := NewRenderer(cfg, testTemplates, config.Probes{}, nil, runner)
 	cand := source.Candidate{Path: "/tmp", Label: "prod", Source: "kube-a", Meta: map[string]string{"context": "cluster prod west"}}
 	if got := mustRender(t, r, cand); got != "cluster ok" {
 		t.Fatalf("local preview = %q, want cluster output", got)
@@ -353,11 +358,50 @@ func TestRender_CustomSourceLocalCommandsUseMetadataAndRemainScoped(t *testing.T
 	}
 
 	runner = &fakeRunner{out: map[string]string{"kube-preview": "cluster ok", "other-preview": "other ok"}}
-	r = NewRenderer(cfg, config.Probes{}, nil, runner)
+	r = NewRenderer(cfg, testTemplates, config.Probes{}, nil, runner)
 	foreign := source.Candidate{Path: "/tmp", Label: "prod", Source: "unknown", Meta: map[string]string{"context": "cluster prod west"}}
 	got := mustRender(t, r, foreign)
 	if strings.Contains(got, "cluster ok") || runner.calls != 0 {
 		t.Fatalf("foreign candidate used custom source-local command: output=%q calls=%d", got, runner.calls)
+	}
+}
+
+// TestRender_PreviewCommandsRenderSharedTemplateData proves both global
+// [preview.commands] and custom-source preview_commands render their argv
+// with the shared template data and functions: .Kind, git fields, .Icon,
+// .Meta and the engine's tilde, with .Path being the normalized path.
+func TestRender_PreviewCommandsRenderSharedTemplateData(t *testing.T) {
+	t.Parallel()
+	cfg := cfgWithDefault("info")
+	cfg.Preview.Commands = map[string]config.PreviewCommand{
+		"info": {Command: `echo {{.Kind}} "{{ .Path | tilde }}" {{.Branch}} {{.Icon}} x{{.Meta.missing}}`},
+	}
+	runner := &fakeRunner{out: map[string]string{"echo": "ok"}}
+	cand := source.Candidate{
+		Path: "/link/wt", NormalizedPath: "/home/user/src/shep-wt", Label: "shep (feat)", Source: config.SourceProjects, Icon: "W",
+		Meta: map[string]string{"is_worktree": "true", "branch": "feat", "repo": "shep"},
+	}
+	if got := mustRender(t, NewRenderer(cfg, testTemplates, config.Probes{}, nil, runner), cand); got != "ok" {
+		t.Fatalf("preview = %q, want the command output", got)
+	}
+	if want := []string{"echo", "worktree", "~/src/shep-wt", "feat", "W", "x"}; !reflect.DeepEqual(runner.argv, want) {
+		t.Fatalf("global argv = %#v, want %#v", runner.argv, want)
+	}
+
+	cfg = config.Defaults()
+	cfg.Sources.Custom = []config.CustomSourceConfig{{
+		Name: "kube", Preview: []string{"cluster"},
+		PreviewCommands: map[string]config.CustomSourcePreviewCommand{
+			"cluster": {Command: []string{"show", "{{.Kind}}", "{{.Source}}", "{{ .Meta.context | upper }}", "{{ .Label | trimIcon }}"}, Timeout: config.Duration(time.Second), MaxLines: 5},
+		},
+	}}
+	runner = &fakeRunner{out: map[string]string{"show": "ok"}}
+	custom := source.Candidate{Path: "/tmp", Label: "\u2388 prod", Source: "kube", Meta: map[string]string{"custom_source": "true", "context": "prod"}}
+	if got := mustRender(t, NewRenderer(cfg, testTemplates, config.Probes{}, nil, runner), custom); got != "ok" {
+		t.Fatalf("custom preview = %q, want the command output", got)
+	}
+	if want := []string{"show", "custom", "kube", "PROD", "prod"}; !reflect.DeepEqual(runner.argv, want) {
+		t.Fatalf("custom argv = %#v, want %#v", runner.argv, want)
 	}
 }
 
@@ -376,7 +420,7 @@ func TestRender_CustomSourceLocalFailureDoesNotHideOtherSections(t *testing.T) {
 		out: map[string]string{"cluster": "cluster rendered"},
 		err: map[string]error{"health": errors.New("timeout")},
 	}
-	got := mustRender(t, NewRenderer(cfg, config.Probes{}, nil, runner), source.Candidate{Path: "/tmp", Source: "kube"})
+	got := mustRender(t, NewRenderer(cfg, testTemplates, config.Probes{}, nil, runner), source.Candidate{Path: "/tmp", Source: "kube"})
 	if !strings.Contains(got, "cluster rendered") || strings.Contains(got, "health") {
 		t.Fatalf("partial local preview = %q, want cluster only", got)
 	}
@@ -389,7 +433,7 @@ func TestRender_AllConfiguredSectionsFailFallsBackToIdentity(t *testing.T) {
 		"broken": {Command: "false"},
 	}
 	runner := &fakeRunner{err: map[string]error{"false": errors.New("exit 1")}}
-	r := NewRenderer(cfg, config.Probes{Git: false}, nil, runner)
+	r := NewRenderer(cfg, testTemplates, config.Probes{Git: false}, nil, runner)
 	got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
 	want := "foo\npath: /p/foo\nsource: workspaces"
 	if got != want {
@@ -828,7 +872,7 @@ func TestRender_WorkspaceSection(t *testing.T) {
 			{ID: "wA:p2", WorkspaceID: "wA", CWD: "/y", Focused: false},
 		},
 	}
-	r := NewRenderer(cfg, config.Probes{}, nil, nil, withFakeSnapshot(driver))
+	r := NewRenderer(cfg, testTemplates, config.Probes{}, nil, nil, withFakeSnapshot(driver))
 	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
 	if !strings.Contains(got, "workspace") {
 		t.Errorf("missing section heading: %q", got)
@@ -858,7 +902,7 @@ func TestRender_ActivePaneSection(t *testing.T) {
 		},
 		readOut: "$ echo hi\nhi\n$ ",
 	}
-	r := NewRenderer(cfg, config.Probes{}, nil, nil, withFakeSnapshot(driver))
+	r := NewRenderer(cfg, testTemplates, config.Probes{}, nil, nil, withFakeSnapshot(driver))
 	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
 	if !strings.Contains(got, "active pane") {
 		t.Errorf("missing section heading: %q", got)
@@ -887,7 +931,7 @@ func TestRender_ActivePaneSection_FallsBackToFirstPane(t *testing.T) {
 		},
 		readOut: "buffer",
 	}
-	r := NewRenderer(cfg, config.Probes{}, nil, nil, withFakeSnapshot(driver))
+	r := NewRenderer(cfg, testTemplates, config.Probes{}, nil, nil, withFakeSnapshot(driver))
 	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
 	if !strings.Contains(got, "buffer") {
 		t.Errorf("missing buffer: %q", got)
@@ -904,7 +948,7 @@ func TestRender_HerdrSections_SkipOnNonHerdrCandidate(t *testing.T) {
 
 	cfg := cfgWithDefault(config.PreviewWorkspace, config.PreviewActivePane, config.PreviewIdentity)
 	driver := &fakePreviewDriver{tabs: []source.Tab{{ID: "wA:t1"}}}
-	r := NewRenderer(cfg, config.Probes{}, nil, nil, withFakeSnapshot(driver))
+	r := NewRenderer(cfg, testTemplates, config.Probes{}, nil, nil, withFakeSnapshot(driver))
 	got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
 	want := "foo\npath: /p/foo\nsource: workspaces"
 	if got != want {
@@ -923,7 +967,7 @@ func TestRender_HerdrSections_SkipOnNonHerdrCandidate(t *testing.T) {
 func TestRender_CacheKey_DoesNotAliasCandidatesSharingPath(t *testing.T) {
 	t.Parallel()
 
-	r := NewRenderer(cfgWithDefault(config.PreviewIdentity), config.Probes{}, nil, nil)
+	r := NewRenderer(cfgWithDefault(config.PreviewIdentity), testTemplates, config.Probes{}, nil, nil)
 	shared := "/tmp/shep-preview/shared"
 
 	gotEcorp := mustRender(t, r, candidate("ecorp", shared, config.SourceWorkspaces, ""))
@@ -962,7 +1006,7 @@ func TestRender_CacheKey_DoesNotAliasHerdrCandidatesSharingCWD(t *testing.T) {
 			"wB": {{ID: "wB:p1", WorkspaceID: "wB", CWD: "/shared", Focused: true}},
 		},
 	}
-	r := NewRenderer(cfg, config.Probes{}, nil, nil, withFakeSnapshot(driver))
+	r := NewRenderer(cfg, testTemplates, config.Probes{}, nil, nil, withFakeSnapshot(driver))
 
 	gotA := mustRender(t, r, herdrCandidate("tabA", "/shared", "wA"))
 	gotB := mustRender(t, r, herdrCandidate("tabB", "/shared", "wB"))
@@ -986,7 +1030,7 @@ func TestRender_WorkspaceSection_TimesOutGracefully(t *testing.T) {
 
 	cfg := cfgWithDefault(config.PreviewWorkspace)
 	driver := &fakePreviewDriver{block: true}
-	r := NewRenderer(cfg, config.Probes{}, nil, nil, withFakeSnapshot(driver))
+	r := NewRenderer(cfg, testTemplates, config.Probes{}, nil, nil, withFakeSnapshot(driver))
 	start := time.Now()
 	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
 	elapsed := time.Since(start)
@@ -1008,7 +1052,7 @@ func TestRenderAgentStatusSection_KnownStatus(t *testing.T) {
 
 	cfg := cfgWithDefault(config.PreviewAgentStatus)
 	driver := &fakePreviewDriver{currentPane: source.Pane{ID: "wA:p1", WorkspaceID: "wA", AgentStatus: "idle"}}
-	r := NewRenderer(cfg, config.Probes{}, nil, nil, withFakeSnapshot(driver))
+	r := NewRenderer(cfg, testTemplates, config.Probes{}, nil, nil, withFakeSnapshot(driver))
 	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
 	if !strings.Contains(got, "agent status") {
 		t.Errorf("missing section heading: %q", got)
@@ -1030,7 +1074,7 @@ func TestRenderAgentStatusSection_EmptyStatus(t *testing.T) {
 
 	cfg := cfgWithDefault(config.PreviewAgentStatus)
 	driver := &fakePreviewDriver{currentPane: source.Pane{ID: "wA:p1", WorkspaceID: "wA", AgentStatus: ""}}
-	r := NewRenderer(cfg, config.Probes{}, nil, nil, withFakeSnapshot(driver))
+	r := NewRenderer(cfg, testTemplates, config.Probes{}, nil, nil, withFakeSnapshot(driver))
 	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
 	if !strings.Contains(got, "agent status") {
 		t.Errorf("missing section heading: %q", got)
@@ -1048,7 +1092,7 @@ func TestRenderAgentStatusSection_SectionDisabled(t *testing.T) {
 
 	cfg := cfgWithDefault(config.PreviewIdentity)
 	driver := &fakePreviewDriver{currentPane: source.Pane{ID: "wA:p1", AgentStatus: "working"}}
-	r := NewRenderer(cfg, config.Probes{}, nil, nil, withFakeSnapshot(driver))
+	r := NewRenderer(cfg, testTemplates, config.Probes{}, nil, nil, withFakeSnapshot(driver))
 	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
 	if strings.Contains(got, "agent status") || strings.Contains(got, "working") {
 		t.Errorf("agent_status section must be omitted when disabled: %q", got)
@@ -1059,7 +1103,7 @@ func TestRenderAgentStatusSection_SectionDisabled(t *testing.T) {
 // snapshot, so tests can compare the exact section text.
 func renderAgentStatus(t *testing.T, snapshot source.Snapshot, cand source.Candidate) string {
 	t.Helper()
-	r := NewRenderer(cfgWithDefault(config.PreviewAgentStatus), config.Probes{}, nil, nil, WithSnapshot(snapshot))
+	r := NewRenderer(cfgWithDefault(config.PreviewAgentStatus), testTemplates, config.Probes{}, nil, nil, WithSnapshot(snapshot))
 	return mustRender(t, r, cand)
 }
 
@@ -1212,7 +1256,7 @@ func TestRender_ActivePaneSection_TimesOutGracefully(t *testing.T) {
 
 	cfg := cfgWithDefault(config.PreviewActivePane)
 	driver := &fakePreviewDriver{block: true}
-	r := NewRenderer(cfg, config.Probes{}, nil, nil, withFakeSnapshot(driver))
+	r := NewRenderer(cfg, testTemplates, config.Probes{}, nil, nil, withFakeSnapshot(driver))
 	start := time.Now()
 	res, err := r.Render(context.Background(), herdrCandidate("foo", "/x", "wA"))
 	if err != nil {
@@ -1242,7 +1286,7 @@ func TestRender_HerdrSections_WithoutDriver(t *testing.T) {
 	t.Parallel()
 
 	cfg := cfgWithDefault(config.PreviewWorkspace, config.PreviewIdentity)
-	r := NewRenderer(cfg, config.Probes{}, nil, nil)
+	r := NewRenderer(cfg, testTemplates, config.Probes{}, nil, nil)
 	got := mustRender(t, r, herdrCandidate("foo", "/x", "wA"))
 	want := "foo\npath: /x\nsource: herdr"
 	if got != want {
@@ -1263,7 +1307,7 @@ func TestRender_DirSection_PicksLsdFirst(t *testing.T) {
 
 	runner := &fakeRunner{out: map[string]string{"lsd": "lsd-output"}}
 	cfg := cfgWithDefault(config.PreviewDir)
-	r := NewRenderer(cfg, config.Probes{}, nil, runner)
+	r := NewRenderer(cfg, testTemplates, config.Probes{}, nil, runner)
 	got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
 	if got != "lsd-output" {
 		t.Errorf("got %q, want lsd-output", got)
@@ -1284,7 +1328,7 @@ func TestRender_DirSection_FallsBackToEza(t *testing.T) {
 
 	runner := &fakeRunner{out: map[string]string{"eza": "eza-output"}}
 	cfg := cfgWithDefault(config.PreviewDir)
-	r := NewRenderer(cfg, config.Probes{}, nil, runner)
+	r := NewRenderer(cfg, testTemplates, config.Probes{}, nil, runner)
 	got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
 	if got != "eza-output" {
 		t.Errorf("got %q, want eza-output", got)
@@ -1300,7 +1344,7 @@ func TestRender_DirSection_FallsBackToLs(t *testing.T) {
 
 	runner := &fakeRunner{out: map[string]string{"ls": "ls-output"}}
 	cfg := cfgWithDefault(config.PreviewDir)
-	r := NewRenderer(cfg, config.Probes{}, nil, runner)
+	r := NewRenderer(cfg, testTemplates, config.Probes{}, nil, runner)
 	got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
 	if got != "ls-output" {
 		t.Errorf("got %q, want ls-output", got)
@@ -1393,7 +1437,7 @@ func equalArgv(got, want []string) bool {
 func TestRender_DirSection_NoRunnerSkipsSilently(t *testing.T) {
 	t.Parallel()
 	cfg := cfgWithDefault(config.PreviewDir)
-	r := NewRenderer(cfg, config.Probes{}, nil, nil)
+	r := NewRenderer(cfg, testTemplates, config.Probes{}, nil, nil)
 	got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
 	if !strings.HasPrefix(got, "foo\npath:") {
 		t.Errorf("expected identity fallback instead of blank preview, got %q", got)
@@ -1409,7 +1453,7 @@ func TestRender_CustomCommand_RunsAndSubstitutesPath(t *testing.T) {
 		"recent_commits": {Command: "git -C {{.Path}} log -n 3"},
 	}
 	runner := &fakeRunner{out: map[string]string{"git": "commit-log"}}
-	r := NewRenderer(cfg, config.Probes{}, nil, runner)
+	r := NewRenderer(cfg, testTemplates, config.Probes{}, nil, runner)
 	got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
 	if got != "commit-log" {
 		t.Errorf("got %q, want commit-log", got)
@@ -1445,7 +1489,7 @@ command = "printf %s {{.Path}}"
 		t.Fatalf("Load: %v", err)
 	}
 
-	r := NewRenderer(cfg, config.Probes{}, nil, NewCommandRunner())
+	r := NewRenderer(cfg, testTemplates, config.Probes{}, nil, NewCommandRunner())
 	got := mustRender(t, r, candidate("dogfood", dir, "workspaces", ""))
 	if got != dir {
 		t.Errorf("rendered command output = %q, want %q", got, dir)
@@ -1462,7 +1506,7 @@ func TestRender_CustomCommand_FailureHiddenFromNormalOutput(t *testing.T) {
 		"broken": {Command: "git -C {{.Path}} log"},
 	}
 	runner := &fakeRunner{err: map[string]error{"git": errors.New("exit 1")}}
-	r := NewRenderer(cfg, config.Probes{}, nil, runner)
+	r := NewRenderer(cfg, testTemplates, config.Probes{}, nil, runner)
 	res, err := r.Render(context.Background(), candidate("foo", "/p/foo", "workspaces", ""))
 	if err != nil {
 		t.Fatalf("render: %v", err)
@@ -1479,7 +1523,7 @@ func TestRender_CustomCommand_FailureHiddenFromNormalOutput(t *testing.T) {
 func TestRender_UnknownSectionNameSkipped(t *testing.T) {
 	t.Parallel()
 	cfg := cfgWithDefault(config.PreviewIdentity, "does-not-exist")
-	r := NewRenderer(cfg, config.Probes{}, nil, nil)
+	r := NewRenderer(cfg, testTemplates, config.Probes{}, nil, nil)
 	got := mustRender(t, r, candidate("foo", "/p/foo", "workspaces", ""))
 	want := "foo\npath: /p/foo\nsource: workspaces"
 	if got != want {
@@ -1493,7 +1537,7 @@ func TestRender_UnknownSectionNameSkipped(t *testing.T) {
 func TestRender_CachesResult(t *testing.T) {
 	t.Parallel()
 	git := &fakeGit{summary: GitSummary{Branch: "main"}}
-	r := NewRenderer(cfgWithDefault(config.PreviewGit), config.Probes{Git: true}, git, nil)
+	r := NewRenderer(cfgWithDefault(config.PreviewGit), testTemplates, config.Probes{Git: true}, git, nil)
 	cand := candidate("foo", "/p/foo", "workspaces", "")
 	first, err := r.Render(context.Background(), cand)
 	if err != nil {
@@ -1533,8 +1577,8 @@ func TestRenderer_WithSnapshotBuildsImmutableGeneration(t *testing.T) {
 		FocusedTabID:       "w1:t1",
 	}
 
-	firstRenderer := NewRenderer(cfg, config.Probes{}, nil, nil, WithSnapshot(first))
-	secondRenderer := NewRenderer(cfg, config.Probes{}, nil, nil, WithSnapshot(second))
+	firstRenderer := NewRenderer(cfg, testTemplates, config.Probes{}, nil, nil, WithSnapshot(first))
+	secondRenderer := NewRenderer(cfg, testTemplates, config.Probes{}, nil, nil, WithSnapshot(second))
 	cand := source.Candidate{Label: "workspace", Path: "/workspace", Source: config.SourceHerdr, Meta: map[string]string{"workspace_id": "w1"}}
 
 	firstText := mustRender(t, firstRenderer, cand)

@@ -6,6 +6,7 @@ import (
 
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
+	"github.com/tranceh2/shep/internal/tmpl"
 )
 
 func TestRowPrimaryText_ConfiguredLabelFormats(t *testing.T) {
@@ -56,11 +57,11 @@ func TestRowPrimaryText_ConfiguredLabelFormats(t *testing.T) {
 			want: "◆ entry=api path=/srv/api",
 		},
 		{
-			name: "zoxide candidate keeps icon outside template body",
+			name: "zoxide candidate template sees the shared icon field",
 			row: Row{Kind: RowCandidate, Candidate: source.Candidate{
 				Source: config.SourceZoxide, Label: "cache", Path: "/srv/cache", Icon: "◆",
 			}},
-			want: "◆ history=cache path=/srv/cache icon=",
+			want: "◆ history=cache path=/srv/cache icon=◆",
 		},
 		{
 			name: "project candidate",
@@ -406,5 +407,61 @@ func TestRowPrimaryText_SessionsUsesConfiguredFormatAndStatusSuffixes(t *testing
 				t.Errorf("accessories = %q, want the session state %q outside the template", acc, tt.wantAcc)
 			}
 		})
+	}
+}
+
+// TestRenderRowLabel_SharedTemplateDataPerRowKind proves row labels render
+// with the shared template data: every candidate gets its source's Kind and
+// the Herdr rows the picker synthesizes get tab, pane or agent, plus the tab,
+// pane and agent fields.
+func TestRenderRowLabel_SharedTemplateDataPerRowKind(t *testing.T) {
+	m := newRenderTestModel(ThemeMocha, FocusList)
+	m.layout.LabelFormats = LabelFormats{
+		Herdr:    "{{.Kind}}",
+		Zoxide:   "{{.Kind}} {{ .Label | name }} [{{ .Label | parent }}]",
+		Projects: "{{.Kind}} {{.RepoName}}@{{.Branch}} {{.Head}}",
+		Tab:      "{{.Kind}} {{.Label}} n={{.TabNumber}} l={{.TabLabel}} ws={{.Workspace}}",
+		Pane:     "{{.Kind}} {{.Agent}}/{{.AgentStatus}} {{.TabLabel}}",
+		Agents:   "{{.Kind}} {{.Agent}} in {{ .Workspace | trimIcon | name }}",
+	}
+	tabMeta := map[string]string{"tab_number": "2", "tab_label": "editor", "workspace_label": "~/srv/api"}
+	paneMeta := map[string]string{"agent": "claude", "agent_status": "idle", "tab_label": "editor"}
+	agentMeta := map[string]string{"agent": "pi", "agent_status": "working", "workspace_label": "\U000f0cc6 ~/srv/api", "kind": "agent"}
+	for _, tt := range []struct {
+		name string
+		row  Row
+		want string
+	}{
+		{"herdr workspace", Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceHerdr, Label: "api", Path: "/srv/api"}}, "workspace"},
+		{"zoxide folder", Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceZoxide, Label: "~/srv/api", Path: "/home/u/srv/api"}}, "folder api [~/srv]"},
+		{"worktree", Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceProjects, Label: "api (x)", Path: "/t/x", Meta: map[string]string{"is_worktree": "true", "repo": "api", "branch": "x", "head": "0123456789"}}}, "worktree api@x 0123456"},
+		{"tree tab", Row{Kind: RowTab, Depth: 1, Candidate: source.Candidate{Label: "editor", Path: "/srv/api", Meta: tabMeta}}, "tab 2 editor n=2 l=editor ws=~/srv/api"},
+		{"tree pane", Row{Kind: RowPane, Depth: 2, Candidate: source.Candidate{Label: "nvim", Path: "/srv/api", Meta: paneMeta}}, "pane claude/idle editor"},
+		{"flat agent row", Row{Kind: RowPane, Depth: 0, Candidate: source.Candidate{Source: config.SourceAgents, Label: "fix", Path: "/srv/api", Meta: agentMeta}}, "agent pi in api"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := m.renderRowLabel(tt.row); got != tt.want {
+				t.Errorf("renderRowLabel() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestNewModelWithLayout_BuildsEngineForHomeWhenNoneIsPassed proves a Layout
+// without an engine still renders templates, with tilde abbreviating the
+// Layout's home directory; a passed engine is used as is.
+func TestNewModelWithLayout_BuildsEngineForHomeWhenNoneIsPassed(t *testing.T) {
+	row := Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceZoxide, Label: "x", Path: "/home/me/src/x"}}
+	m := NewModelWithLayout(nil, nil, Layout{HomeDir: "/home/me", LabelFormats: LabelFormats{Zoxide: "{{ .Path | tilde }}"}})
+	if got := m.renderRowLabel(row); got != "~/src/x" {
+		t.Fatalf("renderRowLabel() = %q, want ~/src/x", got)
+	}
+	engine := tmpl.New("/home")
+	m = NewModelWithLayout(nil, nil, Layout{HomeDir: "/home/me", Templates: engine, LabelFormats: LabelFormats{Zoxide: "{{ .Path | tilde }}"}})
+	if m.Layout().Templates != engine {
+		t.Fatal("Layout().Templates is not the engine the caller passed")
+	}
+	if got := m.renderRowLabel(row); got != "~/me/src/x" {
+		t.Fatalf("renderRowLabel() = %q, want the passed engine's ~/me/src/x", got)
 	}
 }

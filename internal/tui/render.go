@@ -6,8 +6,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/tranceh2/shep/internal/config"
-	"github.com/tranceh2/shep/internal/rowformat"
 	"github.com/tranceh2/shep/internal/source"
+	"github.com/tranceh2/shep/internal/tmpl"
 )
 
 // View renders the borderless grid (see geometry.go): the tab strip, the
@@ -308,8 +308,31 @@ func (m Model) rowLabelFormat(row Row) string {
 	}
 }
 
-// renderRowLabel builds a template context for row and defensively falls back
-// to the raw path if an invalid format somehow reaches render time, or if a
+// rowTemplateData is the template data for row: the candidate's shared data
+// (source.TemplateData), with the Kind of the Herdr rows the picker
+// synthesizes itself (tabs and nested panes have no source) and a tab's
+// de-duplicated "<number> <label>" text as its Label.
+func rowTemplateData(row Row) tmpl.Data {
+	c := row.Candidate
+	data := source.TemplateData(c)
+	switch row.Kind {
+	case RowTab:
+		data.Kind = tmpl.KindTab
+		data.Label = tabLabelPortion(c)
+	case RowPane:
+		// Same split as rowLabelFormat: flat agent rows are agents, nested
+		// tree panes are panes.
+		if row.Depth == 0 || c.Meta["kind"] == "agent" {
+			data.Kind = tmpl.KindAgent
+		} else {
+			data.Kind = tmpl.KindPane
+		}
+	}
+	return data
+}
+
+// renderRowLabel renders row's label template and defensively falls back to
+// the raw path if an invalid format somehow reaches render time, or if a
 // valid format renders to an empty string (e.g. a bare {{.Label}} format
 // evaluated against a candidate whose Label is empty -- reachable only via
 // direct/programmatic Candidate construction, since config.Load enforces
@@ -320,25 +343,14 @@ func (m Model) rowLabelFormat(row Row) string {
 // values a template interpolates and the path all come from outside shep.
 // Matching never reads it — filtering scores the raw candidate data.
 func (m Model) renderRowLabel(row Row) string {
-	c := row.Candidate
-	label := c.Label
-	if row.Kind == RowTab {
-		// Preserve the current Herdr-specific tab-number/label de-duplication
-		// before templates position the label.
-		label = tabLabelPortion(c)
+	engine := m.layout.Templates
+	if engine == nil { // only a bare Model{} literal; constructors set one
+		return plainText(row.Candidate.Path)
 	}
-	text, err := rowformat.Render(m.rowLabelFormat(row), rowformat.Context{
-		Path:        c.Path,
-		Label:       label,
-		TabNumber:   c.Meta["tab_number"],
-		AgentStatus: c.Meta["agent_status"],
-		Meta:        c.Meta,
-		// Icon intentionally stays unset: c.Icon belongs to the row's fixed
-		// prefix (see buildRowView), which truncation must never consume.
-	})
+	text, err := engine.Render(m.rowLabelFormat(row), rowTemplateData(row))
 	text = plainText(text)
 	if err != nil || text == "" {
-		return plainText(c.Path)
+		return plainText(row.Candidate.Path)
 	}
 	return text
 }

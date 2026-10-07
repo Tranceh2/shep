@@ -373,8 +373,9 @@ source_order = ["herdr", "workspaces", "zoxide", "projects"]
 selector = "builtin"
 
 # Template for dynamic workspace names created when opening a project from zoxide or projects.
-# Uses Go template syntax with Sprig functions (e.g. osBase, lower, trimPrefix, replace).
-workspace_name = '{{ .Path | osBase | lower }}'
+# Uses the shared template data and functions (see "Templates" below), e.g. base, lower, tilde.
+# Unset: worktrees are named "<repo>@<branch>", everything else by its full path.
+workspace_name = '{{ .Path | base | lower }}'
 ```
 
 ---
@@ -479,9 +480,26 @@ path = "~/projects/team"
 source_order = ["projects", "zoxide"]
 ```
 
+### Templates — Shared Data and Functions
+
+Every user-written template (`workspace_name`, every `label_format`, preview command arguments) is a [Go template](https://pkg.go.dev/text/template) over the same data and the same functions. Templates are checked when the config loads, against representative rows of every kind the field applies to, so a typo such as `{{ .Nope }}` fails with the field's path instead of at runtime.
+
+Data: `.Path`, `.NormalizedPath`, `.Label`, `.Source` (herdr, workspaces, zoxide, projects, sessions, agents, path or a custom source name), `.Kind` (workspace, configured, group, folder, project, worktree, session, agent, tab, pane, custom), `.Icon`, `.Branch`, `.Head`, `.RepoName`, `.IsWorktree`, `.IsMainWorktree`, `.Agent`, `.AgentStatus`, `.TabNumber`, `.TabLabel`, `.Workspace` (the Herdr workspace label of a tab, pane or agent row) and `.Meta.<key>` for every provider key. Fields that do not apply to a row and missing `.Meta` keys render empty.
+
+Template functions:
+
+- Paths: `base`, `dir`, `clean`, `ext`, `isAbs` (slash-separated paths).
+- Strings: `trim`, `trimPrefix`, `trimSuffix`, `trimAll`, `lower`, `upper`, `title`, `replace`, `contains`, `hasPrefix`, `hasSuffix`, `nospace`, `snakecase`, `camelcase`, `kebabcase`.
+- Values and lists: `default`, `coalesce`, `ternary`, `splitList`, `join`, `mustSlice`, `compact`, `first`, `last`.
+- Numbers: `add`, `sub`, `max`, `min`, `int`.
+- Patterns and hashing: `mustRegexMatch`, `mustRegexReplaceAllLiteral`, `regexQuoteMeta`, `sha256sum`.
+- Shep additions: `tilde` (your home directory becomes `~`), `name` (last element of a `~/…` or `/…` path, any other text unchanged), `parent` (the parent of a `~/…` or `/…` path, `""` otherwise; `~/a/b` → `~/a`), `trimIcon` (drops leading icons, emoji and spaces: `" ~/ops/x"` → `"~/ops/x"`).
+
+These are Sprig's deterministic functions with one name each: nothing reads the environment, the clock or the network, and the `osBase`/`osDir`/`osClean`/`osExt`/`osIsAbs` aliases are not available (use `base`, `dir`, `clean`, `ext`, `isAbs`).
+
 ### `[sources.<name>]` — Source Provider Presentation
 
-Customize icons and label formats per source. Templates support `{{.Label}}`, `{{.Path}}`, and `{{.Meta.<key>}}` for candidate metadata; missing string keys render empty. Agents expose `workspace_label`, `workspace_id`, `tab_label`, `tab_id`, `pane_id`, `agent`, `agent_status`, `terminal_title`, and `kind` through `.Meta`. Herdr itself shortens `terminal_title`; Shep cannot display more than Herdr provides. The default agents label is title-only (`{{.Label}}`); the status marker remains separate from the configured source icon.
+Customize icons and label formats per source with the shared template data above. Agents rows carry `.Agent`, `.AgentStatus`, `.TabLabel` and `.Workspace`, plus `workspace_id`, `tab_id`, `pane_id`, `terminal_title` and `kind` through `.Meta`. Herdr itself shortens `terminal_title`; Shep cannot display more than Herdr provides. The default agents label is title-only (`{{.Label}}`); the status marker remains separate from the configured source icon.
 
 ```toml
 [sources.herdr]
@@ -639,7 +657,7 @@ Apply templates and custom naming rules based on path patterns. The first matchi
 [[wildcards]]
 pattern = "**/microservices/*"
 template = "backend"
-workspace_name = 'svc-{{ .Path | osBase }}'
+workspace_name = 'svc-{{ .Path | base }}'
 preview = ["identity", "git"]
 ```
 

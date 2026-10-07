@@ -1,155 +1,98 @@
+// Package workspacename holds the naming policy for the Herdr workspaces shep
+// creates: which template names a candidate, the default when none is
+// configured, and which rendered names are acceptable. Rendering itself is
+// internal/tmpl's job, with the same data and functions as every other
+// template.
 package workspacename
 
 import (
-	"bytes"
+	"errors"
 	"fmt"
-	"path/filepath"
-	"reflect"
 	"strings"
-	"text/template"
 	"unicode"
 
-	"github.com/Masterminds/sprig/v3"
+	"github.com/tranceh2/shep/internal/tmpl"
 )
-
-// Context is the data-only input exposed to workspace-name templates.
-type Context struct {
-	Path           string
-	NormalizedPath string
-	Label          string
-	Source         string
-	Branch         string
-	RepoName       string
-	IsWorktree     bool
-	IsMainWorktree bool
-}
-
-func NewContext(path, normalizedPath, label, source string, meta map[string]string) Context {
-	branch := meta["branch"]
-	if branch == "" && meta["is_worktree"] == "true" {
-		branch = shortHead(meta["head"])
-	}
-	return Context{
-		Path: path, NormalizedPath: normalizedPath, Label: label, Source: source,
-		Branch: branch, RepoName: meta["repo"], IsWorktree: meta["is_worktree"] == "true",
-		IsMainWorktree: meta["main_worktree"] == "true",
-	}
-}
-
-func shortHead(head string) string {
-	if len(head) > 7 {
-		return head[:7]
-	}
-	if head != "" {
-		return head
-	}
-	return "detached"
-}
 
 // Name is a validated launch-only Herdr workspace label.
 type Name string
 
-var namingFunctionNames = []string{
-	"osBase", "osDir", "osClean", "osExt", "osIsAbs",
-	"base", "dir", "clean", "isAbs",
-	"trim", "trimPrefix", "trimSuffix", "trimAll", "lower", "upper", "title",
-	"replace", "contains", "hasPrefix", "hasSuffix", "nospace", "snakecase",
-	"camelcase", "kebabcase", "default", "coalesce", "ternary", "splitList",
-	"join", "mustSlice", "compact", "first", "last", "add", "sub", "max",
-	"min", "int", "mustRegexMatch", "mustRegexReplaceAllLiteral", "regexQuoteMeta",
-	"sha256sum",
-}
+// worktreeFormat names a worktree when no workspace_name applies.
+const worktreeFormat = `{{.RepoName}}@{{.Branch}}`
 
-var namingFunctionTypes = map[string]reflect.Type{
-	"osBase": reflect.TypeOf(func(string) string { return "" }), "osDir": reflect.TypeOf(func(string) string { return "" }), "osClean": reflect.TypeOf(func(string) string { return "" }), "osExt": reflect.TypeOf(func(string) string { return "" }), "osIsAbs": reflect.TypeOf(func(string) bool { return false }),
-	"base": reflect.TypeOf(func(string) string { return "" }), "dir": reflect.TypeOf(func(string) string { return "" }), "clean": reflect.TypeOf(func(string) string { return "" }), "isAbs": reflect.TypeOf(func(string) bool { return false }),
-	"trim": reflect.TypeOf(func(string) string { return "" }), "trimPrefix": reflect.TypeOf(func(string, string) string { return "" }), "trimSuffix": reflect.TypeOf(func(string, string) string { return "" }), "trimAll": reflect.TypeOf(func(string, string) string { return "" }), "lower": reflect.TypeOf(func(string) string { return "" }), "upper": reflect.TypeOf(func(string) string { return "" }), "title": reflect.TypeOf(func(string) string { return "" }),
-	"replace": reflect.TypeOf(func(string, string, string) string { return "" }), "contains": reflect.TypeOf(func(string, string) bool { return false }), "hasPrefix": reflect.TypeOf(func(string, string) bool { return false }), "hasSuffix": reflect.TypeOf(func(string, string) bool { return false }), "nospace": reflect.TypeOf(func(string) string { return "" }), "snakecase": reflect.TypeOf(func(string) string { return "" }), "camelcase": reflect.TypeOf(func(string) string { return "" }), "kebabcase": reflect.TypeOf(func(string) string { return "" }),
-	"default": reflect.TypeOf(func(interface{}, ...interface{}) interface{} { return nil }), "coalesce": reflect.TypeOf(func(...interface{}) interface{} { return nil }), "ternary": reflect.TypeOf(func(interface{}, interface{}, bool) interface{} { return nil }), "splitList": reflect.TypeOf(func(string, string) []string { return nil }), "join": reflect.TypeOf(func(string, interface{}) string { return "" }), "mustSlice": reflect.TypeOf(func(interface{}, ...interface{}) (interface{}, error) { return nil, nil }), "compact": reflect.TypeOf(func(interface{}) []interface{} { return nil }), "first": reflect.TypeOf(func(interface{}) interface{} { return nil }), "last": reflect.TypeOf(func(interface{}) interface{} { return nil }),
-	"add": reflect.TypeOf(func(...interface{}) int64 { return 0 }), "sub": reflect.TypeOf(func(interface{}, interface{}) int64 { return 0 }), "max": reflect.TypeOf(func(interface{}, ...interface{}) int64 { return 0 }), "min": reflect.TypeOf(func(interface{}, ...interface{}) int64 { return 0 }), "int": reflect.TypeOf(func(interface{}) int { return 0 }),
-	"mustRegexMatch": reflect.TypeOf(func(string, string) (bool, error) { return false, nil }), "mustRegexReplaceAllLiteral": reflect.TypeOf(func(string, string, string) (string, error) { return "", nil }), "regexQuoteMeta": reflect.TypeOf(func(string) string { return "" }), "sha256sum": reflect.TypeOf(func(string) string { return "" }),
-}
-
-// FuncMap returns a fresh, fail-closed map containing exactly the supported
-// deterministic Sprig functions.
-func FuncMap() (template.FuncMap, error) {
-	hermetic := sprig.HermeticTxtFuncMap()
-	out := make(template.FuncMap, len(namingFunctionNames))
-	for _, name := range namingFunctionNames {
-		fn, ok := hermetic[name]
-		if !ok {
-			return nil, fmt.Errorf("workspace name function %q is unavailable in pinned Sprig", name)
-		}
-		if wantType, ok := namingFunctionTypes[name]; ok && reflect.TypeOf(fn) != wantType {
-			return nil, fmt.Errorf("workspace name function %q changed signature", name)
-		}
-		out[name] = fn
-	}
-	return out, nil
-}
-
-// Validate parses and executes format with a representative context.
-func Validate(field, format string) error {
-	_, err := Render(field, format, DefaultContext())
-	return err
-}
-
-// DefaultContext returns a representative, field-complete naming context for
-// validation and testing.
-func DefaultContext() Context {
-	return Context{
-		Path:           "/srv/services/platform-api",
-		NormalizedPath: "/srv/services/platform-api",
-		Label:          "platform-api",
-		Source:         "projects",
-		Branch:         "main",
-		RepoName:       "platform-api",
-		IsWorktree:     true,
-		IsMainWorktree: false,
-	}
-}
-
-// Render parses and executes a naming template, then validates the resulting
-// label before returning it as the typed launch-only Name value.
-func Render(field, format string, data Context) (Name, error) {
+// Render resolves the workspace name for data. A configured format is
+// rendered with engine; an empty format names a worktree "<repo>@<branch>"
+// and anything else by its full normalized path (the raw path when it is not
+// normalized). A rendered name must not be blank or contain control
+// characters. Errors read "field: error".
+func Render(engine *tmpl.Engine, field, format string, data tmpl.Data) (Name, error) {
 	if format == "" {
-		if data.IsWorktree {
-			format = `{{.RepoName}}@{{.Branch}}`
-		} else {
-			path := data.NormalizedPath
-			if path == "" {
-				path = data.Path
+		if !data.IsWorktree {
+			if data.NormalizedPath != "" {
+				return Name(data.NormalizedPath), nil
 			}
-			return Name(filepath.Base(path)), nil
+			return Name(data.Path), nil
 		}
+		format = worktreeFormat
 	}
-	funcs, err := FuncMap()
+	value, err := engine.Render(format, data)
 	if err != nil {
-		return "", scopedError(field, "function map", err)
+		return "", scoped(field, err)
 	}
-	tmpl, err := template.New("workspace-name").Funcs(funcs).Parse(format)
-	if err != nil {
-		return "", scopedError(field, "parse", err)
-	}
-	var output bytes.Buffer
-	if err := tmpl.Execute(&output, data); err != nil {
-		return "", scopedError(field, "execute", err)
-	}
-	value := output.String()
 	if strings.TrimSpace(value) == "" {
-		return "", scopedError(field, "output", fmt.Errorf("output is blank"))
+		return "", scoped(field, errors.New("output is blank"))
 	}
-	for _, r := range value {
-		if unicode.IsControl(r) {
-			return "", scopedError(field, "output", fmt.Errorf("output contains control character U+%04X", r))
-		}
+	if err := rejectControls(value); err != nil {
+		return "", scoped(field, err)
 	}
 	return Name(value), nil
 }
 
-func scopedError(field, phase string, err error) error {
-	if field == "" {
-		return fmt.Errorf("%s: %w", phase, err)
+// Validate checks a workspace_name template before it is ever used: it must
+// parse and execute against every sample (all kinds when none are given),
+// never produce control characters, and produce a non-blank name for at least
+// one sample. A template that is blank only for some kinds (such as
+// "{{ .Branch }}" for plain folders) is accepted here and rejected when it is
+// actually rendered blank.
+func Validate(engine *tmpl.Engine, field, format string, samples ...tmpl.Data) error {
+	if len(samples) == 0 {
+		samples = tmpl.Samples()
 	}
-	return fmt.Errorf("%s: %s: %w", field, phase, err)
+	if err := engine.Validate(field, format, samples...); err != nil {
+		return err
+	}
+	blank := 0
+	for _, sample := range samples {
+		value, err := engine.Render(format, sample)
+		if err != nil {
+			return scoped(field, err)
+		}
+		if strings.TrimSpace(value) == "" {
+			blank++
+			continue
+		}
+		if err := rejectControls(value); err != nil {
+			return scoped(field, err)
+		}
+	}
+	if blank == len(samples) {
+		return scoped(field, errors.New("output is blank"))
+	}
+	return nil
+}
+
+func rejectControls(value string) error {
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("output contains control character U+%04X", r)
+		}
+	}
+	return nil
+}
+
+func scoped(field string, err error) error {
+	if field == "" {
+		return err
+	}
+	return fmt.Errorf("%s: %w", field, err)
 }

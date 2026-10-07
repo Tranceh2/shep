@@ -68,7 +68,7 @@ func TestWorkspaceLaunchRequest_CustomSourceLabelsRemainDistinct(t *testing.T) {
 
 func TestWorkspaceLaunchRequest_WorktreeConditionalTemplate(t *testing.T) {
 	t.Parallel()
-	cfg := namingConfig(`{{ if and .IsWorktree (not .IsMainWorktree) }}{{ .RepoName }}@{{ .Branch }}{{ else }}{{ .Path | osBase }}{{ end }}`, nil)
+	cfg := namingConfig(`{{ if and .IsWorktree (not .IsMainWorktree) }}{{ .RepoName }}@{{ .Branch }}{{ else }}{{ .Path | base }}{{ end }}`, nil)
 
 	cases := []struct {
 		name      string
@@ -226,7 +226,7 @@ func TestWorkspaceNameIsSeparateFromPresentationAcrossRuntimeBoundaries(t *testi
 		t.Fatalf("dedup changed candidate identity/presentation: %+v", deduped)
 	}
 
-	renderer := preview.NewRenderer(configWithPreviewIdentity(), config.Probes{}, nil, nil)
+	renderer := preview.NewRenderer(configWithPreviewIdentity(), app.templateEngine(), config.Probes{}, nil, nil)
 	previewResult, err := renderer.Render(context.Background(), cand)
 	if err != nil {
 		t.Fatalf("preview Render: %v", err)
@@ -307,4 +307,40 @@ func namingConfig(general string, wildcards []config.WildcardConfig) *config.Con
 	cfg.General.WorkspaceName = general
 	cfg.Wildcards = wildcards
 	return cfg
+}
+
+// TestApp_OneTemplateEnginePerProcess proves the command layer builds a single
+// template engine, resolving the user's home once, and hands that same engine
+// to the picker layout and the workspace-name policy.
+func TestApp_OneTemplateEnginePerProcess(t *testing.T) {
+	t.Parallel()
+	lookups := 0
+	app := New(WithUserHomeDir(func() (string, error) {
+		lookups++
+		return "/home/tester", nil
+	}))
+	app.cfg = namingConfig(`{{ .Path | tilde }}`, nil)
+	app.probes = config.Probes{}
+
+	engine := app.templateEngine()
+	if app.templateEngine() != engine || lookups != 1 {
+		t.Fatalf("templateEngine built %d home lookups / a second engine; want one of each", lookups)
+	}
+	if engine.Home() != "/home/tester" {
+		t.Fatalf("engine home = %q, want /home/tester", engine.Home())
+	}
+	if layout := app.pickerLayout(app.cfg.General.SourceOrder, nil); layout.Templates != engine {
+		t.Fatal("picker layout does not carry the process engine")
+	}
+	cand := source.Candidate{Path: "/home/tester/src/api", NormalizedPath: "/home/tester/src/api", Label: "api", Source: config.SourceZoxide}
+	request, err := app.workspaceLaunchRequest(cand)
+	if err != nil {
+		t.Fatalf("workspaceLaunchRequest: %v", err)
+	}
+	if got := string(request.WorkspaceName); got != "~/src/api" {
+		t.Fatalf("workspace name = %q, want ~/src/api rendered with the process engine", got)
+	}
+	if lookups != 1 {
+		t.Fatalf("home looked up %d times, want once", lookups)
+	}
 }

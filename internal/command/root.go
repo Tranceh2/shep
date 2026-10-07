@@ -22,6 +22,7 @@ import (
 	"github.com/tranceh2/shep/internal/selector"
 	"github.com/tranceh2/shep/internal/source"
 	"github.com/tranceh2/shep/internal/templates"
+	"github.com/tranceh2/shep/internal/tmpl"
 	"github.com/tranceh2/shep/internal/tui"
 )
 
@@ -114,6 +115,11 @@ type App struct {
 	executable func() (string, error)
 	// evalSymlinks resolves symbolic links in an executable path for link/unlink.
 	evalSymlinks func(string) (string, error)
+	// templates is the process's single template engine (row labels,
+	// workspace names, preview commands), built on first use by
+	// templateEngine from the user's home directory.
+	templates     *tmpl.Engine
+	templatesOnce sync.Once
 }
 
 // Config returns the loaded configuration, defaulting to path-agnostic
@@ -128,6 +134,18 @@ func (a *App) Config() *config.Config {
 
 // Probes returns the binary availability snapshot.
 func (a *App) Probes() config.Probes { return a.probes }
+
+// templateEngine returns the one template engine this process renders every
+// user template with. It is built on first use, resolving the home directory
+// its tilde helper abbreviates exactly once; an unresolvable home only
+// disables that abbreviation.
+func (a *App) templateEngine() *tmpl.Engine {
+	a.templatesOnce.Do(func() {
+		home, _ := a.getUserHomeDir()()
+		a.templates = tmpl.New(home)
+	})
+	return a.templates
+}
 
 // versionInfo bundles injected build metadata.
 type versionInfo struct {
