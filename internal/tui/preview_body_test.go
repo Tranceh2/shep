@@ -260,6 +260,27 @@ func TestTabsSection_FromTree(t *testing.T) {
 	}
 }
 
+// TestTabsSection_UnnamedTabShowsItsNumberOnce proves a tab Herdr labels
+// with its own number reads "3", not "3  3" (the list rows dedupe the same).
+func TestTabsSection_UnnamedTabShowsItsNumberOnce(t *testing.T) {
+	t.Parallel()
+	workspace := preview.Section{Kind: config.PreviewWorkspace, Text: "workspace\n  tab 3: 3 (1 panes)"}
+	tree := NewTreeExpanderFromSnapshot(source.Snapshot{
+		Workspaces: []source.Workspace{{ID: "w1"}},
+		Tabs:       []source.Tab{{ID: "t3", WorkspaceID: "w1", Label: "3", Number: 3}},
+		Panes:      []source.Pane{{ID: "p1", WorkspaceID: "w1", TabID: "t3"}},
+	})
+	m := resolvedModel(t, []source.Candidate{herdrCandidate("api", "/srv/api", "w1")}, tree, workspace)
+	lines := previewLines(m, 0)
+	at := indexOfLineContaining(lines, "Tabs ")
+	if at < 0 {
+		t.Fatalf("preview = %q, want a Tabs section", lines)
+	}
+	if got := strings.TrimRight(lines[at+1], " "); got != "3" {
+		t.Errorf("unnamed tab line = %q, want %q", got, "3")
+	}
+}
+
 // === Capture tail ===
 
 // TestCaptureTail_FitsTheRoomLeft proves the capture keeps its newest lines:

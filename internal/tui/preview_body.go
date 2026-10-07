@@ -496,7 +496,11 @@ func (m Model) tabsSection(c source.Candidate, s preview.Section, width int, cac
 		}
 		numbers[i] = strconv.Itoa(n)
 		numW = max(numW, len(numbers[i]))
-		labels[i] = plainText(tab.Label)
+		// An unnamed Herdr tab is labelled with its own number; showing it
+		// twice ("1  1") repeats the number column, as the list rows avoid.
+		if label := plainText(tab.Label); label != numbers[i] {
+			labels[i] = label
+		}
 		labelW = max(labelW, min(tabLabelMaxCells, ansi.StringWidth(labels[i])))
 	}
 	active := c.Meta["active_tab_id"]
