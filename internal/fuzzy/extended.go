@@ -307,6 +307,24 @@ func parseSingleTerm(p string) Term {
 
 // MatchCandidate evaluates eq against haystack and optional structured fields.
 func (eq ExtendedQuery) MatchCandidate(haystack string, fields CandidateFields) (int, []int, bool) {
+	if len(eq.Clauses) == 1 && len(eq.Clauses[0].Alternatives) == 1 && !eq.Clauses[0].Alternatives[0].Inverse {
+		// One plain term, the query typed on every keystroke: its indexes are
+		// already ascending and distinct, so they need no merging.
+		matched, score, idxs := eq.Clauses[0].Alternatives[0].match(haystack, fields)
+		switch {
+		case !matched:
+			return 0, nil, false
+		case score <= 0 || len(idxs) == 0:
+			return max(score, 0), nil, true
+		}
+		return score, idxs, true
+	}
+	return eq.matchClauses(haystack, fields)
+}
+
+// matchClauses is MatchCandidate's general form: every clause must match,
+// scores add up, and the matched indexes are merged.
+func (eq ExtendedQuery) matchClauses(haystack string, fields CandidateFields) (int, []int, bool) {
 	if len(eq.Clauses) == 0 {
 		return 0, nil, true
 	}

@@ -106,9 +106,11 @@ func referenceScore(query, haystack string) (int, []int) {
 	}
 }
 
-// TestScore_MatchesReferenceImplementation compares Score with the original
-// implementation over thousands of generated query/haystack pairs drawn from
-// a small alphabet (so matches, ties and separators are frequent).
+// TestScore_MatchesReferenceImplementation compares Score and ScoreOnly with
+// the original implementation over thousands of generated query/haystack
+// pairs drawn from a small alphabet (so matches, ties and separators are
+// frequent). Lengths vary widely, so pooled scratch memory is reused across
+// larger and smaller programs.
 func TestScore_MatchesReferenceImplementation(t *testing.T) {
 	t.Parallel()
 	rng := rand.New(rand.NewPCG(1, 2))
@@ -120,12 +122,18 @@ func TestScore_MatchesReferenceImplementation(t *testing.T) {
 		}
 		return b.String()
 	}
-	for range 20000 {
+	for i := range 20000 {
 		q, h := word(1+rng.IntN(4)), word(rng.IntN(24))
+		if i%10 == 0 {
+			q, h = word(1+rng.IntN(12)), word(rng.IntN(300))
+		}
 		gotScore, gotIdx := Score(q, h)
 		wantScore, wantIdx := referenceScore(q, h)
 		if gotScore != wantScore || !slices.Equal(gotIdx, wantIdx) {
 			t.Fatalf("Score(%q, %q) = %d %v, want %d %v", q, h, gotScore, gotIdx, wantScore, wantIdx)
+		}
+		if only := ScoreOnly(q, h); only != wantScore {
+			t.Fatalf("ScoreOnly(%q, %q) = %d, want %d", q, h, only, wantScore)
 		}
 	}
 }
@@ -166,6 +174,54 @@ func TestSameFold_MatchesEqualFold(t *testing.T) {
 			if got, want := sameFold(r, p), strings.EqualFold(string(r), string(p)); got != want {
 				t.Fatalf("sameFold(%U, %U) = %v, want %v", r, p, got, want)
 			}
+		}
+	}
+}
+
+// TestMatchCandidate_SingleTermFastPathMatchesTheGeneralForm proves the
+// one-term shortcut returns exactly what merging every clause returns, for
+// every term kind, negative fuzzy scores included.
+func TestMatchCandidate_SingleTermFastPathMatchesTheGeneralForm(t *testing.T) {
+	t.Parallel()
+	rng := rand.New(rand.NewPCG(3, 4))
+	alphabet := []string{"a", "b", "A", "/", "-", " ", "c", "é", "z"}
+	word := func(n int) string {
+		var b strings.Builder
+		for range n {
+			b.WriteString(alphabet[rng.IntN(len(alphabet))])
+		}
+		return b.String()
+	}
+	shapes := []func(string) string{
+		func(w string) string { return w },
+		func(w string) string { return "'" + w + "'" },
+		func(w string) string { return "^" + w },
+		func(w string) string { return w + "$" },
+		func(w string) string { return "/" + w + "/" },
+		func(w string) string { return "source:" + w },
+		func(w string) string { return "path:" + w },
+	}
+	fields := CandidateFields{Source: "zoxide", Path: "/home/elliot/fsociety", Agent: "claude", AgentStatus: "working"}
+	// A match scoring exactly zero: 160 leading-gap penalties cancel the
+	// word bonus of the only matched rune.
+	zero := strings.Repeat("x", 159) + " a"
+	if score, _ := Score("a", zero); score != 0 {
+		t.Fatalf("Score(%q, zero-score haystack) = %d, want 0", "a", score)
+	}
+	if score, idx, ok := ParseExtendedQuery("a").MatchCandidate(zero, fields); score != 0 || idx != nil || !ok {
+		t.Fatalf("zero-score match = %d %v %v, want 0 [] true", score, idx, ok)
+	}
+	for range 20000 {
+		raw := shapes[rng.IntN(len(shapes))](word(1 + rng.IntN(3)))
+		eq := ParseExtendedQuery(raw)
+		if len(eq.Clauses) != 1 || len(eq.Clauses[0].Alternatives) != 1 || eq.Clauses[0].Alternatives[0].Inverse {
+			continue
+		}
+		haystack := word(rng.IntN(90))
+		gotScore, gotIdx, gotOK := eq.MatchCandidate(haystack, fields)
+		wantScore, wantIdx, wantOK := eq.matchClauses(haystack, fields)
+		if gotScore != wantScore || gotOK != wantOK || !slices.Equal(gotIdx, wantIdx) || (gotIdx == nil) != (wantIdx == nil) {
+			t.Fatalf("MatchCandidate(%q, %q) = %d %v %v, want %d %v %v", raw, haystack, gotScore, gotIdx, gotOK, wantScore, wantIdx, wantOK)
 		}
 	}
 }

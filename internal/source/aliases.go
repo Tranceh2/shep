@@ -37,13 +37,13 @@ func MatchAlias(query string, aliases []string) (AliasMatchKind, int, bool) {
 		switch {
 		case strings.EqualFold(query, alias):
 			kind = AliasExact
-			score, _ = fuzzy.Score(query, alias)
+			score = fuzzy.ScoreOnly(query, alias)
 		case containsWordOrPrefix(query, alias):
 			kind = AliasPrefix
-			score, _ = fuzzy.Score(query, alias)
+			score = fuzzy.ScoreOnly(query, alias)
 		case fuzzy.Match(query, alias):
 			kind = AliasFuzzy
-			score, _ = fuzzy.Score(query, alias)
+			score = fuzzy.ScoreOnly(query, alias)
 		}
 		if kind > bestKind || (kind == bestKind && score > bestScore) {
 			bestKind = kind

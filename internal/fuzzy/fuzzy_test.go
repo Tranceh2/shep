@@ -203,3 +203,16 @@ func TestScore_AccentedCodepointDoesNotSatisfyPlainASCII(t *testing.T) {
 		t.Errorf("Score() matchedIndexes = %v, want nil without Unicode normalization", matchedIndexes)
 	}
 }
+
+// Scoring runs for every candidate on every keystroke: in steady state it
+// allocates only the returned match indexes, and ScoreOnly nothing.
+func TestScore_AllocatesOnlyTheMatchIndexes(t *testing.T) {
+	query, haystack := "shep", "~/Proyectos/fsociety/shep-whiterose"
+	Score(query, haystack) // warm the scratch pool
+	if allocs := testing.AllocsPerRun(200, func() { Score(query, haystack) }); allocs > 1 {
+		t.Errorf("Score allocates %.1f times per call, want only its indexes", allocs)
+	}
+	if allocs := testing.AllocsPerRun(200, func() { ScoreOnly(query, haystack) }); allocs > 0 {
+		t.Errorf("ScoreOnly allocates %.1f times per call, want none", allocs)
+	}
+}
