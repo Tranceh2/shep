@@ -606,6 +606,66 @@ func TestRunShepScript_PreparesPathWithoutSourcingProfiles(t *testing.T) {
 	}
 }
 
+// TestRunShepScript_DeduplicatesPathKeepingFirstOccurrence pins the PATH the
+// wrapper hands shep: every directory once, in first-occurrence order, with
+// empty entries dropped and glob characters taken literally.
+func TestRunShepScript_DeduplicatesPathKeepingFirstOccurrence(t *testing.T) {
+	pluginRoot := t.TempDir()
+	scriptDir := filepath.Join(pluginRoot, "scripts")
+	binDir := filepath.Join(pluginRoot, "bin")
+	for _, dir := range []string{scriptDir, binDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dataPath := filepath.Join(pluginRoot, "record")
+	writeFakePluginShep(t, filepath.Join(binDir, "shep"))
+	if err := copyPath(filepath.Join(repositoryRoot(t), "contrib/herdr-plugin/scripts/run-shep.sh"), filepath.Join(scriptDir, "run-shep.sh")); err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(pluginRoot, "home")
+	cargo := filepath.Join(home, ".cargo/bin")
+	if err := os.MkdirAll(cargo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	glob := filepath.Join(pluginRoot, "tools*")
+	spaced := filepath.Join(pluginRoot, "my tools")
+	original := []string{"/b", "", cargo, glob, "/a", "/b", spaced, "", "/a", glob, spaced}
+	cmd := exec.Command("/bin/sh", filepath.Join(scriptDir, "run-shep.sh"), "probe")
+	cmd.Env = []string{"HOME=" + home, "PATH=" + strings.Join(original, ":"), "RECORD=" + dataPath}
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("run wrapper: %v\n%s", err, output)
+	}
+	contents, err := os.ReadFile(dataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Split(strings.SplitN(string(contents), "\n", 2)[0], ":")
+	seen := make(map[string]bool, len(got))
+	for _, entry := range got {
+		if entry == "" {
+			t.Fatalf("PATH %q keeps an empty entry", got)
+		}
+		if seen[entry] {
+			t.Fatalf("PATH %q repeats %q", got, entry)
+		}
+		seen[entry] = true
+	}
+	if got[0] != cargo {
+		t.Fatalf("PATH %q, want the existing prepended %q first", got, cargo)
+	}
+	// The caller's entries follow in their first-occurrence order.
+	var tail []string
+	for _, entry := range got {
+		if entry == "/b" || entry == "/a" || entry == glob || entry == spaced {
+			tail = append(tail, entry)
+		}
+	}
+	if want := []string{"/b", glob, "/a", spaced}; !equalSlice(tail, want) {
+		t.Fatalf("caller entries in PATH = %q, want %q", tail, want)
+	}
+}
+
 func TestRunShepScript_StartsWithoutBashOnPATH(t *testing.T) {
 	pluginRoot := t.TempDir()
 	scriptDir := filepath.Join(pluginRoot, "scripts")

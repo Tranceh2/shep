@@ -8,22 +8,15 @@ case $script_path in
 esac
 plugin_root=${script_path%/scripts/run-shep.sh}
 
+# path_entries is the PATH being built: every directory once, first
+# occurrence wins. Membership is one pattern match, so building the PATH stays
+# linear on every popup open.
 path_entries=
 append_unique() {
-  candidate_entry=$1
-  entries_to_scan=$path_entries
-  while [ -n "$entries_to_scan" ]; do
-    case $entries_to_scan in
-      *:*) existing_entry=${entries_to_scan%%:*}; entries_to_scan=${entries_to_scan#*:} ;;
-      *) existing_entry=$entries_to_scan; entries_to_scan= ;;
-    esac
-    [ "$existing_entry" = "$candidate_entry" ] && return 0
-  done
-  if [ -n "$path_entries" ]; then
-    path_entries=$path_entries:$candidate_entry
-  else
-    path_entries=$candidate_entry
-  fi
+  case ":$path_entries:" in
+    *":$1:"*) ;;
+    *) path_entries=${path_entries:+$path_entries:}$1 ;;
+  esac
 }
 
 add_dir() {
