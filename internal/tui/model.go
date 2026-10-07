@@ -1515,10 +1515,7 @@ func runProgramWithPane(ctx context.Context, m Model, opts ...tea.ProgramOption)
 		}()
 		m = m.withLiveStatus(ls)
 	}
-	allOpts := make([]tea.ProgramOption, 0, 2+len(opts))
-	allOpts = append(allOpts, tea.WithContext(ctx), tea.WithAltScreen())
-	allOpts = append(allOpts, opts...)
-	p := tea.NewProgram(m, allOpts...)
+	p := tea.NewProgram(m, programOptions(ctx, opts)...)
 	final, err := p.Run()
 	if err != nil {
 		return source.Candidate{}, RowActionOpen, "", nil, false, err
@@ -1532,6 +1529,17 @@ func runProgramWithPane(ctx context.Context, m Model, opts ...tea.ProgramOption)
 // terminated state into the (Candidate, RowAction, target, ok, error)
 // quintuple both Run and RunWithSnapshot return.
 //
+// rendererFPS is the renderer's frame rate, Bubble Tea's maximum. A
+// keystroke's echo waits for the next frame, so the rate bounds the latency
+// the renderer adds to typing; a frame with nothing new writes nothing.
+const rendererFPS = 120
+
+// programOptions are the options every picker program runs with, then opts.
+// The alternate screen is required (see runProgram).
+func programOptions(ctx context.Context, opts []tea.ProgramOption) []tea.ProgramOption {
+	return append([]tea.ProgramOption{tea.WithContext(ctx), tea.WithAltScreen(), tea.WithFPS(rendererFPS)}, opts...)
+}
+
 // WithAltScreen is required: without it, Bubble Tea renders inline and
 // repaints by moving the cursor up N lines on every update, which desyncs
 // against any render taller than the previous one. This is not
@@ -1545,10 +1553,7 @@ func runProgram(ctx context.Context, m Model, opts ...tea.ProgramOption) (source
 		}()
 		m = m.withLiveStatus(ls)
 	}
-	allOpts := make([]tea.ProgramOption, 0, 2+len(opts))
-	allOpts = append(allOpts, tea.WithContext(ctx), tea.WithAltScreen())
-	allOpts = append(allOpts, opts...)
-	p := tea.NewProgram(m, allOpts...)
+	p := tea.NewProgram(m, programOptions(ctx, opts)...)
 	final, err := p.Run()
 	if err != nil {
 		return source.Candidate{}, RowActionOpen, "", false, err
