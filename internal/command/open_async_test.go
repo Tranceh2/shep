@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -131,6 +132,56 @@ func TestOpen_AsyncLoader_InteractiveStartup(t *testing.T) {
 	}
 	if driver.lastCand.Label != "my-proj" {
 		t.Errorf("launched candidate label = %q, want 'my-proj'", driver.lastCand.Label)
+	}
+}
+
+// TestOpen_AsyncLoader_PickerStartsBeforeTheRankingStore proves the picker's
+// first frame does not wait on the ranking store: its SQLite open (and the
+// Herdr focus history read with it) runs in the background, and the command
+// still closes the store once the picker has returned.
+func TestOpen_AsyncLoader_PickerStartsBeforeTheRankingStore(t *testing.T) {
+	t.Parallel()
+
+	pickerStarted := make(chan struct{})
+	var releasedByPicker atomic.Bool
+	open := tempRankingOpen(t)
+	app := New(
+		WithHerdrDriver(&openDriver{detect: true}),
+		WithAsyncTUIRunner(func(context.Context, []tui.SourceProducer, string, tui.Layout) (source.Candidate, tui.RowAction, string, *source.Pane, bool, error) {
+			close(pickerStarted)
+			return source.Candidate{}, tui.RowActionOpen, "", nil, false, tui.ErrCancelled
+		}),
+	)
+	var out, errOut bytes.Buffer
+	app.out = &out
+	app.err = &errOut
+	app.cfg = config.Defaults()
+	app.probes = config.Probes{Herdr: true}
+	app.rankingOpen = func() (rankingStore, error) {
+		select {
+		case <-pickerStarted:
+			releasedByPicker.Store(true)
+		case <-time.After(2 * time.Second):
+		}
+		return open()
+	}
+
+	cmd := app.openCmd()
+	cmd.SetContext(context.Background())
+	if err := app.runOpenWithView(cmd, "", "", "workspace", ""); err != nil {
+		t.Fatalf("runOpen failed: %v", err)
+	}
+	if !releasedByPicker.Load() {
+		t.Fatal("the picker started only after the ranking store opened")
+	}
+	app.rankingMu.Lock()
+	store := app.rankingStore
+	app.rankingMu.Unlock()
+	if store != nil {
+		t.Fatal("ranking store left open after the picker returned")
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("unexpected stderr: %q", errOut.String())
 	}
 }
 

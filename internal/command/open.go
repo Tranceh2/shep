@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -212,6 +213,9 @@ func (a *App) pinToggler() tui.PinToggler {
 
 func (a *App) ackClearer() tui.AckClearer {
 	return func(ctx context.Context, paneID string) {
+		if err := a.openRankingForPins(ctx); err != nil {
+			return
+		}
 		a.rankingMu.Lock()
 		store := a.rankingStore
 		a.rankingMu.Unlock()
@@ -233,6 +237,17 @@ func (a *App) loadWorkspaceMRU(ctx context.Context) ([]string, error) {
 	readCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel()
 	return history.ReadWorkspaceMRU(readCtx, socketPath)
+}
+
+// openRankingInBackground runs openRankingForPins in its own goroutine, so the
+// picker's first frame never waits on the SQLite store or on Herdr's focus
+// history. Every consumer that needs the store (pins, acknowledgements, the
+// ranking producer) calls openRankingForPins, which waits for this open; the
+// returned func waits for it too and reports its error, any number of times.
+func (a *App) openRankingInBackground(ctx context.Context) func() error {
+	done := make(chan error, 1)
+	go func() { done <- a.openRankingForPins(ctx) }()
+	return sync.OnceValue(func() error { return <-done })
 }
 
 func (a *App) openRankingForPins(ctx context.Context) error {
@@ -884,7 +899,11 @@ func (a *App) runOpenWithView(cmd *cobra.Command, query, pathFlag, targetFlag, v
 	a.rankingData = ranking.Snapshot{}
 	a.rankingMu.Unlock()
 
+	// waitRanking waits for a background ranking store open (see
+	// openRankingInBackground); the store is closed only after it settles.
+	waitRanking := func() error { return nil }
 	defer func() {
+		_ = waitRanking()
 		a.rankingMu.Lock()
 		store := a.rankingStore
 		a.rankingStore = nil
@@ -995,12 +1014,13 @@ func (a *App) runOpenWithView(cmd *cobra.Command, query, pathFlag, targetFlag, v
 	layout.PinToggler = a.pinToggler()
 	layout.Closer = a.herdrCloser()
 	layout.AckClearer = a.ackClearer()
-	if err := a.openRankingForPins(cmd.Context()); err != nil {
-		fmt.Fprintf(errOut, "warning: pin storage unavailable: %v\n", err)
-	}
+	waitRanking = a.openRankingInBackground(cmd.Context())
 
 	producers := a.streamingProducersForView(cmd.Context(), view)
 	cand, action, chosenTarget, currentPane, ok, selErr := a.runAsyncTUI(cmd.Context(), producers, query, layout)
+	if err := waitRanking(); err != nil {
+		fmt.Fprintf(errOut, "warning: pin storage unavailable: %v\n", err)
+	}
 	if selErr != nil {
 		if errors.Is(selErr, tui.ErrCancelled) {
 			return nil
