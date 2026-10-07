@@ -4,7 +4,103 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
-_No unreleased changes._
+### Breaking
+
+- Configuration files must declare `version = 3`. Any other version, or none,
+  fails to load with one message pointing to the README's
+  [Migrating from version 2](README.md#migrating-from-version-2). The main
+  steps: replace `osBase`, `osDir`, `osClean`, `osExt` and `osIsAbs` with
+  `base`, `dir`, `clean`, `ext` and `isAbs`; move
+  `[sources.herdr].tab_label_format` and `pane_label_format` to
+  `label_format` in `[sources.herdr.tab]` and `[sources.herdr.pane]`; a
+  custom agents or pane `label_format` must include `{{ status }}` to keep
+  the status glyph; delete `[defaults].type` and
+  `[workspaces.sources.projects].preview` (neither had an effect).
+- `[[integrations]]` is now `[[sources.custom]]`, with the same argv-only
+  JSON-row contract, previews and aliases. **Migration**: rename the table.
+- `shep open --agents` is removed. **Migration**: use `shep open --view agents`.
+- `[[wildcards]]` are scanned per setting: each setting comes from the first
+  matching rule that sets it, where it used to stop at the first matching
+  rule. An explicit `preview = []` on a rule or entry now means "no
+  sections", and a group's template beats wildcards for its children.
+- `ctrl+u` moves the cursor half a page up instead of clearing the query;
+  `esc` clears it, `backspace` deletes a character and `ctrl+w` /
+  `alt+backspace` a word.
+
+### Added
+
+- The picker shows configurable view tabs (`[tui].tabs`): `all`, `agents`, a
+  built-in source, a `[[sources.custom]]` name or a group workspace id,
+  cycled with `tab` / `shift+tab`. A source listed only there loads without
+  joining `all`. `shep open --view <id>` opens any of them directly.
+- `agents` is a built-in source: newly blocked or finished agents first, then
+  the previous agent, then the rest by history.
+- `ctrl+x` closes the selected open Herdr pane, tab or workspace, with a y/n
+  confirmation for the kinds listed in `[tui].confirm_close`. `ctrl+d` /
+  `ctrl+u` move half a page; `ctrl+w` / `alt+backspace` delete a word.
+- Every visible part of a row is a template: `icon`, `icon_color`,
+  `label_format`, `detail_format` and `marker_format`, per source, per
+  `[[sources.custom]]`, for Herdr tab and pane rows, in `[[wildcards]]` and
+  in `[[workspaces]]` entries. Templates share one engine and data model
+  with `workspace_name` and preview commands, and gain `tilde`, `name`,
+  `parent`, `trimIcon`, the style functions `muted`, `accent` and `bold`,
+  and the live values `status`, `pin`, `current`, `group` and `missing`.
+- Themes follow Herdr: the default inherits Herdr's own theme (its 18
+  palettes, `[theme.custom]`, `auto_switch` light/dark variants and the
+  `[ui].accent` fallback). `[tui].theme` also takes any Herdr built-in,
+  `plain`, or a `[themes.<name>]` with a base, token overrides and roles;
+  `SHEP_THEME` and `NO_COLOR` override it. `shep doctor` reports the theme,
+  where it came from and Herdr's theme diagnostics.
+- Preview command sections take an optional `title` (`""` hides the
+  heading); `shep list --format json` includes `meta`.
+
+### Changed
+
+- The picker is redesigned for scanning: one frame (Herdr's popup border),
+  tabs always visible, a prompt with a cursor and matches/total, name-first
+  rows with the parent dimmed, right-hand markers for agent state, pins,
+  groups, worktree branches and "current", workspaces that open only along
+  a matching tab or pane, and a preview with a title row, a summary line, a
+  Tabs table, Files, one heading per custom command and the newest lines of
+  the pane capture. Help is a cheat sheet of the real keys and search syntax.
+- Every per-candidate setting (presentation, preview sections, template,
+  `workspace_name`) resolves with one rule, per field: the candidate's own
+  data, then same-directory `[[workspaces]]` entries (preview sections
+  only), then the first `[[wildcards]]` rule that sets it, then the source,
+  then the defaults.
+- The `agent_status` preview reports the candidate workspace's own most
+  urgent agent state; the `dir` section lists names only.
+- `shep init` writes the defaults shep actually uses, as commented examples.
+- The TUI runs on Bubble Tea v2, Lip Gloss v2 and Bubbles v2. Keys typed
+  right after opening the picker are no longer lost (v1 queried the terminal
+  at startup and discarded them), a bracketed paste is always text and
+  never a key binding, a theme following the terminal's appearance asks for
+  the background without blocking startup, and the terminal gets its
+  keyboard mode back when the picker exits.
+
+### Fixed
+
+- Fast typing and pastes keep every rune; backspace removes whole runes, so
+  accented input stays valid UTF-8.
+- Control characters in pane captures and external data (CRLF line endings,
+  C0/C1 controls) no longer blank or corrupt rows of the frame.
+- Two quick `esc` presses act as two presses; `ctrl+x` works on expanded tab
+  and pane rows; an unnamed tab's number is shown once in the preview Tabs
+  table.
+- `nix build` works again: the flake's `vendorHash` follows `go.mod`.
+
+### Performance
+
+- The first frame no longer waits on any Herdr socket call or on the SQLite
+  ranking store, and the plugin wrapper builds its `PATH` in linear time:
+  inside Herdr the picker appears 70-90 ms after the shortcut instead of
+  100-370 ms.
+- A keystroke ranks only the rows a query can show, from ranking keys
+  computed once per candidate set, scores in pooled memory and never touches
+  the disk (paths are normalized in the producers): about 1.7x faster per
+  key with a long ranking history, under a third of the memory, and a third of
+  the terminal output. The renderer runs at 120 frames per second, so a
+  key's echo waits at most 8 ms for its frame.
 
 ## v0.1.1
 
