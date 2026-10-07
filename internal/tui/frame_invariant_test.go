@@ -66,7 +66,7 @@ func hostileHerdrModel(t *testing.T, w, h int) Model {
 	for i := range 12 {
 		cands = append(cands, zoxideCandidate(fmt.Sprintf("~/src/repo-%02d\x07", i), fmt.Sprintf("/home/dev/src/repo-%02d", i)))
 	}
-	m := NewModelWithTree(cands, stubRenderer{}, NewTreeExpanderFromSnapshot(snap), Layout{Theme: ThemeMocha, HomeDir: "/home/dev"})
+	m := NewModelWithTree(cands, stubRenderer{}, NewTreeExpanderFromSnapshot(snap), Layout{Theme: testTheme(ThemeMocha), HomeDir: "/home/dev"})
 	m, _ = update(t, m, sizeMsg(w, h))
 	m.expandedWorkspaces["w1"] = true
 	m.applyFilter()
@@ -97,7 +97,7 @@ func hostileAgentsModel(t *testing.T, w, h int) Model {
 		},
 	}
 	driver := &fakeTreeDriver{tabs: snap.Tabs, panes: snap.Panes}
-	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(snap), Layout{Theme: ThemeMocha, InitialTab: "agents", HomeDir: "/home/dev"}).
+	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(snap), Layout{Theme: testTheme(ThemeMocha), InitialTab: "agents", HomeDir: "/home/dev"}).
 		WithSnapshotRefresh(driver, snap, nil, nil)
 	m.startupSnapshot = &snap
 	m.applyFilter()
@@ -121,9 +121,8 @@ func hostileCustomModel(t *testing.T, w, h int) Model {
 		{Source: "prs", Label: "PR\x1b]52;c;cGF5bG9hZA==\x07 44 \xff", Icon: "P\t", Meta: map[string]string{"command": "gh pr view 44", "custom_source": "true"}},
 	}
 	m := NewModelWithLayout(cands, stubRenderer{}, Layout{
-		Theme:        ThemeMocha,
-		LabelFormats: LabelFormats{CustomSources: map[string]string{"prs": "{{.Label}}"}},
-		SourceOrder:  []string{"prs"},
+		Theme:       testTheme(ThemeMocha),
+		SourceOrder: []string{"prs"},
 	})
 	m, _ = update(t, m, sizeMsg(w, h))
 	if len(m.rows) != len(cands) {
@@ -239,7 +238,7 @@ func TestView_CRLFCaptureKeepsListColumn(t *testing.T) {
 	for i := range 30 {
 		cands = append(cands, herdrCandidate(fmt.Sprintf("ws-%02d", i), fmt.Sprintf("/srv/ws-%02d", i), fmt.Sprintf("w%02d", i)))
 	}
-	m := NewModelWithLayout(cands, stubRenderer{}, Layout{Theme: ThemeMocha})
+	m := NewModelWithLayout(cands, stubRenderer{}, Layout{Theme: testTheme(ThemeMocha)})
 	m, _ = update(t, m, sizeMsg(120, 24))
 	m, _ = update(t, m, key("ctrl+d"))
 	m, _ = update(t, m, key("ctrl+d"))
@@ -262,7 +261,7 @@ func TestView_CRLFCaptureKeepsListColumn(t *testing.T) {
 	shared := 0
 	for i := range windowLen(len(m.rows), offset, g.ListInnerRows) {
 		line := lines[bodyTop+i]
-		want := m.buildRowView(m.rows[offset+i]).primary
+		want := m.buildRowView(m.rows[offset+i]).label.text
 		if list := ansi.Strip(ansi.Cut(line, 0, g.Margin+g.ListWidth)); !strings.Contains(list, want) {
 			t.Errorf("body row %d: list column %q lost its label %q", i, list, want)
 		}

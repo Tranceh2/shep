@@ -11,6 +11,7 @@ import (
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/preview"
 	"github.com/tranceh2/shep/internal/source"
+	"github.com/tranceh2/shep/internal/tmpl"
 )
 
 // --- helpers ---
@@ -61,7 +62,7 @@ func indexOfLineContaining(lines []string, substr string) int {
 // sections (no render in flight).
 func resolvedModel(t *testing.T, cands []source.Candidate, tree *TreeExpander, sections ...preview.Section) Model {
 	t.Helper()
-	m := NewModelWithTree(cands, sectionsRenderer{sections: sections}, tree, Layout{Theme: ThemePlain, HomeDir: "/home/dev"})
+	m := NewModelWithTree(cands, sectionsRenderer{sections: sections}, tree, Layout{Theme: testTheme(ThemePlain), HomeDir: "/home/dev"})
 	m, _ = update(t, m, sizeMsg(120, 36))
 	m.previewLoading = false
 	m.previewSections = sections
@@ -93,7 +94,7 @@ func twoTabTree() *TreeExpander {
 func TestPreviewTitle_NameAndKindPerRow(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemePlain, FocusList)
-	m.homeDir = "/home/dev"
+	m.layout.Templates = tmpl.New("/home/dev")
 	for _, tc := range []struct {
 		name       string
 		row        Row
@@ -102,7 +103,7 @@ func TestPreviewTitle_NameAndKindPerRow(t *testing.T) {
 		{"herdr workspace", Row{Kind: RowCandidate, Candidate: herdrCandidate("api", "/srv/api", "w1")}, "api", "workspace"},
 		{"configured", Row{Kind: RowCandidate, Candidate: workspaceEntryCandidate("notes", "/n")}, "notes", "configured"},
 		{"group", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "team", Source: config.SourceWorkspaces, Meta: map[string]string{"group": "true"}}}, "team", "group"},
-		{"zoxide path label, filename first", Row{Kind: RowCandidate, Candidate: zoxideCandidate("~/Proyectos/shep", "/home/dev/Proyectos/shep")}, "shep", "zoxide"},
+		{"zoxide path label, filename first", Row{Kind: RowCandidate, Candidate: zoxideCandidate("~/Proyectos/shep", "/home/dev/Proyectos/shep")}, "shep", "folder"},
 		{"project", Row{Kind: RowCandidate, Candidate: projectCandidate("shep", "/p")}, "shep", "project"},
 		{"worktree", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "fix", Source: config.SourceProjects, Meta: map[string]string{"is_worktree": "true"}}}, "fix", "worktree"},
 		{"session", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "main", Source: config.SourceSessions}}, "main", "session"},
@@ -164,7 +165,7 @@ func TestPreview_LocationIsHomeAbbreviated(t *testing.T) {
 func TestPreviewMeta_PerKind(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemePlain, FocusList)
-	m.homeDir = "/home/dev"
+	m.layout.Templates = tmpl.New("/home/dev")
 	m.tree = twoTabTree()
 	m.spinner = spinner.New(spinner.WithSpinner(spinner.MiniDot))
 	working := m.agentStatusIcon("working")
@@ -337,7 +338,7 @@ func TestSessionInfo_AlignedTable(t *testing.T) {
 	t.Parallel()
 	section := preview.Section{Kind: config.PreviewSessionInfo, Text: "session\n  name: main\n  state: running\n  session dir: /tmp/s"}
 	m := NewModelWithLayout([]source.Candidate{{Label: "main", Source: config.SourceSessions}}, sectionsRenderer{sections: []preview.Section{section}},
-		Layout{Theme: ThemePlain, SourceOrder: []string{config.SourceSessions}})
+		Layout{Theme: testTheme(ThemePlain), SourceOrder: []string{config.SourceSessions}})
 	m.previewLoading = false
 	m.previewSections = []preview.Section{section}
 	body := previewBodyAt(m, 0)
@@ -372,7 +373,7 @@ func TestPreview_CaptureOSCSanitized(t *testing.T) {
 // omitted when the capture is empty.
 func TestPreview_TabAndPaneCaptures(t *testing.T) {
 	t.Parallel()
-	m := NewModelWithTree(nil, nil, twoTabTree(), Layout{Theme: ThemeMocha})
+	m := NewModelWithTree(nil, nil, twoTabTree(), Layout{Theme: testTheme(ThemeMocha)})
 	m.rows = []Row{
 		{Kind: RowTab, Depth: 1, Candidate: source.Candidate{Label: "editor", Path: "/srv/api", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1"}}},
 		{Kind: RowPane, Depth: 2, Candidate: source.Candidate{Label: "zsh", Path: "/srv/api", Meta: map[string]string{"pane_id": "p2"}}},
@@ -401,7 +402,7 @@ func TestPreview_TabAndPaneCaptures(t *testing.T) {
 // that a failure reads "Preview unavailable" with its reason.
 func TestPreview_LoadingAndErrorStates(t *testing.T) {
 	t.Parallel()
-	m := NewModelWithLayout([]source.Candidate{zoxideCandidate("shep", "/home/dev/shep")}, blockingRenderer{}, Layout{Theme: ThemePlain, HomeDir: "/home/dev"})
+	m := NewModelWithLayout([]source.Candidate{zoxideCandidate("shep", "/home/dev/shep")}, blockingRenderer{}, Layout{Theme: testTheme(ThemePlain), HomeDir: "/home/dev"})
 	m, _ = update(t, m, sizeMsg(120, 36))
 	parts := m.composePreview(80, 30, nil)
 	lines := strings.Split(stripANSI(m.previewBody(80, 30)), "\n")
@@ -533,7 +534,7 @@ func TestPreview_CutDropsSequencesPastTheEdge(t *testing.T) {
 // messages while open.
 func TestHelpBody_BuiltOnlyWhileVisible(t *testing.T) {
 	t.Parallel()
-	m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: ThemeMocha})
+	m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: testTheme(ThemeMocha)})
 	m, _ = update(t, m, sizeMsg(120, 36))
 	m, _ = update(t, m, key("down"))
 	if m.helpKey.built {

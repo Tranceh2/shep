@@ -115,11 +115,12 @@ func ParseCommand(engine *tmpl.Engine, cmd string, data tmpl.Data) ([]string, er
 	return renderArgv(engine, tokens, data)
 }
 
-// renderArgv renders every argv element as its own template.
+// renderArgv renders every argv element as its own template. Arguments are
+// plain text, so row styling in one is an error.
 func renderArgv(engine *tmpl.Engine, tokens []string, data tmpl.Data) ([]string, error) {
 	out := make([]string, len(tokens))
 	for i, tok := range tokens {
-		rendered, err := engine.Render(tok, data)
+		rendered, err := engine.RenderPlain(tok, data)
 		if err != nil {
 			return nil, err
 		}

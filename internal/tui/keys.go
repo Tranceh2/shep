@@ -120,15 +120,12 @@ func deleteLastWord(query string) string {
 }
 
 // setQuery replaces the query and applies the side effects every query edit
-// shares: focus returns to the list (a no-op from FocusList; from
-// FocusPreview it lets the user type or delete straight out of the preview
-// without an extra Tab), rows are refiltered, and the preview is re-synced
-// to whichever row is now highlighted. The command is built before
-// returning so the pointer-receiver mutations of applyFilter and
+// shares: rows are refiltered, and the preview is re-synced to whichever row
+// is now highlighted. The command is built before returning so the
+// pointer-receiver mutations of applyFilter and
 // syncPreviewAfterSelectionChange are guaranteed to land in the returned
 // model.
 func (m Model) setQuery(query string) (tea.Model, tea.Cmd) {
-	m.focus = FocusList
 	m.query = query
 	cmd := tea.Batch(m.applyFilter(), m.syncPreviewAfterSelectionChange())
 	return m, cmd
@@ -136,12 +133,10 @@ func (m Model) setQuery(query string) (tea.Model, tea.Cmd) {
 
 // deleteFromQuery applies a deletion edit (deleteLastRune for backspace,
 // deleteLastWord for ctrl+w/alt+backspace) through setQuery. With an empty
-// query there is nothing to delete: focus still returns to the list and the
-// preview is re-synced, but rows are not refiltered — the same contract
-// backspace has always had in both focus states.
+// query there is nothing to delete: the preview is re-synced, but rows are
+// not refiltered.
 func (m Model) deleteFromQuery(edit func(string) string) (tea.Model, tea.Cmd) {
 	if m.query == "" {
-		m.focus = FocusList
 		cmd := m.syncPreviewAfterSelectionChange()
 		return m, cmd
 	}
@@ -150,8 +145,8 @@ func (m Model) deleteFromQuery(edit func(string) string) (tea.Model, tea.Cmd) {
 
 // scrollViewport applies one scroll key to vp in place: up/down/ctrl+j/
 // ctrl+k move one line, pgup/pgdown move one page, home/end jump to top/
-// bottom. Shared by the preview pane and the help overlay so both scroll
-// under the identical key contract. bubbles/viewport's own KeyMap does not
+// bottom. The help overlay takes them all; the list passes pgup/pgdown on to
+// the preview pane. bubbles/viewport's own KeyMap does not
 // recognize ctrl+j/ctrl+k/home/end at all (see its DefaultKeyMap), so this
 // dispatches directly to the viewport's line/page/goto methods instead of
 // delegating to viewport.Update — that also sidesteps the fact that
@@ -181,17 +176,10 @@ func scrollViewport(vp *viewport.Model, key string) bool {
 // handleKey applies one key press. FocusHelp is checked first and routes
 // exclusively to handleHelpFocusedKey (help is modal: only "?"/Esc close it,
 // only ctrl+c/ctrl+g cancel through it, everything else is swallowed).
-// Otherwise, global bindings ("?"/esc/ctrl+c/ctrl+g/tab/shift+tab/ctrl+t/
-// ctrl+p/ctrl+f) are checked next regardless of focus, and the remainder branches
-// on m.focus: FocusPreview routes navigation to the preview viewport and any
-// text input (including "q" — it is an ordinary query character, NOT a
-// cancel key; only esc/ctrl+c/ctrl+g cancel) bounces focus back to the list
-// before extending the query (so a user can start typing again straight out
-// of the preview without an extra Tab); FocusList is the classic
-// row-cursor/query-editing behavior, extended with Left/Right for
-// expand/collapse, Enter for selection, and ctrl+l for the layout cycle —
-// all three are List-only actions, no-ops from FocusPreview (see
-// handlePreviewFocusedKey). Every switch matches keyChord(msg), never the
+// Otherwise the global bindings ("?"/esc/ctrl+c/ctrl+g/tab/shift+tab/ctrl+t/
+// ctrl+p/ctrl+x/ctrl+f) are checked, then the list's row-cursor and
+// query-editing keys (handleListFocusedKey). "q" is an ordinary query
+// character, not a cancel key. Every switch matches keyChord(msg), never the
 // raw String(), so a typing burst or a paste is always text, never a chord.
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if isDoubleEsc(msg) {
@@ -214,13 +202,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch keyChord(msg) {
 	case "?":
-		m.prevFocus = m.focus
 		m.focus = FocusHelp
 		return m, nil
 	case "esc":
 		// Esc priority (FocusHelp already handled above, always wins):
-		// a non-empty query is cleared and focus returns to the list
-		// before ever cancelling; only an empty query cancels.
+		// a non-empty query is cleared before ever cancelling; only an
+		// empty query cancels.
 		if m.query != "" {
 			return m.setQuery("")
 		}
@@ -245,15 +232,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if m.focus == FocusPreview {
-		return m.handlePreviewFocusedKey(msg)
-	}
 	return m.handleListFocusedKey(msg)
 }
 
 // handleHelpFocusedKey handles input while FocusHelp owns focus. Only "?"
-// and Esc close help, restoring m.prevFocus (the state recorded when "?"
-// opened it); ctrl+c/ctrl+g remain the unconditional cancel escape hatch;
+// and Esc close help, back to the list; ctrl+c/ctrl+g remain the
+// unconditional cancel escape hatch;
 // up/down/ctrl+j/ctrl+k/pgup/pgdown/home/end scroll helpViewport. Every
 // other key — text input (typed, burst or pasted), backspace, ctrl+w,
 // alt+backspace, ctrl+u, enter, ctrl+l, ctrl+t, ctrl+p, left/right — is
@@ -262,7 +246,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleHelpFocusedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch chord := keyChord(msg); chord {
 	case "?", "esc":
-		m.focus = m.prevFocus
+		m.focus = FocusList
 		return m, nil
 	case "ctrl+c", "ctrl+g":
 		m.cancelled = true
@@ -308,34 +292,6 @@ func (m Model) togglePin() (tea.Model, tea.Cmd) {
 	}
 }
 
-// handlePreviewFocusedKey routes scroll keys to the viewport while the
-// preview pane owns focus. ctrl+u, backspace and ctrl+w/alt+backspace all
-// return focus to the list, mutating the query (clear vs. delete the last
-// rune vs. delete the last word) in the same step. Any text input — a
-// typed rune, a burst or a paste — does the same before extending the
-// query: the non-negotiable "printable rune returns to list and searches"
-// contract. enter/ctrl+l/left/right are List-only actions (selection,
-// layout cycle, expand/collapse) and are explicit no-ops here.
-func (m Model) handlePreviewFocusedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch chord := keyChord(msg); chord {
-	case "up", "down", "ctrl+j", "ctrl+k", "pgup", "pgdown", "home", "end":
-		scrollViewport(&m.viewport, chord)
-		return m, nil
-	case "ctrl+u":
-		return m.setQuery("")
-	case "backspace":
-		return m.deleteFromQuery(deleteLastRune)
-	case "ctrl+w", "alt+backspace":
-		return m.deleteFromQuery(deleteLastWord)
-	case "enter", "ctrl+l", "left", "right":
-		return m, nil
-	}
-	if query, ok := appendQueryRunes(m.query, queryInputRunes(msg)); ok {
-		return m.setQuery(query)
-	}
-	return m, nil
-}
-
 func (m Model) cycleScopeForward() (tea.Model, tea.Cmd) {
 	next := m.adjacentTab(1)
 	m.activeTab = next.ID
@@ -356,9 +312,8 @@ func (m Model) cycleScopeBackward() (tea.Model, tea.Cmd) {
 
 // handleListFocusedKey applies one key press while FocusList owns focus:
 // the classic row-cursor/query-editing key set, extended with Left/Right
-// expand-collapse, Enter to select, and ctrl+l to cycle the layout
-// override — all List-only actions (see handlePreviewFocusedKey's explicit
-// no-ops for the same three while the preview pane is focused).
+// expand-collapse, Enter to select, ctrl+l to cycle the layout override and
+// pgup/pgdown to scroll the preview.
 // ctrl+j/ctrl+k always move the cursor regardless of focus's usual up/down
 // mapping (kept as a stable alternate binding); plain "j"/"k" are
 // intentionally NOT bound to movement here so they fall through to the

@@ -79,7 +79,7 @@ func TestPinTopLevelRowUpdatesStateMarkerAndFooter(t *testing.T) {
 	candidate := source.Candidate{Source: "projects", Path: "/repo", Label: "repo"}
 	called := false
 	m := NewModelWithLayout([]source.Candidate{candidate}, nil, Layout{
-		Theme: ThemePlain,
+		Theme: testTheme(ThemePlain),
 		PinToggler: func(_ context.Context, got source.Candidate) PinToggleResultMsg {
 			called = true
 			return PinToggleResultMsg{Key: ranking.PinKey(got), Candidate: got, Pinned: true}
@@ -113,7 +113,7 @@ func TestPinTopLevelRowUpdatesStateMarkerAndFooter(t *testing.T) {
 func TestPinChildRowIsTruthfulNoOp(t *testing.T) {
 	called := false
 	m := NewModelWithLayout(nil, nil, Layout{
-		Theme: ThemePlain,
+		Theme: testTheme(ThemePlain),
 		PinToggler: func(context.Context, source.Candidate) PinToggleResultMsg {
 			called = true
 			return PinToggleResultMsg{Pinned: true}

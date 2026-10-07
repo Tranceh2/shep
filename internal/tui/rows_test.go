@@ -57,13 +57,16 @@ func TestWorktreeRowPresentationAndSearch(t *testing.T) {
 	}
 }
 
-func TestWorktreeRowUsesCandidateIconForOtherSources(t *testing.T) {
+// TestProjectsIcon_WorktreeGlyphOnlyForWorktrees proves the projects
+// presentation's icon template draws the worktree glyph only on worktree
+// rows; other projects keep the project glyph.
+func TestProjectsIcon_WorktreeGlyphOnlyForWorktrees(t *testing.T) {
 	t.Parallel()
-	cand := source.Candidate{Path: "/srv/api", Label: "api", Source: config.SourceProjects, Icon: "P"}
+	cand := source.Candidate{Path: "/srv/api", Label: "api", Source: config.SourceProjects}
 	m := newRenderTestModel(ThemePlain, FocusList)
 	primary, _ := m.rowDisplayText(Row{Kind: RowCandidate, Candidate: cand})
-	if !strings.Contains(primary, "P") || strings.Contains(primary, "") {
-		t.Fatalf("standard project row = %q, want configured icon only", primary)
+	if !strings.Contains(primary, "\ue702") || strings.Contains(primary, "\ue725") {
+		t.Fatalf("standard project row = %q, want the project glyph only", primary)
 	}
 }
 
@@ -82,7 +85,7 @@ func TestWorkspaceNameRemainsOutsideTUISearchAndPresentation(t *testing.T) {
 		t.Fatalf("TUI search haystack = %q, want only candidate presentation fields", got)
 	}
 	m := newRenderTestModel(ThemePlain, FocusList)
-	m.layout.LabelFormats = LabelFormats{Projects: "{{.Label}}"}
+	m = m.withPresentation(func(p *config.Presentations) { p.Projects.Label = "{{.Label}}" })
 	primary, _ := m.rowDisplayText(rows[0])
 	if !strings.Contains(primary, cand.Label) || strings.Contains(primary, "rendered-name") {
 		t.Fatalf("TUI row presentation = %q, want candidate label without launch name", primary)

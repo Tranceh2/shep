@@ -122,13 +122,6 @@ const (
 	defaultTUIPreviewWidth = "65%"
 )
 
-const (
-	defaultHerdrSourceIcon      = "\U000f0cc6 "
-	defaultWorkspacesSourceIcon = "\ue615 "
-	defaultZoxideSourceIcon     = "\uf114 "
-	defaultProjectsSourceIcon   = "\ue702 "
-)
-
 // Config is the top-level shep configuration document.
 type Config struct {
 	Version  int            `toml:"version,omitempty"`
@@ -150,6 +143,9 @@ type Config struct {
 	// in declaration order; the first pattern matching the candidate's
 	// normalised path or base name wins.
 	Wildcards []WildcardConfig `toml:"wildcards,omitempty"`
+	// Themes declares custom color themes, keyed by name and selected with
+	// [tui].theme (see CustomThemes for the table's shape).
+	Themes map[string]ThemeTable `toml:"themes,omitempty"`
 }
 
 // RankingConfig controls local adaptive candidate ranking. Disabled mode must
@@ -198,40 +194,20 @@ type TUIConfig struct {
 	ListWidth    string   `toml:"list_width,omitempty"`
 	PreviewWidth string   `toml:"preview_width,omitempty"`
 	Layout       string   `toml:"layout,omitempty"`
-	// Theme names the picker's semantic color theme: one of "mocha",
-	// "macchiato", "frappe", "latte", "plain" (no color, textual markers
-	// only), or "inherit" (defers to host Herdr theme). Empty or "inherit"
-	// defers to the host Herdr theme, falling back to "mocha".
-	// $NO_COLOR (any non-empty value) and $SHEP_THEME, when set, always win over
-	// both this field and Herdr inheritance — see internal/tui/theme.go.
+	// Theme names the picker's color theme: "inherit" (the default, also
+	// when empty: Herdr's own theme, [theme.custom] included), a built-in
+	// theme name or alias (Herdr's themes plus catppuccin-frappe and
+	// catppuccin-macchiato), "plain" (no color) or a [themes.<name>] table.
+	// $NO_COLOR and $SHEP_THEME, when set, win over it (see theme.Select).
 	Theme string `toml:"theme,omitempty"`
-	// Icons selects the fallback tier for the picker's OWN semantic icons
-	// (pane agent-status markers and row expand/tab/pane markers): one of
-	// "unicode" (plain Unicode symbols — the picker's original hardcoded
-	// glyphs, safe on any UTF-8 terminal), or "ascii" (7-bit ASCII
-	// only, for terminals/locales that cannot render Unicode). Empty
-	// defaults to "unicode" — see internal/tui/icons.go. Does NOT affect
-	// [sources.<name>].icon, which is a raw user-configured string rendered
-	// verbatim regardless of this setting.
+	// Icons selects the glyph tier: one of "unicode" (plain Unicode symbols,
+	// safe on any UTF-8 terminal, plus Nerd Font source icons) or "ascii"
+	// (7-bit ASCII only, for terminals/locales that cannot render Unicode).
+	// Empty defaults to "unicode". It selects the picker's own glyphs (status,
+	// pin, group, tree, chrome — see internal/tui/icons.go) and the default
+	// row icons (see presentationDefaults); an icon configured in
+	// [sources.<name>] is the user's own template and is drawn as written.
 	Icons string `toml:"icons,omitempty"`
-}
-
-// TUI theme names for [tui].theme. These mirror Catppuccin's four flavors
-// plus a "plain" no-color mode and "inherit" (defer to Herdr); see
-// internal/tui/theme.go for the resolution precedence
-// ($NO_COLOR > $SHEP_THEME > this field > Herdr > "mocha").
-const (
-	TUIThemeMocha     = "mocha"
-	TUIThemeMacchiato = "macchiato"
-	TUIThemeFrappe    = "frappe"
-	TUIThemeLatte     = "latte"
-	TUIThemePlain     = "plain"
-	TUIThemeInherit   = "inherit"
-)
-
-var validTUIThemes = map[string]bool{
-	TUIThemeMocha: true, TUIThemeMacchiato: true, TUIThemeFrappe: true,
-	TUIThemeLatte: true, TUIThemePlain: true, TUIThemeInherit: true,
 }
 
 // TUI icon fallback tier names for [tui].icons, mirrored in
@@ -271,41 +247,38 @@ type SourcesConfig struct {
 
 // AgentsSourceConfig configures the agents source's presentation.
 type AgentsSourceConfig struct {
-	Icon        string   `toml:"icon,omitempty"`
-	LabelFormat string   `toml:"label_format,omitempty"`
-	Preview     []string `toml:"preview,omitempty"`
+	Presentation
+	Preview []string `toml:"preview,omitempty"`
 }
 
-// HerdrSourceConfig configures the herdr workspaces source's presentation.
+// HerdrSourceConfig configures the herdr workspaces source's presentation:
+// the workspace rows themselves, and the tab and pane rows nested under an
+// open workspace ([sources.herdr.tab] and [sources.herdr.pane]).
 type HerdrSourceConfig struct {
-	Icon            string   `toml:"icon,omitempty"`
-	LabelFormat     string   `toml:"label_format,omitempty"`
-	TabLabelFormat  string   `toml:"tab_label_format,omitempty"`
-	PaneLabelFormat string   `toml:"pane_label_format,omitempty"`
-	Preview         []string `toml:"preview,omitempty"`
+	Presentation
+	Tab     Presentation `toml:"tab,omitempty"`
+	Pane    Presentation `toml:"pane,omitempty"`
+	Preview []string     `toml:"preview,omitempty"`
 }
 
 // SessionsSourceConfig configures the opt-in Herdr sessions source's
 // presentation. Session rows never imply a filesystem path.
 type SessionsSourceConfig struct {
-	Icon        string   `toml:"icon,omitempty"`
-	LabelFormat string   `toml:"label_format,omitempty"`
-	Preview     []string `toml:"preview,omitempty"`
+	Presentation
+	Preview []string `toml:"preview,omitempty"`
 }
 
 // WorkspacesSourceConfig configures the predefined-[[workspaces]] source's
 // presentation.
 type WorkspacesSourceConfig struct {
-	Icon        string   `toml:"icon,omitempty"`
-	LabelFormat string   `toml:"label_format,omitempty"`
-	Preview     []string `toml:"preview,omitempty"`
+	Presentation
+	Preview []string `toml:"preview,omitempty"`
 }
 
 // ZoxideSourceConfig configures the zoxide source's presentation.
 type ZoxideSourceConfig struct {
-	Icon        string   `toml:"icon,omitempty"`
-	LabelFormat string   `toml:"label_format,omitempty"`
-	Preview     []string `toml:"preview,omitempty"`
+	Presentation
+	Preview []string `toml:"preview,omitempty"`
 }
 
 // ProjectsSourceConfig configures the projects source: directories detected
@@ -313,25 +286,23 @@ type ZoxideSourceConfig struct {
 // discovered recursively up to MaxDepth beneath configured roots or a group
 // entry's own path.
 type ProjectsSourceConfig struct {
-	Icon        string   `toml:"icon,omitempty"`
-	LabelFormat string   `toml:"label_format,omitempty"`
-	Roots       []string `toml:"roots,omitempty"`
-	Recursive   bool     `toml:"recursive,omitempty"`
-	MaxDepth    int      `toml:"max_depth,omitempty"`
-	Markers     []string `toml:"markers,omitempty"`
-	Ignore      []string `toml:"ignore,omitempty"`
-	Preview     []string `toml:"preview,omitempty"`
+	Presentation
+	Roots     []string `toml:"roots,omitempty"`
+	Recursive bool     `toml:"recursive,omitempty"`
+	MaxDepth  int      `toml:"max_depth,omitempty"`
+	Markers   []string `toml:"markers,omitempty"`
+	Ignore    []string `toml:"ignore,omitempty"`
+	Preview   []string `toml:"preview,omitempty"`
 }
 
 // CustomSourceConfig declares one external argv-only JSON source. Each command
 // must write a JSON array of row objects; see the user-facing config example
 // for the accepted row fields.
 type CustomSourceConfig struct {
-	Name            string                                `toml:"name"`
-	Command         []string                              `toml:"command"`
-	Icon            string                                `toml:"icon,omitempty"`
+	Name    string   `toml:"name"`
+	Command []string `toml:"command"`
+	Presentation
 	Timeout         Duration                              `toml:"timeout,omitempty"`
-	LabelFormat     string                                `toml:"label_format,omitempty"`
 	Aliases         []string                              `toml:"aliases,omitempty"`
 	Preview         []string                              `toml:"preview,omitempty"`
 	PreviewCommands map[string]CustomSourcePreviewCommand `toml:"preview_commands,omitempty"`
@@ -609,8 +580,7 @@ func Defaults() *Config {
 	}
 	normalizeTUI(&cfg.TUI)
 	normalizePreview(&cfg.Preview)
-	normalizeLabelFormats(&cfg.Sources)
-	normalizeSourceIcons(&cfg.Sources)
+	normalizePresentations(&cfg.Sources, cfg.TUI.Icons)
 	// No document exists here, so no preview.default was ever written.
 	normalizeSourcePreviews(&cfg.Sources, false)
 	return cfg
@@ -678,14 +648,11 @@ func Load(path string) (*Config, error) {
 	// Same reason: the normalizers below must see what the document itself says,
 	// and Defaults() has already supplied these. Clearing them keeps nil meaning
 	// "absent from the document" through decoding, which is what lets an explicit
-	// preview.default suppress the per-source lists and an explicit `= []`
-	// survive.
+	// preview.default suppress the per-source lists, an explicit `= []` survive,
+	// and an explicit empty presentation part ("") stay distinct from an unset
+	// one whose default depends on the document's [tui].icons.
 	cfg.Preview.Default = nil
-	cfg.Sources.Herdr.Preview = nil
-	cfg.Sources.Workspaces.Preview = nil
-	cfg.Sources.Zoxide.Preview = nil
-	cfg.Sources.Projects.Preview = nil
-	cfg.Sources.Agents.Preview = nil
+	cfg.Sources = SourcesConfig{}
 	// DisallowUnknownFields makes an unrecognised or legacy/removed key (a
 	// typo'd field, a stale top-level table, an arbitrary [sources.<name>])
 	// fail Load fast instead of silently ignoring it.
@@ -726,8 +693,7 @@ func Load(path string) (*Config, error) {
 	userSetPreviewDefault := cfg.Preview.Default != nil
 	normalizeTUI(&cfg.TUI)
 	normalizePreview(&cfg.Preview)
-	normalizeLabelFormats(&cfg.Sources)
-	normalizeSourceIcons(&cfg.Sources)
+	normalizePresentations(&cfg.Sources, cfg.TUI.Icons)
 	normalizeSourcePreviews(&cfg.Sources, userSetPreviewDefault)
 	normalizeAliases(cfg)
 	normalizeCustomSources(cfg.Sources.Custom, cfg.Preview)
@@ -771,15 +737,13 @@ func normalizeAliases(cfg *Config) {
 }
 
 // normalizeCustomSources fills each declared custom source's zero-value timeout
-// and label format with the documented defaults, mirroring normalizePreview's
-// fill-in-defaults contract for the sibling [preview] table.
+// and its preview commands' limits with the documented defaults, mirroring
+// normalizePreview's fill-in-defaults contract for the sibling [preview]
+// table. Presentations are filled by normalizePresentations.
 func normalizeCustomSources(customSources []CustomSourceConfig, preview PreviewConfig) {
 	for i := range customSources {
 		if customSources[i].Timeout == 0 {
 			customSources[i].Timeout = Duration(defaultCustomSourceTimeout)
-		}
-		if customSources[i].LabelFormat == "" {
-			customSources[i].LabelFormat = "{{.Label}}"
 		}
 		for name, command := range customSources[i].PreviewCommands {
 			if command.Timeout == 0 {
@@ -834,64 +798,6 @@ func normalizePreview(p *PreviewConfig) {
 	}
 }
 
-// normalizeLabelFormats fills empty label format fields with the first-run
-// rendering defaults. Preview lists remain empty when unset so the renderer can
-// distinguish an omitted source preview from an explicitly configured list.
-func normalizeLabelFormats(s *SourcesConfig) {
-	const (
-		labelWithPathFallback = "{{if .Label}}{{.Label}}{{else}}{{.Path}}{{end}}"
-		labelOnly             = "{{.Label}}"
-	)
-
-	if s.Herdr.LabelFormat == "" {
-		s.Herdr.LabelFormat = labelOnly
-	}
-	// Tree children name their tab or pane instead of repeating the
-	// workspace path on every row; a pane without a label shows its path.
-	// The picker prefixes a tab's label with its number (see the TUI's
-	// tabLabelPortion), so the tab default is the bare label.
-	if s.Herdr.TabLabelFormat == "" {
-		s.Herdr.TabLabelFormat = labelOnly
-	}
-	if s.Herdr.PaneLabelFormat == "" {
-		s.Herdr.PaneLabelFormat = labelWithPathFallback
-	}
-	if s.Sessions.LabelFormat == "" {
-		s.Sessions.LabelFormat = labelOnly
-	}
-	if s.Workspaces.LabelFormat == "" {
-		s.Workspaces.LabelFormat = labelOnly
-	}
-	if s.Zoxide.LabelFormat == "" {
-		s.Zoxide.LabelFormat = labelWithPathFallback
-	}
-	if s.Projects.LabelFormat == "" {
-		s.Projects.LabelFormat = labelWithPathFallback
-	}
-	if s.Agents.LabelFormat == "" {
-		s.Agents.LabelFormat = labelOnly
-	}
-}
-
-// normalizeSourceIcons fills absent built-in source icons with Nerd Font
-// defaults. Empty strings cannot distinguish omission from an explicit empty
-// TOML value, so an explicit empty icon is treated as omitted and receives the
-// documented default.
-func normalizeSourceIcons(s *SourcesConfig) {
-	if s.Herdr.Icon == "" {
-		s.Herdr.Icon = defaultHerdrSourceIcon
-	}
-	if s.Workspaces.Icon == "" {
-		s.Workspaces.Icon = defaultWorkspacesSourceIcon
-	}
-	if s.Zoxide.Icon == "" {
-		s.Zoxide.Icon = defaultZoxideSourceIcon
-	}
-	if s.Projects.Icon == "" {
-		s.Projects.Icon = defaultProjectsSourceIcon
-	}
-}
-
 // normalizeSourcePreviews fills each built-in source's preview list when the
 // document names none.
 //
@@ -942,7 +848,7 @@ func validate(cfg *Config) error {
 	if err := validateSources(cfg.General.SourceOrder, cfg.Sources.Custom); err != nil {
 		return err
 	}
-	if err := validateLabelFormats(cfg.Sources, engine); err != nil {
+	if err := validatePresentations(cfg.Sources, engine); err != nil {
 		return err
 	}
 	if !isValidSelector(cfg.General.Selector) {
@@ -979,6 +885,9 @@ func validate(cfg *Config) error {
 	if err := validateTUI(cfg.TUI); err != nil {
 		return err
 	}
+	if err := validateThemes(cfg); err != nil {
+		return err
+	}
 	if err := validateTabs(cfg); err != nil {
 		return err
 	}
@@ -991,12 +900,6 @@ func validate(cfg *Config) error {
 var directoryKinds = []string{
 	tmpl.KindWorkspace, tmpl.KindConfigured, tmpl.KindGroup, tmpl.KindFolder,
 	tmpl.KindProject, tmpl.KindWorktree, tmpl.KindSession, tmpl.KindAgent, tmpl.KindCustom,
-}
-
-// validateTemplate parses format and executes it against representative data
-// for every kind the field applies to, reporting "field: error".
-func validateTemplate(engine *tmpl.Engine, field, format string, kinds ...string) error {
-	return engine.Validate(field, format, tmpl.Samples(kinds...)...)
 }
 
 func validateWorkspaceNames(cfg *Config, engine *tmpl.Engine) error {
@@ -1018,31 +921,6 @@ func validateWorkspaceNames(cfg *Config, engine *tmpl.Engine) error {
 	return nil
 }
 
-// validateLabelFormats verifies every source label template against the
-// kinds of rows that source produces, before the TUI starts.
-func validateLabelFormats(s SourcesConfig, engine *tmpl.Engine) error {
-	formats := []struct {
-		field  string
-		format string
-		kinds  []string
-	}{
-		{"sources.herdr.label_format", s.Herdr.LabelFormat, []string{tmpl.KindWorkspace}},
-		{"sources.herdr.tab_label_format", s.Herdr.TabLabelFormat, []string{tmpl.KindTab}},
-		{"sources.herdr.pane_label_format", s.Herdr.PaneLabelFormat, []string{tmpl.KindPane}},
-		{"sources.sessions.label_format", s.Sessions.LabelFormat, []string{tmpl.KindSession}},
-		{"sources.workspaces.label_format", s.Workspaces.LabelFormat, []string{tmpl.KindConfigured, tmpl.KindGroup}},
-		{"sources.zoxide.label_format", s.Zoxide.LabelFormat, []string{tmpl.KindFolder}},
-		{"sources.projects.label_format", s.Projects.LabelFormat, []string{tmpl.KindProject, tmpl.KindWorktree}},
-		{"sources.agents.label_format", s.Agents.LabelFormat, []string{tmpl.KindAgent}},
-	}
-	for _, f := range formats {
-		if err := validateTemplate(engine, f.field, f.format, f.kinds...); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // validatePreviewCommandTemplates applies the same validation that runtime
 // command rendering will use: tokenize first, then render each argv token
 // for every kind of candidate a global preview command can run for.
@@ -1054,7 +932,7 @@ func validatePreviewCommandTemplates(commands map[string]PreviewCommand, engine 
 			return fmt.Errorf("%s: %w", field, err)
 		}
 		for _, token := range tokens {
-			if err := validateTemplate(engine, field, token, directoryKinds...); err != nil {
+			if err := engine.ValidatePlain(field, token, tmpl.Samples(directoryKinds...)...); err != nil {
 				return err
 			}
 		}
@@ -1084,7 +962,7 @@ func validateCustomSourcePreviewCommands(customSource CustomSourceConfig, index 
 			if strings.IndexByte(arg, 0) >= 0 {
 				return fmt.Errorf("%s: command[%d] contains NUL", field, j)
 			}
-			if err := validateTemplate(engine, field+fmt.Sprintf(".command[%d]", j), arg, tmpl.KindCustom); err != nil {
+			if err := engine.ValidatePlain(field+fmt.Sprintf(".command[%d]", j), arg, tmpl.Samples(tmpl.KindCustom)...); err != nil {
 				return err
 			}
 		}
@@ -1182,7 +1060,7 @@ func validateCustomSources(customSources []CustomSourceConfig, engine *tmpl.Engi
 		if customSource.Timeout <= 0 {
 			return fmt.Errorf("sources.custom[%d] (%q): timeout must be > 0", i, name)
 		}
-		if err := validateTemplate(engine, fmt.Sprintf("sources.custom[%d].label_format", i), customSource.LabelFormat, tmpl.KindCustom); err != nil {
+		if err := validatePresentation(engine, fmt.Sprintf("sources.custom[%d]", i), customSource.Presentation, tmpl.KindCustom); err != nil {
 			return err
 		}
 	}
@@ -1569,10 +1447,6 @@ func validateTUI(t TUIConfig) error {
 	}
 	if err := validateTUILayout(t.Layout); err != nil {
 		return err
-	}
-	if t.Theme != "" && !validTUIThemes[t.Theme] {
-		return fmt.Errorf("tui.theme: %q must be one of %s, %s, %s, %s, %s, %s",
-			t.Theme, TUIThemeMocha, TUIThemeMacchiato, TUIThemeFrappe, TUIThemeLatte, TUIThemePlain, TUIThemeInherit)
 	}
 	if t.Icons != "" && !validTUIIcons[t.Icons] {
 		switch t.Icons {

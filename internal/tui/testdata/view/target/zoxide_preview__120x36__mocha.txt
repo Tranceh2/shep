@@ -1,5 +1,5 @@
   all   agents
- ❯  Search workspaces, projects, folders                       1 │ tmp                                           zoxide
+ ❯  Search workspaces, projects, folders                       1 │ tmp                                           folder
  ────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────
  ❯ tmp                                                           │ /tmp
                                                                  │

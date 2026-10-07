@@ -31,7 +31,7 @@ func TestPromptRow_CursorAndPlaceholderPerView(t *testing.T) {
 		{"team", "Search Platform"},
 	} {
 		t.Run(tc.tab, func(t *testing.T) {
-			m := NewModelWithLayout(nil, nil, Layout{Theme: ThemeMocha, Tabs: tabs, InitialTab: tc.tab})
+			m := NewModelWithLayout(nil, nil, Layout{Theme: testTheme(ThemeMocha), Tabs: tabs, InitialTab: tc.tab})
 			m, _ = update(t, m, sizeMsg(120, 30))
 			if got := promptText(m); !strings.HasPrefix(got, "❯  "+tc.want) {
 				t.Errorf("prompt row = %q, want the prompt, the cursor cell and %q", got, tc.want)
@@ -39,7 +39,7 @@ func TestPromptRow_CursorAndPlaceholderPerView(t *testing.T) {
 		})
 	}
 
-	m := NewModelWithLayout([]source.Candidate{zoxideCandidate("alpha", "/a")}, nil, Layout{Theme: ThemeMocha})
+	m := NewModelWithLayout([]source.Candidate{zoxideCandidate("alpha", "/a")}, nil, Layout{Theme: testTheme(ThemeMocha)})
 	m, _ = update(t, m, sizeMsg(120, 30))
 	for _, r := range "al" {
 		m, _ = update(t, m, key(string(r)))
@@ -59,7 +59,7 @@ func TestPromptRow_CursorAndPlaceholderPerView(t *testing.T) {
 // keeps its end (where the cursor is) behind a leading ellipsis.
 func TestPromptRow_QueryNeverCutForCount(t *testing.T) {
 	t.Parallel()
-	m := NewModelWithLayout([]source.Candidate{zoxideCandidate("alpha", "/a")}, nil, Layout{Theme: ThemeMocha})
+	m := NewModelWithLayout([]source.Candidate{zoxideCandidate("alpha", "/a")}, nil, Layout{Theme: testTheme(ThemeMocha)})
 	for _, tc := range []struct {
 		name, query, want string
 	}{
@@ -87,7 +87,7 @@ func TestPromptRow_QueryNeverCutForCount(t *testing.T) {
 // viewport over exactly the body rows, and its own footer.
 func TestHelpOverlay_UsesTheGrid(t *testing.T) {
 	t.Parallel()
-	m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: ThemeMocha})
+	m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: testTheme(ThemeMocha)})
 	m, _ = update(t, m, sizeMsg(120, 36))
 	m, _ = update(t, m, key("?"))
 	g := m.geometry()
@@ -119,12 +119,11 @@ func TestHelpOverlay_UsesTheGrid(t *testing.T) {
 // contrast, paints the cursor cell with the accent background. Not
 // t.Parallel: it swaps lipgloss's global color profile.
 func TestView_PlainThemeStructureWithoutColor(t *testing.T) {
-	withEnv(t, nil)
 	orig := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() { lipgloss.SetColorProfile(orig) })
 
-	plain := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: ThemePlain})
+	plain := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: testTheme(ThemePlain)})
 	plain, _ = update(t, plain, sizeMsg(120, 30))
 	view := plain.View()
 	for _, color := range []string{"[38;", "[48;", ";38;", ";48;"} {
@@ -140,7 +139,7 @@ func TestView_PlainThemeStructureWithoutColor(t *testing.T) {
 		t.Errorf("plain prompt row = %q, want the reverse-video cursor cell", lines[1])
 	}
 
-	mocha := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: ThemeMocha})
+	mocha := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: testTheme(ThemeMocha)})
 	mocha, _ = update(t, mocha, sizeMsg(120, 30))
 	if cursor := mocha.styles.queryCursorStyle.Render(" "); !strings.Contains(cursor, "48;2;") || !strings.Contains(mocha.View(), cursor) {
 		t.Errorf("mocha cursor cell = %q, want an accent background in the prompt row", cursor)

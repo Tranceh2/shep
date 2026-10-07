@@ -8,7 +8,6 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tranceh2/shep/internal/config"
-	"github.com/tranceh2/shep/internal/preview"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -202,156 +201,6 @@ func TestCycleFocus_NoOpInFocusHelp(t *testing.T) {
 	}
 }
 
-// --- Resize-triggered focus correction (fix round 1, Candidate A) ---
-//
-// A user can Tab into FocusPreview at a wide size, then shrink the terminal
-// to a size that resolves to modeListOnly (preview pane hidden). Without a
-// correction, focus is left stranded at FocusPreview: cycleFocusForward/
-// Backward are no-ops in modeListOnly (nothing to Tab back to), and
-// handlePreviewFocusedKey keeps routing every key since routing is keyed on
-// m.focus, not m.mode — so Down/Enter/Tab are all silently swallowed. See
-// Update's tea.WindowSizeMsg handling in model.go for the fix.
-
-// TestResize_ToListOnly_FromFocusPreview_RefocusesList proves that shrinking
-// the terminal to a modeListOnly size while FocusPreview is active
-// automatically refocuses FocusList, so the user is never stranded.
-func TestResize_ToListOnly_FromFocusPreview_RefocusesList(t *testing.T) {
-	t.Parallel()
-	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
-	m, _ = update(t, m, sizeMsg(120, 36)) // wide: preview reachable
-	m.focus = FocusPreview
-	if m.focus != FocusPreview {
-		t.Fatalf("setup: expected FocusPreview")
-	}
-	m, _ = update(t, m, sizeMsg(64, 24)) // shrink to a list-only size
-	if m.mode != modeListOnly {
-		t.Fatalf("setup: expected mode = modeListOnly after shrink, got %v", m.mode)
-	}
-	if m.focus != FocusList {
-		t.Errorf("focus after shrink-to-list-only = %v, want FocusList (must not strand focus on an unavailable preview)", m.focus)
-	}
-}
-
-// TestResize_ToListOnly_WithHelpOpenPrevFocusPreview_DegradesPrevFocus
-// proves the FocusHelp/prevFocus corollary: opening Help while FocusPreview
-// records prevFocus=FocusPreview; shrinking to modeListOnly while Help is
-// still open must degrade that recorded prevFocus to FocusList, so closing
-// Help afterwards lands on FocusList instead of restoring a stale,
-// unavailable FocusPreview.
-func TestResize_ToListOnly_WithHelpOpenPrevFocusPreview_DegradesPrevFocus(t *testing.T) {
-	t.Parallel()
-	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
-	m, _ = update(t, m, sizeMsg(120, 36))
-	m.focus = FocusPreview
-	m, _ = update(t, m, key("?")) // open help; prevFocus = FocusPreview
-	if m.focus != FocusHelp || m.prevFocus != FocusPreview {
-		t.Fatalf("setup: focus = %v, prevFocus = %v, want FocusHelp/FocusPreview", m.focus, m.prevFocus)
-	}
-	m, _ = update(t, m, sizeMsg(64, 24)) // shrink to list-only while help is open
-	if m.mode != modeListOnly {
-		t.Fatalf("setup: expected mode = modeListOnly after shrink, got %v", m.mode)
-	}
-	if m.focus != FocusHelp {
-		t.Fatalf("setup: expected help to remain open across the resize, focus = %v", m.focus)
-	}
-	m, _ = update(t, m, key("esc")) // close help
-	if m.focus != FocusList {
-		t.Errorf("focus after closing help post-shrink = %v, want FocusList (prevFocus must have degraded, not restored a stale FocusPreview)", m.focus)
-	}
-}
-
-// TestPreviewFocused_ArrowsScrollViewportNotCursor proves that while the
-// preview pane owns focus, up/down move the viewport's scroll offset
-// instead of the list cursor. The preview body for a RowCandidate is built
-// from the renderer's structured Result.Sections (see
-// preview_body.go:previewSectionBlocks), not the raw previewText field
-// (which only backs RowPane captures) — so the fixture must populate
-// previewSections with enough multiline content to overflow the viewport.
-func TestPreviewFocused_ArrowsScrollViewportNotCursor(t *testing.T) {
-	t.Parallel()
-	longText := ""
-	for i := 0; i < 100; i++ {
-		longText += "line\n"
-	}
-	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a"), zoxideCandidate("b", "/b")}, stubRenderer{})
-	m, _ = update(t, m, tea.WindowSizeMsg{Width: 120, Height: 30})
-	m.previewSections = []preview.Section{{Kind: config.PreviewDir, Text: longText}}
-	m.previewLoading = false
-	m.syncViewport()
-	m.focus = FocusPreview
-	startCursor := m.cursor
-	startOffset := m.viewport.YOffset
-
-	m, _ = update(t, m, key("down"))
-	if m.cursor != startCursor {
-		t.Errorf("list cursor moved (%d -> %d) while preview focused, want unchanged", startCursor, m.cursor)
-	}
-	if m.viewport.YOffset <= startOffset {
-		t.Errorf("viewport.YOffset = %d, want > %d after scrolling down while focused", m.viewport.YOffset, startOffset)
-	}
-}
-
-// TestPreviewFocused_PrintableRuneReturnsToListAndSearches proves the
-// non-negotiable "a printable rune returns to list and searches" contract.
-func TestPreviewFocused_PrintableRuneReturnsToListAndSearches(t *testing.T) {
-	t.Parallel()
-	m := NewModel([]source.Candidate{zoxideCandidate("alpha", "/alpha"), zoxideCandidate("beta", "/beta")}, nil)
-	m.focus = FocusPreview
-	if m.focus != FocusPreview {
-		t.Fatalf("setup: expected FocusPreview")
-	}
-	m, _ = update(t, m, key("b"))
-	if m.focus != FocusList {
-		t.Errorf("after printable rune while preview-focused: focus = %v, want FocusList", m.focus)
-	}
-	if m.query != "b" {
-		t.Errorf("query = %q, want \"b\" (the rune must extend the query)", m.query)
-	}
-}
-
-// TestPreviewFocused_CtrlUReturnsToListAndClearsQuery proves ctrl+u while
-// the preview pane owns focus refocuses List and clears the query in the
-// same step (mirrors the printable-rune and backspace contracts, not the
-// viewport's own half-page-scroll binding).
-func TestPreviewFocused_CtrlUReturnsToListAndClearsQuery(t *testing.T) {
-	t.Parallel()
-	m := NewModel([]source.Candidate{zoxideCandidate("alpha", "/alpha"), zoxideCandidate("beta", "/beta")}, nil)
-	m.query = "al"
-	m.applyFilter()
-	m.focus = FocusPreview
-	if m.focus != FocusPreview {
-		t.Fatalf("setup: expected FocusPreview")
-	}
-	m, _ = update(t, m, key("ctrl+u"))
-	if m.focus != FocusList {
-		t.Errorf("after ctrl+u while preview-focused: focus = %v, want FocusList", m.focus)
-	}
-	if m.query != "" {
-		t.Errorf("query = %q, want cleared", m.query)
-	}
-}
-
-// TestPreviewFocused_BackspaceReturnsToListAndDeletes proves backspace while
-// the preview pane owns focus refocuses List and deletes the last query
-// rune in the same step.
-func TestPreviewFocused_BackspaceReturnsToListAndDeletes(t *testing.T) {
-	t.Parallel()
-	m := NewModel([]source.Candidate{zoxideCandidate("alpha", "/alpha"), zoxideCandidate("beta", "/beta")}, nil)
-	m.query = "al"
-	m.applyFilter()
-	m.focus = FocusPreview
-	if m.focus != FocusPreview {
-		t.Fatalf("setup: expected FocusPreview")
-	}
-	m, _ = update(t, m, key("backspace"))
-	if m.focus != FocusList {
-		t.Errorf("after backspace while preview-focused: focus = %v, want FocusList", m.focus)
-	}
-	if m.query != "a" {
-		t.Errorf("query = %q, want \"a\" (last rune deleted)", m.query)
-	}
-}
-
 // --- Enter: row selection ---
 
 // TestEnter_OnCandidateSelectsAndQuits proves Enter on a row selects it and
@@ -490,30 +339,6 @@ func TestSelectWithTarget_HerdrTabAndPaneRowsAreUnsupported(t *testing.T) {
 	}
 }
 
-// TestSelectWithTarget_WorksIdenticallyFromPreviewFocus proves ctrl+t/
-// ctrl+p apply identically whether the list or the preview pane owns
-// focus, gated only by currentPane != nil and
-// source.SupportsCurrentWorkspaceTarget — the same rule handleKey applies
-// as a global binding regardless of m.focus.
-func TestSelectWithTarget_WorksIdenticallyFromPreviewFocus(t *testing.T) {
-	t.Parallel()
-	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
-	m, _ = update(t, m, sizeMsg(120, 36))
-	pane := source.Pane{ID: "p0"}
-	m = m.WithCurrentPane(&pane)
-	m.focus = FocusPreview
-	if m.focus != FocusPreview {
-		t.Fatalf("setup: expected FocusPreview")
-	}
-	m, cmd := update(t, m, key("ctrl+p"))
-	if cmd == nil {
-		t.Fatal("ctrl+p from FocusPreview with a current pane should select+quit")
-	}
-	if m.ChosenTarget() != "pane" {
-		t.Errorf("ChosenTarget() = %q, want \"pane\"", m.ChosenTarget())
-	}
-}
-
 // TestSelectWithTarget_NoOpInFocusHelp proves ctrl+t/ctrl+p are swallowed
 // while FocusHelp, even with an otherwise-eligible current pane and
 // candidate.
@@ -523,7 +348,6 @@ func TestSelectWithTarget_NoOpInFocusHelp(t *testing.T) {
 	pane := source.Pane{ID: "p0"}
 	m = m.WithCurrentPane(&pane)
 	m.focus = FocusHelp
-	m.prevFocus = FocusList
 	m, cmd := update(t, m, key("ctrl+t"))
 	if cmd != nil {
 		t.Error("ctrl+t while FocusHelp must be a no-op")
@@ -664,47 +488,6 @@ func TestCtrlL_RecomputesModeImmediately(t *testing.T) {
 
 // --- List-only actions (enter/ctrl+l/left/right) are no-ops off-List ---
 
-// TestListOnlyActions_NoOpInFocusPreview proves enter, ctrl+l, left, and
-// right mutate nothing (no selection, no orientation change, no cursor
-// move) while the preview pane owns focus — selection/layout-cycle/expand-
-// collapse are List-only actions.
-func TestListOnlyActions_NoOpInFocusPreview(t *testing.T) {
-	t.Parallel()
-	driver := &fakeTreeDriver{tabs: []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}}}
-	tree := treeFromFake(driver)
-	base := []source.Candidate{herdrCandidate("backend", "/svc", "w1")}
-	m := NewModelWithTree(base, nil, tree, Layout{})
-	m, _ = update(t, m, sizeMsg(120, 36))
-	m.cursor = 0
-	startCursor := m.cursor
-	startOrientation := m.layout.Orientation
-	m.focus = FocusPreview
-	if m.focus != FocusPreview {
-		t.Fatalf("setup: expected FocusPreview")
-	}
-
-	for _, k := range []string{"enter", "ctrl+l", "left", "right"} {
-		m, cmd := update(t, m, key(k))
-		if cmd != nil {
-			t.Errorf("%s while FocusPreview: expected no Cmd, got one", k)
-		}
-		if _, ok := m.Selected(); ok {
-			t.Errorf("%s while FocusPreview: unexpected selection", k)
-		}
-		if m.layout.Orientation != startOrientation {
-			t.Errorf("%s while FocusPreview: orientation changed to %q, want unchanged %q", k, m.layout.Orientation, startOrientation)
-		}
-		if m.cursor != startCursor {
-			t.Errorf("%s while FocusPreview: cursor moved to %d, want unchanged %d", k, m.cursor, startCursor)
-		}
-		for _, r := range m.rows {
-			if r.Kind == RowTab {
-				t.Errorf("%s while FocusPreview: unexpected RowTab (expand/collapse must be a no-op)", k)
-			}
-		}
-	}
-}
-
 // TestListOnlyActions_NoOpInFocusHelp proves the same enter/ctrl+l/left/
 // right no-op contract while FocusHelp.
 func TestListOnlyActions_NoOpInFocusHelp(t *testing.T) {
@@ -717,7 +500,6 @@ func TestListOnlyActions_NoOpInFocusHelp(t *testing.T) {
 	startCursor := m.cursor
 	startOrientation := m.layout.Orientation
 	m.focus = FocusHelp
-	m.prevFocus = FocusList
 
 	for _, k := range []string{"enter", "ctrl+l", "left", "right"} {
 		m, cmd := update(t, m, key(k))
@@ -739,38 +521,15 @@ func TestListOnlyActions_NoOpInFocusHelp(t *testing.T) {
 	}
 }
 
-// --- Help overlay: open/close + prevFocus round trip ---
+// --- Help overlay: open/close ---
 
-// TestHelpToggle_FromList_RecordsPrevFocusAndOpens proves "?" from FocusList
-// records prevFocus=FocusList and opens FocusHelp.
-func TestHelpToggle_FromList_RecordsPrevFocusAndOpens(t *testing.T) {
+// TestHelpToggle_FromList_Opens proves "?" from FocusList opens FocusHelp.
+func TestHelpToggle_FromList_Opens(t *testing.T) {
 	t.Parallel()
 	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
 	m, _ = update(t, m, key("?"))
 	if m.focus != FocusHelp {
 		t.Fatalf("focus = %v, want FocusHelp after \"?\"", m.focus)
-	}
-	if m.prevFocus != FocusList {
-		t.Errorf("prevFocus = %v, want FocusList", m.prevFocus)
-	}
-}
-
-// TestHelpToggle_FromPreview_RecordsPrevFocusAndOpens proves "?" from
-// FocusPreview records prevFocus=FocusPreview and opens FocusHelp.
-func TestHelpToggle_FromPreview_RecordsPrevFocusAndOpens(t *testing.T) {
-	t.Parallel()
-	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
-	m, _ = update(t, m, sizeMsg(120, 36))
-	m.focus = FocusPreview
-	if m.focus != FocusPreview {
-		t.Fatalf("setup: expected FocusPreview")
-	}
-	m, _ = update(t, m, key("?"))
-	if m.focus != FocusHelp {
-		t.Fatalf("focus = %v, want FocusHelp after \"?\"", m.focus)
-	}
-	if m.prevFocus != FocusPreview {
-		t.Errorf("prevFocus = %v, want FocusPreview", m.prevFocus)
 	}
 }
 
@@ -784,24 +543,6 @@ func TestHelpToggle_QuestionMarkRoundTrip_FromList(t *testing.T) {
 	m, _ = update(t, m, key("?"))
 	if m.focus != FocusList {
 		t.Errorf("focus after round trip = %v, want FocusList", m.focus)
-	}
-}
-
-// TestHelpToggle_EscRoundTrip_FromPreview proves "?" opens help from
-// FocusPreview and Esc closes it, restoring exactly FocusPreview (not
-// FocusList) — the no-contradiction round trip for the Preview side.
-func TestHelpToggle_EscRoundTrip_FromPreview(t *testing.T) {
-	t.Parallel()
-	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
-	m, _ = update(t, m, sizeMsg(120, 36))
-	m.focus = FocusPreview
-	m, _ = update(t, m, key("?"))
-	m, _ = update(t, m, key("esc"))
-	if m.focus != FocusPreview {
-		t.Errorf("focus after round trip = %v, want FocusPreview", m.focus)
-	}
-	if m.cancelled {
-		t.Error("esc while help is open must close help, not cancel the picker")
 	}
 }
 
@@ -836,10 +577,9 @@ func TestEscPriority_HelpOpenTakesPrecedenceOverQuery(t *testing.T) {
 	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
 	m.query = "abc"
 	m.focus = FocusHelp
-	m.prevFocus = FocusList
 	m, _ = update(t, m, key("esc"))
 	if m.focus != FocusList {
-		t.Errorf("focus = %v, want FocusList (help closed, prevFocus restored)", m.focus)
+		t.Errorf("focus = %v, want FocusList (help closed back to the list)", m.focus)
 	}
 	if m.query != "abc" {
 		t.Errorf("query = %q, want unchanged \"abc\" (help-close takes precedence over query-clear)", m.query)
@@ -862,30 +602,6 @@ func TestEscPriority_NonEmptyQueryClearsAndRefocusesList_FromList(t *testing.T) 
 	}
 	if m.focus != FocusList {
 		t.Errorf("focus = %v, want FocusList", m.focus)
-	}
-	if m.cancelled {
-		t.Error("expected cancelled=false")
-	}
-}
-
-// TestEscPriority_NonEmptyQueryClearsAndRefocusesList_FromPreview proves the
-// same non-empty-query rule applies from FocusPreview, refocusing List.
-func TestEscPriority_NonEmptyQueryClearsAndRefocusesList_FromPreview(t *testing.T) {
-	t.Parallel()
-	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
-	m, _ = update(t, m, sizeMsg(120, 36))
-	m.query = "abc"
-	m.applyFilter()
-	m.focus = FocusPreview
-	if m.focus != FocusPreview {
-		t.Fatalf("setup: expected FocusPreview")
-	}
-	m, _ = update(t, m, key("esc"))
-	if m.query != "" {
-		t.Errorf("query = %q, want cleared", m.query)
-	}
-	if m.focus != FocusList {
-		t.Errorf("focus = %v, want FocusList (esc refocuses list even from preview)", m.focus)
 	}
 	if m.cancelled {
 		t.Error("expected cancelled=false")
@@ -934,29 +650,6 @@ func TestQ_ExtendsQueryInFocusList_DoesNotCancel(t *testing.T) {
 	}
 	if !strings.HasSuffix(m.query, "q") {
 		t.Errorf("query = %q, want it to end with \"q\"", m.query)
-	}
-}
-
-// TestQ_FromFocusPreview_RefocusesListAndExtendsQuery proves "q" while
-// FocusPreview behaves exactly like any other printable rune: it refocuses
-// FocusList and extends the query, instead of cancelling.
-func TestQ_FromFocusPreview_RefocusesListAndExtendsQuery(t *testing.T) {
-	t.Parallel()
-	m := NewModel([]source.Candidate{zoxideCandidate("queue", "/queue"), zoxideCandidate("other", "/other")}, nil)
-	m, _ = update(t, m, sizeMsg(120, 36))
-	m.focus = FocusPreview
-	if m.focus != FocusPreview {
-		t.Fatalf("setup: expected FocusPreview")
-	}
-	m, _ = update(t, m, key("q"))
-	if m.cancelled {
-		t.Error("expected cancelled=false: \"q\" must never cancel the picker")
-	}
-	if m.focus != FocusList {
-		t.Errorf("after \"q\" while preview-focused: focus = %v, want FocusList", m.focus)
-	}
-	if m.query != "q" {
-		t.Errorf("query = %q, want \"q\" (the rune must extend the query)", m.query)
 	}
 }
 

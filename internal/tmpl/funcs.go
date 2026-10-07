@@ -65,11 +65,6 @@ var sprigFunctions = []sprigFunction{
 	{"sha256sum", reflect.TypeFor[func(string) string]()},
 }
 
-// reservedFunctionNames are kept free for the semantic and live-marker
-// functions a later stage adds (styling roles and row markers). No function
-// in the set may use them until then.
-var reservedFunctionNames = []string{"muted", "accent", "bold", "status", "pin", "current", "group", "missing"}
-
 // buildFuncs assembles the complete function map for an engine whose home
 // directory is home. It fails closed: a missing Sprig function, an entry
 // without a declared signature, a changed signature or a name collision is an
@@ -100,23 +95,23 @@ func buildFuncs(home string) (template.FuncMap, error) {
 		}
 		out[name] = impl
 	}
-	for _, name := range reservedFunctionNames {
-		if _, used := out[name]; used {
-			return nil, fmt.Errorf("function name %q is reserved", name)
-		}
-	}
 	return out, nil
 }
 
-// shepFuncs returns shep's own helpers. tilde closes over the engine's home
-// directory; the others are pure.
+// shepFuncs returns shep's own helpers: the path helpers and the style and
+// live functions of row templates (see markup.go). tilde closes over the
+// engine's home directory; the others are pure.
 func shepFuncs(home string) template.FuncMap {
-	return template.FuncMap{
+	funcs := template.FuncMap{
 		"tilde":    tildeFunc(home),
 		"name":     pathName,
 		"parent":   pathParent,
 		"trimIcon": trimIcon,
 	}
+	for name, impl := range markupFuncs() {
+		funcs[name] = impl
+	}
+	return funcs
 }
 
 // tildeFunc returns the tilde helper: s with a leading home directory
@@ -188,6 +183,10 @@ func pathParent(s string) string {
 		return t[:i]
 	}
 }
+
+// TrimIcon is the trimIcon template function for Go callers that need the
+// same notion of "the text after a leading icon" (the TUI's truncation side).
+func TrimIcon(s string) string { return trimIcon(s) }
 
 // trimIcon drops the leading run of runes that are neither letters, digits
 // nor one of "~/._-@" — icons, emoji with their variation selectors, symbols

@@ -1,7 +1,10 @@
 // Package tmpl is shep's single template engine. Every user-authored template
 // — row labels, workspace names and preview command arguments — is a Go
 // text/template evaluated against the same Data model with the same function
-// set (a hermetic, type-checked Sprig subset plus a few shep helpers).
+// set (a hermetic, type-checked Sprig subset plus a few shep helpers). Row
+// templates may also style their text and place live markers (see Segments);
+// templates that render plain text reject those functions (see
+// ValidatePlain).
 //
 // An Engine owns the home directory the tilde helper abbreviates, the
 // function map and a bounded parse cache, so the package itself keeps no

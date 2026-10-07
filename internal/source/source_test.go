@@ -739,7 +739,8 @@ func TestRegistry_CollectPreservesResultsOnPartialError(t *testing.T) {
 func TestRegistry_CollectAttachesConfiguredIcon(t *testing.T) {
 	t.Parallel()
 	cfg := config.Defaults()
-	cfg.Sources.Workspaces.Icon = "★"
+	star := "★"
+	cfg.Sources.Workspaces.Icon = &star
 	cfg.Workspaces = []config.WorkspaceConfig{{Name: "proj", Path: t.TempDir()}}
 	r := NewRegistry(cfg, config.Probes{}, nil)
 	got, err := r.Collect(context.Background())
@@ -751,6 +752,13 @@ func TestRegistry_CollectAttachesConfiguredIcon(t *testing.T) {
 	}
 	if got[0].Icon != "★" {
 		t.Errorf("expected icon %q on workspaces candidate, got %q", "★", got[0].Icon)
+	}
+
+	// A template icon depends on the row; only the picker draws it.
+	tmplIcon := "{{ if .IsWorktree }}W{{ end }}"
+	cfg.Sources.Workspaces.Icon = &tmplIcon
+	if icon := NewRegistry(cfg, config.Probes{}, nil).IconFor(config.SourceWorkspaces); icon != "" {
+		t.Errorf("IconFor(template icon) = %q, want empty", icon)
 	}
 }
 
@@ -1480,7 +1488,8 @@ func TestAgentCandidates_DerivationAndPrecedence(t *testing.T) {
 
 func TestAgentsProvider_RegistryLifecycle(t *testing.T) {
 	cfg := config.Defaults()
-	cfg.Sources.Agents.Icon = "🤖 "
+	robot := "🤖 "
+	cfg.Sources.Agents.Icon = &robot
 	probes := config.Probes{Herdr: true}
 
 	reg := NewRegistry(cfg, probes, nil)

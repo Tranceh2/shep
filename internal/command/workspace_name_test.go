@@ -217,7 +217,9 @@ func TestWorkspaceNameIsSeparateFromPresentationAcrossRuntimeBoundaries(t *testi
 	if got := resolver.Match([]source.Candidate{cand}, "rendered-name"); len(got) != 0 {
 		t.Fatalf("rendered name leaked into search: %+v", got)
 	}
-	tuiRows := tui.NewModelWithLayout([]source.Candidate{cand}, nil, tui.Layout{LabelFormats: tui.LabelFormats{Projects: "{{.Label}}"}})
+	presentation := config.DefaultPresentations("")
+	presentation.Projects.Label = "{{.Label}}"
+	tuiRows := tui.NewModelWithLayout([]source.Candidate{cand}, nil, tui.Layout{Presentation: &presentation})
 	if body := tuiRows.View(); strings.Contains(body, "rendered-name") || !strings.Contains(body, cand.Label) {
 		t.Fatalf("TUI view changed presentation: %q", body)
 	}

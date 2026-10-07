@@ -53,10 +53,12 @@ template = "default"
 # the split axis). layout is "landscape" (forces side-by-side) or omitted for
 # the responsive default (the picker chooses wide or list-only from terminal
 # width); ctrl+l toggles session-only auto/landscape while the picker is open.
-# There is no portrait/stacked mode. theme accepts "mocha", "macchiato", "frappe",
-# "latte", "plain", or "inherit". "inherit" delegates explicitly to the
-# Herdr theme. Exact precedence is NO_COLOR > SHEP_THEME > explicit config theme
-# (except inherit) > Herdr theme > mocha.
+# There is no portrait/stacked mode. theme is "inherit" (the default: Herdr's
+# own theme, [theme.custom] included), a built-in theme or alias (catppuccin
+# alias mocha, catppuccin-latte, catppuccin-frappe, catppuccin-macchiato,
+# tokyo-night, dracula, nord, gruvbox, one-dark, solarized, kanagawa,
+# rose-pine, vesper, their light variants, terminal), "plain" (no color) or
+# the name of a [themes.<name>] table. NO_COLOR and SHEP_THEME win over it.
 [tui]
 list_width = "auto"
 preview_width = "60%"
@@ -109,15 +111,14 @@ icon = "󰳆 "
 preview = ["workspace", "active_pane", "agent_status"]
 
 # [sources.agents] applies to the agents tab and agents in source/group tabs.
-# The default title-only label is {{.Label}}; the status marker is separate.
-# label_format also supports .Agent, .AgentStatus, .TabLabel, .Workspace
-# (the Herdr workspace label) and every metadata key: .Meta.workspace_id,
-# .Meta.tab_id, .Meta.pane_id, .Meta.terminal_title, .Meta.kind... Missing
-# keys render empty. Herdr itself shortens terminal_title; Shep cannot recover
-# any text Herdr omits.
+# The default label_format is "{{ status }} {{ or .Label .Path | tilde }}":
+# the agent's status glyph, then its title. Templates also see .Agent,
+# .AgentStatus, .TabLabel, .Workspace (the Herdr workspace label) and every
+# metadata key: .Meta.workspace_id, .Meta.tab_id, .Meta.pane_id,
+# .Meta.terminal_title, .Meta.kind... Missing keys render empty. Herdr itself
+# shortens terminal_title; Shep cannot recover any text Herdr omits.
 [sources.agents]
 icon = " "
-label_format = "{{.Label}}"
 # preview = ["identity", "git"] # unset uses [preview].default; [] shows only identity
 
 [sources.workspaces]

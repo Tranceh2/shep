@@ -123,7 +123,7 @@ func TestModel_ExpandAndCollapseDuringQuery(t *testing.T) {
 		tabs:  []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}},
 		panes: []source.Pane{{ID: "p1", WorkspaceID: "w1", TabID: "t1", CWD: "/srv/api"}},
 	}
-	m := NewModelWithTree([]source.Candidate{herdrCandidate("backend", "/srv/backend", "w1")}, nil, treeFromFake(driver), Layout{Theme: ThemeMocha})
+	m := NewModelWithTree([]source.Candidate{herdrCandidate("backend", "/srv/backend", "w1")}, nil, treeFromFake(driver), Layout{Theme: testTheme(ThemeMocha)})
 	m, _ = update(t, m, sizeMsg(120, 30))
 	for _, r := range "back" {
 		m, _ = update(t, m, key(string(r)))

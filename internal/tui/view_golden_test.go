@@ -302,6 +302,21 @@ func sizeMsg(w, h int) tea.WindowSizeMsg {
 	return tea.WindowSizeMsg{Width: w, Height: h}
 }
 
+// goldenPresentation is the scenarios' row presentation: the defaults, with
+// every icon drawn from the candidate's own Icon (the worktree glyph kept).
+// The scenarios were written when the picker drew the icon stamped on each
+// candidate, so their candidates carry exactly the icons the fixtures pin;
+// the default presentations' own icons are pinned by
+// TestDefaultPresentations_ReproduceTheRowTexts.
+func goldenPresentation() *config.Presentations {
+	p := config.DefaultPresentations("")
+	for _, rp := range []*config.RowPresentation{&p.Herdr, &p.Sessions, &p.Workspaces, &p.Zoxide, &p.Agents} {
+		rp.Icon = "{{ .Icon }}"
+	}
+	p.Projects.Icon = "{{ if .IsWorktree }}\ue725 {{ else }}{{ .Icon }}{{ end }}"
+	return &p
+}
+
 // goldenCandidates is the deterministic candidate set spanning every group
 // (Herdr workspaces, discovered projects, zoxide dirs, configured
 // [[workspaces]] entries) used by the all-groups / plain / narrow / short
@@ -398,10 +413,7 @@ type goldenScenario struct {
 	name   string
 	width  int
 	height int
-	theme  string // Layout.Theme value; also the fixture filename suffix
-	// env overrides the envLookup seam (theme.go) for fully deterministic
-	// theme resolution regardless of the real process environment.
-	env map[string]string
+	theme  string // the theme the scenario's Layout uses; also the fixture filename suffix
 	// setup builds the model and drives it through its WindowSizeMsg and any
 	// state-advancing messages, returning the model ready to View().
 	setup func(t *testing.T) Model
@@ -422,7 +434,7 @@ func goldenScenarios() []goldenScenario {
 		{
 			name: "empty_query_all_groups", width: 120, height: 36, theme: ThemeMocha,
 			setup: func(t *testing.T) Model {
-				m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: ThemeMocha})
+				m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: testTheme(ThemeMocha), Presentation: goldenPresentation()})
 				m, _ = update(t, m, sizeMsg(120, 36))
 				return m
 			},
@@ -436,7 +448,7 @@ func goldenScenarios() []goldenScenario {
 				tree := treeFromFake(driver)
 				m := NewModelWithTree(
 					[]source.Candidate{herdrCandidate("backend", "/srv/backend", "w1"), herdrCandidate("api-gateway", "/srv/gateway", "w2")},
-					nil, tree, Layout{Theme: ThemeMocha},
+					nil, tree, Layout{Theme: testTheme(ThemeMocha), Presentation: goldenPresentation()},
 				)
 				m, _ = update(t, m, sizeMsg(120, 36))
 				// "api" matches the synthesized tab but not the workspace
@@ -457,7 +469,7 @@ func goldenScenarios() []goldenScenario {
 					zoxideCandidate("alpha-dir", "/home/dev/alpha-dir"),
 					zoxideCandidate("beta-dir", "/home/dev/beta-dir"),
 				}
-				m := NewModelWithLayout(cands, nil, Layout{Theme: ThemeMocha})
+				m := NewModelWithLayout(cands, nil, Layout{Theme: testTheme(ThemeMocha), Presentation: goldenPresentation()})
 				m, _ = update(t, m, sizeMsg(120, 36))
 				// "alpha" matches the zoxide candidate but not the herdr
 				// workspace, which drops out of the filtered list entirely
@@ -471,11 +483,10 @@ func goldenScenarios() []goldenScenario {
 		},
 		{
 			name: "preview_loading", width: 88, height: 30, theme: ThemeMocha,
-			env: nil,
 			setup: func(t *testing.T) Model {
 				m := NewModelWithLayout(
 					[]source.Candidate{zoxideCandidate("alpha", "/a"), zoxideCandidate("beta", "/b")},
-					blockingRenderer{}, Layout{Theme: ThemeMocha},
+					blockingRenderer{}, Layout{Theme: testTheme(ThemeMocha), Presentation: goldenPresentation()},
 				)
 				m, _ = update(t, m, sizeMsg(88, 30))
 				// Deliberately do NOT deliver any previewResponseMsg: the
@@ -488,7 +499,7 @@ func goldenScenarios() []goldenScenario {
 			setup: func(t *testing.T) Model {
 				m := NewModelWithLayout(
 					[]source.Candidate{zoxideCandidate("alpha", "/a"), zoxideCandidate("beta", "/b")},
-					errRenderer{}, Layout{Theme: ThemeMocha},
+					errRenderer{}, Layout{Theme: testTheme(ThemeMocha), Presentation: goldenPresentation()},
 				)
 				m, _ = update(t, m, sizeMsg(88, 30))
 				// Init dispatches the first render at seq 0; execute that Cmd
@@ -506,7 +517,7 @@ func goldenScenarios() []goldenScenario {
 		{
 			name: "narrow_list_only", width: 64, height: 24, theme: ThemeMocha,
 			setup: func(t *testing.T) Model {
-				m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: ThemeMocha})
+				m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: testTheme(ThemeMocha), Presentation: goldenPresentation()})
 				m, _ = update(t, m, sizeMsg(64, 24))
 				return m
 			},
@@ -519,7 +530,7 @@ func goldenScenarios() []goldenScenario {
 			// breakpoints do not force list-only at this size — a finding for
 			// the redesign, not a test failure. See the Phase 1 report.
 			setup: func(t *testing.T) Model {
-				m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: ThemeMocha})
+				m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: testTheme(ThemeMocha), Presentation: goldenPresentation()})
 				m, _ = update(t, m, sizeMsg(100, 10))
 				return m
 			},
@@ -535,7 +546,7 @@ func goldenScenarios() []goldenScenario {
 				tree := treeFromFake(driver)
 				m := NewModelWithTree(
 					[]source.Candidate{herdrCandidate("backend", "/srv/backend", "w1")},
-					nil, tree, Layout{Theme: ThemeMocha},
+					nil, tree, Layout{Theme: testTheme(ThemeMocha), Presentation: goldenPresentation()},
 				)
 				m, _ = update(t, m, sizeMsg(120, 36))
 				// Manually expand the workspace (progressive disclosure at an
@@ -578,7 +589,7 @@ func goldenScenarios() []goldenScenario {
 				snapshot := source.Snapshot{Workspaces: []source.Workspace{{ID: "w1"}}, Tabs: driver.tabs, Panes: driver.panes}
 				m := NewModelWithTree(
 					[]source.Candidate{herdrCandidate("backend", "/srv/backend", "w1")},
-					nil, treeFromFake(driver), Layout{Theme: ThemeMocha},
+					nil, treeFromFake(driver), Layout{Theme: testTheme(ThemeMocha), Presentation: goldenPresentation()},
 				).WithSnapshotRefresh(driver, snapshot, nil, nil)
 				m, _ = update(t, m, sizeMsg(120, 36))
 				m.expandedWorkspaces["w1"] = true
@@ -600,9 +611,8 @@ func goldenScenarios() []goldenScenario {
 		},
 		{
 			name: "plain_no_color", width: 120, height: 36, theme: ThemePlain,
-			env: map[string]string{"NO_COLOR": "1"},
 			setup: func(t *testing.T) Model {
-				m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: ThemePlain})
+				m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: testTheme(ThemePlain), Presentation: goldenPresentation()})
 				m, _ = update(t, m, sizeMsg(120, 36))
 				return m
 			},
@@ -632,7 +642,7 @@ func goldenScenarios() []goldenScenario {
 						{ID: "p3", WorkspaceID: "w1", TabID: "t2", Agent: "codex", AgentStatus: "idle"},
 					},
 				})
-				m := NewModelWithTree(cands, renderer, tree, Layout{Theme: ThemeMocha})
+				m := NewModelWithTree(cands, renderer, tree, Layout{Theme: testTheme(ThemeMocha), Presentation: goldenPresentation()})
 				m, _ = update(t, m, sizeMsg(120, 36))
 				// Init dispatches the first render at seq 0; execute the Cmd
 				// and deliver its response.
@@ -655,7 +665,7 @@ func goldenScenarios() []goldenScenario {
 				tree := treeFromFake(driver)
 				m := NewModelWithTree(
 					[]source.Candidate{herdrCandidate("backend", "/srv/backend", "w1")},
-					nil, tree, Layout{Theme: ThemeMocha},
+					nil, tree, Layout{Theme: testTheme(ThemeMocha), Presentation: goldenPresentation()},
 				)
 				m, _ = update(t, m, sizeMsg(120, 36))
 				m.expandedWorkspaces["w1"] = true
@@ -684,7 +694,7 @@ func goldenScenarios() []goldenScenario {
 				cands := []source.Candidate{
 					projectCandidate("shep", "/home/dev/shep"),
 				}
-				m := NewModelWithLayout(cands, renderer, Layout{Theme: ThemeMocha})
+				m := NewModelWithLayout(cands, renderer, Layout{Theme: testTheme(ThemeMocha), Presentation: goldenPresentation()})
 				m, _ = update(t, m, sizeMsg(120, 36))
 				initCmd := m.Init()
 				if initCmd != nil {
@@ -703,7 +713,7 @@ func goldenScenarios() []goldenScenario {
 				cands := []source.Candidate{
 					zoxideCandidate("tmp", "/tmp"),
 				}
-				m := NewModelWithLayout(cands, renderer, Layout{Theme: ThemeMocha})
+				m := NewModelWithLayout(cands, renderer, Layout{Theme: testTheme(ThemeMocha), Presentation: goldenPresentation()})
 				m, _ = update(t, m, sizeMsg(120, 36))
 				initCmd := m.Init()
 				if initCmd != nil {
@@ -712,51 +722,16 @@ func goldenScenarios() []goldenScenario {
 				return m
 			},
 		},
-		// --- Phase 6 scenarios: List/Preview/Help focus state machine ---
+		// --- Phase 6 scenarios: the help overlay ---
 		{
-			// help_from_list: "?" opened directly from FocusList (the
-			// common path). Proves the help overlay itself renders
-			// correctly; the prevFocus round-trip logic is covered by
-			// keys_test.go, not by this visual fixture.
+			// help_from_list: "?" opened from the list. Proves the help
+			// overlay itself renders correctly; opening and closing it is
+			// covered by keys_test.go, not by this visual fixture.
 			name: "help_from_list", width: 120, height: 36, theme: ThemeMocha,
 			setup: func(t *testing.T) Model {
-				m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: ThemeMocha})
+				m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: testTheme(ThemeMocha), Presentation: goldenPresentation()})
 				m, _ = update(t, m, sizeMsg(120, 36))
 				m, _ = update(t, m, key("?"))
-				return m
-			},
-		},
-		{
-			// help_from_preview: Tab into FocusPreview, then "?". The
-			// rendered help screen is identical to help_from_list (it does
-			// not depend on prevFocus) — this fixture is evidence that
-			// opening help from the preview pane renders the same overlay
-			// without crashing/differing unexpectedly; the round-trip back
-			// to FocusPreview specifically is proven by
-			// TestHelpToggle_EscRoundTrip_FromPreview in keys_test.go.
-			name: "help_from_preview", width: 120, height: 36, theme: ThemeMocha,
-			setup: func(t *testing.T) Model {
-				m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: ThemeMocha})
-				m, _ = update(t, m, sizeMsg(120, 36))
-				m.focus = FocusPreview
-				m, _ = update(t, m, key("?"))
-				return m
-			},
-		},
-		{
-			// preview_focus_unfocused_selection: Tab into FocusPreview at a
-			// wide dimension. Proves the list's cursor row still renders a
-			// gutter (now the unfocused style variant — a color-only
-			// distinction invisible in this headless, colorless fixture;
-			// see TestRenderRowLine_UnfocusedSelectedShowsGutter et al. in
-			// render_selection_test.go for the actual style-selection
-			// proof) once the preview pane owns focus, and that the
-			// preview pane's own border switches to focused.
-			name: "preview_focus_unfocused_selection", width: 120, height: 36, theme: ThemeMocha,
-			setup: func(t *testing.T) Model {
-				m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: ThemeMocha})
-				m, _ = update(t, m, sizeMsg(120, 36))
-				m.focus = FocusPreview
 				return m
 			},
 		},
@@ -771,7 +746,7 @@ func goldenScenarios() []goldenScenario {
 			setup: func(t *testing.T) Model {
 				cands, tree, pins := accessoryCandidates()
 				m := NewModelWithTree(cands, nil, tree, Layout{
-					Theme: ThemeMocha, HomeDir: "/home/dev", RankingSnapshot: pins,
+					Theme: testTheme(ThemeMocha), Presentation: goldenPresentation(), HomeDir: "/home/dev", RankingSnapshot: pins,
 					SourceOrder: []string{config.SourceHerdr, config.SourceSessions, config.SourceWorkspaces, config.SourceProjects, config.SourceZoxide},
 				})
 				m, _ = update(t, m, sizeMsg(100, 16))
@@ -797,7 +772,7 @@ func goldenScenarios() []goldenScenario {
 					},
 				}
 				driver := &fakeTreeDriver{tabs: snapshot.Tabs, panes: snapshot.Panes}
-				m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(snapshot), Layout{Theme: ThemeMocha, InitialTab: "agents", HomeDir: "/home/dev"}).
+				m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(snapshot), Layout{Theme: testTheme(ThemeMocha), Presentation: goldenPresentation(), InitialTab: "agents", HomeDir: "/home/dev"}).
 					WithSnapshotRefresh(driver, snapshot, nil, nil)
 				m.startupSnapshot = &snapshot // as the streaming producer delivers it
 				m.applyFilter()
@@ -818,7 +793,7 @@ func goldenScenarios() []goldenScenario {
 			// instead of silently truncating the bottom of the help text.
 			name: "help_scrolled_short", width: 100, height: 10, theme: ThemeMocha,
 			setup: func(t *testing.T) Model {
-				m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: ThemeMocha})
+				m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: testTheme(ThemeMocha), Presentation: goldenPresentation()})
 				m, _ = update(t, m, sizeMsg(100, 10))
 				m, _ = update(t, m, key("?"))
 				for i := 0; i < 30; i++ {
@@ -861,15 +836,12 @@ func writeFixture(t *testing.T, path, content string) {
 // View(), normalizes, and compares against its target fixture when one
 // exists, else its immutable before/ evidence fixture.
 //
-// It is deliberately NOT t.Parallel: withEnv swaps the package-level
-// envLookup seam (theme.go) for deterministic theme resolution, which would
-// race with any concurrent Model construction in parallel tests. Non-parallel
-// also keeps fixture writes (only under -update-golden) race-free.
+// It is deliberately NOT t.Parallel, which keeps fixture writes (only under
+// -update-golden) race-free.
 func TestViewGolden(t *testing.T) {
 	for _, sc := range goldenScenarios() {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
-			withEnv(t, sc.env)
 			m := sc.setup(t)
 			raw := m.View()
 			if sc.evidence != nil {

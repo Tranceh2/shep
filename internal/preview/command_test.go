@@ -34,6 +34,8 @@ func TestParseCommand(t *testing.T) {
 		{name: "unquoted template action with whitespace errors", cmd: "echo {{ .Path }}", data: tmpl.Data{Path: "/has space/x"}, wantErr: true},
 		{name: "quoted template action with whitespace succeeds", cmd: `echo "{{ .Path }}"`, data: tmpl.Data{Path: "/has space/x"}, want: []string{"echo", "/has space/x"}},
 		{name: "removed os alias errors", cmd: `echo {{.Path|osBase}}`, data: tmpl.Data{Path: "/p"}, wantErr: true},
+		{name: "row style function errors", cmd: `echo "{{ muted .Path }}"`, data: tmpl.Data{Path: "/p"}, wantErr: true},
+		{name: "row live function errors", cmd: `echo {{pin}}`, data: tmpl.Data{Path: "/p"}, wantErr: true},
 		{name: "empty command errors", cmd: "   ", data: tmpl.Data{Path: "/p"}, wantErr: true},
 		{name: "unterminated quote errors", cmd: `echo "open`, data: tmpl.Data{Path: "/p"}, wantErr: true},
 	}

@@ -23,26 +23,29 @@ import (
 // (headless test runs run a no-color profile — see spinner_style_test.go for
 // the single, deliberate exception).
 
-// TestRowIcons_AreTheOnlySourceIdentity proves each configured source row
-// keeps its icon and does not render a source-name badge.
+// TestRowIcons_AreTheOnlySourceIdentity proves each source's row draws its
+// presentation icon and no source-name badge.
 func TestRowIcons_AreTheOnlySourceIdentity(t *testing.T) {
 	t.Parallel()
-	rows := []Row{
-		{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceHerdr, Path: "/herdr", Icon: "H"}},
-		{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceWorkspaces, Path: "/config", Icon: "C"}},
-		{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceZoxide, Path: "/zoxide", Icon: "Z"}},
-		{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceProjects, Path: "/projects", Icon: "P"}},
-	}
-	m := newRenderTestModel(ThemePlain, FocusList)
-	for _, row := range rows {
-		primary, _ := m.rowDisplayText(row)
+	p := config.DefaultPresentations("")
+	for _, tc := range []struct {
+		row  Row
+		icon string
+	}{
+		{Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceHerdr, Path: "/herdr"}}, p.Herdr.Icon},
+		{Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceWorkspaces, Path: "/config"}}, p.Workspaces.Icon},
+		{Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceZoxide, Path: "/zoxide"}}, p.Zoxide.Icon},
+		{Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceProjects, Path: "/projects"}}, "\ue702 "},
+	} {
+		m := newRenderTestModel(ThemePlain, FocusList)
+		primary, _ := m.rowDisplayText(tc.row)
 		got := stripNonSGRANSI(primary)
-		if !strings.Contains(got, row.Candidate.Icon+" ") {
-			t.Errorf("row %q = %q, missing configured icon", row.Candidate.Source, got)
+		if !strings.HasPrefix(got, tc.icon+" ") {
+			t.Errorf("row %q = %q, missing its icon %q", tc.row.Candidate.Source, got, tc.icon)
 		}
 		for _, badge := range []string{"HERDR", "CONFIG", "ZOXIDE", "PROJECTS", "SESSION"} {
 			if strings.Contains(got, badge) {
-				t.Errorf("row %q = %q, contains redundant source badge %q", row.Candidate.Source, got, badge)
+				t.Errorf("row %q = %q, contains redundant source badge %q", tc.row.Candidate.Source, got, badge)
 			}
 		}
 	}
@@ -72,9 +75,9 @@ func TestFooter_NarrowKeepsHighValueHints(t *testing.T) {
 	cands := []source.Candidate{zoxideCandidate("alpha", "/home/dev/alpha")}
 	pane := source.Pane{ID: "p0"}
 	toggler := func(context.Context, source.Candidate) PinToggleResultMsg { return PinToggleResultMsg{} }
-	wide := NewModelWithLayout(cands, nil, Layout{Theme: ThemeMocha, PinToggler: toggler}).WithCurrentPane(&pane)
+	wide := NewModelWithLayout(cands, nil, Layout{Theme: testTheme(ThemeMocha), PinToggler: toggler}).WithCurrentPane(&pane)
 	wide, _ = update(t, wide, sizeMsg(120, 36))
-	narrowM := NewModelWithLayout(cands, nil, Layout{Theme: ThemeMocha, PinToggler: toggler}).WithCurrentPane(&pane)
+	narrowM := NewModelWithLayout(cands, nil, Layout{Theme: testTheme(ThemeMocha), PinToggler: toggler}).WithCurrentPane(&pane)
 	narrowM, _ = update(t, narrowM, sizeMsg(44, 24))
 
 	if got := footerText(wide); got != "enter open · tab agents · ctrl+f pin · ctrl+t tab · ctrl+p pane · ? help · esc quit" {
@@ -138,7 +141,7 @@ func TestFitHints_DropsByPriorityKeepingOrder(t *testing.T) {
 // now: "clear" while a query is typed, "quit" otherwise.
 func TestFooter_EscLabelClearsOrQuits(t *testing.T) {
 	t.Parallel()
-	m := NewModelWithLayout([]source.Candidate{zoxideCandidate("alpha", "/a")}, nil, Layout{Theme: ThemeMocha})
+	m := NewModelWithLayout([]source.Candidate{zoxideCandidate("alpha", "/a")}, nil, Layout{Theme: testTheme(ThemeMocha)})
 	m, _ = update(t, m, sizeMsg(120, 36))
 	if !hasHint(m.footerHints(), keyChordEsc, "quit") {
 		t.Errorf("empty query footer = %q, want esc quit", footerText(m))
@@ -157,7 +160,7 @@ func TestFooter_OmitsUnavailableActions(t *testing.T) {
 	t.Parallel()
 	toggler := func(context.Context, source.Candidate) PinToggleResultMsg { return PinToggleResultMsg{} }
 	closer := func(context.Context, string, string) CloseResultMsg { return CloseResultMsg{} }
-	m := NewModelWithLayout(nil, nil, Layout{Theme: ThemeMocha, PinToggler: toggler, Closer: closer})
+	m := NewModelWithLayout(nil, nil, Layout{Theme: testTheme(ThemeMocha), PinToggler: toggler, Closer: closer})
 	m, _ = update(t, m, sizeMsg(120, 36))
 
 	m.rows = []Row{{Kind: RowTab, Candidate: source.Candidate{Label: "api", Meta: map[string]string{"tab_id": "t1"}}}}
@@ -173,7 +176,7 @@ func TestFooter_OmitsUnavailableActions(t *testing.T) {
 		t.Errorf("zoxide row footer = %q, must not offer close for a row that is not open in Herdr", footerText(m))
 	}
 
-	single := NewModelWithLayout([]source.Candidate{zoxideCandidate("alpha", "/a")}, nil, Layout{Theme: ThemeMocha, Tabs: []TabDefinition{{ID: "all", Kind: TabAll}}})
+	single := NewModelWithLayout([]source.Candidate{zoxideCandidate("alpha", "/a")}, nil, Layout{Theme: testTheme(ThemeMocha), Tabs: []TabDefinition{{ID: "all", Kind: TabAll}}})
 	if hasHintKey(single.footerHints(), keyChordTab) {
 		t.Errorf("single-tab footer = %q, must not offer tab", footerText(single))
 	}
@@ -185,7 +188,7 @@ func TestFooter_OmitsUnavailableActions(t *testing.T) {
 // beside the hints when it fits.
 func TestFooter_StatusPlacement(t *testing.T) {
 	t.Parallel()
-	m := NewModelWithLayout([]source.Candidate{herdrCandidate("backend", "/srv/backend", "w1")}, nil, Layout{Theme: ThemeMocha})
+	m := NewModelWithLayout([]source.Candidate{herdrCandidate("backend", "/srv/backend", "w1")}, nil, Layout{Theme: testTheme(ThemeMocha)})
 	m, _ = update(t, m, sizeMsg(120, 36))
 
 	confirm := m
@@ -219,7 +222,7 @@ func TestFooter_StatusPlacement(t *testing.T) {
 // mouse-adjacent wording — the picker is keyboard-first.
 func TestFooterAndHelp_NoMouseLanguage(t *testing.T) {
 	t.Parallel()
-	m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: ThemeMocha})
+	m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: testTheme(ThemeMocha)})
 	m, _ = update(t, m, sizeMsg(120, 36))
 	for _, got := range []string{footerText(m), m.helpBodyText(80), m.helpBodyText(120)} {
 		plain := strings.ToLower(stripNonSGRANSI(got))

@@ -138,3 +138,24 @@ func TestValidate(t *testing.T) {
 		})
 	}
 }
+
+// TestRowFunctionsAreRejected proves workspace names stay plain text: the
+// style and live functions of row templates are rejected by name at
+// validation and fail at render time instead of leaking their markup into a
+// Herdr workspace label.
+func TestRowFunctionsAreRejected(t *testing.T) {
+	t.Parallel()
+	for _, name := range tmpl.MarkupFunctions() {
+		format := "{{ .Path | base }}{{ " + name + " }}"
+		if name == "muted" || name == "accent" || name == "bold" {
+			format = "{{ " + name + " (.Path | base) }}"
+		}
+		err := workspacename.Validate(engine, "general.workspace_name", format)
+		if err == nil || !strings.Contains(err.Error(), "general.workspace_name: "+name+" is a row presentation function") {
+			t.Errorf("Validate(%q) error = %v, want it to reject %s", format, err, name)
+		}
+		if got, err := workspacename.Render(engine, "workspace name", format, tmpl.Data{Path: "/srv/api"}); err == nil {
+			t.Errorf("Render(%q) = %q, want an error", format, got)
+		}
+	}
+}

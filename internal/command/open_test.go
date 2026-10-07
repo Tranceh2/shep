@@ -447,7 +447,7 @@ func TestOpen_SessionsSourceEndToEnd(t *testing.T) {
 	t.Setenv("HERDR_BIN_PATH", "")
 	cfg := config.Defaults()
 	cfg.General.SourceOrder = []string{config.SourceSessions}
-	cfg.Sources.Sessions.Icon = "S"
+	cfg.Sources.Sessions.Icon = strPtr("S")
 	driver := &openDriver{detect: true, sessions: []source.Session{{Name: "alpha", Running: true}}}
 	var attached string
 	var out, errOut bytes.Buffer
@@ -1053,7 +1053,7 @@ func TestOpen_TemplateAppliesOnCreatedWorkspace(t *testing.T) {
 // leaves without an explicit label preserve the Herdr pane label.
 func TestOpen_SourcePaneLabelFormatNeverRenamesOmittedLeaf(t *testing.T) {
 	cfg := config.Defaults()
-	cfg.Sources.Herdr.PaneLabelFormat = "display={{.Label}}"
+	cfg.Sources.Herdr.Pane.LabelFormat = strPtr("display={{.Label}}")
 	cfg.Templates["default"] = config.TemplateConfig{
 		Tabs: []config.TemplateTab{
 			{Name: "code", Root: "main", Nodes: []config.TemplateNode{{ID: "main", Command: "nvim"}}},
@@ -1214,7 +1214,7 @@ func TestOpen_GroupWorkspaceLazilyRunsCustomSourceAndDirectSelectsSingleRow(t *t
 	cfg := config.Defaults()
 	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
 	cfg.Sources.Custom = []config.CustomSourceConfig{{
-		Name: "kube-contexts", Command: []string{script}, Timeout: config.Duration(time.Second), LabelFormat: "context={{.Label}}",
+		Name: "kube-contexts", Command: []string{script}, Timeout: config.Duration(time.Second), Presentation: config.Presentation{LabelFormat: strPtr("context={{.Label}}")},
 	}}
 	cfg.Workspaces = []config.WorkspaceConfig{{
 		Name: "Kubernetes", Type: config.WorkspaceTypeGroup, Path: root, SourceOrder: []string{"kube-contexts"},
@@ -1252,7 +1252,7 @@ func TestOpen_SamePathGroups_ResolveDistinctGroupConfigs(t *testing.T) {
 	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
 	cfg.Sources.Projects = config.ProjectsSourceConfig{Markers: []string{".git"}}
 	cfg.Sources.Custom = []config.CustomSourceConfig{{
-		Name: "kube-contexts", Command: []string{script}, Timeout: config.Duration(time.Second), LabelFormat: "context={{.Label}}",
+		Name: "kube-contexts", Command: []string{script}, Timeout: config.Duration(time.Second), Presentation: config.Presentation{LabelFormat: strPtr("context={{.Label}}")},
 	}}
 	// Two groups sharing the exact same Path, but different names and source orders.
 	cfg.Workspaces = []config.WorkspaceConfig{
@@ -1331,28 +1331,32 @@ func TestOpen_TemplateSkippedOnFocused(t *testing.T) {
 	}
 }
 
+// configWithTUI is a configuration with only t as its [tui] table: every
+// presentation resolves to the built-in defaults for t's icon tier.
+func configWithTUI(t config.TUIConfig) *config.Config {
+	return &config.Config{TUI: t}
+}
+
 // TestLayoutFromConfig_ThreadsOrientationAndWidths (pure function) proves
 // layoutFromConfig carries cfg.TUI.Layout into tui.Layout.Orientation
 // alongside the existing ListWidth/PreviewWidth wiring, so `shep open`'s
 // live ctrl+l toggle starts from the user's configured default orientation.
 func TestLayoutFromConfig_ThreadsOrientationAndWidths(t *testing.T) {
 	t.Parallel()
-	got := layoutFromConfig(config.TUIConfig{ListWidth: "70%", PreviewWidth: "auto", Layout: config.TUILayoutLandscape}, nil)
-	want := tui.Layout{ListWidth: "70%", PreviewWidth: "auto", Orientation: tui.LayoutLandscape}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("layoutFromConfig = %+v, want %+v", got, want)
+	got := layoutFromConfig(configWithTUI(config.TUIConfig{ListWidth: "70%", PreviewWidth: "auto", Layout: config.TUILayoutLandscape}), nil)
+	if got.ListWidth != "70%" || got.PreviewWidth != "auto" || got.Orientation != tui.LayoutLandscape {
+		t.Errorf("layoutFromConfig = %q/%q/%q, want 70%%/auto/landscape", got.ListWidth, got.PreviewWidth, got.Orientation)
 	}
 }
 
 // TestLayoutFromConfig_ThreadsIcons proves layoutFromConfig carries
-// cfg.TUI.Icons into tui.Layout.Icons verbatim, so the picker's configured
-// icon fallback tier (Phase 8) reaches the resolved Model.
+// cfg.TUI.Icons into tui.Layout.Icons verbatim, and that the presentations it
+// threads follow that tier.
 func TestLayoutFromConfig_ThreadsIcons(t *testing.T) {
 	t.Parallel()
-	got := layoutFromConfig(config.TUIConfig{Icons: config.TUIIconsASCII}, nil)
-	want := tui.Layout{Icons: tui.IconsASCII}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("layoutFromConfig = %+v, want %+v", got, want)
+	got := layoutFromConfig(configWithTUI(config.TUIConfig{Icons: config.TUIIconsASCII}), nil)
+	if got.Icons != tui.IconsASCII || got.Presentation == nil || got.Presentation.HerdrTab.Icon != "t" {
+		t.Errorf("layoutFromConfig icons = %q, presentation %+v; want the ASCII tier throughout", got.Icons, got.Presentation)
 	}
 }
 
@@ -1363,7 +1367,7 @@ func TestLayoutFromConfig_ThreadsIcons(t *testing.T) {
 func TestLayoutFromConfig_ThreadsSourceOrder(t *testing.T) {
 	t.Parallel()
 	sources := []string{config.SourceProjects, config.SourceHerdr}
-	got := layoutFromConfig(config.TUIConfig{}, sources)
+	got := layoutFromConfig(config.Defaults(), sources)
 	if !reflect.DeepEqual(got.SourceOrder, sources) {
 		t.Errorf("layoutFromConfig SourceOrder = %v, want %v", got.SourceOrder, sources)
 	}
@@ -1374,42 +1378,38 @@ func TestLayoutFromConfig_ThreadsSourceOrder(t *testing.T) {
 // (landscape default), not an arbitrary string.
 func TestLayoutFromConfig_EmptyLayoutDefaultsToZeroOrientation(t *testing.T) {
 	t.Parallel()
-	got := layoutFromConfig(config.TUIConfig{}, nil)
+	got := layoutFromConfig(configWithTUI(config.TUIConfig{}), nil)
 	if got.Orientation != "" {
 		t.Errorf("layoutFromConfig empty layout: Orientation = %q, want empty", got.Orientation)
 	}
 }
 
-// TestLayoutFromConfigWithCustomSources_ThreadsPerCustomSourceLabelFormat
-// proves layoutFromConfigWithCustomSources resolves each declared
-// [[sources.custom]] entry's label_format into Layout.LabelFormats.CustomSources,
-// keyed by name, alongside the five fixed built-in fields layoutFromConfig
-// already threads.
-func TestLayoutFromConfigWithCustomSources_ThreadsPerCustomSourceLabelFormat(t *testing.T) {
+// TestLayoutFromConfig_ThreadsPerCustomSourcePresentation proves each
+// declared [[sources.custom]] entry's presentation reaches the picker keyed
+// by name, alongside the built-in sources' presentations, and that custom
+// source tabs are typed as such.
+func TestLayoutFromConfig_ThreadsPerCustomSourcePresentation(t *testing.T) {
 	t.Parallel()
-	customSources := []config.CustomSourceConfig{
-		{Name: "prs", LabelFormat: "PR {{.Label}}"},
-		{Name: "issues", LabelFormat: "#{{.Label}}"},
+	cfg := config.Defaults()
+	cfg.TUI.Tabs = []string{"all", "prs"}
+	cfg.Sources.Custom = []config.CustomSourceConfig{
+		{Name: "prs", Presentation: config.Presentation{LabelFormat: strPtr("PR {{.Label}}")}},
+		{Name: "issues", Presentation: config.Presentation{LabelFormat: strPtr("#{{.Label}}")}},
 	}
+	cfg.Sources.Agents.LabelFormat = strPtr("agent={{.Label}}")
 	order := []string{"issues", "prs"}
-	got := layoutFromConfigWithCustomSources(config.TUIConfig{}, order, customSources)
-	want := map[string]string{"prs": "PR {{.Label}}", "issues": "#{{.Label}}"}
-	if !reflect.DeepEqual(got.LabelFormats.CustomSources, want) {
-		t.Errorf("LabelFormats.CustomSources = %v, want %v", got.LabelFormats.CustomSources, want)
+	got := layoutFromConfig(cfg, order)
+	if got.Presentation.Custom["prs"].Label != "PR {{.Label}}" || got.Presentation.Custom["issues"].Label != "#{{.Label}}" {
+		t.Errorf("custom presentations = %+v", got.Presentation.Custom)
+	}
+	if got.Presentation.Agents.Label != "agent={{.Label}}" {
+		t.Errorf("agents label = %q, want agent={{.Label}}", got.Presentation.Agents.Label)
 	}
 	if !reflect.DeepEqual(got.SourceOrder, order) {
 		t.Errorf("nested custom source SourceOrder = %v, want %v", got.SourceOrder, order)
 	}
-}
-
-func TestLayoutFromConfigWithCustomSources_ThreadsAgentsLabelFormat(t *testing.T) {
-	t.Parallel()
-	sources := config.SourcesConfig{
-		Agents: config.AgentsSourceConfig{LabelFormat: "agent={{.Label}}"},
-	}
-	got := layoutFromConfigWithCustomSources(config.TUIConfig{}, nil, nil, sources)
-	if want := "agent={{.Label}}"; got.LabelFormats.Agents != want {
-		t.Errorf("LabelFormats.Agents = %q, want %q", got.LabelFormats.Agents, want)
+	if len(got.Tabs) != 2 || got.Tabs[1].Kind != tui.TabCustomSource {
+		t.Errorf("tabs = %+v, want the prs tab typed as a custom source", got.Tabs)
 	}
 }
 
@@ -1620,7 +1620,7 @@ func TestOpenLayoutToggle_ConfigUnchangedAfterCtrlL(t *testing.T) {
 	cfg.TUI = config.TUIConfig{ListWidth: "70%", PreviewWidth: "auto", Layout: config.TUILayoutLandscape}
 	originalTUI := cfg.TUI
 
-	layout := layoutFromConfig(cfg.TUI, cfg.General.SourceOrder)
+	layout := layoutFromConfig(cfg, cfg.General.SourceOrder)
 	cands := []source.Candidate{{Path: "/a", Label: "a"}}
 	m := tui.NewModelWithLayout(cands, nil, layout)
 
@@ -1635,7 +1635,7 @@ func TestOpenLayoutToggle_ConfigUnchangedAfterCtrlL(t *testing.T) {
 	// from landscape, a single ctrl+l toggles back to auto (the stacked/
 	// portrait third state was removed along with the stacked layout) —
 	// while...
-	toggled := layoutFromConfig(config.TUIConfig{Layout: ""}, nil)
+	toggled := layoutFromConfig(configWithTUI(config.TUIConfig{Layout: ""}), nil)
 	if mm.Layout().Orientation != toggled.Orientation {
 		t.Fatalf("setup: expected ctrl+l to flip Model's orientation to auto, got %+v", mm.Layout())
 	}
@@ -2724,7 +2724,7 @@ func TestLaunchOutcome_CompletedRecordsExactlyOnce(t *testing.T) {
 		t.Parallel()
 		cfg := config.Defaults()
 		cfg.General.SourceOrder = []string{config.SourceSessions}
-		cfg.Sources.Sessions.Icon = "S"
+		cfg.Sources.Sessions.Icon = strPtr("S")
 		driver := &openDriver{detect: true, sessions: []source.Session{{Name: "alpha", Running: true}}}
 		store, _, _, err := runOpenWithRecordingStore(t, cfg, driver, "alpha")
 		if err != nil {
@@ -3023,7 +3023,7 @@ func TestOpen_ViewValidation(t *testing.T) {
 func TestOpen_AgentIconViaRegistryInViewAndGroup(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Ranking.Enabled = false
-	cfg.Sources.Agents.Icon = "X "
+	cfg.Sources.Agents.Icon = strPtr("X ")
 	cfg.General.SourceOrder = []string{config.SourceAgents}
 	cfg.TUI.Tabs = []string{"all", "agents", "team"}
 	cfg.Workspaces = []config.WorkspaceConfig{{ID: "team", Name: "Team", Type: config.WorkspaceTypeGroup, Path: t.TempDir(), SourceOrder: []string{config.SourceAgents}}}

@@ -236,10 +236,5 @@ func (p *customSourceProvider) List(ctx context.Context) ([]Candidate, error) {
 	if err != nil {
 		return nil, fmt.Errorf("custom source %q: %w", p.cfg.Name, err)
 	}
-	for i := range candidates {
-		if candidates[i].Icon == "" && p.cfg.Icon != "" {
-			candidates[i].Icon = p.cfg.Icon
-		}
-	}
 	return candidates, nil
 }

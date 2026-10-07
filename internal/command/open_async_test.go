@@ -253,7 +253,7 @@ func TestOpen_AsyncLoader_SamePathGroupWorkspaceRecursion(t *testing.T) {
 	cfg.General.SourceOrder = []string{config.SourceWorkspaces}
 	cfg.Sources.Projects = config.ProjectsSourceConfig{Markers: []string{".git"}}
 	cfg.Sources.Custom = []config.CustomSourceConfig{{
-		Name: "kube-contexts", Command: []string{script}, Timeout: config.Duration(time.Second), LabelFormat: "context={{.Label}}",
+		Name: "kube-contexts", Command: []string{script}, Timeout: config.Duration(time.Second), Presentation: config.Presentation{LabelFormat: strPtr("context={{.Label}}")},
 	}}
 	cfg.Workspaces = []config.WorkspaceConfig{
 		{Name: "Kubernetes", Type: config.WorkspaceTypeGroup, Path: root, SourceOrder: []string{"kube-contexts"}},

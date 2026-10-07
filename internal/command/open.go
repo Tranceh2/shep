@@ -328,34 +328,23 @@ func treeActiveFor(matches []source.Candidate) bool {
 }
 
 // layoutFromConfig builds the tui.Layout consumed by the picker from the
-// loaded [tui] config, threading list_width/preview_width and the layout
-// orientation through the same way. This is the user's configured DEFAULT
-// orientation for the session — the live ctrl+l keybinding may flip it
-// in-memory afterwards without ever writing back to cfg. sources is
-// [general].source_order (already normalized non-empty by config.Load()), threaded
-// through as Layout.SourceOrder so the picker's row order matches the
-// configured provider order instead of a hardcoded literal — the same order
-// source.Registry.Enabled() already collects candidates in. t.Icons threads
-// through as Layout.Icons, selecting the picker's own icon fallback tier
-// (unicode/ascii — see internal/tui/icons.go). sourceConfigs is optional for
-// compatibility with direct callers; production passes the normalized loaded
-// config to thread resolved row format templates into the Model.
-func layoutFromConfig(t config.TUIConfig, sources []string, sourceConfigs ...config.SourcesConfig) tui.Layout {
-	return layoutFromConfigWithCustomSources(t, sources, nil, sourceConfigs...)
-}
-
-// layoutFromConfigWithCustomSources extends layoutFromConfig with the
-// declared [[sources.custom]] label formats, keyed by name so each
-// custom source's label_format resolves per-source at render time (see
-// tui.LabelFormats.CustomSources / rowLabelFormat).
-func layoutFromConfigWithCustomSources(t config.TUIConfig, sources []string, customSources []config.CustomSourceConfig, sourceConfigs ...config.SourcesConfig) tui.Layout {
+// loaded config: the [tui] pane widths, orientation and icon tier, the
+// configured tabs, order (the source order the picker groups rows in — the
+// same order source.Registry.Enabled() collects candidates in) and the
+// resolved row presentations. This is the user's configured DEFAULT layout
+// for the session — the live ctrl+l keybinding may flip the orientation
+// in-memory afterwards without ever writing back to cfg. The theme is
+// selected separately, once per process (see App.selectedTheme).
+func layoutFromConfig(cfg *config.Config, order []string) tui.Layout {
+	t := cfg.TUI
+	presentation := cfg.Presentations()
 	layout := tui.Layout{
 		ListWidth:    t.ListWidth,
 		PreviewWidth: t.PreviewWidth,
 		Orientation:  t.Layout,
-		Theme:        t.Theme,
-		SourceOrder:  sources,
+		SourceOrder:  order,
 		Icons:        t.Icons,
+		Presentation: &presentation,
 	}
 	for _, id := range t.Tabs {
 		tab := tui.TabDefinition{ID: id}
@@ -366,7 +355,7 @@ func layoutFromConfigWithCustomSources(t config.TUIConfig, sources []string, cus
 			tab.Kind = tui.TabAgents
 		default:
 			tab.Kind = tui.TabSource
-			for _, customSource := range customSources {
+			for _, customSource := range cfg.Sources.Custom {
 				if customSource.Name == id {
 					tab.Kind = tui.TabCustomSource
 					break
@@ -375,25 +364,6 @@ func layoutFromConfigWithCustomSources(t config.TUIConfig, sources []string, cus
 		}
 		layout.Tabs = append(layout.Tabs, tab)
 	}
-	if len(customSources) > 0 {
-		formats := make(map[string]string, len(customSources))
-		for _, customSource := range customSources {
-			formats[customSource.Name] = customSource.LabelFormat
-		}
-		layout.LabelFormats.CustomSources = formats
-	}
-	if len(sourceConfigs) == 0 {
-		return layout
-	}
-	s := sourceConfigs[0]
-	layout.LabelFormats.Herdr = s.Herdr.LabelFormat
-	layout.LabelFormats.Sessions = s.Sessions.LabelFormat
-	layout.LabelFormats.Workspaces = s.Workspaces.LabelFormat
-	layout.LabelFormats.Zoxide = s.Zoxide.LabelFormat
-	layout.LabelFormats.Projects = s.Projects.LabelFormat
-	layout.LabelFormats.Agents = s.Agents.LabelFormat
-	layout.LabelFormats.Tab = s.Herdr.TabLabelFormat
-	layout.LabelFormats.Pane = s.Herdr.PaneLabelFormat
 	return layout
 }
 
@@ -405,9 +375,10 @@ func (a *App) pickerLayout(order []string, matches []source.Candidate) tui.Layou
 }
 
 func (a *App) pickerLayoutForConfig(cfg *config.Config, order []string, matches []source.Candidate) tui.Layout {
-	layout := layoutFromConfigWithCustomSources(cfg.TUI, order, cfg.Sources.Custom, cfg.Sources)
+	layout := layoutFromConfig(cfg, order)
 	layout.ConfirmClose = append([]string(nil), cfg.TUI.ConfirmClose...)
 	layout.Templates = a.templateEngine()
+	layout.Theme = a.selectedTheme(cfg)
 	registry := a.withStartupSnapshot(source.NewRegistry(cfg, a.Probes(), a.Driver()))
 	providers := make(map[string]source.Provider)
 	for _, provider := range registry.Providers() {

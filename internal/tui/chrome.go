@@ -8,7 +8,6 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -337,86 +336,57 @@ func (m Model) visibleTopLevelCount() int {
 }
 
 // renderPreviewTitle renders the preview column of row 1 at width cells: the
-// highlighted row's name — the same primary text the row shows — in bold,
-// and its kind right-aligned and muted. The kind is dropped first when the
-// two do not fit; the name then keeps its start (a title) or its end (a
-// path). The body below carries everything else, so the title never repeats
-// a "preview" caption.
+// highlighted row's label — the text its label part shows, without live
+// markers — in bold (a muted or accent part of it keeps that style), and its
+// kind right-aligned and muted. The kind is dropped first when the two do
+// not fit; the name then keeps its start (a title) or its end (a path). The
+// body below carries everything else, so the title never repeats a
+// "preview" caption.
 func (m Model) renderPreviewTitle(width int) string {
 	row, ok := m.currentRow()
 	if !ok || width <= 0 {
 		return strings.Repeat(" ", max(0, width))
 	}
 	v := m.cursorRowView()
-	name := v.primary
-	if name == "" {
-		name = plainText(row.Candidate.Label)
+	name := v.label.withoutLive()
+	name.hl = nil
+	if name.width == 0 {
+		name = plainPart(plainText(row.Candidate.Label))
 	}
-	if name == "" {
-		name = abbreviateHome(plainText(row.Candidate.Path), m.homeDir)
+	if name.width == 0 {
+		name = plainPart(m.layout.Templates.Tilde(plainText(row.Candidate.Path)))
 	}
 	kind := v.kind
-	nameW, kindW := ansi.StringWidth(name), ansi.StringWidth(kind)
-	if kind == "" || nameW+1+kindW > width {
-		return fitWidth(m.renderTitleName(truncateTitle(name, width), v.lead), width)
+	kindW := ansi.StringWidth(kind)
+	if kind == "" || name.width+1+kindW > width {
+		return fitWidth(m.renderTitleName(truncatePart(name, width, !name.pathLike())), width)
 	}
-	return fitWidth(m.renderTitleName(name, v.lead), width-kindW) + m.styles.mutedStyle.Render(kind)
+	return fitWidth(m.renderTitleName(name), width-kindW) + m.styles.mutedStyle.Render(kind)
 }
 
-// renderTitleName styles the title's name in bold, its leading tab number
-// (lead) muted as in the list.
-func (m Model) renderTitleName(name, lead string) string {
-	if lead != "" && strings.HasPrefix(name, lead) {
-		return m.styles.mutedStyle.Render(lead) + m.styles.titleStyle.Render(name[len(lead):])
+// renderTitleName draws the title's name in the title style, the runs its
+// label template muted or accented in those styles.
+func (m Model) renderTitleName(name part) string {
+	if name.runs == nil {
+		return m.styles.titleStyle.Render(name.text)
 	}
-	return m.styles.titleStyle.Render(name)
-}
-
-// rowKindLabel names what a row is, for the preview title: the Herdr
-// object, the directory source, an agent's program, or a custom source's
-// own name. buildRowView stores it, made plain, as rowView.kind.
-func rowKindLabel(row Row) string {
-	c := row.Candidate
-	switch {
-	case row.Kind == RowTab:
-		return "tab"
-	case c.Source == config.SourceAgents:
-		if agent := c.Meta["agent"]; agent != "" {
-			return agent
+	var b strings.Builder
+	start := 0
+	for _, r := range name.runs {
+		style := m.styles.titleStyle
+		switch r.role {
+		case roleMuted:
+			style = m.styles.mutedStyle
+		case roleAccent:
+			style = m.styles.accentStyle
 		}
-		return "agent"
-	case row.Kind == RowPane:
-		return "pane"
-	}
-	switch c.Source {
-	case config.SourceHerdr:
-		return "workspace"
-	case config.SourceWorkspaces:
-		if c.Meta["group"] == "true" {
-			return "group"
+		if r.bold {
+			style = style.Bold(true)
 		}
-		return "configured"
-	case config.SourceZoxide:
-		return "zoxide"
-	case config.SourceProjects:
-		if c.Meta["is_worktree"] == "true" {
-			return "worktree"
-		}
-		return "project"
-	case config.SourceSessions:
-		return "session"
-	default:
-		return c.Source
+		b.WriteString(style.Render(name.text[start:r.end]))
+		start = r.end
 	}
-}
-
-// truncateTitle fits a title into width cells. A path-like title keeps its
-// end (the directory name identifies it); anything else keeps its start.
-func truncateTitle(title string, width int) string {
-	if isPathLike(title) {
-		return truncateFromLeftToWidth(title, width)
-	}
-	return truncateToWidth(title, width)
+	return b.String()
 }
 
 // renderRule renders row 2 across the content width. With the preview
@@ -630,7 +600,7 @@ func errorStatus(text string) footerStatus {
 func (m Model) renderStatus(s footerStatus) string {
 	switch s.tone {
 	case toneSuccess:
-		return m.styles.statusIdleStyle.Render(s.text)
+		return m.styles.successStyle.Render(s.text)
 	case toneError:
 		return m.styles.previewErrStyle.Render(s.text)
 	default:

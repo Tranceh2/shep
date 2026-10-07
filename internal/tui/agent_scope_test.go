@@ -920,8 +920,10 @@ func TestAgentScope_RowPrimaryText_SessionNameAndStatusIconOnly(t *testing.T) {
 	if strings.Contains(primary, set.TreeMid) || strings.Contains(primary, set.TreeLast) || strings.Contains(primary, set.TreeVertical) {
 		t.Errorf("agent row primary %q must not contain tree glyphs", primary)
 	}
-	if wantPrefix := len([]rune(icon + " ")); prefixRunes != wantPrefix {
-		t.Errorf("prefixRunes = %d, want %d", prefixRunes, wantPrefix)
+	// The status glyph leads the label (the agents label_format starts with
+	// {{ status }}); with no icon there is no fixed prefix.
+	if prefixRunes != 0 {
+		t.Errorf("prefixRunes = %d, want 0", prefixRunes)
 	}
 
 	// Nested tree pane row (Depth: 2) uses formats.Pane: its label, or its
@@ -1617,8 +1619,9 @@ func TestAgentScope_SnapshotRefreshPreservesLiveStatusAndSelection(t *testing.T)
 func TestAgentScope_SourceRowFormattingUsesAgentsLabelFormat(t *testing.T) {
 	t.Parallel()
 
-	m := newRenderTestModel(ThemeMocha, FocusList)
-	m.layout.LabelFormats = LabelFormats{Agents: "{{.Label}} [{{.AgentStatus}}]"}.withDefaults()
+	m := newRenderTestModel(ThemeMocha, FocusList).withPresentation(func(p *config.Presentations) {
+		p.Agents.Label = "{{.Label}} [{{.AgentStatus}}]"
+	})
 
 	flatPaneRow := Row{
 		Kind:      RowPane,
@@ -1626,7 +1629,7 @@ func TestAgentScope_SourceRowFormattingUsesAgentsLabelFormat(t *testing.T) {
 		Action:    RowActionFocusTab,
 		Candidate: source.Candidate{Label: "security scan", Path: "/srv/ws1/src", Meta: map[string]string{"kind": "agent", "agent_status": "blocked"}},
 	}
-	if got := m.renderRowLabel(flatPaneRow); got != "security scan [blocked]" {
+	if got := m.buildRowView(flatPaneRow).label.text; got != "security scan [blocked]" {
 		t.Errorf("flat agent row label = %q, want %q", got, "security scan [blocked]")
 	}
 
@@ -1634,7 +1637,7 @@ func TestAgentScope_SourceRowFormattingUsesAgentsLabelFormat(t *testing.T) {
 		Kind:      RowCandidate,
 		Candidate: source.Candidate{Label: "codegen", Path: "/srv/ws1/src", Source: config.SourceAgents, Meta: map[string]string{"agent_status": "working"}},
 	}
-	if got := m.renderRowLabel(allViewRow); got != "codegen [working]" {
+	if got := m.buildRowView(allViewRow).label.text; got != "codegen [working]" {
 		t.Errorf("all-view agents row label = %q, want %q", got, "codegen [working]")
 	}
 }
@@ -1669,7 +1672,10 @@ func TestAgentScope_SnapshotRefreshFillsEmptyAgentsSliceAndKeepsIcon(t *testing.
 		}
 	}
 
-	m := NewModelWithProducers([]SourceProducer{prodAgents}, "", nil, context.Background(), Layout{SourceOrder: []string{config.SourceAgents}})
+	// The agents rows draw the icon the producer stamped on them.
+	presentation := config.DefaultPresentations("")
+	presentation.Agents.Icon = "{{ .Icon }}"
+	m := NewModelWithProducers([]SourceProducer{prodAgents}, "", nil, context.Background(), Layout{SourceOrder: []string{config.SourceAgents}, Presentation: &presentation})
 	msg := prodAgents(context.Background())
 	msg.producerID = 0
 	next, _ := m.Update(msg)

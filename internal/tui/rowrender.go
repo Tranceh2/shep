@@ -11,21 +11,23 @@ import (
 
 // rowrender.go renders a rowView (rowview.go) as one list row:
 //
-//	[gutter 2][tree prefix][icon] [status] [primary][  secondary][fill] [accessories]
+//	[gutter 2][tree prefix][icon] [label][  detail][fill] [marker]
 
-// Truncation floors (see fitRow): the secondary path is shortened down to
-// minSecondaryCells before it is dropped, and the accessories give way when
-// the primary would otherwise shrink below minPrimaryCells.
+// Truncation (see fitRow): the detail is shortened from the left down to
+// minDetailCells before it is dropped; the marker is capped at
+// markerMaxPercent of the row, and dropped before the label would go under
+// minLabelCells.
 const (
-	minSecondaryCells = 6
-	minPrimaryCells   = 8
-	// secondaryGap separates the primary name from its parent path.
-	secondaryGap = 2
+	minDetailCells   = 6
+	minLabelCells    = 16
+	markerMaxPercent = 30
+	// detailGap separates the label from its detail.
+	detailGap = 2
 )
 
-// cursorGlyphUnicode and cursorGlyphASCII are the FocusList-only cursor
-// markers. cursorPrefixWidth reserves two stable leading cells for every row:
-// the selected row uses its marker plus one space, and other rows use two
+// cursorGlyphUnicode and cursorGlyphASCII are the cursor markers.
+// cursorPrefixWidth reserves two stable leading cells for every row: the
+// selected row uses its marker plus one space, and other rows use two
 // blanks.
 const (
 	cursorGlyphUnicode = "❯"
@@ -35,26 +37,20 @@ const (
 
 // rowRenderer renders list rows for one frame. It carries what every row
 // needs, resolved once per frame instead of once per row: the shared styles,
-// the glyph tier, the spinner (whose frame draws "working") and whether the
-// list owns focus (only then does the selected row show the cursor glyph).
+// the glyph tier and the spinner (whose frame draws "working").
 type rowRenderer struct {
 	styles  *styleSet
 	icons   IconSet
 	spinner spinner.Model
-	focused bool
 }
 
 func (m Model) newRowRenderer() rowRenderer {
-	return rowRenderer{styles: m.styles, icons: m.icons(), spinner: m.spinner, focused: m.focus == FocusList}
+	return rowRenderer{styles: m.styles, icons: m.icons(), spinner: m.spinner}
 }
 
-// rowLayout is what of a row fits its width (see fitRow).
+// rowLayout is what of a row's parts fits its width (see fitRow).
 type rowLayout struct {
-	primary, secondary     string
-	primaryHL, secondaryHL []bool
-	primaryW, secondaryW   int
-	accessories            []accessory
-	accessoriesW           int
+	label, detail, marker part
 }
 
 // render renders v as one row of exactly width cells. A selected row
@@ -64,13 +60,10 @@ func (r *rowRenderer) render(v *rowView, selected bool, width int) string {
 	st := &r.styles.rowPlain
 	gutter := "  "
 	if selected {
-		st = &r.styles.rowSelectedUnfocused
-		if r.focused {
-			st = &r.styles.rowSelected
-			gutter = cursorGlyphUnicode + " "
-			if r.icons.Name == IconsASCII {
-				gutter = cursorGlyphASCII + " "
-			}
+		st = &r.styles.rowSelected
+		gutter = cursorGlyphUnicode + " "
+		if r.icons.Name == IconsASCII {
+			gutter = cursorGlyphASCII + " "
 		}
 	}
 	room := width - cursorPrefixWidth - v.fixedW
@@ -87,37 +80,33 @@ func (r *rowRenderer) render(v *rowView, selected bool, width int) string {
 	if v.tree != "" {
 		b.WriteString(st.tree.Render(v.tree))
 	}
-	if v.icon != "" {
-		b.WriteString(st.icons[v.iconRole].Render(v.icon))
-		st.blank(&b, 1)
-	}
-	if v.statusGlyph {
-		b.WriteString(r.statusGlyph(v.status, st))
-		st.blank(&b, 1)
-	}
-	primary := st.primary
-	if v.descendant {
-		primary = st.descendant
-	}
-	text, mask := lay.primary, lay.primaryHL
-	if v.lead != "" && strings.HasPrefix(text, v.lead) {
-		n := utf8.RuneCountInString(v.lead)
-		writeRuns(&b, v.lead, subMask(mask, 0, min(n, len(mask))), st.muted, st.highlight)
-		text = text[len(v.lead):]
-		if mask != nil {
-			mask = mask[min(n, len(mask)):]
+	if v.icon.width > 0 {
+		switch {
+		case v.iconStyle >= len(st.icons):
+			r.writePart(&b, &v.icon, lipgloss.Style{}, st)
+		case v.icon.runs == nil:
+			// An icon is static plain text: written through its pre-rendered
+			// style, it costs nothing per frame.
+			st.iconWraps[v.iconStyle].write(&b, v.icon.text)
+		default:
+			r.writePart(&b, &v.icon, st.icons[v.iconStyle], st)
 		}
+		st.blank(&b, 1)
 	}
-	writeRuns(&b, text, mask, primary, st.highlight)
-	used := lay.primaryW
-	if lay.secondaryW > 0 {
-		st.blank(&b, secondaryGap)
-		writeRuns(&b, lay.secondary, lay.secondaryHL, st.secondary, st.highlight)
-		used += secondaryGap + lay.secondaryW
+	label := st.label
+	if v.descendant {
+		label = st.descendant
 	}
-	if lay.accessoriesW > 0 {
-		st.blank(&b, max(1, room-used-lay.accessoriesW))
-		r.writeAccessories(&b, lay.accessories, st)
+	r.writePart(&b, &lay.label, label, st)
+	used := lay.label.width
+	if lay.detail.width > 0 {
+		st.blank(&b, detailGap)
+		r.writePart(&b, &lay.detail, st.detail, st)
+		used += detailGap + lay.detail.width
+	}
+	if lay.marker.width > 0 {
+		st.blank(&b, max(1, room-used-lay.marker.width))
+		r.writePart(&b, &lay.marker, st.marker, st)
 	} else {
 		st.blank(&b, room-used)
 	}
@@ -125,115 +114,172 @@ func (r *rowRenderer) render(v *rowView, selected bool, width int) string {
 }
 
 // fitRow decides what of v fits in room cells (the row's width after the
-// gutter and the fixed prefix). Space is given up in this order: the
-// secondary parent path shrinks from the left down to minSecondaryCells and
-// is then dropped; the accessories are dropped when the primary would
-// otherwise go below minPrimaryCells (agentTitleMinCells beside an agent's
-// workspace label); finally the primary is truncated — keeping its tail, or
-// its start for titles (see rowView.keepStart).
+// gutter and the fixed prefix). Space is given up in this order: the detail
+// shrinks from the left down to minDetailCells and is then dropped; the
+// marker is capped at markerMaxPercent of the row (keeping its start), then
+// dropped when the label would otherwise go below minLabelCells; finally the
+// label is truncated — keeping its start, or its end when it is a path (see
+// rowView.keepStart).
 func fitRow(v *rowView, room, rowWidth int) rowLayout {
-	lay := rowLayout{
-		primary: v.primary, primaryHL: v.primaryHL, primaryW: v.primaryW,
-		secondary: v.secondary, secondaryHL: v.secondaryHL, secondaryW: v.secondaryW,
-	}
-	lay.accessories, lay.accessoriesW = fitAccessories(v.accessories, rowWidth)
-	accessoryCost := 0
-	if lay.accessoriesW > 0 {
-		accessoryCost = lay.accessoriesW + 1
-	}
-	if lay.secondaryW > 0 && lay.primaryW+secondaryGap+lay.secondaryW+accessoryCost > room {
-		if fit := room - lay.primaryW - accessoryCost - secondaryGap; fit >= minSecondaryCells {
-			lay.secondary, lay.secondaryHL = truncateMasked(lay.secondary, lay.secondaryHL, fit, false)
-			lay.secondaryW = ansi.StringWidth(lay.secondary)
+	lay := rowLayout{label: v.label, detail: v.detail, marker: v.marker}
+	markerCost := partCost(&lay.marker)
+	if lay.detail.width > 0 && lay.label.width+detailGap+lay.detail.width+markerCost > room {
+		if fit := room - lay.label.width - markerCost - detailGap; fit >= minDetailCells {
+			lay.detail = truncatePart(lay.detail, fit, false)
 		} else {
-			lay.secondary, lay.secondaryHL, lay.secondaryW = "", nil, 0
+			lay.detail = part{}
 		}
 	}
-	if lay.secondaryW > 0 {
+	if lay.detail.width > 0 {
 		return lay
 	}
-	floor := minPrimaryCells
-	if hasShrinkable(lay.accessories) {
-		floor = agentTitleMinCells
+	if lay.label.width+markerCost > room {
+		if limit := rowWidth * markerMaxPercent / 100; lay.marker.width > limit {
+			lay.marker = truncatePart(lay.marker, max(1, limit), true)
+			markerCost = partCost(&lay.marker)
+		}
+		if room-markerCost < min(lay.label.width, minLabelCells) {
+			lay.marker, markerCost = part{}, 0
+		}
 	}
-	if lay.primaryW+accessoryCost > room && room-accessoryCost < min(lay.primaryW, floor) {
-		lay.accessories, lay.accessoriesW, accessoryCost = nil, 0, 0
-	}
-	if budget := room - accessoryCost; lay.primaryW > budget {
-		lay.primary, lay.primaryHL = truncateMasked(lay.primary, lay.primaryHL, budget, v.keepStart)
-		lay.primaryW = ansi.StringWidth(lay.primary)
+	if budget := room - markerCost; lay.label.width > budget {
+		lay.label = truncatePart(lay.label, budget, v.keepStart)
 	}
 	return lay
 }
 
-// fitAccessories applies the shrinkable part's cap (agentLabelMaxPercent of
-// the row, at most agentLabelMaxCells; the label keeps its start) and
-// returns the parts with their total width, single spaces between parts
-// included.
-func fitAccessories(parts []accessory, rowWidth int) ([]accessory, int) {
-	if len(parts) == 0 {
-		return nil, 0
+// partCost is the cells a marker takes with the blank before it.
+func partCost(p *part) int {
+	if p.width == 0 {
+		return 0
 	}
-	limit := min(rowWidth*agentLabelMaxPercent/100, agentLabelMaxCells)
-	total := len(parts) - 1
-	var fitted []accessory
-	for i, p := range parts {
-		if p.shrink && p.width > limit {
-			if fitted == nil {
-				fitted = append([]accessory(nil), parts...)
+	return p.width + 1
+}
+
+// truncatePart fits p into width cells with an ellipsis — keeping its start
+// (keepStart) or its end — and cuts its runs and highlight mask to match.
+// The ellipsis is drawn in the part's own role and never highlighted.
+func truncatePart(p part, width int, keepStart bool) part {
+	if width <= 0 {
+		return part{}
+	}
+	if p.width <= width {
+		return p
+	}
+	const ellipsis = "…"
+	var out, kept string
+	var from, to int // the byte range of p.text that is kept
+	if keepStart {
+		out = truncateToWidth(p.text, width)
+		kept = strings.TrimSuffix(out, ellipsis)
+		from, to = 0, len(kept)
+		if !strings.HasPrefix(p.text, kept) {
+			return plainPart(out)
+		}
+	} else {
+		out = truncateFromLeftToWidth(p.text, width)
+		kept = strings.TrimPrefix(out, ellipsis)
+		from, to = len(p.text)-len(kept), len(p.text)
+		if !strings.HasSuffix(p.text, kept) {
+			return plainPart(out)
+		}
+	}
+	t := part{text: out, width: ansi.StringWidth(out)}
+	if p.runs != nil {
+		t.runs = make([]run, 0, len(p.runs)+1)
+		shift := 0
+		if !keepStart {
+			t.runs = append(t.runs, run{end: len(ellipsis)})
+			shift = len(ellipsis)
+		}
+		start := 0
+		for _, r := range p.runs {
+			lo, hi := max(start, from), min(r.end, to)
+			start = r.end
+			if lo >= hi {
+				continue
 			}
-			p.text = truncateToWidth(p.text, max(1, limit))
-			p.width = ansi.StringWidth(p.text)
-			fitted[i] = p
+			r.end = hi - from + shift
+			t.runs = append(t.runs, r)
 		}
-		total += p.width
+		if keepStart {
+			t.runs = append(t.runs, run{end: len(out)})
+		}
 	}
-	if fitted != nil {
-		return fitted, total
+	if p.hl != nil {
+		lo := utf8.RuneCountInString(p.text[:from])
+		n := utf8.RuneCountInString(kept)
+		mask := make([]bool, 0, n+1)
+		if !keepStart {
+			mask = append(mask, false)
+		}
+		mask = append(mask, p.hl[min(lo, len(p.hl)):min(lo+n, len(p.hl))]...)
+		if keepStart {
+			mask = append(mask, false)
+		}
+		t.hl = mask
 	}
-	return parts, total
+	return t
 }
 
-// hasShrinkable reports an agent workspace label among parts.
-func hasShrinkable(parts []accessory) bool {
-	for _, p := range parts {
-		if p.shrink {
-			return true
-		}
+// writePart writes p's runs: its own role in base, the template's inline
+// styles and the live markers in their roles, and the runes the query
+// matched in the highlight style. The working status glyph draws the shared
+// spinner's current frame.
+func (r *rowRenderer) writePart(b *strings.Builder, p *part, base lipgloss.Style, st *rowStyles) {
+	if p.runs == nil {
+		writeRuns(b, p.text, p.hl, base, st.highlight)
+		return
 	}
-	return false
-}
-
-// writeAccessories writes parts joined by single spaces.
-func (r *rowRenderer) writeAccessories(b *strings.Builder, parts []accessory, st *rowStyles) {
-	for i, p := range parts {
-		if i > 0 {
-			st.blank(b, 1)
+	start, at := 0, 0
+	for _, run := range p.runs {
+		text := p.text[start:run.end]
+		start = run.end
+		if run.role == roleStatusWorking && r.icons.StatusWorking == "" {
+			sp := r.spinner // a copy keeps the shared spinner's own Style
+			sp.Style = st.statusWorking
+			b.WriteString(sp.View())
+			at += utf8.RuneCountInString(text)
+			continue
 		}
-		switch p.role {
-		case accessoryStatus:
-			// In the list this column answers "which workspace needs me", so
-			// only attention states (working, blocked, done) are colored; idle
-			// is the resting state and reads muted. Status glyphs elsewhere
-			// (agent and pane rows, the preview) keep Herdr's colors.
-			if p.text == "idle" {
-				b.WriteString(statusGlyph(&r.icons, r.spinner, p.text, st.muted))
-			} else {
-				b.WriteString(r.statusGlyph(p.text, st))
-			}
-		case accessoryPin:
-			b.WriteString(st.pin.Render(p.text))
-		case accessoryError:
-			b.WriteString(st.err.Render(p.text))
-		default:
-			b.WriteString(st.muted.Render(p.text))
+		var mask []bool
+		if p.hl != nil {
+			n := utf8.RuneCountInString(text)
+			mask = p.hl[min(at, len(p.hl)):min(at+n, len(p.hl))]
+			at += n
 		}
+		writeRuns(b, text, mask, st.runStyle(run, base), st.highlight)
 	}
 }
 
-// statusGlyph draws an agent status as its glyph in st's status style.
-func (r *rowRenderer) statusGlyph(status string, st *rowStyles) string {
-	return statusGlyph(&r.icons, r.spinner, status, st.statusStyle(status))
+// runStyle is the style one run draws in: base for the part's own role, else
+// the role's style; bold adds to either.
+func (st *rowStyles) runStyle(r run, base lipgloss.Style) lipgloss.Style {
+	style := base
+	switch r.role {
+	case roleMuted:
+		style = st.muted
+	case roleAccent:
+		style = st.accent
+	case rolePin:
+		style = st.pin
+	case roleMissing:
+		style = st.err
+	case roleStatusIdle:
+		style = st.statusIdle
+	case roleStatusWorking:
+		style = st.statusWorking
+	case roleStatusBlocked:
+		style = st.statusBlocked
+	case roleStatusDone:
+		style = st.statusDone
+	case roleStatusUnknown:
+		style = st.statusUnknown
+	}
+	if r.bold {
+		style = style.Bold(true)
+	}
+	return style
 }
 
 // statusGlyph returns the styled glyph for an agent status, matching herdr's
@@ -322,33 +368,6 @@ func writeRuns(b *strings.Builder, text string, mask []bool, base, hl lipgloss.S
 		r++
 	}
 	b.WriteString(style(run).Render(text[start:]))
-}
-
-// truncateMasked fits text into width cells with an ellipsis — keeping its
-// start (keepStart) or its end — and cuts its highlight mask to match. The
-// ellipsis is never highlighted.
-func truncateMasked(text string, mask []bool, width int, keepStart bool) (string, []bool) {
-	if width <= 0 {
-		return "", nil
-	}
-	if ansi.StringWidth(text) <= width {
-		return text, mask
-	}
-	var out string
-	if keepStart {
-		out = truncateToWidth(text, width)
-	} else {
-		out = truncateFromLeftToWidth(text, width)
-	}
-	if mask == nil {
-		return out, nil
-	}
-	kept := min(len(mask), max(0, utf8.RuneCountInString(out)-1))
-	cut := make([]bool, 0, kept+1)
-	if keepStart {
-		return out, append(append(cut, mask[:kept]...), false)
-	}
-	return out, append(append(cut, false), mask[len(mask)-kept:]...)
 }
 
 // scrollThumb returns the rows [start, start+length) of a visible-row track

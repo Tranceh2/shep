@@ -62,8 +62,7 @@ func TestResolveIconSet_DefaultsToUnicode(t *testing.T) {
 
 // TestResolveIconSet_UnknownFallsBackToUnicode proves an unrecognized
 // configIcons value degrades to "unicode" rather than erroring — resolution
-// must never fail to start the picker over a typo'd icons name, mirroring
-// resolveThemeName's precedent.
+// must never fail to start the picker over a typo'd icons name.
 func TestResolveIconSet_UnknownFallsBackToUnicode(t *testing.T) {
 	t.Parallel()
 	set := resolveIconSet("emoji")
@@ -112,7 +111,7 @@ func TestResolveIconSet_ASCII(t *testing.T) {
 func newRenderTestModelWithIcons(themeName, icons string) Model {
 	m := newRenderTestModel(themeName, FocusList)
 	m.layout.Icons = icons
-	return m
+	return m.withPresentation(nil)
 }
 
 // TestModelIcons_DefaultsToUnicodeWhenLayoutIconsUnset proves a Model built
@@ -337,7 +336,7 @@ func TestSearchPrompt_RespectsConfiguredIconSet(t *testing.T) {
 		{IconsASCII, ">"},
 	} {
 		t.Run(tc.icons, func(t *testing.T) {
-			m := NewModelWithLayout([]source.Candidate{{Label: "a", Source: "zoxide"}}, nil, Layout{Icons: tc.icons, Theme: ThemeMocha})
+			m := NewModelWithLayout([]source.Candidate{{Label: "a", Source: "zoxide"}}, nil, Layout{Icons: tc.icons, Theme: testTheme(ThemeMocha)})
 			prompt := promptText(m)
 			if strings.Contains(prompt, "[/]") {
 				t.Errorf("[%s] prompt row contains keycap brackets: %q", tc.icons, prompt)
@@ -358,7 +357,7 @@ func TestASCIITier_ChromeIsASCIIOnly(t *testing.T) {
 	t.Parallel()
 	for _, size := range []struct{ w, h int }{{120, 30}, {64, 20}} {
 		for _, help := range []bool{false, true} {
-			m := NewModelWithLayout([]source.Candidate{zoxideCandidate("alpha", "/a")}, nil, Layout{Icons: IconsASCII, Theme: ThemeMocha})
+			m := NewModelWithLayout([]source.Candidate{zoxideCandidate("alpha", "/a")}, nil, Layout{Icons: IconsASCII, Theme: testTheme(ThemeMocha)})
 			m, _ = update(t, m, sizeMsg(size.w, size.h))
 			if help {
 				m, _ = update(t, m, key("?"))

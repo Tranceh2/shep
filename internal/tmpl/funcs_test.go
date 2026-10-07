@@ -8,9 +8,13 @@ import (
 	"github.com/Masterminds/sprig/v3"
 )
 
-// shepFunctionNames lists shep's own helpers; together with sprigFunctions it
-// is the complete, exact function set.
-var shepFunctionNames = []string{"tilde", "name", "parent", "trimIcon"}
+// shepFunctionNames lists shep's own helpers (the path helpers and the style
+// and live functions of row templates); together with sprigFunctions it is
+// the complete, exact function set.
+var shepFunctionNames = []string{
+	"tilde", "name", "parent", "trimIcon",
+	"muted", "accent", "bold", "status", "pin", "current", "group", "missing",
+}
 
 func TestBuildFuncs_ExactAllowListAndTypes(t *testing.T) {
 	got, err := buildFuncs("/home/user")
@@ -100,14 +104,14 @@ func TestBuildFuncs_ForbiddenSurfaceIsAbsentAndUnusable(t *testing.T) {
 	}
 }
 
-func TestBuildFuncs_ReservedNamesStayFree(t *testing.T) {
+func TestBuildFuncs_MarkupFunctionsAreInTheSet(t *testing.T) {
 	got, err := buildFuncs("")
 	if err != nil {
 		t.Fatalf("buildFuncs: %v", err)
 	}
-	for _, name := range reservedFunctionNames {
-		if _, ok := got[name]; ok {
-			t.Errorf("reserved function name %q is in use", name)
+	for _, name := range MarkupFunctions() {
+		if _, ok := got[name]; !ok {
+			t.Errorf("markup function %q is missing", name)
 		}
 	}
 }

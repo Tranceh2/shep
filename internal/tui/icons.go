@@ -1,13 +1,11 @@
 // Package tui icon fallback resolution: [tui].icons (config.TUIConfig.Icons,
 // threaded through Layout.Icons — see layoutFromConfig in
 // internal/command/open.go) selects one of the glyph tiers for the
-// picker's OWN semantic icons — agent status glyphs (statusGlyph),
-// row tree glyphs (kindPrefix) and the grid chrome (rules,
-// divider, prompt, footer separator — see chrome.go). It intentionally does NOT
-// cover source.Candidate.Icon (each [sources.<name>].icon in config): that
-// is a raw user-configured string rendered verbatim by buildRowView
-// regardless of the resolved tier, since shep has no
-// way to know what codepoints the user's own choice needs.
+// picker's OWN semantic icons — the glyphs of the status, pin and group live
+// markers (see rowparts.go), row tree glyphs (treePrefix) and the grid chrome
+// (rules, divider, prompt, footer separator — see chrome.go). Row icons are
+// the presentations' icon templates; their defaults follow the same tier
+// (config.DefaultPresentations).
 package tui
 
 // Icon fallback tier names for Layout.Icons, mirrored in
@@ -80,8 +78,8 @@ type IconSet struct {
 	// track is RuleVertical) when the rows do not fit.
 	ScrollThumb string
 
-	// Pinned and Group are row accessories: a pinned candidate, and a group
-	// workspace that opens a nested picker.
+	// Pinned and Group are the pin and group live markers: a pinned
+	// candidate, and a group workspace that opens a nested picker.
 	Pinned string
 	Group  string
 }
@@ -142,7 +140,7 @@ var iconSets = map[string]IconSet{
 // resolveIconSetName applies the documented default: empty or unrecognized
 // configIcons resolves to IconsUnicode — the picker's original hardcoded
 // glyphs — so resolution never fails to start the picker over a typo'd
-// icons name, mirroring resolveThemeName's precedent.
+// icons name.
 func resolveIconSetName(configIcons string) string {
 	if _, ok := iconSets[configIcons]; ok {
 		return configIcons

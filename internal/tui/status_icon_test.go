@@ -17,46 +17,6 @@ import (
 // empty/absent agent_status still renders no icon (unchanged, must not
 // regress).
 
-// === New semantic color tokens: Teal, Success ===
-
-// TestTheme_TealAndSuccessTokens proves the two new tokens carry the exact
-// official Catppuccin hex values for each of the four color flavors, and
-// are left unset ("") on the Plain (NoColor) theme — consistent with how
-// every other color token already degrades in ThemePlain (see
-// themes[ThemePlain] in theme.go, which sets no color fields at all).
-func TestTheme_TealAndSuccessTokens(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name        string
-		theme       string
-		wantTeal    string
-		wantSuccess string
-	}{
-		{"mocha", ThemeMocha, "#94e2d5", "#a6e3a1"},
-		{"macchiato", ThemeMacchiato, "#8bd5ca", "#a6da95"},
-		{"frappe", ThemeFrappe, "#81c8be", "#a6d189"},
-		{"latte", ThemeLatte, "#179299", "#40a02b"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			th := themes[tt.theme]
-			if th.Teal != tt.wantTeal {
-				t.Errorf("%s: Teal = %q, want %q", tt.name, th.Teal, tt.wantTeal)
-			}
-			if th.Success != tt.wantSuccess {
-				t.Errorf("%s: Success = %q, want %q", tt.name, th.Success, tt.wantSuccess)
-			}
-		})
-	}
-	plain := themes[ThemePlain]
-	if plain.Teal != "" {
-		t.Errorf("plain theme Teal = %q, want empty (no-color fallback, matches every other token)", plain.Teal)
-	}
-	if plain.Success != "" {
-		t.Errorf("plain theme Success = %q, want empty (no-color fallback, matches every other token)", plain.Success)
-	}
-}
-
 // === agentStatusIcon glyph + color mapping ===
 
 // TestAgentStatusIcon_GlyphsAndColors proves the corrected glyph+style pairs

@@ -12,24 +12,16 @@
 // empty queries preserve configured source and provider order; active history
 // ranks empty queries by frecency while non-empty queries retain fuzzy dominance
 // with history only affecting ties and near-ties (see buildRows' doc comment).
-// Tab/Shift+Tab cycles keyboard focus between the list and the preview pane
-// (FocusList/FocusPreview — see the Focus ring in keys.go); while the
-// preview is focused, arrow/page keys scroll it (via bubbles/viewport)
-// instead of moving the list cursor, and any printable rune returns focus
-// to the list and resumes the live filter. Enter opens a candidate/tab/pane
-// row; Left/Right expand/collapse a Herdr workspace's tab/pane children —
-// both are List-only actions, as is ctrl+l (toggles the session-only layout
-// override: auto -> landscape -> auto). "?" opens a modal,
-// scrollable help overlay (FocusHelp) from either List or Preview,
-// remembering which one so "?"/Esc restores it on close (a resize to a
-// list-only size while Preview was remembered degrades that memory to List
-// — see degradeFocusIfPreviewUnavailable); esc/ctrl+c/ctrl+g cancels (Run
-// then returns ErrCancelled), except Esc first clears a non-empty query
-// (returning to FocusList) before ever cancelling. "q" is an ordinary query
-// character, not a cancel key. The active color theme (see theme.go)
-// resolves from $NO_COLOR, then
-// $SHEP_THEME, then Layout.Theme (config.TUIConfig.Theme), then Catppuccin
-// Mocha.
+// Tab/Shift+Tab cycle the tabs (views); Enter opens a candidate/tab/pane row;
+// Left/Right expand/collapse a Herdr workspace's tab/pane children; ctrl+l
+// toggles the session-only layout override (auto -> landscape -> auto);
+// pgup/pgdown scroll the preview. "?" opens a modal, scrollable help overlay
+// (FocusHelp) that "?"/Esc close back to the list; esc/ctrl+c/ctrl+g cancels
+// (Run then returns ErrCancelled), except Esc first clears a non-empty query
+// before ever cancelling. "q" is an ordinary query character, not a cancel
+// key. Colors come from the theme the command layer selected (Layout.Theme,
+// see theme.go); rows are drawn from their presentation templates
+// (Layout.Presentation, see rowparts.go).
 package tui
 
 import (
@@ -47,6 +39,7 @@ import (
 	"github.com/tranceh2/shep/internal/ranking"
 	"github.com/tranceh2/shep/internal/resolver"
 	"github.com/tranceh2/shep/internal/source"
+	"github.com/tranceh2/shep/internal/theme"
 	"github.com/tranceh2/shep/internal/tmpl"
 )
 
@@ -96,68 +89,20 @@ type PinToggler func(context.Context, source.Candidate) PinToggleResultMsg
 
 const snapshotTTL = 5 * time.Second
 
-// LabelFormats contains the resolved source-specific row templates needed by
-// render.go. It deliberately carries only presentation strings rather than a
-// config.Config so Model remains a session-only view model. CustomSources maps
-// a declared [[sources.custom]].name to its resolved label_format, since the
-// set of custom sources is open-ended (unlike the five fixed built-in
-// fields above) and keyed by the same name candidates already carry as
-// Candidate.Source.
-type LabelFormats struct {
-	Herdr         string
-	Sessions      string
-	Workspaces    string
-	Zoxide        string
-	Projects      string
-	Agents        string
-	Tab           string
-	Pane          string
-	CustomSources map[string]string
-}
-
-// withDefaults lets direct Model/Layout construction retain the same first-run
-// rendering defaults as config.Load before command wires them into Layout.
-func (f LabelFormats) withDefaults() LabelFormats {
-	if f.Herdr == "" {
-		f.Herdr = defaultLabelOnlyFormat
-	}
-	if f.Sessions == "" {
-		f.Sessions = defaultLabelOnlyFormat
-	}
-	if f.Workspaces == "" {
-		f.Workspaces = defaultLabelOnlyFormat
-	}
-	if f.Zoxide == "" {
-		f.Zoxide = defaultLabelWithPathFallbackFormat
-	}
-	if f.Projects == "" {
-		f.Projects = defaultLabelWithPathFallbackFormat
-	}
-	if f.Agents == "" {
-		f.Agents = defaultLabelOnlyFormat
-	}
-	if f.Tab == "" {
-		f.Tab = defaultLabelOnlyFormat
-	}
-	if f.Pane == "" {
-		f.Pane = defaultLabelWithPathFallbackFormat
-	}
-	return f
-}
-
 // Layout configures the picker's list/preview pane widths, orientation
-// override, color theme, and resolved row label formats. ListWidth/PreviewWidth are
+// override, color theme, and row presentations. ListWidth/PreviewWidth are
 // each "auto" (or empty) or a percentage string like "60%"; see
 // config.ParsePercent. Orientation is "" (auto — the responsive width-based
 // mode described in nextResponsiveMode applies) or LayoutLandscape (forces
-// wide/side-by-side mode). The stacked "portrait" orientation was removed.
-// Theme is a theme.go theme name (or empty for the default resolution chain:
-// $NO_COLOR > $SHEP_THEME > Theme > "mocha").
+// wide/side-by-side mode).
 type Layout struct {
 	ListWidth    string
 	PreviewWidth string
 	Orientation  string
-	Theme        string
+	// Theme is the resolved color theme (theme.Select, run by the command
+	// layer before the program starts). The zero Theme means Herdr's default
+	// theme, catppuccin.
+	Theme theme.Theme
 	// SourceOrder is the configured group iteration order (config's
 	// general.sources, in declaration order — the same order
 	// source.Registry.Enabled() already collects candidates in). Threaded
@@ -169,13 +114,12 @@ type Layout struct {
 	Tabs []TabDefinition
 	// Icons selects the fallback tier (IconsUnicode/IconsASCII) for the
 	// picker's own semantic icons — see icons.go's resolveIconSet and
-	// Model.icons(). Empty defaults to IconsUnicode, byte-identical to
-	// the picker's pre-Phase-8 hardcoded glyphs.
+	// Model.icons(). Empty defaults to IconsUnicode.
 	Icons string
-	// LabelFormats carries the loaded, per-source row label templates into the
-	// session-only Model, following the same Layout-carried configuration pattern
-	// as Icons and SourceOrder.
-	LabelFormats    LabelFormats
+	// Presentation is how every kind of row is drawn: the resolved
+	// [sources.<name>] (and [sources.herdr.tab]/[sources.herdr.pane])
+	// presentations. nil means the built-in defaults for Icons.
+	Presentation    *config.Presentations
 	RankingSnapshot ranking.Snapshot
 	StatusDialer    StatusDialer
 	PinToggler      PinToggler
@@ -185,12 +129,13 @@ type Layout struct {
 	InitialScope    FilterScope
 	InitialTab      string
 	// HomeDir is the home directory displayed paths under it are shown
-	// relative to ("~/..."). Empty resolves os.UserHomeDir once at
-	// construction; tests set it for deterministic output.
+	// relative to ("~/...") when Templates is nil. Empty resolves
+	// os.UserHomeDir once at construction; tests set it for deterministic
+	// output.
 	HomeDir string
-	// Templates renders the row label templates. The command layer passes
-	// the process's single engine; nil builds one for HomeDir at
-	// construction.
+	// Templates renders the row templates and abbreviates displayed paths
+	// (tmpl.Engine.Tilde). The command layer passes the process's single
+	// engine; nil builds one for HomeDir at construction.
 	Templates *tmpl.Engine
 }
 
@@ -208,18 +153,13 @@ const LayoutLandscape = "landscape"
 // with a nil error) so they can exit without printing anything.
 var ErrCancelled = errors.New("cancelled")
 
-// Focus identifies which pane currently owns keyboard input for
-// navigation/scrolling: FocusList (the default) routes up/down/left/right to
-// the row cursor and query editing; FocusPreview routes them to the preview
-// viewport's scroll position instead; FocusHelp is the modal "?" help
-// overlay — it is NOT a member of the Tab/Shift+Tab ring (see focusRing in
-// keys.go), it only opens from FocusList/FocusPreview (recording that state
-// in Model.prevFocus) and only closes via "?" or Esc, restoring prevFocus.
+// Focus identifies what owns keyboard input: FocusList (the default) routes
+// keys to the row cursor and query editing; FocusHelp is the modal "?" help
+// overlay, which only closes via "?" or Esc, back to the list.
 type Focus int
 
 const (
 	FocusList Focus = iota
-	FocusPreview
 	FocusHelp
 )
 
@@ -261,8 +201,6 @@ type Model struct {
 	// rowWindow caches the display models of the rows in the list window
 	// across frames (see syncRowWindow).
 	rowWindow rowWindow
-	// homeDir abbreviates displayed paths to "~" (see Layout.HomeDir).
-	homeDir string
 
 	query            string
 	lastAppliedQuery string
@@ -286,8 +224,10 @@ type Model struct {
 	groupGeneration     int
 	snapshotUnavailable error
 	layout              Layout
-	theme               Theme
+	theme               theme.Theme
 	styles              *styleSet
+	// formats is every kind of row's prepared presentation (see rowparts.go).
+	formats *rowFormats
 
 	// currentPane is the Herdr pane shep is running inside, queried once by
 	// the caller and threaded in via WithCurrentPane. nil means "no current
@@ -357,18 +297,12 @@ type Model struct {
 	sourceOrder     []string
 	rankingSnapshot ranking.Snapshot
 
-	// focus is which pane currently owns up/down/left/right/page navigation.
+	// focus is the list or the help overlay.
 	focus Focus
-	// prevFocus is the focus state (FocusList or FocusPreview) recorded the
-	// moment "?" opens FocusHelp, so closing help ("?" or Esc) restores
-	// keyboard focus to wherever the user actually was instead of always
-	// snapping back to the list.
-	prevFocus Focus
 	// viewport backs the preview pane's internal scroll position. Its
 	// Width/Height/Content are refreshed every Update call (syncViewport) —
 	// transient, never itself the source of truth for preview text — so
-	// only YOffset (mutated while focus==FocusPreview) needs to persist
-	// across renders.
+	// only YOffset (mutated by pgup/pgdown) needs to persist across renders.
 	viewport viewport.Model
 	// helpViewport backs the "?" help overlay's own scroll position,
 	// independent of the preview pane's viewport. Its Width/Height/Content
@@ -568,13 +502,22 @@ func newModelWithLayout(candidates []source.Candidate, renderer preview.Renderer
 	if renderCtx == nil {
 		renderCtx = context.TODO()
 	}
-	theme := resolveTheme(layout.Theme)
-	styles := newPalette(theme)
-	home := layout.HomeDir
-	if home == "" {
-		home, _ = os.UserHomeDir()
+	th := layout.Theme
+	if th.Name == "" {
+		th = defaultTheme()
 	}
+	presentation := layout.Presentation
+	if presentation == nil {
+		defaults := config.DefaultPresentations(layout.Icons)
+		presentation = &defaults
+	}
+	formats := newRowFormats(*presentation)
+	styles := newPalette(th, formats.iconRefs)
 	if layout.Templates == nil {
+		home := layout.HomeDir
+		if home == "" {
+			home, _ = os.UserHomeDir()
+		}
 		layout.Templates = tmpl.New(home)
 	}
 	var snapshot ranking.Snapshot
@@ -587,8 +530,9 @@ func newModelWithLayout(candidates []source.Candidate, renderer preview.Renderer
 		renderer:           renderer,
 		renderCtx:          renderCtx,
 		layout:             layout,
-		theme:              theme,
+		theme:              th,
 		styles:             styles,
+		formats:            formats,
 		expandedWorkspaces: map[string]bool{},
 		sourceOrder:        layout.SourceOrder,
 		rankingSnapshot:    snapshot,
@@ -596,7 +540,6 @@ func newModelWithLayout(candidates []source.Candidate, renderer preview.Renderer
 		groupCandidates:    make(map[string][]source.Candidate),
 		groupLoading:       make(map[string]bool),
 		groupErrors:        make(map[string]error),
-		homeDir:            home,
 		spinner:            spinner.New(spinner.WithSpinner(loadingSpinner(layout.Icons)), spinner.WithStyle(styles.previewLoadingStyle)),
 		// mode starts "" (unknown/not yet sized): View treats "" the same
 		// as modeWide (side-by-side, using the same width<=0 fallback
@@ -677,13 +620,6 @@ func (m Model) Layout() Layout { return m.layout }
 // updated for Phase 8.
 func (m Model) icons() IconSet {
 	return resolveIconSet(m.layout.Icons)
-}
-
-// labelFormats resolves the model's configured row templates from Layout.
-// Direct test callers that construct a zero-value Layout receive the same
-// first-run defaults as the production config path.
-func (m Model) labelFormats() LabelFormats {
-	return m.layout.LabelFormats.withDefaults()
 }
 
 // ChosenTarget returns the target the user picked via ctrl+t ("tab") or
@@ -790,7 +726,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.mode = nextResponsiveMode(m, m.mode)
-		m.degradeFocusIfPreviewUnavailable()
 	case SourceResultMsg:
 		m, cmd = m.handleSourceResult(msg)
 	case groupResultMsg:
@@ -1170,33 +1105,6 @@ func (m Model) handlePaneStatus(msg paneStatusMsg) (Model, tea.Cmd) {
 	// A status that turns working (a pane's own glyph or its workspace's
 	// aggregate) needs the shared spinner ticking.
 	return m, tea.Batch(clearCmd, m.maybeStartSpinner(), waitForStatusCmd(m.renderCtx, m.liveStatusEvents))
-}
-
-// degradeFocusIfPreviewUnavailable corrects m.focus/m.prevFocus after a
-// resize that just resolved to modeListOnly (no preview pane at all): a
-// stale FocusPreview would otherwise strand the user — cycleFocusForward/
-// Backward are no-op in modeListOnly (nothing to Tab back to) and
-// handlePreviewFocusedKey keeps routing every key regardless of m.mode, so
-// Down/Enter/Tab would all be silently swallowed. Called only from the
-// tea.WindowSizeMsg branch of Update, right after m.mode is recomputed.
-//
-// Two cases:
-//   - m.focus == FocusPreview: refocus straight to FocusList.
-//   - m.focus == FocusHelp with m.prevFocus == FocusPreview: the overlay
-//     stays open (a resize must never silently close Help), but the
-//     recorded prevFocus is degraded to FocusList so closing Help
-//     afterwards ("?"/Esc) restores an available focus instead of the
-//     now-stale FocusPreview.
-func (m *Model) degradeFocusIfPreviewUnavailable() {
-	if m.mode != modeListOnly {
-		return
-	}
-	if m.focus == FocusPreview {
-		m.focus = FocusList
-	}
-	if m.focus == FocusHelp && m.prevFocus == FocusPreview {
-		m.prevFocus = FocusList
-	}
 }
 
 // handlePreviewResponse applies a completed async candidate render,

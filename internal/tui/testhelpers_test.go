@@ -8,9 +8,11 @@ import (
 	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/preview"
 	"github.com/tranceh2/shep/internal/source"
+	"github.com/tranceh2/shep/internal/theme"
 )
 
 // fakeTreeDriver supplies immutable snapshot records plus the dedicated live
@@ -93,39 +95,71 @@ func (m Model) renderRowLine(row Row, isCursor bool, width int) string {
 	return r.render(&v, isCursor, width)
 }
 
-// rowPrimaryText returns the row's fixed prefix (tree prefix, icon, status
-// glyph) followed by its primary text, and the prefix's rune length.
+// partText draws p the way a plain (unselected) row does, as plain text: a
+// working status glyph shows the spinner's current frame.
+func (m Model) partText(p *part) string {
+	var b strings.Builder
+	r := m.newRowRenderer()
+	r.writePart(&b, p, r.styles.rowPlain.label, &r.styles.rowPlain)
+	return ansi.Strip(b.String())
+}
+
+// rowPrimaryText returns the row's fixed prefix (tree prefix and icon)
+// followed by its label as drawn (a status glyph included), and the prefix's
+// rune length.
 func (m Model) rowPrimaryText(row Row) (string, int) {
 	v := m.buildRowView(row)
 	prefix := v.indent + v.tree
-	if v.icon != "" {
-		prefix += v.icon + " "
+	if v.icon.width > 0 {
+		prefix += m.partText(&v.icon) + " "
 	}
-	if v.statusGlyph {
-		prefix += m.agentStatusIcon(v.status) + " "
-	}
-	return prefix + v.primary, utf8.RuneCountInString(prefix)
+	return prefix + m.partText(&v.label), utf8.RuneCountInString(prefix)
 }
 
-// rowDisplayText returns rowPrimaryText's text and the row's secondary
-// (filename-first parent) text, without accessories.
-func (m Model) rowDisplayText(row Row) (primary, secondary string) {
+// rowDisplayText returns rowPrimaryText's text and the row's detail text,
+// without the marker.
+func (m Model) rowDisplayText(row Row) (primary, detail string) {
 	primary, _ = m.rowPrimaryText(row)
-	return primary, m.buildRowView(row).secondary
+	v := m.buildRowView(row)
+	return primary, m.partText(&v.detail)
 }
 
-// rowAccessoryText returns the row's accessories as plain text, joined by
-// single spaces (status words are shown as their glyphs).
+// rowAccessoryText returns the row's marker part as plain text (status words
+// are shown as their glyphs).
 func (m Model) rowAccessoryText(row Row) string {
 	v := m.buildRowView(row)
-	parts := make([]string, len(v.accessories))
-	for i, a := range v.accessories {
-		parts[i] = a.text
-		if a.role == accessoryStatus {
-			parts[i] = m.agentStatusIcon(a.text)
-		}
+	return m.partText(&v.marker)
+}
+
+// withPresentation returns m drawing its rows with the built-in
+// presentations for its icon tier, as edited by edit.
+func (m Model) withPresentation(edit func(*config.Presentations)) Model {
+	p := config.DefaultPresentations(m.layout.Icons)
+	if edit != nil {
+		edit(&p)
 	}
-	return stripNonSGRANSI(strings.Join(parts, " "))
+	m.layout.Presentation = &p
+	m.formats = newRowFormats(p)
+	m.styles = newPalette(m.theme, m.formats.iconRefs)
+	m.invalidateRowWindow()
+	return m
+}
+
+// Theme names the tests build themes from (see testTheme): Herdr's default
+// Catppuccin Mocha under shep's alias, and the no-color theme. They also
+// name the golden fixtures.
+const (
+	ThemeMocha = "mocha"
+	ThemePlain = "plain"
+)
+
+// testTheme builds the built-in theme called name (no Herdr inheritance).
+func testTheme(name string) theme.Theme {
+	t, err := theme.Build(name, nil, theme.HerdrTheme{}, true)
+	if err != nil {
+		panic(err)
+	}
+	return t
 }
 
 // agentStatusIcon renders status as its glyph in the plain row's style.

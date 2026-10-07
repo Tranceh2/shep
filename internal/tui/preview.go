@@ -179,7 +179,7 @@ func (m Model) spinnerNeeded() bool {
 
 // anyVisibleRowWorking reports whether at least one row (m.rows) draws a
 // working status glyph — a pane or agent row's own, or an open workspace's
-// aggregate accessory (see rowShowsWorking) — the condition that keeps the
+// aggregate status marker (see rowShowsWorking) — the condition that keeps the
 // shared spinner tick loop armed for the animated glyph even when no preview
 // render is in flight.
 func (m Model) anyVisibleRowWorking() bool {

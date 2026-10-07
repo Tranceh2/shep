@@ -189,11 +189,11 @@ func (m Model) emptyStateLines() []string {
 	return []string{"No workspaces yet"}
 }
 
-// applySurface merges the selection surface treatment into ownStyle: a
-// selectedSurface/unfocusedSurface background for color themes; the plain
-// theme has no surface (its selection is bold, see newPalette), but a faint
-// surface would still be honored. The row's own foreground/bold/italic
-// survive because Background/Faint do not clobber them.
+// applySurface merges the selection surface treatment into ownStyle: the
+// selection background for color themes; the plain theme has no surface (its
+// selection is bold, see newPalette), but a faint surface would still be
+// honored. The row's own foreground/bold/italic survive because
+// Background/Faint do not clobber them.
 func applySurface(ownStyle, surface lipgloss.Style) lipgloss.Style {
 	noColor := lipgloss.NoColor{}
 	if bg := surface.GetBackground(); bg != noColor {
@@ -215,8 +215,8 @@ func (m Model) kindPrefix(row Row) string {
 
 // containsCurrentPane reports whether row holds the Herdr pane shep is
 // running inside (m.currentPane): that pane's own row, the tab row that
-// contains it, or the open workspace row that contains it. Such rows carry a
-// muted "current" accessory — a "you are here" that reads as text instead of
+// contains it, or the open workspace row that contains it. Such rows show
+// the "current" live marker — a "you are here" that reads as text instead of
 // a glyph that could pass for a status. A tab's match is also the truthful
 // action: Herdr focuses tabs, never one exact pane.
 func (m Model) containsCurrentPane(row Row) bool {
@@ -234,94 +234,18 @@ func (m Model) containsCurrentPane(row Row) bool {
 	}
 }
 
-// The default formats intentionally match config.normalizeLabelFormats
-// (TestLabelFormatDefaults_MatchConfig keeps them identical). They apply to
-// direct zero-value Layout callers, which do not carry a loaded config.
-const (
-	defaultLabelWithPathFallbackFormat = "{{if .Label}}{{.Label}}{{else}}{{.Path}}{{end}}"
-	defaultPathLabelFormat             = "{{.Path}}"
-	defaultLabelOnlyFormat             = "{{.Label}}"
-)
-
-// tabLabelPortion resolves a RowTab's label text for the unified primary
-// layout: "<tab_number> <label>" when a tab number is configured and the
-// tab's own label differs from it, or just the bare tab number when the
-// label is empty OR is itself literally the tab number as a string (Herdr's
-// default/unnamed tab label equals its own number, e.g. Label="3" and
-// tab_number="3" — showing both would render the redundant "3 3"). With no
-// tab_number at all, the raw label is used as-is.
-func tabLabelPortion(c source.Candidate) string {
-	number := c.Meta["tab_number"]
-	if number == "" {
-		return c.Label
-	}
-	if c.Label == "" || c.Label == number {
-		return number
-	}
-	return number + " " + c.Label
-}
-
-// rowLabelFormat selects the resolved template for row. Ordinary candidates
-// use their provider's label_format; synthesized Herdr rows use their dedicated
-// tab_label_format or pane_label_format.
-func (m Model) rowLabelFormat(row Row) string {
-	formats := m.labelFormats()
-	switch row.Kind {
-	case RowTab:
-		return formats.Tab
-	case RowPane:
-		// Flat agent scope rows (Depth == 0, or tagged with Meta["kind"] ==
-		// "agent") render through the agents format, never the tree pane
-		// format: their path is not part of an agent's title. Nested tree
-		// pane rows (Depth >= 1) use formats.Pane.
-		if row.Depth == 0 || row.Candidate.Meta["kind"] == "agent" {
-			if formats.Agents != "" {
-				return formats.Agents
-			}
-			return defaultLabelOnlyFormat
-		}
-		return formats.Pane
-	}
-
-	switch row.Candidate.Source {
-	case config.SourceHerdr:
-		return formats.Herdr
-	case config.SourceSessions:
-		return formats.Sessions
-	case config.SourceWorkspaces:
-		return formats.Workspaces
-	case config.SourceZoxide:
-		return formats.Zoxide
-	case config.SourceProjects:
-		return formats.Projects
-	case config.SourceAgents:
-		return formats.Agents
-	default:
-		// A declared [[sources.custom]] source resolves its own configured (or
-		// config.Load-defaulted) label_format via the open-ended CustomSources
-		// map. Any other/unknown source (a direct --path candidate, or a
-		// synthesized candidate built directly in Go) keeps a safe path fallback.
-		if format, ok := formats.CustomSources[row.Candidate.Source]; ok && format != "" {
-			return format
-		}
-		return defaultPathLabelFormat
-	}
-}
-
 // rowTemplateData is the template data for row: the candidate's shared data
 // (source.TemplateData), with the Kind of the Herdr rows the picker
-// synthesizes itself (tabs and nested panes have no source) and a tab's
-// de-duplicated "<number> <label>" text as its Label.
+// synthesizes itself (tabs and nested panes have no source).
 func rowTemplateData(row Row) tmpl.Data {
 	c := row.Candidate
 	data := source.TemplateData(c)
 	switch row.Kind {
 	case RowTab:
 		data.Kind = tmpl.KindTab
-		data.Label = tabLabelPortion(c)
 	case RowPane:
-		// Same split as rowLabelFormat: flat agent rows are agents, nested
-		// tree panes are panes.
+		// Flat agent rows are agents, nested tree panes are panes (the same
+		// split rowFormat makes).
 		if row.Depth == 0 || c.Meta["kind"] == "agent" {
 			data.Kind = tmpl.KindAgent
 		} else {
@@ -329,30 +253,6 @@ func rowTemplateData(row Row) tmpl.Data {
 		}
 	}
 	return data
-}
-
-// renderRowLabel renders row's label template and defensively falls back to
-// the raw path if an invalid format somehow reaches render time, or if a
-// valid format renders to an empty string (e.g. a bare {{.Label}} format
-// evaluated against a candidate whose Label is empty -- reachable only via
-// direct/programmatic Candidate construction, since config.Load enforces
-// non-empty names/labels for every source that ships a label-only default).
-// Config.Load rejects unparsable formats, but the TUI must never show a
-// silently blank row or crash when called directly. The result is what the
-// row displays, so it is plain text (see plainText): the label, the Meta
-// values a template interpolates and the path all come from outside shep.
-// Matching never reads it — filtering scores the raw candidate data.
-func (m Model) renderRowLabel(row Row) string {
-	engine := m.layout.Templates
-	if engine == nil { // only a bare Model{} literal; constructors set one
-		return plainText(row.Candidate.Path)
-	}
-	text, err := engine.Render(m.rowLabelFormat(row), rowTemplateData(row))
-	text = plainText(text)
-	if err != nil || text == "" {
-		return plainText(row.Candidate.Path)
-	}
-	return text
 }
 
 // truncateToWidth trims s so it never exceeds maxW cells of visible width,

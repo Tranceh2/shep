@@ -35,7 +35,7 @@ func TestPromptRow_NoBrandCompactCount(t *testing.T) {
 	t.Parallel()
 	m := NewModelWithLayout(
 		[]source.Candidate{zoxideCandidate("alpha", "/a"), zoxideCandidate("beta", "/b")},
-		nil, Layout{Theme: ThemeMocha},
+		nil, Layout{Theme: testTheme(ThemeMocha)},
 	)
 	m, _ = update(t, m, sizeMsg(120, 36))
 	prompt := promptText(m)
@@ -55,7 +55,7 @@ func TestPromptRow_NoBrandCompactCount(t *testing.T) {
 // and that no rounded pane box is drawn anywhere in the frame.
 func TestView_ChromeRowsHaveNoBrandOrBoxes(t *testing.T) {
 	t.Parallel()
-	m := NewModelWithLayout([]source.Candidate{zoxideCandidate("alpha", "/a")}, nil, Layout{Theme: ThemeMocha})
+	m := NewModelWithLayout([]source.Candidate{zoxideCandidate("alpha", "/a")}, nil, Layout{Theme: testTheme(ThemeMocha)})
 	m, _ = update(t, m, sizeMsg(120, 36))
 	lines := viewLines(m)
 	chrome := strings.Join(lines[:3], "\n")
@@ -87,7 +87,7 @@ func TestBuildRows_NonDefaultConfiguredOrder(t *testing.T) {
 		projectCandidate("shep", "/home/dev/shep"),
 	}
 	nonDefault := []string{config.SourceProjects, config.SourceHerdr, config.SourceZoxide, config.SourceWorkspaces}
-	m := NewModelWithLayout(cands, nil, Layout{Theme: ThemeMocha, SourceOrder: nonDefault})
+	m := NewModelWithLayout(cands, nil, Layout{Theme: testTheme(ThemeMocha), SourceOrder: nonDefault})
 	m, _ = update(t, m, sizeMsg(120, 36))
 	if len(m.rows) != 2 {
 		t.Fatalf("expected 2 rows, got %d: %+v", len(m.rows), m.rows)
@@ -123,7 +123,7 @@ func TestEmptyQueryKeepsSourceBlocksContiguousWithActiveRanking(t *testing.T) {
 		herdrCandidate("beta", "/srv/beta", "w2"),
 	}
 	order := []string{config.SourceHerdr, config.SourceZoxide}
-	m := NewModelWithLayout(cands, nil, Layout{Theme: ThemeMocha, SourceOrder: order, RankingSnapshot: snapshot})
+	m := NewModelWithLayout(cands, nil, Layout{Theme: testTheme(ThemeMocha), SourceOrder: order, RankingSnapshot: snapshot})
 	m, _ = update(t, m, sizeMsg(120, 36))
 	var got []string
 	for _, r := range m.rows {
@@ -338,7 +338,7 @@ func TestRowDisplayText_ZoxideAndProjectsShowFullPathNoSecondary(t *testing.T) {
 // compact shortcut contract at both standard and narrow widths.
 func TestRenderFooter_HasNoSelectedPathOrBrackets(t *testing.T) {
 	t.Parallel()
-	m := NewModelWithLayout([]source.Candidate{zoxideCandidate("alpha", "/home/dev/alpha")}, nil, Layout{Theme: ThemeMocha})
+	m := NewModelWithLayout([]source.Candidate{zoxideCandidate("alpha", "/home/dev/alpha")}, nil, Layout{Theme: testTheme(ThemeMocha)})
 	for _, size := range []struct{ width, height int }{{120, 36}, {60, 20}, {15, 20}} {
 		m, _ = update(t, m, sizeMsg(size.width, size.height))
 		footer := footerText(m)

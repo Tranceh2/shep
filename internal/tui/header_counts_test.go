@@ -17,7 +17,7 @@ func TestResultCount_MultiSourceMatchesKeepTotal(t *testing.T) {
 		zoxideCandidate("back-alley", "/x/back-alley"),
 		projectCandidate("frontend", "/srv/frontend"),
 	}
-	m := NewModelWithLayout(cands, nil, Layout{Theme: ThemeMocha})
+	m := NewModelWithLayout(cands, nil, Layout{Theme: testTheme(ThemeMocha)})
 	m, _ = update(t, m, sizeMsg(120, 36))
 	for _, r := range "back" {
 		m, _ = update(t, m, key(string(r)))
@@ -63,7 +63,7 @@ func TestResultCount_TextStates(t *testing.T) {
 // the shared spinner frame while producers stream, and only then.
 func TestResultCount_LoadingPrefixesSpinner(t *testing.T) {
 	t.Parallel()
-	m := NewModelWithLayout(nil, nil, Layout{Theme: ThemeMocha})
+	m := NewModelWithLayout(nil, nil, Layout{Theme: testTheme(ThemeMocha)})
 	frame := m.spinner.View()
 	if got := m.renderResultCount(resultCount{shown: 3, total: 3, loading: true}); got != frame+" 3" {
 		t.Errorf("loading tally = %q, want the spinner frame then the count", got)
@@ -86,7 +86,7 @@ func TestResultCount_AgentsViewCountsAgents(t *testing.T) {
 			{ID: "p2", WorkspaceID: "w1", TabID: "t1", Agent: "codex", AgentStatus: "idle", TerminalTitle: "write docs"},
 		},
 	}
-	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(snapshot), Layout{Theme: ThemeMocha, InitialTab: "agents"})
+	m := NewModelWithTree(nil, nil, NewTreeExpanderFromSnapshot(snapshot), Layout{Theme: testTheme(ThemeMocha), InitialTab: "agents"})
 	m, _ = update(t, m, sizeMsg(120, 36))
 	if got := m.resultCount().text(); got != "2" {
 		t.Errorf("unfiltered agents tally = %q, want \"2\"", got)

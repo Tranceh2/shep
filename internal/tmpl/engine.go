@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"text/template"
+	"text/template/parse"
 )
 
 // templateName names every parsed template, so errors read
@@ -60,6 +62,10 @@ func New(home string) *Engine {
 // Home returns the home directory the engine's tilde helper abbreviates.
 func (e *Engine) Home() string { return e.home }
 
+// Tilde abbreviates a leading home directory in s to "~", exactly like the
+// tilde template function, for Go code that shows a path outside a template.
+func (e *Engine) Tilde(s string) string { return tildeFunc(e.home)(s) }
+
 // Parse returns the parsed template for format, parsing it at most once. The
 // returned template is shared with every other caller and must not be
 // modified. Missing map keys (such as an absent .Meta entry) render empty;
@@ -79,7 +85,9 @@ func (e *Engine) Parse(format string) (*template.Template, error) {
 }
 
 // Render evaluates format against d. A format without template actions is
-// returned as is.
+// returned as is. The output of a row template may carry style and live
+// markup (see Segments); every reserved rune is removed from d first, so
+// only the template itself can produce markup.
 func (e *Engine) Render(format string, d Data) (string, error) {
 	if !strings.Contains(format, "{{") {
 		return format, nil
@@ -88,6 +96,7 @@ func (e *Engine) Render(format string, d Data) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	sanitize(&d)
 	var out strings.Builder
 	out.Grow(len(format) + 32)
 	if err := t.Execute(&out, d); err != nil {
@@ -96,24 +105,146 @@ func (e *Engine) Render(format string, d Data) (string, error) {
 	return out.String(), nil
 }
 
+// RenderPlain is Render for templates whose output is plain text (a
+// workspace name, a preview command argument): output carrying style or live
+// markup is an error instead of reaching a place that cannot decode it.
+func (e *Engine) RenderPlain(format string, d Data) (string, error) {
+	out, err := e.Render(format, d)
+	if err != nil {
+		return "", err
+	}
+	if HasMarkup(out) {
+		return "", errPlainMarkup
+	}
+	return out, nil
+}
+
+// errPlainMarkup reports markup in a plain-text template's output.
+var errPlainMarkup = errors.New("output contains row styling; style and live functions (" +
+	strings.Join(markupFunctionNames, ", ") + ") only apply to row templates (icon, label_format, detail_format, marker_format)")
+
 // Validate parses format and executes it against every sample (all kinds'
 // Samples when none are given), so syntax errors, unknown fields and
 // functions, and data-dependent execution failures are all reported before
 // the template is ever used. Errors read "field: error".
 func (e *Engine) Validate(field, format string, samples ...Data) error {
+	_, err := e.validate(field, format, samples)
+	return err
+}
+
+// ValidatePlain is Validate for templates whose output is plain text: it
+// also rejects any call of a style or live function, in every branch, with
+// an error naming the function.
+func (e *Engine) ValidatePlain(field, format string, samples ...Data) error {
+	t, err := e.validate(field, format, samples)
+	if err != nil {
+		return err
+	}
+	if name := markupCall(t); name != "" {
+		return scoped(field, fmt.Errorf("%s is a row presentation function; this template renders plain text, so style and live functions (%s) cannot be used here",
+			name, strings.Join(markupFunctionNames, ", ")))
+	}
+	if len(samples) == 0 {
+		samples = Samples()
+	}
+	for _, sample := range samples {
+		out, err := e.Render(format, sample)
+		if err != nil {
+			return scoped(field, err)
+		}
+		if HasMarkup(out) {
+			return scoped(field, errPlainMarkup)
+		}
+	}
+	return nil
+}
+
+// validate parses format and executes it against every sample, returning
+// the parsed template.
+func (e *Engine) validate(field, format string, samples []Data) (*template.Template, error) {
 	if len(samples) == 0 {
 		samples = Samples()
 	}
 	t, err := e.Parse(format)
 	if err != nil {
-		return scoped(field, err)
+		return nil, scoped(field, err)
 	}
 	for _, sample := range samples {
+		sanitize(&sample)
 		if err := t.Execute(io.Discard, sample); err != nil {
-			return scoped(field, err)
+			return nil, scoped(field, err)
 		}
 	}
-	return nil
+	return t, nil
+}
+
+// markupCall returns the first style or live function t (or a template it
+// defines) calls anywhere, "" when there is none.
+func markupCall(t *template.Template) string {
+	for _, tt := range t.Templates() {
+		if tt.Tree == nil {
+			continue
+		}
+		if name := markupCallIn(tt.Root); name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+func markupCallIn(node parse.Node) string {
+	switch n := node.(type) {
+	case *parse.ListNode:
+		if n == nil {
+			return ""
+		}
+		for _, child := range n.Nodes {
+			if name := markupCallIn(child); name != "" {
+				return name
+			}
+		}
+	case *parse.ActionNode:
+		return markupCallIn(n.Pipe)
+	case *parse.IfNode:
+		return markupCallInBranch(&n.BranchNode)
+	case *parse.RangeNode:
+		return markupCallInBranch(&n.BranchNode)
+	case *parse.WithNode:
+		return markupCallInBranch(&n.BranchNode)
+	case *parse.TemplateNode:
+		return markupCallIn(n.Pipe)
+	case *parse.PipeNode:
+		if n == nil {
+			return ""
+		}
+		for _, cmd := range n.Cmds {
+			if name := markupCallIn(cmd); name != "" {
+				return name
+			}
+		}
+	case *parse.CommandNode:
+		for _, arg := range n.Args {
+			if name := markupCallIn(arg); name != "" {
+				return name
+			}
+		}
+	case *parse.ChainNode:
+		return markupCallIn(n.Node)
+	case *parse.IdentifierNode:
+		if slices.Contains(markupFunctionNames, n.Ident) {
+			return n.Ident
+		}
+	}
+	return ""
+}
+
+func markupCallInBranch(n *parse.BranchNode) string {
+	for _, child := range []parse.Node{n.Pipe, n.List, n.ElseList} {
+		if name := markupCallIn(child); name != "" {
+			return name
+		}
+	}
+	return ""
 }
 
 // scoped prefixes err with the configuration field it belongs to.

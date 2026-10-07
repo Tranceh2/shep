@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
+	"github.com/tranceh2/shep/internal/tmpl"
 )
 
 // This file exercises four related visual/behavioral changes requested
@@ -160,7 +161,9 @@ func TestRowView_RowCandidate_PathFallbackIsFilenameFirst(t *testing.T) {
 
 func TestRowPrimaryText_RowCandidate_HerdrLabelComposition(t *testing.T) {
 	t.Parallel()
-	m := newRenderTestModel(ThemeMocha, FocusList)
+	m := newRenderTestModel(ThemeMocha, FocusList).withPresentation(func(p *config.Presentations) {
+		p.Herdr.Icon, p.Zoxide.Icon = "◆", "◆"
+	})
 
 	for _, tt := range []struct {
 		name          string
@@ -240,11 +243,12 @@ func TestRowPrimaryText_TabAndPaneDefaultsAreLabelOnly(t *testing.T) {
 
 // TestRowView_TabAndPaneSecondary proves tree children never carry the
 // parent workspace's context; only a pane shown by its path fallback is
-// split filename-first, and titles keep their start when truncated.
+// drawn name-first, and labels that are not paths keep their start when
+// truncated.
 func TestRowView_TabAndPaneSecondary(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
-	m.homeDir = "/home/dev"
+	m.layout.Templates = tmpl.New("/home/dev")
 	for _, tc := range []struct {
 		row       Row
 		secondary string
@@ -252,11 +256,11 @@ func TestRowView_TabAndPaneSecondary(t *testing.T) {
 	}{
 		{Row{Kind: RowPane, Candidate: source.Candidate{Label: "p1", Path: "/srv/api", Meta: map[string]string{"workspace_label": "backend"}}}, "", true},
 		{Row{Kind: RowTab, Candidate: source.Candidate{Label: "api", Meta: map[string]string{"workspace_label": "backend"}}}, "", true},
-		{Row{Kind: RowPane, Depth: 2, Candidate: source.Candidate{Path: "/home/dev/allsafe/ECORP/tech/whiterose-db"}}, "~/allsafe/ECORP/tech", false},
+		{Row{Kind: RowPane, Depth: 2, Candidate: source.Candidate{Path: "/home/dev/allsafe/ECORP/tech/whiterose-db"}}, "~/allsafe/ECORP/tech", true},
 	} {
 		v := m.buildRowView(tc.row)
-		if v.secondary != tc.secondary || v.keepStart != tc.keepStart {
-			t.Errorf("row %q: secondary %q keepStart %v, want %q %v", v.primary, v.secondary, v.keepStart, tc.secondary, tc.keepStart)
+		if v.detail.text != tc.secondary || v.keepStart != tc.keepStart {
+			t.Errorf("row %q: detail %q keepStart %v, want %q %v", v.label.text, v.detail.text, v.keepStart, tc.secondary, tc.keepStart)
 		}
 	}
 }

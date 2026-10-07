@@ -9,6 +9,7 @@ import (
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/fuzzy"
 	"github.com/tranceh2/shep/internal/source"
+	"github.com/tranceh2/shep/internal/tmpl"
 )
 
 // maskedRunes returns the runes of text a highlight mask marks.
@@ -24,15 +25,17 @@ func maskedRunes(text string, mask []bool) string {
 
 // TestAgentPresentation_RightTruncationAndHighlight proves agent titles keep
 // their start when truncated (the start of a sentence carries its meaning),
-// unlike every other row, and that a highlighted rune in the kept start keeps
-// its accent through truncation.
+// like every label that is not a path, while a path keeps its end, and that a
+// highlighted rune in the kept start keeps its accent through truncation.
 func TestAgentPresentation_RightTruncationAndHighlight(t *testing.T) {
-	m := newRenderTestModel(ThemeMocha, FocusList)
+	m := newRenderTestModel(ThemeMocha, FocusList).withPresentation(func(p *config.Presentations) {
+		p.Agents.Icon, p.Projects.Icon, p.Projects.Label, p.Projects.Detail = "X", "X", "{{ .Label }}", ""
+	})
 	m.query = "sec"
 	agent := Row{Kind: RowCandidate, Match: MatchDirect, MatchedIndexes: []int{0, 1, 2}, Candidate: source.Candidate{
-		Source: config.SourceAgents, Icon: "X", Label: "security scan long title", Meta: map[string]string{"agent_status": "idle"},
+		Source: config.SourceAgents, Label: "security scan long title", Meta: map[string]string{"agent_status": "idle"},
 	}}
-	if v := m.buildRowView(agent); maskedRunes(v.primary, v.primaryHL) != "sec" || !v.keepStart {
+	if v := m.buildRowView(agent); maskedRunes(v.label.text, v.label.hl) != "sec" || !v.keepStart {
 		t.Fatalf("agent view = %+v, want the title highlighted and kept from its start", v)
 	}
 	prefix := "X " + m.agentStatusIcon("idle") + " "
@@ -49,15 +52,15 @@ func TestAgentPresentation_RightTruncationAndHighlight(t *testing.T) {
 		t.Errorf("agents tab pane row = %q, want the same right truncation", got)
 	}
 
-	other := Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceProjects, Icon: "X", Label: "security scan long title"}}
-	if got := renderRowLineText(m.renderRowLine(other, false, width-2)); !strings.HasSuffix(got, "X …long title") {
-		t.Errorf("project row = %q, want the label's tail behind a leading ellipsis", got)
+	other := Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceProjects, Label: "~/security/scan/long/title"}}
+	if got := renderRowLineText(m.renderRowLine(other, false, width-2)); !strings.HasSuffix(got, "X …long/title") {
+		t.Errorf("project row = %q, want the path label's tail behind a leading ellipsis", got)
 	}
 
 	// The surviving highlighted start keeps the accent after truncation.
-	_, mask := truncateMasked("security scan long title", m.buildRowView(agent).primaryHL, 11, true)
-	if got := maskedRunes("security s…", mask); got != "sec" {
-		t.Errorf("truncated mask highlights %q, want \"sec\"", got)
+	cut := truncatePart(m.buildRowView(agent).label, 13, true)
+	if got := maskedRunes(cut.text, cut.hl); cut.text != "✓ security s…" || got != "sec" {
+		t.Errorf("truncated label %q highlights %q, want \"sec\"", cut.text, got)
 	}
 }
 
@@ -67,8 +70,8 @@ func TestHighlight_EmptyMatchedIndexesHasNoMask(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	v := m.buildRowView(Row{Kind: RowCandidate, Candidate: zoxideCandidate("café", "/home/dev/café"), Match: MatchDirect})
-	if v.primary != "café" || v.primaryHL != nil {
-		t.Errorf("view = %q mask %v, want café without a highlight mask", v.primary, v.primaryHL)
+	if v.label.text != "café" || v.label.hl != nil {
+		t.Errorf("view = %q mask %v, want café without a highlight mask", v.label.text, v.label.hl)
 	}
 }
 
@@ -91,8 +94,8 @@ func TestHighlight_MatchUsesVisibleRowIndexes(t *testing.T) {
 			t.Fatalf("setup: query %q must keep a direct row, got %+v", tc.query, rows)
 		}
 		v := m.buildRowView(rows[0])
-		if got := maskedRunes(v.primary, v.primaryHL); v.primary != tc.label || got != tc.want {
-			t.Errorf("query %q: view %q highlights %q, want %q", tc.query, v.primary, got, tc.want)
+		if got := maskedRunes(v.label.text, v.label.hl); v.label.text != tc.label || got != tc.want {
+			t.Errorf("query %q: view %q highlights %q, want %q", tc.query, v.label.text, got, tc.want)
 		}
 	}
 }
@@ -105,8 +108,8 @@ func TestHighlight_NonDirectMatchesUseNoQueryStyle(t *testing.T) {
 	m.query = "wk"
 	for _, match := range []MatchKind{MatchDescendant, MatchNone} {
 		v := m.buildRowView(Row{Kind: RowCandidate, Candidate: zoxideCandidate("workspace", "/home/dev/workspace"), Match: match, MatchedIndexes: []int{0, 2}})
-		if v.primaryHL != nil {
-			t.Errorf("match %v: highlight mask %v, want none", match, v.primaryHL)
+		if v.label.hl != nil {
+			t.Errorf("match %v: highlight mask %v, want none", match, v.label.hl)
 		}
 		if v.descendant != (match == MatchDescendant) {
 			t.Errorf("match %v: descendant = %v", match, v.descendant)
@@ -120,7 +123,7 @@ func TestHighlight_NonDirectMatchesUseNoQueryStyle(t *testing.T) {
 func TestHighlight_FilenameFirstMapsAcrossParentAndName(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
-	m.homeDir = "/home/dev"
+	m.layout.Templates = tmpl.New("/home/dev")
 	m.query = "proshep"
 	label := "~/Proyectos/shep"
 	rows := buildRows(rowBuildInput{query: m.query, candidates: []source.Candidate{zoxideCandidate("", "/home/dev/Proyectos/shep")}})
@@ -128,21 +131,21 @@ func TestHighlight_FilenameFirstMapsAcrossParentAndName(t *testing.T) {
 		t.Fatalf("setup: want one direct row, got %+v", rows)
 	}
 	v := m.buildRowView(rows[0])
-	if v.primary != "shep" || v.secondary != "~/Proyectos" {
-		t.Fatalf("split = %q + %q, want shep + ~/Proyectos", v.primary, v.secondary)
+	if v.label.text != "shep" || v.detail.text != "~/Proyectos" {
+		t.Fatalf("split = %q + %q, want shep + ~/Proyectos", v.label.text, v.detail.text)
 	}
 	_, indexes := fuzzy.Score(m.query, label)
 	sep := strings.LastIndex(label, "/")
 	for _, i := range indexes {
 		switch {
-		case i < sep && !v.secondaryHL[i]:
+		case i < sep && !v.detail.hl[i]:
 			t.Errorf("parent rune %d (%q) not highlighted", i, string([]rune(label)[i]))
-		case i > sep && !v.primaryHL[i-sep-1]:
+		case i > sep && !v.label.hl[i-sep-1]:
 			t.Errorf("name rune %d (%q) not highlighted", i, string([]rune(label)[i]))
 		}
 	}
-	if maskedRunes(v.primary, v.primaryHL) == "" || maskedRunes(v.secondary, v.secondaryHL) == "" {
-		t.Errorf("highlights = %q / %q, want matches in both parts", maskedRunes(v.secondary, v.secondaryHL), maskedRunes(v.primary, v.primaryHL))
+	if maskedRunes(v.label.text, v.label.hl) == "" || maskedRunes(v.detail.text, v.detail.hl) == "" {
+		t.Errorf("highlights = %q / %q, want matches in both parts", maskedRunes(v.detail.text, v.detail.hl), maskedRunes(v.label.text, v.label.hl))
 	}
 }
 
@@ -154,7 +157,9 @@ func TestHighlight_FilenameFirstMapsAcrossParentAndName(t *testing.T) {
 func TestHighlight_ControlCharLabelMasksDisplayedRunes(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
-	m.layout.LabelFormats = LabelFormats{CustomSources: map[string]string{"prs": "{{.Label}}"}}
+	m = m.withPresentation(func(p *config.Presentations) {
+		p.Custom = map[string]config.RowPresentation{"prs": {Label: "{{.Label}}"}}
+	})
 	for _, tc := range []struct {
 		name, query   string
 		cand          source.Candidate
@@ -171,14 +176,14 @@ func TestHighlight_ControlCharLabelMasksDisplayedRunes(t *testing.T) {
 				t.Fatalf("setup: query %q must keep a direct row for %q, got %+v", tc.query, tc.cand.Label, rows)
 			}
 			v := m.buildRowView(rows[0])
-			if v.primary != tc.shown {
-				t.Fatalf("shown label = %q, want %q", v.primary, tc.shown)
+			if v.label.text != tc.shown {
+				t.Fatalf("shown label = %q, want %q", v.label.text, tc.shown)
 			}
-			if len(v.primaryHL) != len([]rune(v.primary)) {
-				t.Fatalf("mask covers %d runes, the shown label has %d", len(v.primaryHL), len([]rune(v.primary)))
+			if len(v.label.hl) != len([]rune(v.label.text)) {
+				t.Fatalf("mask covers %d runes, the shown label has %d", len(v.label.hl), len([]rune(v.label.text)))
 			}
-			if got := maskedRunes(v.primary, v.primaryHL); got != tc.marked {
-				t.Errorf("highlighted %q of %q, want %q", got, v.primary, tc.marked)
+			if got := maskedRunes(v.label.text, v.label.hl); got != tc.marked {
+				t.Errorf("highlighted %q of %q, want %q", got, v.label.text, tc.marked)
 			}
 		})
 	}
@@ -193,7 +198,7 @@ func TestWriteRuns_OneRenderPerStyleRun(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() { lipgloss.SetColorProfile(orig) })
 
-	s := newPalette(themes[ThemeMocha])
+	s := newPalette(testTheme(ThemeMocha), nil)
 	base, hl := s.rowStyle, s.queryStyle
 	for _, tc := range []struct {
 		text string

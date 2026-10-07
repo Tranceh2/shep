@@ -164,19 +164,14 @@ func benchStep(m Model, msg tea.Msg) Model {
 	return next.(Model)
 }
 
-// setupBenchRendering pins a true-color profile (so styles emit real escape
-// sequences, as in a terminal) and an empty environment (so NO_COLOR or
-// SHEP_THEME in the caller's shell cannot change the measured theme).
+// setupBenchRendering pins a true-color profile so styles emit real escape
+// sequences, as in a terminal. The theme is always passed explicitly, so the
+// caller's NO_COLOR or SHEP_THEME cannot change it.
 func setupBenchRendering(b *testing.B) {
 	b.Helper()
 	origProfile := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
-	origEnv := envLookup
-	envLookup = func(string) string { return "" }
-	b.Cleanup(func() {
-		lipgloss.SetColorProfile(origProfile)
-		envLookup = origEnv
-	})
+	b.Cleanup(func() { lipgloss.SetColorProfile(origProfile) })
 }
 
 // benchAllModel builds the sized all-view model with a resolved preview.
@@ -184,7 +179,7 @@ func benchAllModel(b *testing.B) Model {
 	b.Helper()
 	setupBenchRendering(b)
 	snap := benchSnapshot(30)
-	m := NewModelWithTree(benchAllCandidates(snap), benchWorkspaceRenderer{}, NewTreeExpanderFromSnapshot(snap), Layout{Theme: ThemeMocha})
+	m := NewModelWithTree(benchAllCandidates(snap), benchWorkspaceRenderer{}, NewTreeExpanderFromSnapshot(snap), Layout{Theme: testTheme(ThemeMocha)})
 	m = benchStep(m, tea.WindowSizeMsg{Width: 140, Height: 38})
 	res, _ := benchWorkspaceRenderer{}.Render(context.Background(), source.Candidate{})
 	m = benchStep(m, previewResponseMsg{seq: m.previewSeq, result: res})
@@ -247,7 +242,7 @@ func BenchmarkUpdate_SpinnerTickWorkspaceHeavyCapture(b *testing.B) {
 	setupBenchRendering(b)
 	snap := benchSnapshot(30)
 	renderer := benchHeavyRenderer{capture: heavyCapture()}
-	m := NewModelWithTree(benchAllCandidates(snap), renderer, NewTreeExpanderFromSnapshot(snap), Layout{Theme: ThemeMocha})
+	m := NewModelWithTree(benchAllCandidates(snap), renderer, NewTreeExpanderFromSnapshot(snap), Layout{Theme: testTheme(ThemeMocha)})
 	m = benchStep(m, tea.WindowSizeMsg{Width: 140, Height: 38})
 	res, _ := renderer.Render(context.Background(), source.Candidate{})
 	m = benchStep(m, previewResponseMsg{seq: m.previewSeq, result: res})
@@ -305,7 +300,7 @@ func benchConfiguredTabsModel(b *testing.B) Model {
 		})
 	}
 	layout := Layout{
-		Theme:       ThemeMocha,
+		Theme:       testTheme(ThemeMocha),
 		HomeDir:     home,
 		SourceOrder: []string{config.SourceHerdr, config.SourceWorkspaces, config.SourceZoxide, config.SourceProjects},
 		Tabs: []TabDefinition{
@@ -389,7 +384,7 @@ func BenchmarkUpdate_SpinnerTickAgents(b *testing.B) {
 	for _, ws := range snap.Workspaces {
 		cands = append(cands, herdrCandidate(ws.Label, ws.CWD, ws.ID))
 	}
-	m := NewModelWithTree(cands, nil, NewTreeExpanderFromSnapshot(snap), Layout{Theme: ThemeMocha, InitialTab: "agents"})
+	m := NewModelWithTree(cands, nil, NewTreeExpanderFromSnapshot(snap), Layout{Theme: testTheme(ThemeMocha), InitialTab: "agents"})
 	m = benchStep(m, tea.WindowSizeMsg{Width: 140, Height: 38})
 	if got := len(m.rows); got != 10 {
 		b.Fatalf("agents view has %d rows, want 10", got)

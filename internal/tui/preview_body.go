@@ -205,7 +205,7 @@ func (m Model) previewHead(row Row, width int) previewBlock {
 // previewLocation renders the row's path, home-abbreviated and kept from
 // its end when it does not fit; "" for a row without a path.
 func (m Model) previewLocation(row Row, width int) string {
-	path := abbreviateHome(plainText(row.Candidate.Path), m.homeDir)
+	path := m.layout.Templates.Tilde(plainText(row.Candidate.Path))
 	if path == "" {
 		return ""
 	}
@@ -278,7 +278,7 @@ func (m Model) previewMeta(row Row, width int) (meta string, spins bool) {
 // placement renders where a tab or pane lives: "in <workspace> › <tab>".
 // withTab adds the tab (a pane's), when it has a label.
 func (m Model) placement(c source.Candidate, withTab bool) string {
-	ws := abbreviateHome(plainText(c.Meta["workspace_label"]), m.homeDir)
+	ws := m.layout.Templates.Tilde(plainText(c.Meta["workspace_label"]))
 	if ws == "" {
 		return ""
 	}
@@ -320,14 +320,14 @@ func (m Model) directoryMeta(c source.Candidate) []string {
 					branch = b
 				}
 			}
-			parts = append(parts, muted.Render(on)+m.styles.queryStyle.Render(plainText(branch)))
+			parts = append(parts, muted.Render(on)+m.styles.gitBranchStyle.Render(plainText(branch)))
 			if head := c.Meta["head"]; c.Meta["is_worktree"] == "true" && head != "" {
 				parts = append(parts, muted.Render(plainText(head[:min(7, len(head))])))
 			}
 			if dirty == 0 {
-				parts = append(parts, m.styles.statusIdleStyle.Render("clean"))
+				parts = append(parts, m.styles.gitCleanStyle.Render("clean"))
 			} else {
-				parts = append(parts, m.styles.warnStyle.Render(plural(dirty, "change")))
+				parts = append(parts, m.styles.gitChangesStyle.Render(plural(dirty, "change")))
 			}
 		}
 	}

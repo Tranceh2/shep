@@ -86,7 +86,7 @@ func TestQueryInput_MultiRuneBurstAppendsAllRunes(t *testing.T) {
 func TestQueryInput_BurstSpellingAChordIsText(t *testing.T) {
 	t.Parallel()
 	for _, text := range []string{"esc", "tab", "enter", "up", "down", "end", "ctrl+t", "ctrl+x", "backspace", "ctrl+w"} {
-		for _, focus := range []Focus{FocusList, FocusPreview} {
+		for _, focus := range []Focus{FocusList} {
 			m := queryInputModel()
 			m.focus = focus
 			startTab := m.activeTab
@@ -156,18 +156,16 @@ func TestQueryInput_ControlRunesDropped(t *testing.T) {
 
 // TestQueryInput_NothingPrintableIsUnboundKey proves input with no
 // printable rune (a paste of only line breaks) behaves like any other
-// unbound key: the query is not refiltered and the preview keeps focus.
+// unbound key: the query is not refiltered.
 func TestQueryInput_NothingPrintableIsUnboundKey(t *testing.T) {
 	t.Parallel()
 	m := queryInputModel()
 	m.query = "al"
 	m.applyFilter()
-	m.focus = FocusPreview
 	m, cmd := update(t, m, paste("\n\t\r\n"))
-	if m.query != "al" || m.focus != FocusPreview || cmd != nil {
-		t.Errorf("control-only paste from preview: query = %q focus = %v cmd = %v, want \"al\", FocusPreview, nil", m.query, m.focus, cmd != nil)
+	if m.query != "al" || cmd != nil {
+		t.Errorf("control-only paste: query = %q cmd = %v, want \"al\", nil", m.query, cmd != nil)
 	}
-	m.focus = FocusList
 	m, _ = update(t, m, burst("\x01\x02"))
 	if m.query != "al" {
 		t.Errorf("control-only burst from list: query = %q, want \"al\"", m.query)
@@ -240,49 +238,6 @@ func TestQueryInput_WordDeletion(t *testing.T) {
 				t.Errorf("%s on %q: focus = %v cancelled = %v", chord.String(), tc.query, m.focus, m.cancelled)
 			}
 		}
-	}
-}
-
-// TestQueryInput_FromPreviewReturnsFocusToList proves every query edit —
-// burst, paste, backspace, ctrl+w, alt+backspace — taken while the preview
-// owns focus returns focus to the list in the same step (focus is set
-// directly: no key enters FocusPreview anymore).
-func TestQueryInput_FromPreviewReturnsFocusToList(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name, query string
-		msg         tea.KeyMsg
-		want        string
-	}{
-		{"burst", "", burst("shep"), "shep"},
-		{"paste", "a", paste("foo\nbar\tbaz"), "afoobarbaz"},
-		{"backspace", "canción", key("backspace"), "canció"},
-		{"backspace empty", "", key("backspace"), ""},
-		{"ctrl+w", "foo bar  ", keyCtrlW, "foo "},
-		{"ctrl+w single word", "foo", keyCtrlW, ""},
-		{"ctrl+w empty", "", keyCtrlW, ""},
-		{"alt+backspace", "foo bar  ", keyAltBackspace, "foo "},
-		{"alt+backspace single word", "foo", keyAltBackspace, ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			m := queryInputModel()
-			m.query = tc.query
-			m.applyFilter()
-			m.focus = FocusPreview
-			seq := m.previewSeq
-			m, _ = update(t, m, tc.msg)
-			if m.focus != FocusList {
-				t.Errorf("focus = %v, want FocusList", m.focus)
-			}
-			if m.query != tc.want || !utf8.ValidString(m.query) {
-				t.Errorf("query = %q, want %q", m.query, tc.want)
-			}
-			if m.previewSeq != seq+1 {
-				t.Errorf("previewSeq = %d, want %d (edit must re-sync the preview)", m.previewSeq, seq+1)
-			}
-		})
 	}
 }
 
@@ -375,7 +330,6 @@ func TestDoubleEsc_ActsAsTwoPresses(t *testing.T) {
 		t.Parallel()
 		m := queryInputModel()
 		m.query = "shep"
-		m.prevFocus = FocusList
 		m.focus = FocusHelp
 		next, _ := m.handleKey(keyDoubleEsc)
 		got := next.(Model)

@@ -38,7 +38,7 @@ func TestCurrentAccessory_MarksThePaneItsTabAndItsWorkspace(t *testing.T) {
 		{"directory with the same id meta", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "x", Source: config.SourceZoxide, Meta: map[string]string{"workspace_id": "w1"}}}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := strings.Contains(m.rowAccessoryText(tc.row), currentAccessory); got != tc.want {
+			if got := strings.Contains(m.rowAccessoryText(tc.row), currentMarker); got != tc.want {
 				t.Errorf("accessories = %q, want current=%v", m.rowAccessoryText(tc.row), tc.want)
 			}
 		})
@@ -64,6 +64,7 @@ func TestCurrentAccessory_RendersMutedAtTheRowEnd(t *testing.T) {
 	for _, icons := range []string{IconsUnicode, IconsASCII} {
 		m := currentPaneModel()
 		m.layout.Icons = icons
+		m = m.withPresentation(nil)
 		set := m.icons()
 		row := Row{Kind: RowTab, Depth: 1, IsLast: true, Candidate: source.Candidate{Label: "api", Meta: map[string]string{"tab_id": "t1"}}}
 		line := strings.TrimRight(stripNonSGRANSI(m.renderRowLine(row, false, 40)), " ")

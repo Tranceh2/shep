@@ -590,30 +590,38 @@ func (r *Registry) Collect(ctx context.Context) ([]Candidate, error) {
 	return out, firstErr
 }
 
-// IconFor returns the configured icon for the named source, or "" when no
-// icon is configured. Centralised so every provider's candidates receive the
-// same icon from a single lookup site.
+// IconFor returns the named source's configured icon when it is a fixed
+// string, "" when none is configured or when the icon is a template (one that
+// depends on the row, such as the projects default): the picker draws icons
+// from the presentation templates itself, so the stamped value only feeds
+// the .Icon field and shep list's icon column.
 func (r *Registry) IconFor(name string) string {
+	var icon *string
 	switch name {
 	case config.SourceHerdr:
-		return r.cfg.Sources.Herdr.Icon
+		icon = r.cfg.Sources.Herdr.Icon
 	case config.SourceSessions:
-		return r.cfg.Sources.Sessions.Icon
+		icon = r.cfg.Sources.Sessions.Icon
 	case config.SourceWorkspaces:
-		return r.cfg.Sources.Workspaces.Icon
+		icon = r.cfg.Sources.Workspaces.Icon
 	case config.SourceZoxide:
-		return r.cfg.Sources.Zoxide.Icon
+		icon = r.cfg.Sources.Zoxide.Icon
 	case config.SourceProjects:
-		return r.cfg.Sources.Projects.Icon
+		icon = r.cfg.Sources.Projects.Icon
 	case config.SourceAgents:
-		return r.cfg.Sources.Agents.Icon
-	}
-	for _, customSource := range r.cfg.Sources.Custom {
-		if customSource.Name == name {
-			return customSource.Icon
+		icon = r.cfg.Sources.Agents.Icon
+	default:
+		for _, customSource := range r.cfg.Sources.Custom {
+			if customSource.Name == name {
+				icon = customSource.Icon
+				break
+			}
 		}
 	}
-	return ""
+	if icon == nil || strings.Contains(*icon, "{{") {
+		return ""
+	}
+	return *icon
 }
 
 // --- workspaces provider ---

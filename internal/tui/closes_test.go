@@ -114,16 +114,6 @@ func TestClosePendingStatusSurvivesNonKeyUpdatesAndOverlappingKey(t *testing.T) 
 	}
 }
 
-func TestCloseFromPreviewFocus(t *testing.T) {
-	m := NewModelWithLayout(nil, nil, Layout{Closer: func(context.Context, string, string) CloseResultMsg { return CloseResultMsg{} }})
-	m.rows = []Row{{Kind: RowTab, Candidate: source.Candidate{Source: config.SourceHerdr, Meta: map[string]string{"tab_id": "t1"}}}}
-	m.focus = FocusPreview
-	m, cmd := update(t, m, closeKey())
-	if cmd == nil || !m.closePending || m.focus != FocusPreview {
-		t.Fatal("preview focus did not close selected row")
-	}
-}
-
 func TestCloseRowKindsAndNoOps(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

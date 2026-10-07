@@ -1,8 +1,6 @@
 package tui
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -14,6 +12,8 @@ import (
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/ranking"
 	"github.com/tranceh2/shep/internal/source"
+	"github.com/tranceh2/shep/internal/theme"
+	"github.com/tranceh2/shep/internal/tmpl"
 )
 
 // treeWith builds a one-workspace tree whose panes report statuses.
@@ -28,164 +28,119 @@ func treeWith(workspaceID string, statuses ...string) *TreeExpander {
 	return NewTreeExpanderFromSnapshot(snap)
 }
 
-// TestRowAccessories_PerKind proves each row kind's right-aligned
-// accessories, in display order.
-func TestRowAccessories_PerKind(t *testing.T) {
+// TestRowMarkers_PerKind proves each row kind's default marker part, in
+// display order: the live markers it shows and the text around them, with
+// no gap left by the markers a row does not show.
+func TestRowMarkers_PerKind(t *testing.T) {
 	t.Parallel()
 	pinnedZoxide := zoxideCandidate("cache", "/srv/cache")
 	group := source.Candidate{Label: "team", Path: "/srv/team", Source: config.SourceWorkspaces, Meta: map[string]string{"group": "true"}}
+	working := newRenderTestModel(ThemeMocha, FocusList).agentStatusIcon("working")
 	for _, tc := range []struct {
 		name string
 		tree *TreeExpander
 		row  Row
-		want []accessory
+		want string
 	}{
-		{"open workspace: most urgent agent status", treeWith("w1", "idle", "working", "blocked", ""), Row{Kind: RowCandidate, Candidate: herdrCandidate("api", "/srv/api", "w1")},
-			[]accessory{{text: "blocked", role: accessoryStatus, width: 1}}},
-		{"open workspace: working beats done and idle", treeWith("w1", "done", "working", "idle"), Row{Kind: RowCandidate, Candidate: herdrCandidate("api", "/srv/api", "w1")},
-			[]accessory{{text: "working", role: accessoryStatus, width: 1}}},
-		{"open workspace without agents", treeWith("w1", "", "unknown"), Row{Kind: RowCandidate, Candidate: herdrCandidate("api", "/srv/api", "w1")}, nil},
-		{"pinned candidate", nil, Row{Kind: RowCandidate, Candidate: pinnedZoxide}, []accessory{{text: "★", role: accessoryPin, width: 1}}},
-		{"pinned group workspace", nil, Row{Kind: RowCandidate, Candidate: group},
-			[]accessory{{text: "★", role: accessoryPin, width: 1}, {text: "›", width: 1}}},
-		{"worktree branch", nil, Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "api", Source: config.SourceProjects, Meta: map[string]string{"is_worktree": "true", "branch": "main"}}},
-			[]accessory{{text: "main", width: 4}}},
-		{"session state", nil, Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "s", Source: config.SourceSessions, Meta: map[string]string{"running": "true", "default": "true"}}},
-			[]accessory{{text: "running · default", width: 17}}},
-		{"missing path", nil, Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "gone", Path: "/gone", Source: config.SourceProjects, Missing: true}},
-			[]accessory{{text: "missing", role: accessoryError, width: 7}}},
-		{"agent row: a path-like workspace shows its last element", nil, Row{Kind: RowPane, Candidate: source.Candidate{Label: "fix it", Source: config.SourceAgents, Meta: map[string]string{"workspace_label": "/home/dev/Proyectos/fsociety/"}}},
-			[]accessory{{text: "fsociety", width: 8, shrink: true}}},
-		{"agent row: a named workspace keeps its label", nil, Row{Kind: RowPane, Candidate: source.Candidate{Label: "fix it", Source: config.SourceAgents, Meta: map[string]string{"workspace_label": "app contract"}}},
-			[]accessory{{text: "app contract", width: 12, shrink: true}}},
-		{"tree pane: its agent", nil, Row{Kind: RowPane, Depth: 2, Candidate: source.Candidate{Label: "zsh", Meta: map[string]string{"agent": "claude"}}},
-			[]accessory{{text: "claude", width: 6}}},
-		{"tab row: none", nil, Row{Kind: RowTab, Depth: 1, Candidate: source.Candidate{Label: "api"}}, nil},
+		{"open workspace: most urgent agent status", treeWith("w1", "idle", "working", "blocked", ""), Row{Kind: RowCandidate, Candidate: herdrCandidate("api", "/srv/api", "w1")}, "◉"},
+		{"open workspace: working beats done and idle", treeWith("w1", "done", "working", "idle"), Row{Kind: RowCandidate, Candidate: herdrCandidate("api", "/srv/api", "w1")}, working},
+		{"open workspace without agents", treeWith("w1", "", "unknown"), Row{Kind: RowCandidate, Candidate: herdrCandidate("api", "/srv/api", "w1")}, ""},
+		{"pinned candidate", nil, Row{Kind: RowCandidate, Candidate: pinnedZoxide}, "★"},
+		{"pinned group workspace", nil, Row{Kind: RowCandidate, Candidate: group}, "★ ›"},
+		{"worktree branch", nil, Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "api", Source: config.SourceProjects, Meta: map[string]string{"is_worktree": "true", "branch": "main"}}}, "main"},
+		{"session state", nil, Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "s", Source: config.SourceSessions, Meta: map[string]string{"running": "true", "default": "true"}}}, "running · default"},
+		{"stopped session", nil, Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "s", Source: config.SourceSessions}}, "stopped"},
+		{"missing path", nil, Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "gone", Path: "/gone", Source: config.SourceProjects, Missing: true}}, "missing"},
+		{"missing open workspace", treeWith("w1", "blocked"), Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "api", Source: config.SourceHerdr, Missing: true, Meta: map[string]string{"workspace_id": "w1"}}}, "missing ◉"},
+		{"agent row: a path-like workspace shows its last element", nil, Row{Kind: RowPane, Candidate: source.Candidate{Label: "fix it", Source: config.SourceAgents, Meta: map[string]string{"workspace_label": "/home/dev/Proyectos/fsociety/"}}}, "fsociety"},
+		{"agent row: a named workspace keeps its label", nil, Row{Kind: RowPane, Candidate: source.Candidate{Label: "fix it", Source: config.SourceAgents, Meta: map[string]string{"workspace_label": "app contract"}}}, "app contract"},
+		{"tree pane: its agent", nil, Row{Kind: RowPane, Depth: 2, Candidate: source.Candidate{Label: "zsh", Meta: map[string]string{"agent": "claude"}}}, "claude"},
+		{"tab row: none", nil, Row{Kind: RowTab, Depth: 1, Candidate: source.Candidate{Label: "api"}}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newRenderTestModel(ThemeMocha, FocusList)
-			m.homeDir = "/home/dev"
+			m.layout.Templates = tmpl.New("/home/dev")
 			m.tree = tc.tree
 			m.rankingSnapshot = m.rankingSnapshot.WithPinned(ranking.PinKey(pinnedZoxide), true).WithPinned(ranking.PinKey(group), true)
-			got := m.buildRowView(tc.row).accessories
-			if len(got) != len(tc.want) {
-				t.Fatalf("accessories = %+v, want %+v", got, tc.want)
-			}
-			for i := range got {
-				if got[i] != tc.want[i] {
-					t.Errorf("accessory %d = %+v, want %+v", i, got[i], tc.want[i])
-				}
+			if got := m.rowAccessoryText(tc.row); got != tc.want {
+				t.Errorf("marker = %q, want %q", got, tc.want)
 			}
 		})
 	}
 }
 
-// TestRowView_AgentWorkspaceLabelCappedAndTitleKeepsStart proves an agent
-// row's workspace accessory takes at most min(30% of the row, 24 cells),
-// keeping its start, and is dropped when the title would keep fewer than 24
-// cells; the title keeps its start.
-func TestRowView_AgentWorkspaceLabelCappedAndTitleKeepsStart(t *testing.T) {
+// TestRowView_AgentMarkerCappedAndTitleKeepsStart proves the truncation
+// order on an agent row: under pressure its workspace marker is capped at
+// 30% of the row, keeping its start, and the title keeps its start; the
+// marker is dropped only when the title would keep fewer than 16 cells, and
+// a row with room shows the marker whole.
+func TestRowView_AgentMarkerCappedAndTitleKeepsStart(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	row := Row{Kind: RowPane, Candidate: source.Candidate{Label: "Refactor the render path of shep and measure everything", Source: config.SourceAgents,
 		Meta: map[string]string{"workspace_label": "platform-engineering-workspace"}}}
 	line := strings.TrimRight(renderRowLineText(m.renderRowLine(row, false, 60)), " ")
-	if !strings.HasSuffix(line, " platform-engineer…") || ansi.StringWidth("platform-engineer…") != 60*agentLabelMaxPercent/100 {
-		t.Errorf("agent row = %q, want the workspace label capped at 30%% of the row, keeping its start", line)
+	if !strings.HasSuffix(line, " platform-engineer…") || ansi.StringWidth("platform-engineer…") != 60*markerMaxPercent/100 {
+		t.Errorf("agent row = %q, want the workspace marker capped at 30%% of the row, keeping its start", line)
 	}
 	if !strings.HasPrefix(line, "  Refactor the render path of shep and m… ") {
 		t.Errorf("agent row = %q, want the title's start, truncated on the right", line)
 	}
-	if got := fitAccessoriesWidth(200); got != agentLabelMaxCells {
-		t.Errorf("workspace label at 200 columns = %d cells, want the %d-cell cap", got, agentLabelMaxCells)
+	if wide := renderRowLineText(m.renderRowLine(row, false, 120)); !strings.Contains(wide, "everything") || !strings.HasSuffix(strings.TrimRight(wide, " "), " platform-engineering-workspace") {
+		t.Errorf("wide agent row = %q, want the whole title and marker", wide)
 	}
-	narrow := strings.TrimRight(renderRowLineText(m.renderRowLine(row, false, 36)), " ")
-	if strings.Contains(narrow, "platform") || !strings.HasPrefix(narrow, "  Refactor the render path of shep") || ansi.StringWidth(narrow) != 36 {
-		t.Errorf("narrow agent row = %q, want the workspace dropped so the title keeps its room", narrow)
+	narrow := strings.TrimRight(renderRowLineText(m.renderRowLine(row, false, 25)), " ")
+	if strings.Contains(narrow, "platform") || !strings.HasPrefix(narrow, "  Refactor the render pa") || ansi.StringWidth(narrow) != 25 {
+		t.Errorf("narrow agent row = %q, want the marker dropped so the title keeps its room", narrow)
+	}
+	if kept := strings.TrimRight(renderRowLineText(m.renderRowLine(row, false, 26)), " "); !strings.HasSuffix(kept, " platfo…") {
+		t.Errorf("agent row at 26 = %q, want the capped marker kept while the title keeps 16 cells", kept)
 	}
 }
 
-// fitAccessoriesWidth is the width an agent workspace label 40 cells wide
-// gets in a row of rowWidth cells.
-func fitAccessoriesWidth(rowWidth int) int {
-	_, w := fitAccessories([]accessory{{text: strings.Repeat("w", 40), width: 40, shrink: true}}, rowWidth)
-	return w
-}
-
-// TestRowView_IconRolesPerSource proves icons are colored by source family
-// and that the plain theme leaves them uncolored. Not t.Parallel: it swaps
-// lipgloss's global color profile.
-func TestRowView_IconRolesPerSource(t *testing.T) {
+// TestRowView_IconColorsPerPresentation proves icons are colored by their
+// presentation's icon_color — by default the source.<name> roles, the tab
+// glyph text.muted — and that the plain theme leaves them uncolored. Not
+// t.Parallel: it swaps lipgloss's global color profile.
+func TestRowView_IconColorsPerPresentation(t *testing.T) {
 	orig := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() { lipgloss.SetColorProfile(orig) })
 
-	mocha := themes[ThemeMocha]
+	th := testTheme(ThemeMocha)
+	letters := func(p *config.Presentations) {
+		p.Herdr.Icon, p.Workspaces.Icon, p.Zoxide.Icon, p.Sessions.Icon, p.Agents.Icon = "H", "W", "Z", "S", "A"
+	}
 	for _, tc := range []struct {
-		name  string
-		row   Row
-		role  iconRole
-		color string
+		name string
+		row  Row
+		icon string
+		role theme.Role
 	}{
-		{"herdr", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "a", Icon: "H", Source: config.SourceHerdr}}, iconRoleHerdr, mocha.Success},
-		{"workspaces", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "a", Icon: "W", Source: config.SourceWorkspaces}}, iconRoleWorkspaces, mocha.Lavender},
-		{"zoxide", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "a", Icon: "Z", Source: config.SourceZoxide}}, iconRoleZoxide, mocha.Blue},
-		{"projects", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "a", Icon: "P", Source: config.SourceProjects}}, iconRoleProjects, mocha.Peach},
-		{"worktree", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "a", Icon: "P", Source: config.SourceProjects, Meta: map[string]string{"is_worktree": "true"}}}, iconRoleProjects, mocha.Peach},
-		{"sessions", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "a", Icon: "S", Source: config.SourceSessions}}, iconRoleSessions, mocha.Teal},
-		{"agents", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "a", Icon: "A", Source: config.SourceAgents}}, iconRoleAgents, mocha.Accent},
-		{"custom", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "a", Icon: "C", Source: "prs"}}, iconRoleCustom, mocha.Sky},
-		{"tab", Row{Kind: RowTab, Depth: 1, Candidate: source.Candidate{Label: "a"}}, iconRoleTab, mocha.Muted},
+		{"herdr", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "a", Source: config.SourceHerdr}}, "H", theme.RoleSourceHerdr},
+		{"workspaces", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "a", Source: config.SourceWorkspaces}}, "W", theme.RoleSourceWorkspaces},
+		{"zoxide", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "a", Source: config.SourceZoxide}}, "Z", theme.RoleSourceZoxide},
+		{"projects", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "a", Source: config.SourceProjects}}, "\ue702 ", theme.RoleSourceProjects},
+		{"worktree", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "a", Source: config.SourceProjects, Meta: map[string]string{"is_worktree": "true"}}}, "\ue725 ", theme.RoleSourceProjects},
+		{"sessions", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "a", Source: config.SourceSessions}}, "S", theme.RoleSourceSessions},
+		{"agents", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "a", Source: config.SourceAgents}}, "A", theme.RoleSourceAgents},
+		{"custom: the row's own icon", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "a", Icon: "C", Source: "prs"}}, "C", theme.RoleSourceCustom},
+		{"tab", Row{Kind: RowTab, Depth: 1, Candidate: source.Candidate{Label: "a"}}, "◫", theme.RoleTextMuted},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m := newRenderTestModel(ThemeMocha, FocusList)
-			v := m.buildRowView(tc.row)
-			if v.iconRole != tc.role {
-				t.Fatalf("icon role = %d, want %d", v.iconRole, tc.role)
+			m := newRenderTestModel(ThemeMocha, FocusList).withPresentation(letters)
+			if v := m.buildRowView(tc.row); v.icon.text != tc.icon {
+				t.Fatalf("icon = %q, want %q", v.icon.text, tc.icon)
 			}
-			want := lipgloss.NewStyle().Foreground(lipgloss.Color(tc.color)).Render(v.icon)
+			want := lipgloss.NewStyle().Foreground(th.Role(tc.role).Lipgloss()).Render(tc.icon)
 			if line := m.renderRowLine(tc.row, false, 30); !strings.Contains(line, want) {
 				t.Errorf("row %q does not draw the icon as %q", line, want)
 			}
-			plain := newRenderTestModel(ThemePlain, FocusList)
+			plain := newRenderTestModel(ThemePlain, FocusList).withPresentation(letters)
 			if line := plain.renderRowLine(tc.row, false, 30); strings.Contains(line, "38;2;") {
 				t.Errorf("plain row %q colors its icon", line)
 			}
 		})
-	}
-}
-
-// TestLabelFormatDefaults_MatchConfig proves the picker's fallback row
-// formats (used by direct Layout callers) stay identical to the defaults
-// config.Load fills in, including the label-only tree child formats.
-func TestLabelFormatDefaults_MatchConfig(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(path, []byte("[general]\nsource_order = [\"herdr\"]\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := config.Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := LabelFormats{}.withDefaults()
-	s := cfg.Sources
-	for _, tc := range []struct{ name, tui, config string }{
-		{"herdr", got.Herdr, s.Herdr.LabelFormat},
-		{"tab", got.Tab, s.Herdr.TabLabelFormat},
-		{"pane", got.Pane, s.Herdr.PaneLabelFormat},
-		{"sessions", got.Sessions, s.Sessions.LabelFormat},
-		{"workspaces", got.Workspaces, s.Workspaces.LabelFormat},
-		{"zoxide", got.Zoxide, s.Zoxide.LabelFormat},
-		{"projects", got.Projects, s.Projects.LabelFormat},
-		{"agents", got.Agents, s.Agents.LabelFormat},
-	} {
-		if tc.tui != tc.config {
-			t.Errorf("%s default: tui %q, config %q", tc.name, tc.tui, tc.config)
-		}
-	}
-	if got.Tab != "{{.Label}}" || got.Pane != "{{if .Label}}{{.Label}}{{else}}{{.Path}}{{end}}" {
-		t.Errorf("tree defaults = %q / %q, want label-only", got.Tab, got.Pane)
 	}
 }
 
@@ -231,7 +186,7 @@ func numberedCandidates(n int) []source.Candidate {
 // edge, then scrolls one row per move; a new query resets the window.
 func TestList_ScrollOffFollowsCursorAndQueryResets(t *testing.T) {
 	t.Parallel()
-	m := NewModelWithLayout(numberedCandidates(30), nil, Layout{Theme: ThemeMocha})
+	m := NewModelWithLayout(numberedCandidates(30), nil, Layout{Theme: testTheme(ThemeMocha)})
 	m, _ = update(t, m, sizeMsg(120, 10+chromeRows))
 	for i := 1; i <= 6; i++ {
 		m, _ = update(t, m, key("down"))
@@ -291,7 +246,7 @@ func TestView_ScrollbarOnDividerAndListOnlyColumn(t *testing.T) {
 		}
 		return b.String()
 	}
-	wide := NewModelWithLayout(numberedCandidates(20), nil, Layout{Theme: ThemeMocha})
+	wide := NewModelWithLayout(numberedCandidates(20), nil, Layout{Theme: testTheme(ThemeMocha)})
 	wide, _ = update(t, wide, sizeMsg(120, 10+chromeRows))
 	g := wide.geometry()
 	col := g.Margin + g.ListWidth + 1
@@ -311,7 +266,7 @@ func TestView_ScrollbarOnDividerAndListOnlyColumn(t *testing.T) {
 	for i := range long {
 		long[i].Label += strings.Repeat("-wide", 20)
 	}
-	narrow := NewModelWithLayout(long, nil, Layout{Theme: ThemeMocha})
+	narrow := NewModelWithLayout(long, nil, Layout{Theme: testTheme(ThemeMocha)})
 	narrow, _ = update(t, narrow, sizeMsg(64, 10+chromeRows))
 	last := narrow.geometry().Margin + narrow.geometry().ListWidth - 1
 	if got := bodyColumn(narrow, last); got != "┃┃┃┃┃│││││" {
@@ -321,7 +276,7 @@ func TestView_ScrollbarOnDividerAndListOnlyColumn(t *testing.T) {
 		t.Errorf("cells before the list-only track = %q, want a blank gap on every row", got)
 	}
 
-	fits := NewModelWithLayout(numberedCandidates(5), nil, Layout{Theme: ThemeMocha})
+	fits := NewModelWithLayout(numberedCandidates(5), nil, Layout{Theme: testTheme(ThemeMocha)})
 	fits, _ = update(t, fits, sizeMsg(64, 10+chromeRows))
 	if got := bodyColumn(fits, last); strings.ContainsAny(got, "┃│") {
 		t.Errorf("list-only last column = %q, want no track when the rows fit", got)
@@ -334,20 +289,20 @@ func TestView_ScrollbarOnDividerAndListOnlyColumn(t *testing.T) {
 // cached row view.
 func TestSpinnerNeeded_WorkspaceAccessory(t *testing.T) {
 	t.Parallel()
-	m := NewModelWithTree([]source.Candidate{herdrCandidate("api", "/srv/api", "w1")}, nil, treeWith("w1", "idle"), Layout{Theme: ThemeMocha})
+	m := NewModelWithTree([]source.Candidate{herdrCandidate("api", "/srv/api", "w1")}, nil, treeWith("w1", "idle"), Layout{Theme: testTheme(ThemeMocha)})
 	m, _ = update(t, m, sizeMsg(120, 20))
 	if m.spinnerNeeded() {
 		t.Fatal("idle workspace must not arm the spinner")
 	}
-	if got := m.rowWindow.views[0].accessories; len(got) != 1 || got[0].text != "idle" {
-		t.Fatalf("cached accessories = %+v, want the idle status", got)
+	if got := m.partText(&m.rowWindow.views[0].marker); got != m.icons().StatusIdle {
+		t.Fatalf("cached marker = %q, want the idle status", got)
 	}
 	m, cmd := update(t, m, paneStatusMsg{PaneID: "w1:pa", Status: "working"})
 	if !m.spinnerNeeded() || !m.spinnerRunning || cmd == nil {
 		t.Fatalf("working workspace: needed=%v running=%v cmd=%v, want the spinner armed", m.spinnerNeeded(), m.spinnerRunning, cmd != nil)
 	}
-	if got := m.rowWindow.views[0].accessories; len(got) != 1 || got[0].text != "working" {
-		t.Errorf("cached accessories after the live update = %+v, want working", got)
+	if got := m.partText(&m.rowWindow.views[0].marker); got != m.agentStatusIcon("working") {
+		t.Errorf("cached marker after the live update = %q, want working", got)
 	}
 }
 
@@ -356,7 +311,7 @@ func TestSpinnerNeeded_WorkspaceAccessory(t *testing.T) {
 // while a new query rebuilds them.
 func TestRowWindow_ReusedAcrossFrames(t *testing.T) {
 	t.Parallel()
-	m := NewModelWithLayout(numberedCandidates(30), nil, Layout{Theme: ThemeMocha})
+	m := NewModelWithLayout(numberedCandidates(30), nil, Layout{Theme: testTheme(ThemeMocha)})
 	m, _ = update(t, m, sizeMsg(120, 20))
 	views := &m.rowWindow.views[0]
 	m, _ = update(t, m, spinner.TickMsg{ID: m.spinner.ID()})
@@ -377,7 +332,7 @@ func TestRowWindow_ReusedAcrossFrames(t *testing.T) {
 // and that the preview column stays blank with nothing selected.
 func TestEmptyState_AlignedWithRowsAndBlankPreview(t *testing.T) {
 	t.Parallel()
-	m := NewModelWithLayout([]source.Candidate{zoxideCandidate("alpha", "/a")}, nil, Layout{Theme: ThemeMocha})
+	m := NewModelWithLayout([]source.Candidate{zoxideCandidate("alpha", "/a")}, nil, Layout{Theme: testTheme(ThemeMocha)})
 	m, _ = update(t, m, sizeMsg(120, 20))
 	for _, r := range "zzz" {
 		m, _ = update(t, m, key(string(r)))
@@ -424,7 +379,7 @@ func TestFitPlaceholder_FallsBackToAWholeWord(t *testing.T) {
 		}
 	}
 
-	m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: ThemeMocha})
+	m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: testTheme(ThemeMocha)})
 	m, _ = update(t, m, sizeMsg(80, 24))
 	if prompt := promptText(m); strings.Contains(prompt, "…") || !strings.HasPrefix(prompt, "❯  Search") {
 		t.Errorf("prompt at 80x24 = %q, want a whole-word placeholder", prompt)
@@ -436,7 +391,7 @@ func TestFitPlaceholder_FallsBackToAWholeWord(t *testing.T) {
 // next frame instead of a stale cached view.
 func TestPaneStatus_InvalidatesCachedRowsInPlace(t *testing.T) {
 	t.Parallel()
-	m := NewModelWithTree([]source.Candidate{herdrCandidate("api", "/srv/api", "w1")}, nil, treeWith("w1", "idle"), Layout{Theme: ThemeMocha})
+	m := NewModelWithTree([]source.Candidate{herdrCandidate("api", "/srv/api", "w1")}, nil, treeWith("w1", "idle"), Layout{Theme: testTheme(ThemeMocha)})
 	m.expandedWorkspaces["w1"] = true
 	m.applyFilter()
 	m, _ = update(t, m, sizeMsg(120, 20))
@@ -506,7 +461,7 @@ func TestRowView_TabNumberMuted(t *testing.T) {
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	row := Row{Kind: RowTab, Depth: 1, Candidate: source.Candidate{Label: "code", Meta: map[string]string{"tab_number": "2"}}}
 	line := m.renderRowLine(row, false, 40)
-	if want := m.styles.rowPlain.muted.Render("2") + m.styles.rowPlain.primary.Render(" code"); !strings.Contains(line, want) {
+	if want := m.styles.rowPlain.muted.Render("2") + m.styles.rowPlain.label.Render(" code"); !strings.Contains(line, want) {
 		t.Errorf("tab row = %q, want the muted number then the label %q", line, want)
 	}
 	m.rows = []Row{row}
@@ -531,7 +486,7 @@ func TestPlainTheme_SelectedRowIsBoldAndPreviewHasNoSGR(t *testing.T) {
 		t.Errorf("plain selected row = %q, want bold and never faint", selected)
 	}
 
-	plain := NewModelWithLayout([]source.Candidate{zoxideCandidate("alpha", "/a")}, nil, Layout{Theme: ThemePlain})
+	plain := NewModelWithLayout([]source.Candidate{zoxideCandidate("alpha", "/a")}, nil, Layout{Theme: testTheme(ThemePlain)})
 	plain.rows[0].Kind = RowPane
 	plain.previewText = "\x1b[31mred\x1b[0m line\n\x1b]0;evil\x07"
 	plain.tree = treeWith("w1")

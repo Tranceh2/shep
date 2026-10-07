@@ -23,8 +23,8 @@ const worktreeFormat = `{{.RepoName}}@{{.Branch}}`
 // Render resolves the workspace name for data. A configured format is
 // rendered with engine; an empty format names a worktree "<repo>@<branch>"
 // and anything else by its full normalized path (the raw path when it is not
-// normalized). A rendered name must not be blank or contain control
-// characters. Errors read "field: error".
+// normalized). A workspace name is plain text: it must not be blank, contain
+// control characters or carry row styling. Errors read "field: error".
 func Render(engine *tmpl.Engine, field, format string, data tmpl.Data) (Name, error) {
 	if format == "" {
 		if !data.IsWorktree {
@@ -35,7 +35,7 @@ func Render(engine *tmpl.Engine, field, format string, data tmpl.Data) (Name, er
 		}
 		format = worktreeFormat
 	}
-	value, err := engine.Render(format, data)
+	value, err := engine.RenderPlain(format, data)
 	if err != nil {
 		return "", scoped(field, err)
 	}
@@ -50,15 +50,15 @@ func Render(engine *tmpl.Engine, field, format string, data tmpl.Data) (Name, er
 
 // Validate checks a workspace_name template before it is ever used: it must
 // parse and execute against every sample (all kinds when none are given),
-// never produce control characters, and produce a non-blank name for at least
-// one sample. A template that is blank only for some kinds (such as
+// call no style or live function, never produce control characters, and
+// produce a non-blank name for at least one sample. A template that is blank only for some kinds (such as
 // "{{ .Branch }}" for plain folders) is accepted here and rejected when it is
 // actually rendered blank.
 func Validate(engine *tmpl.Engine, field, format string, samples ...tmpl.Data) error {
 	if len(samples) == 0 {
 		samples = tmpl.Samples()
 	}
-	if err := engine.Validate(field, format, samples...); err != nil {
+	if err := engine.ValidatePlain(field, format, samples...); err != nil {
 		return err
 	}
 	blank := 0

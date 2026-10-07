@@ -372,7 +372,7 @@ func TestSessionsSource_OptInRegistration(t *testing.T) {
 	if err := validateSources([]string{SourceSessions}); err != nil {
 		t.Fatalf("sessions must be a valid source: %v", err)
 	}
-	if got, want := defaults.Sources.Sessions.LabelFormat, "{{.Label}}"; got != want {
+	if got, want := deref(defaults.Sources.Sessions.LabelFormat), defaultNameFormat; got != want {
 		t.Errorf("sessions label format = %q, want %q", got, want)
 	}
 	if got := defaults.Sources.Sessions.Preview; len(got) != 0 {
@@ -398,10 +398,10 @@ preview = ["session_info"]
 	if got, want := cfg.General.SourceOrder, []string{SourceSessions}; !reflect.DeepEqual(got, want) {
 		t.Errorf("configured sources = %v, want %v", got, want)
 	}
-	if got, want := cfg.Sources.Sessions.Icon, "S"; got != want {
+	if got, want := deref(cfg.Sources.Sessions.Icon), "S"; got != want {
 		t.Errorf("sessions icon = %q, want %q", got, want)
 	}
-	if got, want := cfg.Sources.Sessions.LabelFormat, "session {{.Label}}"; got != want {
+	if got, want := deref(cfg.Sources.Sessions.LabelFormat), "session {{.Label}}"; got != want {
 		t.Errorf("sessions label format = %q, want %q", got, want)
 	}
 }
@@ -415,16 +415,16 @@ func TestDefaults_VisualDefaults(t *testing.T) {
 		got  string
 		want string
 	}{
-		{name: SourceHerdr, got: cfg.Sources.Herdr.Icon, want: "\U000f0cc6 "},
-		{name: SourceWorkspaces, got: cfg.Sources.Workspaces.Icon, want: "\ue615 "},
-		{name: SourceZoxide, got: cfg.Sources.Zoxide.Icon, want: "\uf114 "},
-		{name: SourceProjects, got: cfg.Sources.Projects.Icon, want: "\ue702 "},
+		{name: SourceHerdr, got: deref(cfg.Sources.Herdr.Icon), want: "\U000f0cc6 "},
+		{name: SourceWorkspaces, got: deref(cfg.Sources.Workspaces.Icon), want: "\ue615 "},
+		{name: SourceZoxide, got: deref(cfg.Sources.Zoxide.Icon), want: "\uf114 "},
+		{name: SourceProjects, got: deref(cfg.Sources.Projects.Icon), want: "{{ if .IsWorktree }}\ue725 {{ else }}\ue702 {{ end }}"},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("%s icon = %q, want %q", tc.name, tc.got, tc.want)
 		}
 	}
-	if got := cfg.Sources.Sessions.Icon; got != "" {
+	if got := deref(cfg.Sources.Sessions.Icon); got != "" {
 		t.Errorf("sessions icon = %q, want empty (sessions has no default icon)", got)
 	}
 	if got, want := cfg.Preview.Default, []string{PreviewAgentStatus, PreviewIdentity, PreviewGit}; !reflect.DeepEqual(got, want) {
@@ -474,10 +474,10 @@ func TestLoad_MissingFileFallsBackToDefaults(t *testing.T) {
 		got  string
 		want string
 	}{
-		{name: SourceHerdr, got: cfg.Sources.Herdr.Icon, want: "\U000f0cc6 "},
-		{name: SourceWorkspaces, got: cfg.Sources.Workspaces.Icon, want: "\ue615 "},
-		{name: SourceZoxide, got: cfg.Sources.Zoxide.Icon, want: "\uf114 "},
-		{name: SourceProjects, got: cfg.Sources.Projects.Icon, want: "\ue702 "},
+		{name: SourceHerdr, got: deref(cfg.Sources.Herdr.Icon), want: "\U000f0cc6 "},
+		{name: SourceWorkspaces, got: deref(cfg.Sources.Workspaces.Icon), want: "\ue615 "},
+		{name: SourceZoxide, got: deref(cfg.Sources.Zoxide.Icon), want: "\uf114 "},
+		{name: SourceProjects, got: deref(cfg.Sources.Projects.Icon), want: "{{ if .IsWorktree }}\ue725 {{ else }}\ue702 {{ end }}"},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("%s icon: got %q want %q", tc.name, tc.got, tc.want)
@@ -500,10 +500,10 @@ func TestLoad_PresentConfigWithoutSourcesUsesSourceIconDefaults(t *testing.T) {
 		got  string
 		want string
 	}{
-		{name: SourceHerdr, got: cfg.Sources.Herdr.Icon, want: "\U000f0cc6 "},
-		{name: SourceWorkspaces, got: cfg.Sources.Workspaces.Icon, want: "\ue615 "},
-		{name: SourceZoxide, got: cfg.Sources.Zoxide.Icon, want: "\uf114 "},
-		{name: SourceProjects, got: cfg.Sources.Projects.Icon, want: "\ue702 "},
+		{name: SourceHerdr, got: deref(cfg.Sources.Herdr.Icon), want: "\U000f0cc6 "},
+		{name: SourceWorkspaces, got: deref(cfg.Sources.Workspaces.Icon), want: "\ue615 "},
+		{name: SourceZoxide, got: deref(cfg.Sources.Zoxide.Icon), want: "\uf114 "},
+		{name: SourceProjects, got: deref(cfg.Sources.Projects.Icon), want: "{{ if .IsWorktree }}\ue725 {{ else }}\ue702 {{ end }}"},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("%s icon = %q, want %q", tc.name, tc.got, tc.want)
@@ -581,10 +581,10 @@ icon = "P "
 		got  string
 		want string
 	}{
-		{name: SourceHerdr, got: cfg.Sources.Herdr.Icon, want: "H "},
-		{name: SourceWorkspaces, got: cfg.Sources.Workspaces.Icon, want: "W "},
-		{name: SourceZoxide, got: cfg.Sources.Zoxide.Icon, want: "Z "},
-		{name: SourceProjects, got: cfg.Sources.Projects.Icon, want: "P "},
+		{name: SourceHerdr, got: deref(cfg.Sources.Herdr.Icon), want: "H "},
+		{name: SourceWorkspaces, got: deref(cfg.Sources.Workspaces.Icon), want: "W "},
+		{name: SourceZoxide, got: deref(cfg.Sources.Zoxide.Icon), want: "Z "},
+		{name: SourceProjects, got: deref(cfg.Sources.Projects.Icon), want: "P "},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("%s icon = %q, want %q", tc.name, tc.got, tc.want)
@@ -603,8 +603,8 @@ func TestLoad_ExplicitLabelFormatsWin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Sources.Zoxide.LabelFormat != "custom {{.Path}}" || cfg.Sources.Projects.LabelFormat != "project {{.Label}}" {
-		t.Fatalf("explicit label formats were replaced: zoxide=%q projects=%q", cfg.Sources.Zoxide.LabelFormat, cfg.Sources.Projects.LabelFormat)
+	if deref(cfg.Sources.Zoxide.LabelFormat) != "custom {{.Path}}" || deref(cfg.Sources.Projects.LabelFormat) != "project {{.Label}}" {
+		t.Fatalf("explicit label formats were replaced: zoxide=%q projects=%q", deref(cfg.Sources.Zoxide.LabelFormat), deref(cfg.Sources.Projects.LabelFormat))
 	}
 }
 
@@ -673,10 +673,10 @@ preview = ["identity"]
 		t.Fatalf("custom sources = %d, want %d", got, want)
 	}
 	got := cfg.Sources.Custom[0]
-	if got.Name != "prs" || len(got.Command) != 5 || got.Icon != "PR" || time.Duration(got.Timeout) != 3*time.Second {
+	if got.Name != "prs" || len(got.Command) != 5 || deref(got.Icon) != "PR" || time.Duration(got.Timeout) != 3*time.Second {
 		t.Errorf("custom source = %+v", got)
 	}
-	if got.LabelFormat != "PR {{.Label}}" || !reflect.DeepEqual(got.Preview, []string{"identity"}) {
+	if deref(got.LabelFormat) != "PR {{.Label}}" || !reflect.DeepEqual(got.Preview, []string{"identity"}) {
 		t.Errorf("custom source presentation = %+v", got)
 	}
 }
@@ -964,7 +964,7 @@ description = "development workspace"
 	if got, want := cfg.TUI.PreviewWidth, "60%"; got != want {
 		t.Errorf("tui.preview_width: got %q want %q", got, want)
 	}
-	if got, want := cfg.Sources.Herdr.Icon, "H"; got != want {
+	if got, want := deref(cfg.Sources.Herdr.Icon), "H"; got != want {
 		t.Errorf("sources.herdr.icon: got %q want %q", got, want)
 	}
 	if got, want := len(cfg.Sources.Herdr.Preview), 2; got != want {
@@ -1014,8 +1014,12 @@ func TestLoad_LabelFormatsRoundTrip(t *testing.T) {
 	const doc = `
 [sources.herdr]
 label_format = "{{.Path}} / {{.Label}}"
-tab_label_format = "tab {{.TabNumber}}: {{.Label}}"
-pane_label_format = "pane {{.Path}}"
+
+[sources.herdr.tab]
+label_format = "tab {{.TabNumber}}: {{.Label}}"
+
+[sources.herdr.pane]
+label_format = "pane {{.Path}}"
 
 [sources.workspaces]
 label_format = "workspace {{.Path}}"
@@ -1042,49 +1046,12 @@ label_format = "project {{.Path}}"
 		got   string
 		want  string
 	}{
-		{"sources.herdr.label_format", cfg.Sources.Herdr.LabelFormat, "{{.Path}} / {{.Label}}"},
-		{"sources.herdr.tab_label_format", cfg.Sources.Herdr.TabLabelFormat, "tab {{.TabNumber}}: {{.Label}}"},
-		{"sources.herdr.pane_label_format", cfg.Sources.Herdr.PaneLabelFormat, "pane {{.Path}}"},
-		{"sources.workspaces.label_format", cfg.Sources.Workspaces.LabelFormat, "workspace {{.Path}}"},
-		{"sources.zoxide.label_format", cfg.Sources.Zoxide.LabelFormat, "zoxide {{.Path}}"},
-		{"sources.projects.label_format", cfg.Sources.Projects.LabelFormat, "project {{.Path}}"},
-	}
-	for _, tc := range cases {
-		if tc.got != tc.want {
-			t.Errorf("%s: got %q want %q", tc.field, tc.got, tc.want)
-		}
-	}
-}
-
-// TestLoad_LabelFormatsDefault verifies empty label format fields resolve to
-// the first-run label-first rendering defaults during Load.
-func TestLoad_LabelFormatsDefault(t *testing.T) {
-	t.Parallel()
-
-	tmp := t.TempDir()
-	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte("[general]\nsource_order = [\"herdr\"]\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-
-	const labelWithPathFallback = "{{if .Label}}{{.Label}}{{else}}{{.Path}}{{end}}"
-	cases := []struct {
-		field string
-		got   string
-		want  string
-	}{
-		{"sources.herdr.label_format", cfg.Sources.Herdr.LabelFormat, "{{.Label}}"},
-		{"sources.herdr.tab_label_format", cfg.Sources.Herdr.TabLabelFormat, "{{.Label}}"},
-		{"sources.herdr.pane_label_format", cfg.Sources.Herdr.PaneLabelFormat, labelWithPathFallback},
-		{"sources.sessions.label_format", cfg.Sources.Sessions.LabelFormat, "{{.Label}}"},
-		{"sources.workspaces.label_format", cfg.Sources.Workspaces.LabelFormat, "{{.Label}}"},
-		{"sources.zoxide.label_format", cfg.Sources.Zoxide.LabelFormat, labelWithPathFallback},
-		{"sources.projects.label_format", cfg.Sources.Projects.LabelFormat, labelWithPathFallback},
+		{"sources.herdr.label_format", deref(cfg.Sources.Herdr.LabelFormat), "{{.Path}} / {{.Label}}"},
+		{"sources.herdr.tab.label_format", deref(cfg.Sources.Herdr.Tab.LabelFormat), "tab {{.TabNumber}}: {{.Label}}"},
+		{"sources.herdr.pane.label_format", deref(cfg.Sources.Herdr.Pane.LabelFormat), "pane {{.Path}}"},
+		{"sources.workspaces.label_format", deref(cfg.Sources.Workspaces.LabelFormat), "workspace {{.Path}}"},
+		{"sources.zoxide.label_format", deref(cfg.Sources.Zoxide.LabelFormat), "zoxide {{.Path}}"},
+		{"sources.projects.label_format", deref(cfg.Sources.Projects.LabelFormat), "project {{.Path}}"},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {
@@ -1112,14 +1079,14 @@ func TestLoad_RejectsInvalidLabelFormats(t *testing.T) {
 		},
 		{
 			name:   "unknown herdr tab field",
-			doc:    "[sources.herdr]\ntab_label_format = \"{{.Unknown}}\"\n",
-			field:  "sources.herdr.tab_label_format",
+			doc:    "[sources.herdr.tab]\nlabel_format = \"{{.Unknown}}\"\n",
+			field:  "sources.herdr.tab.label_format",
 			detail: "can't evaluate field Unknown",
 		},
 		{
 			name:   "unknown function in herdr pane format",
-			doc:    "[sources.herdr]\npane_label_format = \"pane {{ .Path | osBase }}\"\n",
-			field:  "sources.herdr.pane_label_format",
+			doc:    "[sources.herdr.pane]\nlabel_format = \"pane {{ .Path | osBase }}\"\n",
+			field:  "sources.herdr.pane.label_format",
 			detail: `function "osBase" not defined`,
 		},
 		{
@@ -1229,8 +1196,12 @@ workspace_name = "{{ .Path | tilde | name }}"
 
 [sources.herdr]
 label_format = "{{ .Label | trimIcon | name }}"
-tab_label_format = "{{ .TabNumber }} {{ .TabLabel }} {{ .Workspace }}"
-pane_label_format = "{{ .Agent }} {{ .AgentStatus }} {{ .Path | parent }}"
+
+[sources.herdr.tab]
+label_format = "{{ .TabNumber }} {{ .TabLabel }} {{ .Workspace }}"
+
+[sources.herdr.pane]
+label_format = "{{ .Agent }} {{ .AgentStatus }} {{ .Path | parent }}"
 
 [sources.projects]
 label_format = "{{ if .IsWorktree }}{{ slice .Branch 0 3 }}{{ else }}{{ .Label }}{{ end }}"
@@ -2045,10 +2016,9 @@ func TestExampleTOML_MatchesCanonicalModel(t *testing.T) {
 		"template = ", "[tui]", "list_width", "preview_width", `layout = "landscape"`, "[preview]",
 		"[preview.commands.", "[sources.herdr]", "[sources.projects]",
 		"markers = ", "[templates.default]", "[templates.k8s]", "[[sources.custom]]",
-		`theme accepts "mocha", "macchiato", "frappe",`,
-		`"latte", "plain", or "inherit". "inherit" delegates explicitly to the`,
-		`Exact precedence is NO_COLOR > SHEP_THEME > explicit config theme`,
-		`(except inherit) > Herdr theme > mocha.`,
+		`theme is "inherit" (the default: Herdr's`,
+		`"plain" (no color) or`,
+		`the name of a [themes.<name>] table. NO_COLOR and SHEP_THEME win over it.`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("ExampleTOML missing %q", want)
@@ -2455,8 +2425,8 @@ func TestLoad_RejectsInvalidTUILayoutValue(t *testing.T) {
 }
 
 // TestLoad_TUITheme_DefaultsEmptyAndAccepted confirms an absent
-// [tui].theme parses to the empty string (internal/tui.resolveTheme treats
-// empty as "defer to $SHEP_THEME, then mocha") without failing validation.
+// [tui].theme parses to the empty string (theme.Select reads it as inherit)
+// without failing validation.
 func TestLoad_TUITheme_DefaultsEmptyAndAccepted(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
@@ -2473,11 +2443,11 @@ func TestLoad_TUITheme_DefaultsEmptyAndAccepted(t *testing.T) {
 	}
 }
 
-// TestLoad_AcceptsValidTUIThemeValues confirms every documented theme name
-// (including "inherit") parses and loads without error.
+// TestLoad_AcceptsValidTUIThemeValues confirms inherit, built-in names and
+// aliases (Herdr's and shep's) and plain load without error.
 func TestLoad_AcceptsValidTUIThemeValues(t *testing.T) {
 	t.Parallel()
-	for _, val := range []string{TUIThemeMocha, TUIThemeMacchiato, TUIThemeFrappe, TUIThemeLatte, TUIThemePlain, TUIThemeInherit} {
+	for _, val := range []string{"inherit", "catppuccin", "mocha", "catppuccin-latte", "tokyo-night", "solarized", "catppuccin-frappe", "macchiato", "plain"} {
 		t.Run(val, func(t *testing.T) {
 			t.Parallel()
 			tmp := t.TempDir()
@@ -2503,7 +2473,7 @@ func TestLoad_RejectsInvalidTUIThemeValue(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	const doc = "[tui]\ntheme = \"solarized\"\n"
+	const doc = "[tui]\ntheme = \"not-a-theme\"\n"
 	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -2511,8 +2481,8 @@ func TestLoad_RejectsInvalidTUIThemeValue(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid tui.theme value")
 	}
-	if !strings.Contains(err.Error(), "solarized") {
-		t.Errorf("error must name the bad value %q, got: %v", "solarized", err)
+	if !strings.Contains(err.Error(), `tui.theme: unknown theme "not-a-theme"`) {
+		t.Errorf("error must name the field and the bad value, got: %v", err)
 	}
 }
 
@@ -3300,10 +3270,10 @@ func TestConfig_AgentsSource_DefaultsAndLoad(t *testing.T) {
 			t.Errorf("default source_order contains %q, want excluded", SourceAgents)
 		}
 	}
-	if got := cfg.Sources.Agents.Icon; got != "" {
+	if got := deref(cfg.Sources.Agents.Icon); got != "" {
 		t.Errorf("agents icon = %q, want empty by default", got)
 	}
-	if got, want := cfg.Sources.Agents.LabelFormat, "{{.Label}}"; got != want {
+	if got, want := deref(cfg.Sources.Agents.LabelFormat), "{{ status }} {{ or .Label .Path | tilde }}"; got != want {
 		t.Errorf("agents label_format = %q, want %q", got, want)
 	}
 
@@ -3329,10 +3299,10 @@ preview = ["identity", "active_pane"]
 	if got, want := loaded.General.SourceOrder, []string{SourceAgents, SourceHerdr}; !reflect.DeepEqual(got, want) {
 		t.Errorf("source_order = %v, want %v", got, want)
 	}
-	if got, want := loaded.Sources.Agents.Icon, "🤖 "; got != want {
+	if got, want := deref(loaded.Sources.Agents.Icon), "🤖 "; got != want {
 		t.Errorf("sources.agents.icon = %q, want %q", got, want)
 	}
-	if got, want := loaded.Sources.Agents.LabelFormat, "{{.Label}} [{{.AgentStatus}}]"; got != want {
+	if got, want := deref(loaded.Sources.Agents.LabelFormat), "{{.Label}} [{{.AgentStatus}}]"; got != want {
 		t.Errorf("sources.agents.label_format = %q, want %q", got, want)
 	}
 	if got, want := loaded.Sources.Agents.Preview, []string{"identity", "active_pane"}; !reflect.DeepEqual(got, want) {

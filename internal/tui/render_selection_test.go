@@ -18,15 +18,14 @@ import (
 // are set only so a stray renderList call would not panic; renderRowLine
 // itself takes width as an argument.
 func newRenderTestModel(themeName string, focus Focus) Model {
-	th := themes[themeName]
-	return Model{
-		styles: newPalette(th),
-		theme:  th,
+	m := Model{
+		theme:  testTheme(themeName),
 		focus:  focus,
 		width:  40,
 		height: 10,
 		layout: Layout{Templates: tmpl.New("")},
 	}
+	return m.withPresentation(nil)
 }
 
 // renderRowLineText strips any residual ANSI so assertions see the structural
@@ -68,7 +67,7 @@ func TestRenderTabStrip_NarrowShowsActiveTab(t *testing.T) {
 		{ID: "projects", Kind: TabSource}, {ID: "zoxide", Kind: TabSource},
 		{ID: "team", Kind: TabGroup, Label: "Platform engineering"},
 	}
-	m := NewModelWithLayout(nil, nil, Layout{Tabs: tabs, Theme: ThemeMocha})
+	m := NewModelWithLayout(nil, nil, Layout{Tabs: tabs, Theme: testTheme(ThemeMocha)})
 	m, _ = update(t, m, sizeMsg(72, 20))
 	m.activeTab = "zoxide"
 	line := viewLines(m)[0]
@@ -160,46 +159,6 @@ func TestRenderRowLine_SelectedNormalCandidateDropsOldMarker(t *testing.T) {
 	}
 	if strings.Contains(got, "▸") || strings.Contains(got, "▾") {
 		t.Errorf("selected candidate: expand/collapse glyph present, want none for RowCandidate: %q", got)
-	}
-}
-
-// TestRenderRowLine_GutterAbsentUnderFocusPreview proves the cursor marker is
-// scoped to FocusList even when the selected row remains visible in preview.
-func TestRenderRowLine_GutterAbsentUnderFocusPreview(t *testing.T) {
-	t.Parallel()
-	m := newRenderTestModel(ThemeMocha, FocusPreview)
-	row := Row{
-		Kind:       RowCandidate,
-		Candidate:  herdrCandidate("backend", "/srv/backend", "w1"),
-		Match:      MatchDirect,
-		Expandable: true,
-	}
-	got := renderRowLineText(m.renderRowLine(row, true, 40))
-	if strings.HasPrefix(got, "❯") || strings.HasPrefix(got, ">") {
-		t.Errorf("preview-focused selected: cursor marker must be absent, got %q", got)
-	}
-	if want := renderRowLineText(m.renderRowLine(row, false, 40)); got != want {
-		t.Errorf("preview-focused selected: expected non-cursor text alignment %q, got %q", want, got)
-	}
-}
-
-// TestRenderRowLine_GutterAbsentUnderFocusHelp proves FocusHelp uses the same
-// blank selected-row gutter as FocusPreview.
-func TestRenderRowLine_GutterAbsentUnderFocusHelp(t *testing.T) {
-	t.Parallel()
-	m := newRenderTestModel(ThemeMocha, FocusHelp)
-	row := Row{
-		Kind:       RowCandidate,
-		Candidate:  herdrCandidate("backend", "/srv/backend", "w1"),
-		Match:      MatchDirect,
-		Expandable: true,
-	}
-	got := renderRowLineText(m.renderRowLine(row, true, 40))
-	if strings.HasPrefix(got, "❯") || strings.HasPrefix(got, ">") {
-		t.Errorf("help-focused selected: cursor marker must be absent, got %q", got)
-	}
-	if want := renderRowLineText(m.renderRowLine(row, false, 40)); got != want {
-		t.Errorf("help-focused selected: expected non-cursor text alignment %q, got %q", want, got)
 	}
 }
 
@@ -302,8 +261,6 @@ func TestRenderRowLine_MarkerGutterContract(t *testing.T) {
 	}{
 		{name: "selected Unicode list row", focus: FocusList, selected: true, gutter: "❯ "},
 		{name: "non-selected list row", focus: FocusList, gutter: "  "},
-		{name: "selected preview row", focus: FocusPreview, selected: true, gutter: "  "},
-		{name: "selected help row", focus: FocusHelp, selected: true, gutter: "  "},
 		{name: "selected ASCII list row", focus: FocusList, selected: true, icons: IconsASCII, gutter: "> "},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -330,13 +287,14 @@ func TestRenderRowLine_MarkerGutterContract(t *testing.T) {
 }
 
 // TestRenderRowLine_TruncationOrder proves how a row gives up width: the
-// filename-first parent path shrinks from the left down to
-// minSecondaryCells and is then dropped; the accessories go when the name
-// would otherwise shrink below minPrimaryCells; only then is the name itself
-// truncated, keeping its tail. Expected values include the two-cell gutter.
+// detail shrinks from the left down to minDetailCells and is then dropped;
+// the marker is capped at 30% of the row and goes when the label would
+// otherwise shrink below minLabelCells; only then is the label itself
+// truncated, keeping its start (it is not a path). Expected values include
+// the two-cell gutter; the zoxide icon is blanked to keep them short.
 func TestRenderRowLine_TruncationOrder(t *testing.T) {
 	t.Parallel()
-	m := newRenderTestModel(ThemeMocha, FocusList)
+	m := newRenderTestModel(ThemeMocha, FocusList).withPresentation(func(p *config.Presentations) { p.Zoxide.Icon = "" })
 	pinned := func(path string) Row {
 		c := source.Candidate{Path: path, Source: config.SourceZoxide, Missing: true}
 		m.rankingSnapshot = m.rankingSnapshot.WithPinned(ranking.PinKey(c), true)
@@ -345,6 +303,7 @@ func TestRenderRowLine_TruncationOrder(t *testing.T) {
 	plain := Row{Kind: RowCandidate, Candidate: source.Candidate{Path: "/workspace/services/catalog/filename.go"}}
 	short := pinned("/srv/projects/shep")
 	long := pinned("/srv/a-very-long-name")
+	longer := pinned("/srv/a-very-very-long-folder-name")
 	for _, tt := range []struct {
 		name  string
 		row   Row
@@ -352,14 +311,15 @@ func TestRenderRowLine_TruncationOrder(t *testing.T) {
 		want  string
 	}{
 		{"everything fits", short, 40, "  shep  /srv/projects" + strings.Repeat(" ", 10) + "missing ★"},
-		{"secondary shrinks from the left", plain, 40, "  filename.go  …rkspace/services/catalog"},
-		{"secondary keeps its minimum", plain, 21, "  filename.go  …talog"},
-		{"secondary below its minimum is dropped", plain, 20, "  filename.go"},
-		{"secondary shrinks beside accessories", short, 24, "  shep  …jects missing ★"},
-		{"secondary dropped before accessories", short, 23, "  shep" + strings.Repeat(" ", 8) + "missing ★"},
-		{"primary shrinks while it keeps its minimum beside accessories", long, 22, "  …long-name missing ★"},
-		{"accessories dropped before the primary goes below its minimum", long, 19, "  a-very-long-name"},
-		{"primary keeps its tail", plain, 12, "  …lename.go"},
+		{"detail shrinks from the left", plain, 40, "  filename.go  …rkspace/services/catalog"},
+		{"detail keeps its minimum", plain, 21, "  filename.go  …talog"},
+		{"detail below its minimum is dropped", plain, 20, "  filename.go"},
+		{"detail shrinks beside the marker", short, 24, "  shep  …jects missing ★"},
+		{"detail dropped before the marker", short, 23, "  shep" + strings.Repeat(" ", 8) + "missing ★"},
+		{"label shrinks while it keeps its minimum beside the marker", longer, 30, "  a-very-very-long-… missing ★"},
+		{"marker dropped before the label goes below its minimum", long, 22, "  a-very-long-name"},
+		{"marker dropped at the label's minimum", long, 19, "  a-very-long-name"},
+		{"label keeps its start", plain, 12, "  filename.…"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			line := renderRowLineText(m.renderRowLine(tt.row, false, tt.width))
@@ -392,10 +352,10 @@ func TestTruncateFromLeftToWidth_IsRuneSafe(t *testing.T) {
 	}
 }
 
-// TestRenderRowLine_LeftTruncationMatchesCursorAtSameInnerWidth proves a
+// TestRenderRowLine_TruncationMatchesCursorAtSameInnerWidth proves a
 // cursor and non-cursor row given the IDENTICAL total width produce
 // identical content once the two-cell gutter is stripped.
-func TestRenderRowLine_LeftTruncationMatchesCursorAtSameInnerWidth(t *testing.T) {
+func TestRenderRowLine_TruncationMatchesCursorAtSameInnerWidth(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	row := Row{Kind: RowCandidate, Candidate: source.Candidate{Path: "/workspace/services/catalog/filename.go"}}
@@ -408,19 +368,19 @@ func TestRenderRowLine_LeftTruncationMatchesCursorAtSameInnerWidth(t *testing.T)
 	if cursor != nonCursor {
 		t.Errorf("cursor path = %q, want non-cursor path %q at the same total width", cursor, nonCursor)
 	}
-	if !strings.HasPrefix(cursor, "…") {
-		t.Errorf("cursor path = %q, want a leading ellipsis right after the marker", cursor)
+	if cursor != "filename.…" {
+		t.Errorf("cursor label = %q, want its start and a trailing ellipsis", cursor)
 	}
 }
 
 // --- Bug 1: left truncation must never eat a row's own icon ---
 
 // TestRenderRowLine_LeftTruncationPreservesIcon proves a RowCandidate's
-// source icon is a fixed, non-truncatable prefix: at a width too narrow for
-// the full label, the icon glyph survives fully intact and the ellipsis
-// lands immediately after it — never inside/eating the icon itself (the
-// confirmed bug: truncateFromLeftToWidth used to cut the marker+icon prefix
-// first, before touching a single label character).
+// icon is a fixed, non-truncatable prefix: at a width too narrow for the
+// full label, the icon glyph survives fully intact and only the label after
+// it is truncated — never inside/eating the icon itself (the confirmed bug:
+// truncateFromLeftToWidth used to cut the marker+icon prefix first, before
+// touching a single label character).
 func TestRenderRowLine_LeftTruncationPreservesIcon(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
@@ -439,8 +399,8 @@ func TestRenderRowLine_LeftTruncationPreservesIcon(t *testing.T) {
 		t.Fatalf("truncated row = %q, want it to start with the intact icon prefix %q (icon must survive left truncation)", got, wantPrefix)
 	}
 	rest := strings.TrimPrefix(got, wantPrefix)
-	if !strings.HasPrefix(rest, "…") {
-		t.Errorf("truncated row content = %q, want a leading ellipsis right after the icon prefix", rest)
+	if rest != "very-long-f…" {
+		t.Errorf("truncated row content = %q, want the label's start right after the icon prefix", rest)
 	}
 	if strings.Count(got, icon) != 1 {
 		t.Errorf("truncated row = %q, want exactly one intact icon glyph, got %d", got, strings.Count(got, icon))
@@ -571,23 +531,6 @@ func TestRenderRowLine_NonCursorReservesSameGutterAsCursorInFocusList(t *testing
 	}
 }
 
-// TestRenderRowLine_NonCursorKeepsBlankGutterOutsideFocusList proves the
-// two-cell marker gutter remains present and blank in FocusPreview/FocusHelp.
-func TestRenderRowLine_NonCursorKeepsBlankGutterOutsideFocusList(t *testing.T) {
-	t.Parallel()
-	for _, focus := range []Focus{FocusPreview, FocusHelp} {
-		m := newRenderTestModel(ThemeMocha, focus)
-		row := Row{Kind: RowCandidate, Candidate: source.Candidate{Path: "backend"}}
-		const width = 40
-		got := renderRowLineText(m.renderRowLine(row, false, width))
-		// The two-cell marker gutter remains blank outside FocusList.
-		want := "  backend" + strings.Repeat(" ", width-len("  backend"))
-		if got != want {
-			t.Errorf("focus=%v: non-cursor row = %q, want unchanged %q (no reserved gutter outside FocusList)", focus, got, want)
-		}
-	}
-}
-
 // --- Row width and selection invariants ---
 
 // newRenderTestModelWidth clones the render-test model with a width override.
@@ -602,13 +545,13 @@ func newRenderTestModelWidth(themeName string, width int) Model {
 func TestRenderRowLine_ReclaimsBadgeWidth(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModelWidth(ThemeMocha, 120)
-	row := Row{Kind: RowCandidate, Candidate: source.Candidate{Path: "/workspace/services/catalog/filename.go", Source: config.SourceHerdr, Icon: "H"}}
+	row := Row{Kind: RowCandidate, Candidate: source.Candidate{Path: "/workspace/services/catalog/filename.go", Source: config.SourceHerdr}}
 	got := stripNonSGRANSI(m.renderRowLine(row, false, 40))
 	if strings.Contains(got, "HERDR") {
 		t.Errorf("row = %q, source badge must be absent", got)
 	}
-	if !strings.Contains(got, "H ") {
-		t.Errorf("row = %q, configured source icon must remain", got)
+	if icon := config.DefaultPresentations("").Herdr.Icon; !strings.HasPrefix(got, "  "+icon+" ") {
+		t.Errorf("row = %q, the source icon %q must remain", got, icon)
 	}
 }
 
@@ -640,6 +583,7 @@ func TestRenderRowLine_ASCIIEmitsNoUnicodeOnlyGlyphs(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModelWidth(ThemeMocha, 120)
 	m.layout.Icons = IconsASCII
+	m = m.withPresentation(nil)
 	group := source.Candidate{Label: "team", Path: "/a", Source: config.SourceWorkspaces, Meta: map[string]string{"group": "true"}}
 	m.rankingSnapshot = m.rankingSnapshot.WithPinned(ranking.PinKey(group), true)
 	got := stripNonSGRANSI(m.renderRowLine(Row{Kind: RowCandidate, Candidate: group}, false, 120))

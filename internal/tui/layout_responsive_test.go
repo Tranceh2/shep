@@ -245,7 +245,7 @@ func TestNextResponsiveMode_PreviewNamedWindow(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: ThemeMocha})
+			m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: testTheme(ThemeMocha)})
 			m, _ = update(t, m, sizeMsg(tt.width, tt.height))
 			if m.mode != tt.want {
 				t.Errorf("size %dx%d: mode = %q, want %q", tt.width, tt.height, m.mode, tt.want)

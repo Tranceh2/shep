@@ -38,7 +38,7 @@ func TestView_PreviewTitleUsesLabelOrPath(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			m := NewModelWithLayout(tt.candidates, nil, Layout{Theme: ThemePlain})
+			m := NewModelWithLayout(tt.candidates, nil, Layout{Theme: testTheme(ThemePlain)})
 			m.width = 80
 			m.height = 12
 
@@ -75,7 +75,7 @@ func TestRenderPreviewTitle_TruncatesByKind(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemePlain, FocusList)
 	m.rows = []Row{{Kind: RowCandidate, Candidate: source.Candidate{Label: "/srv/a/very/long/path/to/whiterose-db/", Source: config.SourceZoxide}}}
-	if got := strings.TrimSpace(m.renderPreviewTitle(20)); got != "whiterose-db  zoxide" {
+	if got := strings.TrimSpace(m.renderPreviewTitle(20)); got != "whiterose-db  folder" {
 		t.Errorf("filename-first title = %q, want the name and its kind", got)
 	}
 	m.rows = []Row{{Kind: RowCandidate, Candidate: source.Candidate{Label: "Refactor the render path of shep", Source: config.SourceAgents}}}

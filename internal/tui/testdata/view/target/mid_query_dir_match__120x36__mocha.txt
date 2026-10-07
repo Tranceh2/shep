@@ -1,5 +1,5 @@
   all   agents
- ❯ alpha                                                     1/3 │ alpha-dir                                     zoxide
+ ❯ alpha                                                     1/3 │ alpha-dir                                     folder
  ────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────
  ❯ alpha-dir                                                     │ /home/dev/alpha-dir
                                                                  │
