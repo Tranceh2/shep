@@ -1,0 +1,51 @@
+# Shape of a real Herdr config: catppuccin plus a full [theme.custom] block
+# with transparent backgrounds, and sections shep must ignore.
+onboarding = false
+
+[server]
+headless_cols = 120
+
+[theme]
+name = "catppuccin"
+
+[theme.custom]
+# Backgrounds stay transparent so the terminal background shows through.
+panel_bg = "reset"
+sidebar_bg = "reset"
+
+# Mauve-tinted surfaces.
+active_row_bg = "#38324c"
+selection_bg = "#494060"
+
+# Mocha surfaces and overlays.
+surface0 = "#313244"
+surface1 = "#45475a"
+surface_dim = "#181825" # mantle
+overlay0 = "#6c7086"
+overlay1 = "#9399b2" # Mocha overlay2
+
+# Text.
+text = "#cdd6f4"
+subtext0 = "#a6adc8"
+
+# Accents.
+accent = "#cba6f7" # mauve
+mauve = "#cba6f7"
+green = "#a6e3a1"
+yellow = "#f9e2af"
+red = "#f38ba8"
+blue = "#89b4fa"
+teal = "#94e2d5"
+peach = "#fab387"
+
+# A key a future Herdr might add: ignored.
+future_token = "#000000"
+
+[ui]
+accent = "#cba6f7"
+
+[ui.sidebar.spaces]
+rows = [["state_icon", "workspace"], ["branch", "git_status"]]
+
+[keys]
+prefix = "ctrl+b"

@@ -1,0 +1,17 @@
+# auto_switch with per-appearance overrides (mirrors Herdr's
+# theme_auto_switch_layers_active_mode_overrides_last test).
+[theme]
+name = "gruvbox"
+auto_switch = true
+
+[theme.custom]
+accent = "#010203"
+text = "#040506"
+
+[theme.custom.light]
+accent = "#070809"
+
+[theme.custom.dark]
+text = "#0a0b0c"
+sidebar_bg = "#0d0e0f"
+active_row_bg = "rgb(16, 17, 18)"
