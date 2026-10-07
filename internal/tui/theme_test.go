@@ -2,9 +2,11 @@ package tui
 
 import (
 	"image/color"
+	"reflect"
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
@@ -241,4 +243,53 @@ func TestStyleWrap_MatchesRender(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestLightTheme_FollowsTheTerminalBackground proves a theme that follows
+// the terminal's appearance asks for the background color in Init and draws
+// with its light variant on a light reply (and back on a dark one), while a
+// theme without a light variant never asks.
+func TestLightTheme_FollowsTheTerminalBackground(t *testing.T) {
+	t.Parallel()
+	dark, light := testTheme("catppuccin"), testTheme("catppuccin-latte")
+	m := NewModelWithLayout([]source.Candidate{zoxideCandidate("api", "/srv/api")}, nil, Layout{Theme: dark, LightTheme: &light})
+	if !batchHas(m.Init(), tea.RequestBackgroundColor()) {
+		t.Fatal("Init does not ask for the terminal background")
+	}
+	accent := func(m Model) color.Color { return m.styles.promptStyle.GetForeground() }
+	m, _ = update(t, m, tea.BackgroundColorMsg{Color: color.White})
+	if m.theme.Name != light.Name || accent(m) != light.Role(theme.RolePrompt).Lipgloss() {
+		t.Fatalf("light background: theme %q, want the light variant %q", m.theme.Name, light.Name)
+	}
+	m, _ = update(t, m, tea.BackgroundColorMsg{Color: color.Black})
+	if m.theme.Name != dark.Name || accent(m) != dark.Role(theme.RolePrompt).Lipgloss() {
+		t.Fatalf("dark background: theme %q, want %q", m.theme.Name, dark.Name)
+	}
+
+	fixed := NewModelWithLayout(nil, nil, Layout{Theme: dark})
+	if batchHas(fixed.Init(), tea.RequestBackgroundColor()) {
+		t.Error("a theme without a light variant asks for the background")
+	}
+	fixed, _ = update(t, fixed, tea.BackgroundColorMsg{Color: color.White})
+	if fixed.theme.Name != dark.Name {
+		t.Errorf("theme without a light variant switched to %q", fixed.theme.Name)
+	}
+}
+
+// batchHas reports whether running cmd (a tea.Batch or a single command)
+// yields want among its messages.
+func batchHas(cmd tea.Cmd, want tea.Msg) bool {
+	if cmd == nil {
+		return false
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, c := range batch {
+			if c != nil && reflect.TypeOf(c()) == reflect.TypeOf(want) {
+				return true
+			}
+		}
+		return false
+	}
+	return reflect.TypeOf(msg) == reflect.TypeOf(want)
 }
