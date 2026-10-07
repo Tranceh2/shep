@@ -344,15 +344,66 @@ func TestLiveStatus_CancelPath(t *testing.T) {
 	}
 }
 
+// waitNotLive asserts that ls settles as a failed subscription: ready closes
+// with live false and the events channel closes, so the picker runs on
+// without live status.
+func waitNotLive(t *testing.T, ls *liveStatus) {
+	t.Helper()
+	if ls == nil {
+		t.Fatal("startLiveStatus returned nil for a configured dialer")
+	}
+	select {
+	case <-ls.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("subscription never settled")
+	}
+	if ls.live {
+		t.Fatal("failed subscription reported live")
+	}
+	if _, ok := <-ls.Events(); ok {
+		t.Fatal("failed subscription left its events channel open")
+	}
+}
+
+// The subscription is established in the background: starting it never
+// blocks the picker, even while the server never answers, and a hanging
+// server degrades to no live status within the startup timeout.
 func TestLiveStatus_StartupTimeoutDoesNotBlock(t *testing.T) {
 	srv := newFakeUnixServer(t)
 	started := time.Now()
-	if ls := startLiveStatus(context.Background(), NewUnixStatusDialer(srv.sockPath)); ls != nil {
-		_ = ls.Close()
-		t.Fatal("expected hanging subscription to degrade to nil")
+	ls := startLiveStatus(context.Background(), NewUnixStatusDialer(srv.sockPath))
+	if elapsed := time.Since(started); elapsed > 50*time.Millisecond {
+		t.Fatalf("startLiveStatus blocked for %v, want an immediate return", elapsed)
 	}
+	defer ls.Close()
+	waitNotLive(t, ls)
 	if elapsed := time.Since(started); elapsed > time.Second {
-		t.Fatalf("startup took %v, want bounded fallback", elapsed)
+		t.Fatalf("hanging subscription settled after %v, want the startup timeout", elapsed)
+	}
+}
+
+// Closing the picker while Herdr has not answered the subscribe request
+// returns at once instead of waiting out the startup timeout.
+func TestLiveStatus_CloseInterruptsPendingSubscribe(t *testing.T) {
+	srv := newFakeUnixServer(t)
+	ls := startLiveStatus(context.Background(), NewUnixStatusDialer(srv.sockPath))
+	if conn := srv.NextConn(2 * time.Second); conn == nil {
+		t.Fatal("server did not observe the subscription")
+	}
+	started := time.Now()
+	if err := ls.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+		t.Fatalf("Close waited %v on a pending subscribe", elapsed)
+	}
+	select {
+	case <-ls.Ready():
+	default:
+		t.Fatal("Close returned before the subscription settled")
+	}
+	if ls.live {
+		t.Fatal("subscription closed while pending reported live")
 	}
 }
 
@@ -369,10 +420,9 @@ func TestLiveStatus_SubscribeFailureClosesConnection(t *testing.T) {
 		_, _ = r.ReadString('\n')
 		_, _ = io.WriteString(conn, `{"id":"shep-live-status","error":{"code":"ERR"}}`+"\n")
 	}()
-	if ls := startLiveStatus(context.Background(), NewUnixStatusDialer(srv.sockPath)); ls != nil {
-		_ = ls.Close()
-		t.Fatal("expected rejected subscription to degrade to nil")
-	}
+	ls := startLiveStatus(context.Background(), NewUnixStatusDialer(srv.sockPath))
+	defer ls.Close()
+	waitNotLive(t, ls)
 	conn := <-serverConn
 	if conn == nil {
 		t.Fatal("server did not observe connection")
@@ -388,11 +438,15 @@ func TestLiveStatus_Degradation(t *testing.T) {
 	if ls := startLiveStatus(context.Background(), nil); ls != nil {
 		t.Errorf("expected nil for nil dialer, got %+v", ls)
 	}
-	if ls := startLiveStatus(context.Background(), NewUnixStatusDialer("")); ls != nil {
-		t.Errorf("expected nil for empty socket path, got %+v", ls)
-	}
-	if ls := startLiveStatus(context.Background(), NewUnixStatusDialer(filepath.Join(t.TempDir(), "nonexistent.sock"))); ls != nil {
-		t.Errorf("expected nil for missing socket path, got %+v", ls)
+	for name, dialer := range map[string]StatusDialer{
+		"empty socket path":   NewUnixStatusDialer(""),
+		"missing socket path": NewUnixStatusDialer(filepath.Join(t.TempDir(), "nonexistent.sock")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			ls := startLiveStatus(context.Background(), dialer)
+			defer ls.Close()
+			waitNotLive(t, ls)
+		})
 	}
 
 	srv := newFakeUnixServer(t)
@@ -406,10 +460,9 @@ func TestLiveStatus_Degradation(t *testing.T) {
 		_, _ = r.ReadString('\n')
 		_, _ = io.WriteString(conn, `{"id":"shep-live-status","error":{"code":"ERR"}}`+"\n")
 	}()
-
-	if ls := startLiveStatus(context.Background(), NewUnixStatusDialer(srv.sockPath)); ls != nil {
-		t.Errorf("expected nil for rejected subscribe, got %+v", ls)
-	}
+	ls := startLiveStatus(context.Background(), NewUnixStatusDialer(srv.sockPath))
+	defer ls.Close()
+	waitNotLive(t, ls)
 }
 
 func TestLiveStatus_DropOldestOnOverflow(t *testing.T) {

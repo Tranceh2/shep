@@ -353,6 +353,9 @@ type Model struct {
 	snapshotRequestSeq int
 	nowFn              func() time.Time
 	liveStatusEvents   <-chan StatusEvent
+	// liveStatus is the background status subscription whose readiness the
+	// model waits for (see handleLiveStatusReady).
+	liveStatus *liveStatus
 }
 
 // SourceResultMsg carries the asynchronously loaded state from an independent
@@ -627,6 +630,14 @@ func (m Model) WithLiveStatus(events <-chan StatusEvent) Model {
 	return m
 }
 
+// withLiveStatus attaches a background subscription: its events and the
+// readiness that tells the model when status changes stop going unobserved.
+func (m Model) withLiveStatus(ls *liveStatus) Model {
+	m = m.WithLiveStatus(ls.Events())
+	m.liveStatus = ls
+	return m
+}
+
 // WithSnapshotRefresh wires a startup generation into the model. The initial
 // state is already resolved by command/open; this method merely establishes
 // the one refresh owner and generation-scoped tree/focus references, and
@@ -676,6 +687,7 @@ func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		m.initialPreviewCmd(),
 		waitForStatusCmd(m.renderCtx, m.liveStatusEvents),
+		waitForLiveStatusReadyCmd(m.renderCtx, m.liveStatus),
 	}
 	for i, producer := range m.producers {
 		cmds = append(cmds, m.makeProducerCmd(i, producer))
@@ -760,6 +772,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+	case liveStatusReadyMsg:
+		m, cmd = m.handleLiveStatusReady(msg)
 	case spinner.TickMsg:
 		m, cmd = m.handleSpinnerTick(msg)
 	case tea.KeyMsg:
@@ -940,6 +954,35 @@ func (m *Model) dedup(candidates []source.Candidate) []source.Candidate {
 		return m.dedupFn(candidates)
 	}
 	return resolver.Dedup(candidates)
+}
+
+// liveStatusReadyMsg reports that the background status subscription is
+// live (or has failed: live false).
+type liveStatusReadyMsg struct{ live bool }
+
+func waitForLiveStatusReadyCmd(ctx context.Context, ls *liveStatus) tea.Cmd {
+	if ls == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ls.Ready():
+			return liveStatusReadyMsg{live: ls.live}
+		}
+	}
+}
+
+// handleLiveStatusReady closes the gap a background subscription leaves: a
+// Herdr generation applied before the subscription went live may predate an
+// agent status change no event will report, so it is replaced once.
+func (m Model) handleLiveStatusReady(msg liveStatusReadyMsg) (Model, tea.Cmd) {
+	if !msg.live || m.snapshotDriver == nil || m.lastSnapshotAt.IsZero() {
+		return m, nil
+	}
+	m.lastSnapshotAt = m.now().Add(-snapshotTTL)
+	return m, m.maybeRefreshSnapshot()
 }
 
 func waitForStatusCmd(ctx context.Context, events <-chan StatusEvent) tea.Cmd {
@@ -1428,7 +1471,7 @@ func runProgramWithPane(ctx context.Context, m Model, opts ...tea.ProgramOption)
 		defer func() {
 			_ = ls.Close()
 		}()
-		m = m.WithLiveStatus(ls.Events())
+		m = m.withLiveStatus(ls)
 	}
 	allOpts := make([]tea.ProgramOption, 0, 2+len(opts))
 	allOpts = append(allOpts, tea.WithContext(ctx), tea.WithAltScreen())
@@ -1458,7 +1501,7 @@ func runProgram(ctx context.Context, m Model, opts ...tea.ProgramOption) (source
 		defer func() {
 			_ = ls.Close()
 		}()
-		m = m.WithLiveStatus(ls.Events())
+		m = m.withLiveStatus(ls)
 	}
 	allOpts := make([]tea.ProgramOption, 0, 2+len(opts))
 	allOpts = append(allOpts, tea.WithContext(ctx), tea.WithAltScreen())

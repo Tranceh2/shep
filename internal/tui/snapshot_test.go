@@ -569,3 +569,41 @@ func TestSnapshotRefresh_D4Precedence(t *testing.T) {
 		t.Errorf("liveStatuses[p1] = %+v (exists=%t), want done", obs, exists)
 	}
 }
+
+// A Herdr generation applied before the background status subscription went
+// live can predate a status change no event reports, so the subscription
+// becoming live replaces it once; the new generation's statuses then show.
+func TestLiveStatusReady_RefreshesAGenerationAppliedBeforeIt(t *testing.T) {
+	initial := snapshotGeneration("w1", "p1", "working")
+	driver := &scriptedSnapshotDriver{responses: []snapshotDriverResponse{{snapshot: snapshotGeneration("w1", "p1", "done")}}}
+	m := newSnapshotModel(driver, initial, nil)
+
+	next, cmd := m.Update(liveStatusReadyMsg{live: true})
+	if cmd == nil {
+		t.Fatal("subscription going live did not refresh the earlier generation")
+	}
+	next, _ = next.(Model).Update(cmd())
+	if driver.calls != 1 {
+		t.Fatalf("snapshot calls = %d, want exactly one refresh", driver.calls)
+	}
+	if got := next.(Model).startupSnapshot.Panes[0].AgentStatus; got != "done" {
+		t.Fatalf("agent status after refresh = %q, want the new generation's %q", got, "done")
+	}
+}
+
+// Without an applied generation (or without a live subscription) there is
+// nothing stale to replace: no refresh is requested.
+func TestLiveStatusReady_NoRefreshWithoutAnAppliedGeneration(t *testing.T) {
+	driver := &scriptedSnapshotDriver{}
+	live := newSnapshotModel(driver, snapshotGeneration("w1", "p1", "working"), nil)
+	if _, cmd := live.Update(liveStatusReadyMsg{live: false}); cmd != nil {
+		t.Fatal("a failed subscription requested a refresh")
+	}
+	pending := NewModelWithProducers(nil, "", nil, context.Background(), Layout{})
+	if _, cmd := pending.Update(liveStatusReadyMsg{live: true}); cmd != nil {
+		t.Fatal("a model without a Herdr generation requested a refresh")
+	}
+	if driver.calls != 0 {
+		t.Fatalf("snapshot calls = %d, want none", driver.calls)
+	}
+}

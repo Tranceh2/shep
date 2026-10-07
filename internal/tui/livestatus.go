@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -67,7 +68,14 @@ func (d *unixStatusDialer) Dial(ctx context.Context) (StatusStream, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The subscribe round trip only honours the startup deadline; a
+	// cancellation (the picker closing while Herdr is slow to answer) must
+	// unblock it at once instead of after that deadline.
+	stop := context.AfterFunc(startupCtx, func() { _ = conn.SetDeadline(time.Now()) })
 	stream, err := SubscribeStatus(startupCtx, conn)
+	if !stop() && err == nil {
+		err = startupCtx.Err()
+	}
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -242,39 +250,67 @@ func readBoundedLine(r *bufio.Reader) ([]byte, error) {
 	return []byte(strings.TrimSpace(line)), nil
 }
 
+// liveStatus is the picker's held-open agent status subscription. It is
+// established in the background, so the first frame never waits on the Herdr
+// socket: ready closes once the subscription is live or has failed, and live
+// (read only after ready) reports which.
 type liveStatus struct {
 	events chan StatusEvent
+	ready  chan struct{}
+	live   bool
 	cancel context.CancelFunc
-	stream StatusStream
+	mu     sync.Mutex
+	stream StatusStream // set once live; guarded by mu
 	done   chan struct{}
 	closed uint32
 }
 
+// startLiveStatus subscribes to Herdr's agent status events in the background
+// and returns at once; nil without a dialer. A failed or timed-out
+// subscription closes ready with live false and closes the events channel, so
+// the picker runs on without live status.
 func startLiveStatus(ctx context.Context, dialer StatusDialer) *liveStatus {
 	if dialer == nil {
 		return nil
 	}
 	subCtx, cancel := context.WithCancel(ctx)
-	dialCtx, cancelStartup := context.WithTimeout(subCtx, liveStatusStartupTimeout)
-	stream, err := dialer.Dial(dialCtx)
-	cancelStartup()
-	if err != nil {
-		cancel()
-		return nil
-	}
 	ls := &liveStatus{
 		events: make(chan StatusEvent, 32),
+		ready:  make(chan struct{}),
 		cancel: cancel,
-		stream: stream,
 		done:   make(chan struct{}),
 	}
-	go ls.readLoop(subCtx)
+	go ls.run(subCtx, dialer)
 	return ls
 }
 
-func (ls *liveStatus) readLoop(ctx context.Context) {
+func (ls *liveStatus) run(ctx context.Context, dialer StatusDialer) {
 	defer close(ls.done)
 	defer close(ls.events)
+	dialCtx, cancelDial := context.WithTimeout(ctx, liveStatusStartupTimeout)
+	stream, err := dialer.Dial(dialCtx)
+	cancelDial()
+	ls.live = err == nil && ls.adopt(stream)
+	close(ls.ready)
+	if ls.live {
+		ls.readLoop(ctx)
+	}
+}
+
+// adopt records a freshly established stream, or closes it when Close won
+// the race against the subscription.
+func (ls *liveStatus) adopt(stream StatusStream) bool {
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	if atomic.LoadUint32(&ls.closed) == 1 {
+		_ = stream.Close()
+		return false
+	}
+	ls.stream = stream
+	return true
+}
+
+func (ls *liveStatus) readLoop(ctx context.Context) {
 	for {
 		ev, err := ls.stream.ReadEvent()
 		if err != nil {
@@ -306,19 +342,26 @@ func (ls *liveStatus) Events() <-chan StatusEvent {
 	return ls.events
 }
 
+// Ready is closed once the subscription is live or has failed.
+func (ls *liveStatus) Ready() <-chan struct{} {
+	if ls == nil {
+		return nil
+	}
+	return ls.ready
+}
+
 func (ls *liveStatus) Close() error {
 	if ls == nil || !atomic.CompareAndSwapUint32(&ls.closed, 0, 1) {
 		return nil
 	}
-	if ls.cancel != nil {
-		ls.cancel()
-	}
+	ls.cancel()
+	ls.mu.Lock()
+	stream := ls.stream
+	ls.mu.Unlock()
 	var err error
-	if ls.stream != nil {
-		err = ls.stream.Close()
+	if stream != nil {
+		err = stream.Close()
 	}
-	if ls.done != nil {
-		<-ls.done
-	}
+	<-ls.done
 	return err
 }
