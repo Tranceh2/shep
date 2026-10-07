@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tranceh2/shep/internal/cache"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
 )
@@ -30,16 +31,18 @@ func TestCache_HitAndMiss(t *testing.T) {
 	}
 }
 
-// TestCache_TTLExpiry drops an entry once its TTL elapses.
+// TestCache_TTLExpiry drops an entry once its TTL elapses, driven by a fake
+// clock so the test never depends on scheduler timing.
 func TestCache_TTLExpiry(t *testing.T) {
 	t.Parallel()
 
-	c := NewCache(15 * time.Millisecond)
+	clock := time.Unix(1_000, 0)
+	c := &Cache{inner: cache.NewWithClock[Result](15*time.Millisecond, func() time.Time { return clock })}
 	c.Put("k", Result{Text: "x"})
 	if _, ok := c.Get("k"); !ok {
 		t.Fatal("expected hit within TTL")
 	}
-	time.Sleep(40 * time.Millisecond)
+	clock = clock.Add(15*time.Millisecond + time.Nanosecond)
 	if _, ok := c.Get("k"); ok {
 		t.Fatal("expected miss after TTL expiry")
 	}

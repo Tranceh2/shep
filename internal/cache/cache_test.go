@@ -30,34 +30,38 @@ func TestCache_GetPutHit(t *testing.T) {
 	}
 }
 
-// TestCache_TTLExpiry drops an entry once its TTL elapses.
+// TestCache_TTLExpiry drops an entry once its TTL elapses, driven by a fake
+// clock so the test never depends on scheduler timing.
 func TestCache_TTLExpiry(t *testing.T) {
 	t.Parallel()
 
-	c := New[string](15 * time.Millisecond)
+	clock := time.Unix(1_000, 0)
+	c := NewWithClock[string](15*time.Millisecond, func() time.Time { return clock })
 	c.Put("k", "x")
+	clock = clock.Add(15 * time.Millisecond)
 	if _, ok := c.Get("k"); !ok {
-		t.Fatal("expected hit within TTL")
+		t.Fatal("expected hit at the TTL boundary")
 	}
-	time.Sleep(40 * time.Millisecond)
+	clock = clock.Add(time.Nanosecond)
 	if _, ok := c.Get("k"); ok {
 		t.Fatal("expected miss after TTL expiry")
 	}
 }
 
 // TestCache_TTLZeroNeverExpires confirms ttl<=0 disables time-based eviction:
-// an entry stays retrievable well past what would be a short TTL window.
+// an entry stays retrievable however far the clock advances.
 func TestCache_TTLZeroNeverExpires(t *testing.T) {
 	t.Parallel()
 
-	c := New[int](0)
+	clock := time.Unix(1_000, 0)
+	c := NewWithClock[int](0, func() time.Time { return clock })
 	c.Put("k", 42)
-	time.Sleep(20 * time.Millisecond)
+	clock = clock.Add(24 * time.Hour)
 	got, ok := c.Get("k")
 	if !ok {
 		t.Fatal("expected hit: ttl<=0 must never expire")
 	}
 	if got != 42 {
-		t.Errorf("value: got %d want %d", got, 42)
+		t.Fatalf("got %d, want 42", got)
 	}
 }

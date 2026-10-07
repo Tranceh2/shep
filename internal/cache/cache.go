@@ -14,6 +14,7 @@ import (
 type Cache[T any] struct {
 	mu    sync.Mutex
 	ttl   time.Duration
+	now   func() time.Time
 	items map[string]item[T]
 }
 
@@ -26,7 +27,14 @@ type item[T any] struct {
 // time-based eviction entirely: entries never expire on their own (the
 // cache still overwrites a key on a later Put).
 func New[T any](ttl time.Duration) *Cache[T] {
-	return &Cache[T]{ttl: ttl, items: make(map[string]item[T])}
+	return NewWithClock[T](ttl, time.Now)
+}
+
+// NewWithClock is New with an injected clock, so expiry can be tested by
+// advancing a fake clock instead of sleeping (sleep-based TTL tests flake on
+// a loaded machine).
+func NewWithClock[T any](ttl time.Duration, now func() time.Time) *Cache[T] {
+	return &Cache[T]{ttl: ttl, now: now, items: make(map[string]item[T])}
 }
 
 // Get returns the cached value for key, or ok=false when the key is unknown
@@ -39,7 +47,7 @@ func (c *Cache[T]) Get(key string) (T, bool) {
 		var zero T
 		return zero, false
 	}
-	if c.ttl > 0 && time.Now().After(it.expires) {
+	if c.ttl > 0 && c.now().After(it.expires) {
 		delete(c.items, key)
 		var zero T
 		return zero, false
@@ -54,7 +62,7 @@ func (c *Cache[T]) Put(key string, v T) {
 	defer c.mu.Unlock()
 	exp := time.Time{}
 	if c.ttl > 0 {
-		exp = time.Now().Add(c.ttl)
+		exp = c.now().Add(c.ttl)
 	}
 	c.items[key] = item[T]{value: v, expires: exp}
 }
