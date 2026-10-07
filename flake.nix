@@ -20,7 +20,7 @@
 
           # Recompute after any go.mod/go.sum change: set to
           # pkgs.lib.fakeHash, run `nix build .#default`, copy the "got:" hash.
-          vendorHash = "sha256-N4/FQBDQJkB+cY2AkFQ81bSnvbwbyJgbms1afqE/gY4=";
+          vendorHash = "sha256-3BbIHGIy4zPQKdU6JluiRw+Zwq1ni2opEMiLqO5K404=";
 
           ldflags = [
             "-s"
