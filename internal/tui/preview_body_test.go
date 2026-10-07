@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/bubbles/spinner"
+	"charm.land/bubbles/v2/spinner"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/preview"
@@ -115,7 +115,7 @@ func TestPreviewTitle_NameAndKindPerRow(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m.rows = []Row{tc.row}
-			got := m.renderPreviewTitle(40)
+			got := ansi.Strip(m.renderPreviewTitle(40))
 			if ansi.StringWidth(got) != 40 {
 				t.Errorf("title width = %d, want 40", ansi.StringWidth(got))
 			}
@@ -126,7 +126,7 @@ func TestPreviewTitle_NameAndKindPerRow(t *testing.T) {
 		})
 	}
 	m.rows = []Row{{Kind: RowCandidate, Candidate: herdrCandidate("a-long-workspace-name", "/x", "w1")}}
-	if got := strings.TrimSpace(m.renderPreviewTitle(24)); got != "a-long-workspace-name" {
+	if got := strings.TrimSpace(ansi.Strip(m.renderPreviewTitle(24))); got != "a-long-workspace-name" {
 		t.Errorf("short title = %q, want the kind dropped before the name", got)
 	}
 }
@@ -572,7 +572,7 @@ func TestHelpBody_BuiltOnlyWhileVisible(t *testing.T) {
 		t.Error("an unrelated message rebuilt the help body")
 	}
 	m, _ = update(t, m, sizeMsg(100, 30))
-	if m.helpKey == built || m.helpViewport.Width != m.geometry().ContentWidth {
+	if m.helpKey == built || m.helpViewport.Width() != m.geometry().ContentWidth {
 		t.Error("a resize did not rebuild the help body at the new size")
 	}
 }

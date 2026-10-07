@@ -88,7 +88,7 @@ func (a *App) reportWorkspaces(out io.Writer, cfg *config.Config) {
 // note: an ignored SHEP_THEME, a missing Herdr configuration, Herdr's own
 // diagnostics (unknown theme names, colors Herdr would draw as cyan).
 func (a *App) reportTheme(out io.Writer, cfg *config.Config) {
-	t, err := a.selectTheme(cfg)
+	t, err := a.selectTheme(cfg, false)
 	if err != nil {
 		fmt.Fprintf(out, "\nTheme: ERROR %v\n", err)
 		return
@@ -97,6 +97,9 @@ func (a *App) reportTheme(out io.Writer, cfg *config.Config) {
 	fmt.Fprintf(out, "  source: %s\n", t.Source)
 	if t.Source.HerdrPath != "" {
 		fmt.Fprintf(out, "  herdr config: %s\n", t.Source.HerdrPath)
+	}
+	if t.Source.FollowsAppearance {
+		fmt.Fprintln(out, "  appearance: follows the terminal (auto_switch); dark variant shown")
 	}
 	for _, note := range t.Source.Notes {
 		fmt.Fprintf(out, "  note: %s\n", note)

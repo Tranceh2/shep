@@ -8,17 +8,18 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
 )
 
-func closeKey() tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyCtrlX} }
+func closeKey() tea.KeyPressMsg { return key("ctrl+x") }
 
 func TestCloseFooterUsesSharedKeyBinding(t *testing.T) {
 	m := NewModelWithLayout([]source.Candidate{{Source: config.SourceHerdr, Meta: map[string]string{"workspace_id": "w1"}}}, nil, Layout{Closer: func(context.Context, string, string) CloseResultMsg { return CloseResultMsg{} }})
 	m, _ = update(t, m, sizeMsg(120, 36))
-	help := stripNonSGRANSI(m.helpBodyText(160))
+	help := ansi.Strip(m.helpBodyText(160))
 	if !hasHint(m.footerHints(), keyBindingClose.footerChord, keyBindingClose.footerLabel) || !strings.Contains(help, keyBindingClose.chord) || !strings.Contains(help, keyBindingClose.help) {
 		t.Fatalf("footer=%q help=%q", footerText(m), help)
 	}
@@ -43,11 +44,11 @@ func TestCloseFeedbackClearsOnNextKey(t *testing.T) {
 	} {
 		for _, action := range []struct {
 			name string
-			key  tea.KeyMsg
+			key  tea.KeyPressMsg
 		}{
-			{"move", tea.KeyMsg{Type: tea.KeyDown}},
-			{"type", plainKeyMsg('z')},
-			{"esc", tea.KeyMsg{Type: tea.KeyEsc}},
+			{"move", key("down")},
+			{"type", key("z")},
+			{"esc", key("esc")},
 		} {
 			t.Run(tc.name+"/"+action.name, func(t *testing.T) {
 				m := NewModelWithLayout(nil, nil, Layout{Closer: tc.closer})
@@ -104,11 +105,11 @@ func TestClosePendingStatusSurvivesNonKeyUpdatesAndOverlappingKey(t *testing.T) 
 	if footerText(m) != prompt || m.closeConfirm == nil {
 		t.Fatal("resize cleared confirmation")
 	}
-	m, _ = update(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = update(t, m, key("esc"))
 	if m.cancelled || m.closeConfirm != nil || footerText(m) != "close cancelled" {
 		t.Fatal("esc did not only cancel prompt")
 	}
-	m, _ = update(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = update(t, m, key("down"))
 	if strings.Contains(footerText(m), "close cancelled") {
 		t.Fatal("cancellation feedback persisted")
 	}
@@ -265,7 +266,7 @@ func TestCloseWhileSnapshotAlreadyInFlightRefreshesAfterIt(t *testing.T) {
 
 func TestCloseConfirmationAndUnavailable(t *testing.T) {
 	row := Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceHerdr, Label: "work", Meta: map[string]string{"workspace_id": "w1"}}}
-	for _, key := range []tea.KeyMsg{{Type: tea.KeyEsc}, plainKeyMsg('n'), closeKey()} {
+	for _, cancel := range []tea.KeyPressMsg{key("esc"), key("n"), closeKey()} {
 		m := NewModelWithLayout(nil, nil, Layout{ConfirmClose: []string{"workspace"}, Closer: func(context.Context, string, string) CloseResultMsg {
 			t.Fatal("cancel ran closer")
 			return CloseResultMsg{}
@@ -275,7 +276,7 @@ func TestCloseConfirmationAndUnavailable(t *testing.T) {
 		if cmd != nil || !strings.Contains(footerText(m), "close workspace") {
 			t.Fatal("missing prompt")
 		}
-		m, cmd = update(t, m, key)
+		m, cmd = update(t, m, cancel)
 		if cmd != nil || m.cancelled || m.closePending || m.closeConfirm != nil {
 			t.Fatalf("cancel: %+v cmd=%v", m, cmd)
 		}
@@ -285,7 +286,7 @@ func TestCloseConfirmationAndUnavailable(t *testing.T) {
 	}})
 	m.rows = []Row{row}
 	m, _ = update(t, m, closeKey())
-	m, cmd := update(t, m, plainKeyMsg('y'))
+	m, cmd := update(t, m, key("y"))
 	if cmd == nil || !m.closePending {
 		t.Fatal("y did not confirm")
 	}
@@ -365,7 +366,7 @@ func TestCloseTargetFor_TreeRows(t *testing.T) {
 	if cmd != nil || m.closeConfirm == nil || !strings.Contains(footerText(m), `close tab "api"?`) {
 		t.Fatalf("tree tab close must ask first: cmd=%v footer=%q", cmd != nil, footerText(m))
 	}
-	m, cmd = update(t, m, plainKeyMsg('y'))
+	m, cmd = update(t, m, key("y"))
 	if cmd == nil {
 		t.Fatal("confirming did not close the tab")
 	}

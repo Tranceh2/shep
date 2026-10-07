@@ -10,10 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/effective"
 	"github.com/tranceh2/shep/internal/preview"
@@ -167,20 +165,9 @@ func benchStep(m Model, msg tea.Msg) Model {
 	return next.(Model)
 }
 
-// setupBenchRendering pins a true-color profile so styles emit real escape
-// sequences, as in a terminal. The theme is always passed explicitly, so the
-// caller's NO_COLOR or SHEP_THEME cannot change it.
-func setupBenchRendering(b *testing.B) {
-	b.Helper()
-	origProfile := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	b.Cleanup(func() { lipgloss.SetColorProfile(origProfile) })
-}
-
 // benchAllModel builds the sized all-view model with a resolved preview.
 func benchAllModel(b *testing.B) Model {
 	b.Helper()
-	setupBenchRendering(b)
 	snap := benchSnapshot(30)
 	m := NewModelWithTree(benchAllCandidates(snap), benchWorkspaceRenderer{}, NewTreeExpanderFromSnapshot(snap), Layout{Theme: testTheme(ThemeMocha)})
 	m = benchStep(m, tea.WindowSizeMsg{Width: 140, Height: 38})
@@ -197,7 +184,7 @@ func BenchmarkView_AllWide(b *testing.B) {
 	m := benchAllModel(b)
 	b.ReportAllocs()
 	for b.Loop() {
-		_ = m.View()
+		_ = m.View().Content
 	}
 }
 
@@ -206,11 +193,11 @@ func BenchmarkView_AllWide(b *testing.B) {
 // empty-query model value, so every iteration filters the full set.
 func BenchmarkUpdate_TypeQuery(b *testing.B) {
 	base := benchAllModel(b)
-	keys := []tea.KeyMsg{
-		{Type: tea.KeyRunes, Runes: []rune{'s'}},
-		{Type: tea.KeyRunes, Runes: []rune{'h'}},
-		{Type: tea.KeyRunes, Runes: []rune{'e'}},
-		{Type: tea.KeyRunes, Runes: []rune{'p'}},
+	keys := []tea.KeyPressMsg{
+		key("s"),
+		key("h"),
+		key("e"),
+		key("p"),
 	}
 	b.ReportAllocs()
 	for b.Loop() {
@@ -218,7 +205,7 @@ func BenchmarkUpdate_TypeQuery(b *testing.B) {
 		for _, k := range keys {
 			m = benchStep(m, k)
 		}
-		_ = m.View()
+		_ = m.View().Content
 	}
 }
 
@@ -261,18 +248,17 @@ func BenchmarkUpdate_TypeQueryWithHistory(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	setupBenchRendering(b)
 	snap := benchSnapshot(30)
 	base := NewModelWithTree(benchAllCandidates(snap), benchWorkspaceRenderer{}, NewTreeExpanderFromSnapshot(snap), Layout{Theme: testTheme(ThemeMocha), RankingSnapshot: snapshot})
 	base = benchStep(base, tea.WindowSizeMsg{Width: 140, Height: 38})
 	if got := len(base.rows); got < 600 {
 		b.Fatalf("bench model has %d rows, want ~650", got)
 	}
-	keys := []tea.KeyMsg{
-		{Type: tea.KeyRunes, Runes: []rune{'s'}},
-		{Type: tea.KeyRunes, Runes: []rune{'h'}},
-		{Type: tea.KeyRunes, Runes: []rune{'e'}},
-		{Type: tea.KeyRunes, Runes: []rune{'p'}},
+	keys := []tea.KeyPressMsg{
+		key("s"),
+		key("h"),
+		key("e"),
+		key("p"),
 	}
 	b.ReportAllocs()
 	for b.Loop() {
@@ -280,7 +266,7 @@ func BenchmarkUpdate_TypeQueryWithHistory(b *testing.B) {
 		for _, k := range keys {
 			m = benchStep(m, k)
 		}
-		_ = m.View()
+		_ = m.View().Content
 	}
 }
 
@@ -289,17 +275,16 @@ func BenchmarkUpdate_TypeQueryWithHistory(b *testing.B) {
 // producers attach it (effective.Resolver.Attach), so rows draw from the
 // candidate's own presentation instead of their source's.
 func BenchmarkUpdate_TypeQueryResolved(b *testing.B) {
-	setupBenchRendering(b)
 	snap := benchSnapshot(30)
 	cands := benchAllCandidates(snap)
 	effective.New(config.Defaults()).Attach(cands)
 	base := NewModelWithTree(cands, benchWorkspaceRenderer{}, NewTreeExpanderFromSnapshot(snap), Layout{Theme: testTheme(ThemeMocha)})
 	base = benchStep(base, tea.WindowSizeMsg{Width: 140, Height: 38})
-	keys := []tea.KeyMsg{
-		{Type: tea.KeyRunes, Runes: []rune{'s'}},
-		{Type: tea.KeyRunes, Runes: []rune{'h'}},
-		{Type: tea.KeyRunes, Runes: []rune{'e'}},
-		{Type: tea.KeyRunes, Runes: []rune{'p'}},
+	keys := []tea.KeyPressMsg{
+		key("s"),
+		key("h"),
+		key("e"),
+		key("p"),
 	}
 	b.ReportAllocs()
 	for b.Loop() {
@@ -307,7 +292,7 @@ func BenchmarkUpdate_TypeQueryResolved(b *testing.B) {
 		for _, k := range keys {
 			m = benchStep(m, k)
 		}
-		_ = m.View()
+		_ = m.View().Content
 	}
 }
 
@@ -321,7 +306,7 @@ func BenchmarkUpdate_SpinnerTickAll(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		m = benchStep(m, tick)
-		_ = m.View()
+		_ = m.View().Content
 	}
 }
 
@@ -331,21 +316,20 @@ func BenchmarkUpdate_SpinnerTickAll(b *testing.B) {
 // truecolor pane capture: the frame must not re-sanitize, re-fit or re-split
 // the capture.
 func BenchmarkUpdate_SpinnerTickWorkspaceHeavyCapture(b *testing.B) {
-	setupBenchRendering(b)
 	snap := benchSnapshot(30)
 	renderer := benchHeavyRenderer{capture: heavyCapture()}
 	m := NewModelWithTree(benchAllCandidates(snap), renderer, NewTreeExpanderFromSnapshot(snap), Layout{Theme: testTheme(ThemeMocha)})
 	m = benchStep(m, tea.WindowSizeMsg{Width: 140, Height: 38})
 	res, _ := renderer.Render(context.Background(), source.Candidate{})
 	m = benchStep(m, previewResponseMsg{seq: m.previewSeq, result: res})
-	if !strings.Contains(m.View(), "Active pane") || m.tree.WorkspaceAgentStatus("w00") != "working" {
+	if !strings.Contains(m.View().Content, "Active pane") || m.tree.WorkspaceAgentStatus("w00") != "working" {
 		b.Fatal("setup: want a working workspace previewing its capture")
 	}
 	tick := spinner.TickMsg{ID: m.spinner.ID()}
 	b.ReportAllocs()
 	for b.Loop() {
 		m = benchStep(m, tick)
-		_ = m.View()
+		_ = m.View().Content
 	}
 }
 
@@ -358,7 +342,6 @@ func BenchmarkUpdate_SpinnerTickWorkspaceHeavyCapture(b *testing.B) {
 // deduplication resolves with EvalSymlinks and Stat in production.
 func benchConfiguredTabsModel(b *testing.B) Model {
 	b.Helper()
-	setupBenchRendering(b)
 	home := b.TempDir()
 	snap := benchSnapshotUnder(30, home)
 	cands := benchAllCandidatesUnder(snap, home)
@@ -424,7 +407,7 @@ func BenchmarkUpdate_SpinnerTickConfiguredTabs(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		m = benchStep(m, tick)
-		_ = m.View()
+		_ = m.View().Content
 	}
 }
 
@@ -432,11 +415,11 @@ func BenchmarkUpdate_SpinnerTickConfiguredTabs(b *testing.B) {
 // configured tabs and on-disk paths: a keystroke must not touch the disk.
 func BenchmarkUpdate_TypeQueryConfiguredTabs(b *testing.B) {
 	base := benchConfiguredTabsModel(b)
-	keys := []tea.KeyMsg{
-		{Type: tea.KeyRunes, Runes: []rune{'s'}},
-		{Type: tea.KeyRunes, Runes: []rune{'h'}},
-		{Type: tea.KeyRunes, Runes: []rune{'e'}},
-		{Type: tea.KeyRunes, Runes: []rune{'p'}},
+	keys := []tea.KeyPressMsg{
+		key("s"),
+		key("h"),
+		key("e"),
+		key("p"),
 	}
 	b.ReportAllocs()
 	for b.Loop() {
@@ -444,7 +427,7 @@ func BenchmarkUpdate_TypeQueryConfiguredTabs(b *testing.B) {
 		for _, k := range keys {
 			m = benchStep(m, k)
 		}
-		_ = m.View()
+		_ = m.View().Content
 	}
 }
 
@@ -452,7 +435,6 @@ func BenchmarkUpdate_TypeQueryConfiguredTabs(b *testing.B) {
 // agents view with two working agents: the idle-CPU path the picker pays
 // several times per second while it sits open.
 func BenchmarkUpdate_SpinnerTickAgents(b *testing.B) {
-	setupBenchRendering(b)
 	snap := benchSnapshot(8)
 	// Keep exactly ten agent panes, two of them working.
 	agents := 0
@@ -485,6 +467,6 @@ func BenchmarkUpdate_SpinnerTickAgents(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		m = benchStep(m, tick)
-		_ = m.View()
+		_ = m.View().Content
 	}
 }

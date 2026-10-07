@@ -18,10 +18,10 @@ type Options struct {
 	// HerdrConfigPath is Herdr's config.toml (see DefaultHerdrConfigPath);
 	// empty means there is none, so inherit uses Herdr's defaults.
 	HerdrConfigPath string
-	// Dark reports whether the terminal has a dark appearance. It is called
-	// at most once, and only when the selected theme inherits from a Herdr
-	// configuration with auto_switch on; nil (or never called) means dark.
-	Dark func() bool
+	// Light selects the variant for a light terminal appearance. Only a
+	// theme inheriting a Herdr configuration with auto_switch on has one (see
+	// Source.FollowsAppearance); every other theme ignores it.
+	Light bool
 }
 
 // Select picks the theme shep renders with. Precedence:
@@ -91,6 +91,7 @@ func (s *selector) build(name string) (Theme, error) {
 		return Theme{}, err
 	}
 	t.Source.HerdrPath = s.opts.HerdrConfigPath
+	t.Source.FollowsAppearance = s.herdr.AutoSwitch
 	t.Source.Notes = append([]string(nil), s.notes...)
 	return t, nil
 }
@@ -117,9 +118,7 @@ func (s *selector) loadHerdr() {
 	}
 	s.herdr = h
 	s.notes = append(s.notes, h.Diagnostics()...)
-	if h.AutoSwitch && s.opts.Dark != nil {
-		s.dark = s.opts.Dark()
-	}
+	s.dark = !h.AutoSwitch || !s.opts.Light
 }
 
 // inheritsHerdr reports whether name is inherit or a custom theme whose base

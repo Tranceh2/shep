@@ -5,7 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -158,8 +159,7 @@ func TestAgentStatusIcon_RespectsConfiguredIconSet(t *testing.T) {
 // spinner is a Bubble Tea component, not one of the icon-fallback-chain
 // glyphs, and a unicode-capable terminal can always display its Braille dot
 // glyphs. Its color role (statusWorkingStyle, not previewLoadingStyle) is
-// asserted with a forced color profile in spinner_style_test.go, since this
-// package's tests never force lipgloss color output.
+// asserted in spinner_style_test.go.
 func TestAgentStatusIcon_WorkingIgnoresIconSet(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModelWithIcons(ThemeMocha, IconsUnicode)
@@ -275,7 +275,7 @@ func TestRowDisplayText_TreePrefixDistinguishesLastTab(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			primary, _ := m.rowDisplayText(tt.row)
-			if got := stripNonSGRANSI(primary); got != tt.want {
+			if got := ansi.Strip(primary); got != tt.want {
 				t.Errorf("rowDisplayText(%+v) primary = %q, want %q", tt.row, got, tt.want)
 			}
 		})
@@ -298,7 +298,7 @@ func TestRowDisplayText_RespectsConfiguredIconSetEndToEnd(t *testing.T) {
 		},
 	}
 	primary, _ := m.rowDisplayText(row)
-	plain := stripNonSGRANSI(primary)
+	plain := ansi.Strip(primary)
 	if !containsFold(plain, set.StatusIdle) {
 		t.Errorf("rowDisplayText primary %q must contain the ascii idle glyph %q", plain, set.StatusIdle)
 	}

@@ -163,11 +163,11 @@ func TestView_FrameInvariants(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/%dx%d", sc.name, size.w, size.h), func(t *testing.T) {
 				t.Parallel()
 				m := sc.setup(t, size.w, size.h)
-				assertFrameInvariants(t, m.View(), size.w, size.h)
+				assertFrameInvariants(t, m.View().Content, size.w, size.h)
 				// A spinner frame recomposes the animated parts of the preview
 				// from the memo: it must keep the contract too.
 				m, _ = update(t, m, m.spinner.Tick())
-				assertFrameInvariants(t, m.View(), size.w, size.h)
+				assertFrameInvariants(t, m.View().Content, size.w, size.h)
 			})
 		}
 	}
@@ -250,7 +250,7 @@ func TestView_CRLFCaptureKeepsListColumn(t *testing.T) {
 		{Kind: config.PreviewActivePane, Text: "active pane\n" + capture.String()},
 	}}})
 
-	view := m.View()
+	view := m.View().Content
 	if i := strings.IndexByte(view, '\r'); i >= 0 {
 		t.Fatalf("View() carries a carriage return at byte %d: %q", i, view[max(0, i-40):min(len(view), i+20)])
 	}

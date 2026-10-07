@@ -4,11 +4,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/muesli/termenv"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/ranking"
 	"github.com/tranceh2/shep/internal/source"
@@ -79,34 +78,30 @@ func TestRowView_AgentMarkerCappedAndTitleKeepsStart(t *testing.T) {
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	row := Row{Kind: RowPane, Candidate: source.Candidate{Label: "Refactor the render path of shep and measure everything", Source: config.SourceAgents,
 		Meta: map[string]string{"workspace_label": "platform-engineering-workspace"}}}
-	line := strings.TrimRight(renderRowLineText(m.renderRowLine(row, false, 60)), " ")
+	line := strings.TrimRight(ansi.Strip(m.renderRowLine(row, false, 60)), " ")
 	if !strings.HasSuffix(line, " platform-engineer…") || ansi.StringWidth("platform-engineer…") != 60*markerMaxPercent/100 {
 		t.Errorf("agent row = %q, want the workspace marker capped at 30%% of the row, keeping its start", line)
 	}
 	if !strings.HasPrefix(line, "  Refactor the render path of shep and m… ") {
 		t.Errorf("agent row = %q, want the title's start, truncated on the right", line)
 	}
-	if wide := renderRowLineText(m.renderRowLine(row, false, 120)); !strings.Contains(wide, "everything") || !strings.HasSuffix(strings.TrimRight(wide, " "), " platform-engineering-workspace") {
+	if wide := ansi.Strip(m.renderRowLine(row, false, 120)); !strings.Contains(wide, "everything") || !strings.HasSuffix(strings.TrimRight(wide, " "), " platform-engineering-workspace") {
 		t.Errorf("wide agent row = %q, want the whole title and marker", wide)
 	}
-	narrow := strings.TrimRight(renderRowLineText(m.renderRowLine(row, false, 25)), " ")
+	narrow := strings.TrimRight(ansi.Strip(m.renderRowLine(row, false, 25)), " ")
 	if strings.Contains(narrow, "platform") || !strings.HasPrefix(narrow, "  Refactor the render pa") || ansi.StringWidth(narrow) != 25 {
 		t.Errorf("narrow agent row = %q, want the marker dropped so the title keeps its room", narrow)
 	}
-	if kept := strings.TrimRight(renderRowLineText(m.renderRowLine(row, false, 26)), " "); !strings.HasSuffix(kept, " platfo…") {
+	if kept := strings.TrimRight(ansi.Strip(m.renderRowLine(row, false, 26)), " "); !strings.HasSuffix(kept, " platfo…") {
 		t.Errorf("agent row at 26 = %q, want the capped marker kept while the title keeps 16 cells", kept)
 	}
 }
 
 // TestRowView_IconColorsPerPresentation proves icons are colored by their
 // presentation's icon_color — by default the source.<name> roles, the tab
-// glyph text.muted — and that the plain theme leaves them uncolored. Not
-// t.Parallel: it swaps lipgloss's global color profile.
+// glyph text.muted — and that the plain theme leaves them uncolored.
 func TestRowView_IconColorsPerPresentation(t *testing.T) {
-	orig := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() { lipgloss.SetColorProfile(orig) })
-
+	t.Parallel()
 	th := testTheme(ThemeMocha)
 	letters := func(p *config.Presentations) {
 		p.Herdr.Icon, p.Workspaces.Icon, p.Zoxide.Icon, p.Sessions.Icon, p.Agents.Icon = "H", "W", "Z", "S", "A"
@@ -301,7 +296,7 @@ func TestSpinnerNeeded_WorkspaceAccessory(t *testing.T) {
 	if !m.spinnerNeeded() || !m.spinnerRunning || cmd == nil {
 		t.Fatalf("working workspace: needed=%v running=%v cmd=%v, want the spinner armed", m.spinnerNeeded(), m.spinnerRunning, cmd != nil)
 	}
-	if got := m.partText(&m.rowWindow.views[0].marker); got != m.agentStatusIcon("working") {
+	if got := m.partText(&m.rowWindow.views[0].marker); got != ansi.Strip(m.agentStatusIcon("working")) {
 		t.Errorf("cached marker after the live update = %q, want working", got)
 	}
 }
@@ -345,7 +340,7 @@ func TestEmptyState_AlignedWithRowsAndBlankPreview(t *testing.T) {
 	if left, _, _ := strings.Cut(lines[4], "│"); strings.TrimRight(left, " ") != "   esc clears the search" {
 		t.Errorf("second empty-state row = %q, want the hint after the gutter", lines[4])
 	}
-	if strings.TrimSpace(preview) != "" || strings.Contains(m.View(), "(no selection)") {
+	if strings.TrimSpace(preview) != "" || strings.Contains(m.View().Content, "(no selection)") {
 		t.Errorf("preview column = %q, want it blank with no row", preview)
 	}
 	ascii := m
@@ -395,7 +390,7 @@ func TestPaneStatus_InvalidatesCachedRowsInPlace(t *testing.T) {
 	m.expandedWorkspaces["w1"] = true
 	m.applyFilter()
 	m, _ = update(t, m, sizeMsg(120, 20))
-	idle, blocked := m.agentStatusIcon("idle"), m.agentStatusIcon("blocked")
+	idle, blocked := ansi.Strip(m.agentStatusIcon("idle")), ansi.Strip(m.agentStatusIcon("blocked"))
 	if body := strings.Join(viewLines(m)[3:6], "\n"); !strings.Contains(body, idle) {
 		t.Fatalf("body = %q, want the idle glyph", body)
 	}
@@ -410,13 +405,9 @@ var _ tea.Msg = paneStatusMsg{}
 
 // TestRowAccessories_IdleWorkspaceIsMuted proves the open workspace's
 // aggregate status only colors attention states: idle is the resting state
-// and draws muted, while blocked keeps its color. Not t.Parallel: it swaps
-// lipgloss's global color profile.
+// and draws muted, while blocked keeps its color.
 func TestRowAccessories_IdleWorkspaceIsMuted(t *testing.T) {
-	orig := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() { lipgloss.SetColorProfile(orig) })
-
+	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	row := Row{Kind: RowCandidate, Candidate: herdrCandidate("api", "/srv/api", "w1")}
 	set := m.icons()
@@ -451,13 +442,9 @@ func TestRowAccessories_PaneAgentNotRepeated(t *testing.T) {
 }
 
 // TestRowView_TabNumberMuted proves a tab row's number reads muted and its
-// label in the row style, in the list and in the preview title. Not
-// t.Parallel: it swaps lipgloss's global color profile.
+// label in the row style, in the list and in the preview title.
 func TestRowView_TabNumberMuted(t *testing.T) {
-	orig := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() { lipgloss.SetColorProfile(orig) })
-
+	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	row := Row{Kind: RowTab, Depth: 1, Candidate: source.Candidate{Label: "code", Meta: map[string]string{"tab_number": "2"}}}
 	line := m.renderRowLine(row, false, 40)
@@ -473,12 +460,8 @@ func TestRowView_TabNumberMuted(t *testing.T) {
 // TestPlainTheme_SelectedRowIsBoldAndPreviewHasNoSGR proves the plain theme
 // draws the selected row bold (never faint) and strips every SGR from
 // preview content, which tools emit even when the user asked for no color.
-// Not t.Parallel: it swaps lipgloss's global color profile.
 func TestPlainTheme_SelectedRowIsBoldAndPreviewHasNoSGR(t *testing.T) {
-	orig := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() { lipgloss.SetColorProfile(orig) })
-
+	t.Parallel()
 	m := newRenderTestModel(ThemePlain, FocusList)
 	row := Row{Kind: RowCandidate, Candidate: zoxideCandidate("alpha", "/a")}
 	selected := m.renderRowLine(row, true, 30)

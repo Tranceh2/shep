@@ -1,11 +1,11 @@
 package tui
 
 import (
+	"image/color"
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	"charm.land/lipgloss/v2"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
 	"github.com/tranceh2/shep/internal/theme"
@@ -18,7 +18,7 @@ func TestNewPalette_StylesAreThemeRoles(t *testing.T) {
 	t.Parallel()
 	th := testTheme(ThemeMocha)
 	s := newPalette(th, nil)
-	color := func(r theme.Role) lipgloss.TerminalColor { return th.Role(r).Lipgloss() }
+	roleColor := func(r theme.Role) color.Color { return th.Role(r).Lipgloss() }
 	for _, tc := range []struct {
 		name  string
 		style lipgloss.Style
@@ -51,7 +51,7 @@ func TestNewPalette_StylesAreThemeRoles(t *testing.T) {
 		{"git changes", s.gitChangesStyle, theme.RoleGitChanges},
 		{"active tab", s.tabActiveStyle, theme.RoleTabActiveFg},
 	} {
-		if got, want := tc.style.GetForeground(), color(tc.role); got != want {
+		if got, want := tc.style.GetForeground(), roleColor(tc.role); got != want {
 			t.Errorf("%s foreground = %v, want role %s (%v)", tc.name, got, tc.role, want)
 		}
 	}
@@ -64,7 +64,7 @@ func TestNewPalette_StylesAreThemeRoles(t *testing.T) {
 		{"active tab", s.tabActiveStyle, theme.RoleTabActive},
 		{"query cursor", s.queryCursorStyle, theme.RoleCursor},
 	} {
-		if got, want := tc.style.GetBackground(), color(tc.role); got != want {
+		if got, want := tc.style.GetBackground(), roleColor(tc.role); got != want {
 			t.Errorf("%s background = %v, want role %s (%v)", tc.name, got, tc.role, want)
 		}
 	}
@@ -74,7 +74,7 @@ func TestNewPalette_StylesAreThemeRoles(t *testing.T) {
 	if !s.rowSelected.label.GetBold() || s.rowPlain.label.GetBold() {
 		t.Error("only the selected row's label is bold")
 	}
-	if s.rowSelected.detail.GetBackground() != color(theme.RoleSelection) {
+	if s.rowSelected.detail.GetBackground() != roleColor(theme.RoleSelection) {
 		t.Error("the selected row's detail does not carry the selection surface")
 	}
 	if !s.rowDescendantStyle.GetItalic() {
@@ -141,7 +141,7 @@ func TestIconStyle_TokenRoleOrColor(t *testing.T) {
 	th := testTheme(ThemeMocha)
 	for _, tc := range []struct {
 		ref  string
-		want lipgloss.TerminalColor
+		want color.Color
 	}{
 		{"blue", th.Palette().Get(theme.TokenBlue).Lipgloss()},
 		{"source.projects", th.Role(theme.RoleSourceProjects).Lipgloss()},
@@ -187,12 +187,8 @@ func TestStatusStyle_Mapping(t *testing.T) {
 
 // TestThemeWiring_CustomRoleColorsTheRowDetail proves the whole chain in a
 // true-color render: a custom theme's role override reaches the drawn row.
-// Not t.Parallel: it swaps lipgloss's global color profile.
 func TestThemeWiring_CustomRoleColorsTheRowDetail(t *testing.T) {
-	orig := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() { lipgloss.SetColorProfile(orig) })
-
+	t.Parallel()
 	customs := map[string]theme.Custom{"mine": {Base: "nord", Roles: map[string]string{"row.detail": "#ff0000"}}}
 	mine, err := theme.Build("mine", customs, theme.HerdrTheme{}, true)
 	if err != nil {
@@ -217,12 +213,8 @@ func TestThemeWiring_CustomRoleColorsTheRowDetail(t *testing.T) {
 
 // TestThemeWiring_PresentationIconColor proves a presentation's icon_color
 // colors that row kind's icon, through the shared icon style table.
-// Not t.Parallel: it swaps lipgloss's global color profile.
 func TestThemeWiring_PresentationIconColor(t *testing.T) {
-	orig := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() { lipgloss.SetColorProfile(orig) })
-
+	t.Parallel()
 	p := config.DefaultPresentations("")
 	p.Zoxide.Icon, p.Zoxide.IconColor = "Z", "#00ff00"
 	m := NewModelWithLayout(nil, nil, Layout{Theme: testTheme(ThemeMocha), Presentation: &p})
@@ -234,12 +226,9 @@ func TestThemeWiring_PresentationIconColor(t *testing.T) {
 
 // TestStyleWrap_MatchesRender proves an icon written through its
 // pre-rendered style is byte-identical to rendering it, plain and selected,
-// colored and not. Not t.Parallel: it swaps lipgloss's global color profile.
+// colored and not.
 func TestStyleWrap_MatchesRender(t *testing.T) {
-	orig := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() { lipgloss.SetColorProfile(orig) })
-
+	t.Parallel()
 	for _, name := range []string{ThemeMocha, ThemePlain} {
 		s := newPalette(testTheme(name), []string{"source.herdr", "text.muted", "#123456", "nope"})
 		for _, st := range []*rowStyles{&s.rowPlain, &s.rowSelected} {

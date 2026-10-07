@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/ranking"
 	"github.com/tranceh2/shep/internal/source"
@@ -48,7 +47,7 @@ func TestModel_AsyncLoader_FirstFrameAvailableBeforeBlockedProducersComplete(t *
 	}
 
 	// First frame is rendered immediately without blocking
-	view := m.View()
+	view := m.View().Content
 	if strings.Contains(view, "[/]") {
 		t.Errorf("view = %q, want no [/] search keycap", view)
 	}
@@ -146,7 +145,7 @@ func TestModel_AsyncLoader_QueryKeystrokesRetainedAcrossIncrementalArrivals(t *t
 
 	// Type 'b', 'e' before any producer finishes
 	for _, ch := range []string{"b", "e"} {
-		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(ch)})
+		next, _ := m.Update(key(ch))
 		m = next.(Model)
 	}
 
@@ -168,7 +167,7 @@ func TestModel_AsyncLoader_QueryKeystrokesRetainedAcrossIncrementalArrivals(t *t
 	}
 
 	// Type 't' -> query becomes 'bet'
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	next, _ = m.Update(key("t"))
 	m = next.(Model)
 
 	if m.query != "bet" {
@@ -275,7 +274,7 @@ func TestModel_AsyncLoader_RankingLateArrivalReordersWithoutChangingSelectedIden
 	m = next.(Model)
 
 	// Move cursor to proj-2 (index 1)
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	next, _ = m.Update(key("down"))
 	m = next.(Model)
 
 	cur, ok := m.currentRow()
@@ -384,7 +383,7 @@ func TestModel_AsyncLoader_CancelWhileLoading(t *testing.T) {
 	}
 
 	m := NewModelWithProducers([]SourceProducer{prod}, "", nil, context.Background(), Layout{})
-	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	next, cmd := m.Update(key("esc"))
 	m = next.(Model)
 
 	if !m.Cancelled() {
@@ -409,7 +408,7 @@ func TestModel_AsyncLoader_EnterWhileLoadingEmptyIsNoop(t *testing.T) {
 	}
 
 	m := NewModelWithProducers([]SourceProducer{prod}, "", nil, context.Background(), Layout{})
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, _ := m.Update(key("enter"))
 	m = next.(Model)
 
 	if _, ok := m.Selected(); ok {
@@ -582,7 +581,7 @@ func TestModel_AsyncLoader_QueryTypingKeepsFirstMatchingRowPinnedAsArrivalsOccur
 
 	// User types "alpha" before sources finish
 	for _, ch := range []string{"a", "l", "p", "h", "a"} {
-		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(ch)})
+		next, _ := m.Update(key(ch))
 		m = next.(Model)
 	}
 
@@ -649,7 +648,7 @@ func TestModel_AsyncLoader_ExplicitNavigationRetainsSelectedCandidateIdentityOnL
 	m = next.(Model)
 
 	// User explicitly moves down to proj-2
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	next, _ = m.Update(key("down"))
 	m = next.(Model)
 
 	if cur, ok := m.currentRow(); !ok || cur.Candidate.Label != "proj-2" {
@@ -706,7 +705,7 @@ func TestModel_AsyncLoader_QueryEditAfterExplicitNavigationResetsCursorAndPinsFi
 	m = next.(Model)
 
 	// User navigates down to alpha-proj-2 (index 1)
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	next, _ = m.Update(key("down"))
 	m = next.(Model)
 
 	if m.cursor != 1 {
@@ -715,7 +714,7 @@ func TestModel_AsyncLoader_QueryEditAfterExplicitNavigationResetsCursorAndPinsFi
 
 	// User types "alpha" - query edit resets cursor to 0
 	for _, ch := range []string{"a", "l", "p", "h", "a"} {
-		next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(ch)})
+		next, _ = m.Update(key(ch))
 		m = next.(Model)
 	}
 

@@ -2,9 +2,10 @@ package theme
 
 import (
 	"fmt"
+	"image/color"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 func mustColor(t *testing.T, s string) Color {
@@ -116,7 +117,7 @@ func TestColor_StringRoundTrips(t *testing.T) {
 func TestColor_Lipgloss(t *testing.T) {
 	tests := []struct {
 		in   string
-		want lipgloss.TerminalColor
+		want color.Color
 	}{
 		{"#89b4fa", lipgloss.Color("#89b4fa")},
 		{"#ABC", lipgloss.Color("#aabbcc")},

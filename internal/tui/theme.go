@@ -3,7 +3,7 @@ package tui
 import (
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 	"github.com/tranceh2/shep/internal/theme"
 )
 
@@ -164,8 +164,6 @@ func newRowStyles(s *styleSet, icons []lipgloss.Style, surface, gutter lipgloss.
 // styleWrap is a style rendered once: the escape sequences it opens and
 // closes a single line of plain text with. Writing a static segment (a row's
 // icon) through it costs no Render call — and no allocation — per frame.
-// The color profile is the one in force when the palette is built, which is
-// fixed for the life of a program.
 type styleWrap struct{ open, close string }
 
 // newStyleWrap renders style around a probe rune and keeps what surrounds it.

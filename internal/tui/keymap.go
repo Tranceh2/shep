@@ -1,6 +1,6 @@
 package tui
 
-// Canonical key chord notation, in the exact spelling tea.KeyMsg.String()
+// Canonical key chord notation, in the exact spelling tea.KeyPressMsg.String()
 // produces (see keys.go's switch statements). These are the single source
 // of truth for every user-facing chord string: the footer's compact hints
 // (footerHints) and the "?" help cheat sheet (helpBodyText) both build

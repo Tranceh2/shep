@@ -4,9 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/muesli/termenv"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -49,7 +47,7 @@ func TestPromptRow_CursorAndPlaceholderPerView(t *testing.T) {
 	if !strings.HasPrefix(row, want) {
 		t.Errorf("prompt row = %q, want the query followed by the cursor cell", row)
 	}
-	if !strings.HasSuffix(strings.TrimSpace(stripNonSGRANSI(row)), "1/1") {
+	if !strings.HasSuffix(strings.TrimSpace(ansi.Strip(row)), "1/1") {
 		t.Errorf("prompt row = %q, want the filtered count right-aligned", row)
 	}
 }
@@ -75,7 +73,7 @@ func TestPromptRow_QueryNeverCutForCount(t *testing.T) {
 			if got := ansi.StringWidth(row); got != 22 {
 				t.Errorf("prompt row width = %d, want 22", got)
 			}
-			if got := strings.TrimRight(stripNonSGRANSI(row), " "); got != tc.want {
+			if got := strings.TrimRight(ansi.Strip(row), " "); got != tc.want {
 				t.Errorf("prompt row = %q, want %q", got, tc.want)
 			}
 		})
@@ -91,8 +89,8 @@ func TestHelpOverlay_UsesTheGrid(t *testing.T) {
 	m, _ = update(t, m, sizeMsg(120, 36))
 	m, _ = update(t, m, key("?"))
 	g := m.geometry()
-	if m.helpViewport.Width != g.ContentWidth || m.helpViewport.Height != 36-chromeRows {
-		t.Errorf("help viewport = %dx%d, want %dx%d", m.helpViewport.Width, m.helpViewport.Height, g.ContentWidth, 36-chromeRows)
+	if m.helpViewport.Width() != g.ContentWidth || m.helpViewport.Height() != 36-chromeRows {
+		t.Errorf("help viewport = %dx%d, want %dx%d", m.helpViewport.Width(), m.helpViewport.Height(), g.ContentWidth, 36-chromeRows)
 	}
 	lines := viewLines(m)
 	if len(lines) != 36 {
@@ -112,20 +110,16 @@ func TestHelpOverlay_UsesTheGrid(t *testing.T) {
 	}
 }
 
-// TestView_PlainThemeStructureWithoutColor renders a real frame with a
-// true-color profile and proves the plain theme stays structural: no
+// TestView_PlainThemeStructureWithoutColor renders a real frame and proves
+// the plain theme stays structural: no
 // foreground or background color sequence anywhere, while the active tab
 // and the prompt cursor still render in reverse video. The mocha theme, in
-// contrast, paints the cursor cell with the accent background. Not
-// t.Parallel: it swaps lipgloss's global color profile.
+// contrast, paints the cursor cell with the accent background.
 func TestView_PlainThemeStructureWithoutColor(t *testing.T) {
-	orig := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() { lipgloss.SetColorProfile(orig) })
-
+	t.Parallel()
 	plain := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: testTheme(ThemePlain)})
 	plain, _ = update(t, plain, sizeMsg(120, 30))
-	view := plain.View()
+	view := plain.View().Content
 	for _, color := range []string{"[38;", "[48;", ";38;", ";48;"} {
 		if strings.Contains(view, color) {
 			t.Fatalf("plain View() contains a color sequence %q", color)
@@ -141,7 +135,7 @@ func TestView_PlainThemeStructureWithoutColor(t *testing.T) {
 
 	mocha := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: testTheme(ThemeMocha)})
 	mocha, _ = update(t, mocha, sizeMsg(120, 30))
-	if cursor := mocha.styles.queryCursorStyle.Render(" "); !strings.Contains(cursor, "48;2;") || !strings.Contains(mocha.View(), cursor) {
+	if cursor := mocha.styles.queryCursorStyle.Render(" "); !strings.Contains(cursor, "48;2;") || !strings.Contains(mocha.View().Content, cursor) {
 		t.Errorf("mocha cursor cell = %q, want an accent background in the prompt row", cursor)
 	}
 }

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/effective"
 	"github.com/tranceh2/shep/internal/herdr"
@@ -1591,7 +1591,7 @@ func TestOpenLayoutToggle_ConfigUnchangedAfterCtrlL(t *testing.T) {
 	cands := []source.Candidate{{Path: "/a", Label: "a"}}
 	m := tui.NewModelWithLayout(cands, nil, layout)
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlL})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'l', Mod: tea.ModCtrl})
 	mm, ok := updated.(tui.Model)
 	if !ok {
 		t.Fatalf("expected tui.Model from Update, got %T", updated)

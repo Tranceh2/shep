@@ -252,7 +252,7 @@ func TestHandleEnter_SourcesActionFromDescriptorNotRowField(t *testing.T) {
 	m.rows = []Row{tabRow}
 	m.cursor = 0
 	after, _ := m.handleEnter()
-	got := after.(Model).selectedAction
+	got := after.selectedAction
 	if want := rowActionDescriptor(tabRow).Action; got != want {
 		t.Errorf("handleEnter selectedAction = %v, want descriptor Action %v (must source from descriptor, not row.Action=%v)", got, want, tabRow.Action)
 	}
@@ -270,7 +270,7 @@ func TestHandleEnter_SourcesActionFromDescriptorNotRowField(t *testing.T) {
 	m2.rows = []Row{candRow}
 	m2.cursor = 0
 	after2, _ := m2.handleEnter()
-	got2 := after2.(Model).selectedAction
+	got2 := after2.selectedAction
 	if want := rowActionDescriptor(candRow).Action; got2 != want {
 		t.Errorf("handleEnter selectedAction = %v, want descriptor Action %v (candidate drift)", got2, want)
 	}
@@ -304,7 +304,7 @@ func TestRowActionDescriptor_ParityWithHandleEnter(t *testing.T) {
 		}
 		d := rowActionDescriptor(row)
 		after, _ := m.handleEnter()
-		got := after.(Model).selectedAction
+		got := after.selectedAction
 		if got != d.Action {
 			t.Errorf("row %d (kind=%v): handleEnter action = %v, descriptor Action = %v (must match)", i, row.Kind, got, d.Action)
 		}

@@ -73,8 +73,8 @@ func (p *previewMemo) fresh(key previewKey, frame int) bool {
 // layout shows no preview and composes nothing.
 func (m *Model) syncViewport() {
 	width, height := m.previewPaneContentSize()
-	m.viewport.Width = width
-	m.viewport.Height = height
+	m.viewport.SetWidth(width)
+	m.viewport.SetHeight(height)
 	if width == 0 {
 		return
 	}
@@ -129,7 +129,8 @@ func (m *Model) syncHelpViewport() {
 	if m.helpKey == key {
 		return
 	}
-	m.helpViewport.Width, m.helpViewport.Height = key.width, key.height
+	m.helpViewport.SetWidth(key.width)
+	m.helpViewport.SetHeight(key.height)
 	m.helpViewport.SetContent(m.helpBodyText(key.width))
 	m.helpKey = key
 }

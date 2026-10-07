@@ -18,10 +18,8 @@ import (
 //     are rendered.
 //   - footer shortcuts use clean key tokens and action labels.
 //
-// Assertions are structural (plain text after stripNonSGRANSI); style-property
-// checks live in theme_test.go, forced-profile ANSI checks are avoided
-// (headless test runs run a no-color profile — see spinner_style_test.go for
-// the single, deliberate exception).
+// Assertions are structural (plain text after ansi.Strip); style-property
+// checks live in theme_test.go.
 
 // TestRowIcons_AreTheOnlySourceIdentity proves each source's row draws its
 // presentation icon and no source-name badge.
@@ -39,7 +37,7 @@ func TestRowIcons_AreTheOnlySourceIdentity(t *testing.T) {
 	} {
 		m := newRenderTestModel(ThemePlain, FocusList)
 		primary, _ := m.rowDisplayText(tc.row)
-		got := stripNonSGRANSI(primary)
+		got := ansi.Strip(primary)
 		if !strings.HasPrefix(got, tc.icon+" ") {
 			t.Errorf("row %q = %q, missing its icon %q", tc.row.Candidate.Source, got, tc.icon)
 		}
@@ -57,7 +55,7 @@ func TestRenderKeycap_PlainStructure(t *testing.T) {
 	t.Parallel()
 	for _, theme := range []string{ThemeMocha, ThemePlain} {
 		m := newRenderTestModel(theme, FocusList)
-		got := renderKeycap(m.styles, "enter", "open")
+		got := ansi.Strip(renderKeycap(m.styles, "enter", "open"))
 		if !strings.HasPrefix(got, "enter open") {
 			t.Errorf("theme %s renderKeycap = %q, want the enter open structure", theme, got)
 		}
@@ -205,7 +203,7 @@ func TestFooter_StatusPlacement(t *testing.T) {
 
 	closed := m
 	closed.closeStatus = successStatus("closed tab")
-	line := closed.renderFooter(closed.geometry().ContentWidth)
+	line := ansi.Strip(closed.renderFooter(closed.geometry().ContentWidth))
 	if !strings.HasPrefix(line, "enter open") || !strings.HasSuffix(line, "  closed tab") || ansi.StringWidth(line) != closed.geometry().ContentWidth {
 		t.Errorf("success footer = %q, want hints with the status right-aligned", line)
 	}
@@ -225,7 +223,7 @@ func TestFooterAndHelp_NoMouseLanguage(t *testing.T) {
 	m := NewModelWithLayout(goldenCandidates(), nil, Layout{Theme: testTheme(ThemeMocha)})
 	m, _ = update(t, m, sizeMsg(120, 36))
 	for _, got := range []string{footerText(m), m.helpBodyText(80), m.helpBodyText(120)} {
-		plain := strings.ToLower(stripNonSGRANSI(got))
+		plain := strings.ToLower(ansi.Strip(got))
 		for _, word := range []string{"click", "mouse", "drag"} {
 			if strings.Contains(plain, word) {
 				t.Errorf("footer/help text = %q, must not use mouse language %q", plain, word)
@@ -241,12 +239,12 @@ func TestPreviewTitle_IsLabelNotPath(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	m.rows = []Row{{Kind: RowCandidate, Candidate: herdrCandidate("backend", "/srv/backend", "w1")}}
-	if title := strings.Fields(m.renderPreviewTitle(40)); len(title) != 2 || title[0] != "backend" || title[1] != "workspace" {
+	if title := strings.Fields(ansi.Strip(m.renderPreviewTitle(40))); len(title) != 2 || title[0] != "backend" || title[1] != "workspace" {
 		t.Errorf("preview title = %q, want the label and its kind", title)
 	}
 
 	m.rows = []Row{{Kind: RowCandidate, Candidate: source.Candidate{Label: "scratch-buffer", Source: "hermes"}}}
-	if title := strings.Fields(m.renderPreviewTitle(40)); len(title) != 2 || title[0] != "scratch-buffer" || title[1] != "hermes" {
+	if title := strings.Fields(ansi.Strip(m.renderPreviewTitle(40))); len(title) != 2 || title[0] != "scratch-buffer" || title[1] != "hermes" {
 		t.Errorf("custom source preview title = %q, want the label and the source name", title)
 	}
 }

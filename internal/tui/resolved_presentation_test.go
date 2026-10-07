@@ -3,6 +3,7 @@ package tui
 import (
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/effective"
 	"github.com/tranceh2/shep/internal/source"
@@ -100,7 +101,7 @@ func TestAgentsView_RowsTakeTheirPanesResolvedPresentation(t *testing.T) {
 				t.Errorf("p1 drew icon %q label %q, want the resolved presentation", m.partText(&v.icon), m.partText(&v.label))
 			}
 		case "p2":
-			if row.Candidate.Presentation != nil || m.partText(&v.label) != m.agentStatusIcon("idle")+" two" {
+			if row.Candidate.Presentation != nil || m.partText(&v.label) != ansi.Strip(m.agentStatusIcon("idle"))+" two" {
 				t.Errorf("p2 drew label %q, want the agents source's", m.partText(&v.label))
 			}
 		}

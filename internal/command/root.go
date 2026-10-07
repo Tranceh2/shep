@@ -15,7 +15,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/effective"
@@ -129,14 +128,14 @@ type App struct {
 	resolverCfg *config.Config
 	resolverMu  sync.Mutex
 	// pickerTheme is the picker's color theme, selected once by
-	// selectedTheme. themeGetenv reads NO_COLOR, SHEP_THEME and the location
-	// of Herdr's configuration for it (nil: os.Getenv); darkBackground
-	// reports the terminal's appearance when an auto-switching Herdr theme
-	// needs it (nil: ask the terminal). Tests set both.
-	pickerTheme    theme.Theme
-	themeOnce      sync.Once
-	themeGetenv    func(string) string
-	darkBackground func() bool
+	// selectedTheme, and pickerLight its variant for a light terminal when it
+	// follows the terminal's appearance (nil otherwise). themeGetenv reads
+	// NO_COLOR, SHEP_THEME and the location of Herdr's configuration for it
+	// (nil: os.Getenv); tests set it.
+	pickerTheme theme.Theme
+	pickerLight *theme.Theme
+	themeOnce   sync.Once
+	themeGetenv func(string) string
 }
 
 // Config returns the loaded configuration, defaulting to path-agnostic
@@ -180,34 +179,37 @@ func (a *App) settings() *effective.Resolver {
 }
 
 // selectedTheme selects the picker's color theme once per process (see
-// selectTheme). A selection error (the configuration was validated, so none
-// is expected) is reported on stderr and the picker keeps Herdr's default
-// theme.
-func (a *App) selectedTheme(cfg *config.Config) theme.Theme {
+// selectTheme), with its light-appearance variant when the theme follows the
+// terminal's appearance: the picker asks the terminal and switches (see
+// tui.Layout.LightTheme). A selection error (the configuration was
+// validated, so none is expected) is reported on stderr and the picker keeps
+// Herdr's default theme.
+func (a *App) selectedTheme(cfg *config.Config) (theme.Theme, *theme.Theme) {
 	a.themeOnce.Do(func() {
-		t, err := a.selectTheme(cfg)
+		t, err := a.selectTheme(cfg, false)
 		if err != nil {
 			fmt.Fprintf(a.err, "shep: %v; using the %s theme\n", err, theme.NameDefault)
 			t = theme.Theme{}
 		}
 		a.pickerTheme = t
+		if t.Source.FollowsAppearance {
+			if light, err := a.selectTheme(cfg, true); err == nil {
+				a.pickerLight = &light
+			}
+		}
 	})
-	return a.pickerTheme
+	return a.pickerTheme, a.pickerLight
 }
 
 // selectTheme selects the color theme with theme.Select: NO_COLOR, then
 // SHEP_THEME, then [tui].theme and its [themes.<name>] tables, inheriting
 // Herdr's own theme (its config.toml, [theme.custom] included) by default.
-// The terminal's appearance is asked only when Herdr's auto_switch needs it,
-// and reads as dark when the terminal does not answer.
-func (a *App) selectTheme(cfg *config.Config) (theme.Theme, error) {
+// light selects the variant for a light terminal of a theme that follows the
+// appearance (Herdr's auto_switch).
+func (a *App) selectTheme(cfg *config.Config, light bool) (theme.Theme, error) {
 	getenv := a.themeGetenv
 	if getenv == nil {
 		getenv = os.Getenv
-	}
-	dark := a.darkBackground
-	if dark == nil {
-		dark = lipgloss.HasDarkBackground
 	}
 	customs, err := cfg.CustomThemes()
 	if err != nil {
@@ -218,7 +220,7 @@ func (a *App) selectTheme(cfg *config.Config) (theme.Theme, error) {
 		Customs:         customs,
 		Getenv:          getenv,
 		HerdrConfigPath: theme.DefaultHerdrConfigPath(getenv, a.templateEngine().Home()),
-		Dark:            dark,
+		Light:           light,
 	})
 }
 

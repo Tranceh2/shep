@@ -4,7 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
 	"github.com/tranceh2/shep/internal/tmpl"
@@ -358,7 +359,7 @@ func TestRenderRowLine_LeadingBlankCellIsStable(t *testing.T) {
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	row := Row{Kind: RowCandidate, Candidate: source.Candidate{Path: "backend"}}
 	const width = 40
-	got := renderRowLineText(m.renderRowLine(row, false, width))
+	got := ansi.Strip(m.renderRowLine(row, false, width))
 	trimmed := strings.TrimLeft(got, " ")
 	leading := len(got) - len(trimmed)
 	if leading != 2 {

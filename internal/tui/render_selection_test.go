@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/ranking"
@@ -28,13 +28,6 @@ func newRenderTestModel(themeName string, focus Focus) Model {
 	return m.withPresentation(nil)
 }
 
-// renderRowLineText strips any residual ANSI so assertions see the structural
-// text only (the headless test color profile already emits none, but this
-// keeps the tests robust against a future profile-forcing helper).
-func renderRowLineText(s string) string {
-	return stripNonSGRANSI(s)
-}
-
 // TestRenderTabStrip_LongTabsKeepsActiveVisibleAndBounded proves a tab
 // strip too long for its row keeps the active tab whole, stays within the
 // row, and marks the hidden tabs on both sides with the overflow glyph.
@@ -52,7 +45,7 @@ func TestRenderTabStrip_LongTabsKeepsActiveVisibleAndBounded(t *testing.T) {
 	if !strings.Contains(strip, " Engineering Operations Very Long Group d ") {
 		t.Fatalf("active tab missing from the strip: %q", strip)
 	}
-	if plain := strings.TrimSpace(strip); !strings.HasPrefix(plain, "…") || !strings.HasSuffix(plain, "…") {
+	if plain := strings.TrimSpace(ansi.Strip(strip)); !strings.HasPrefix(plain, "…") || !strings.HasSuffix(plain, "…") {
 		t.Errorf("tab strip = %q, want overflow markers for the tabs hidden on both sides", strip)
 	}
 }
@@ -79,7 +72,7 @@ func TestRenderTabStrip_NarrowShowsActiveTab(t *testing.T) {
 	}
 
 	m.activeTab = "team"
-	if got := strings.TrimSpace(m.renderTabStrip(34)); got != "…  zoxide   Platform engineering" {
+	if got := strings.TrimSpace(ansi.Strip(m.renderTabStrip(34))); got != "…  zoxide   Platform engineering" {
 		t.Errorf("narrow tab strip = %q, want the active tab with the hidden tabs marked", got)
 	}
 }
@@ -122,7 +115,7 @@ func TestRenderRowLine_SelectedDescendantUsesCursorMarker(t *testing.T) {
 		Match:      MatchDescendant,
 		Expandable: true,
 	}
-	got := renderRowLineText(m.renderRowLine(row, true, 40))
+	got := ansi.Strip(m.renderRowLine(row, true, 40))
 	if !strings.HasPrefix(got, "❯ ") {
 		t.Errorf("selected descendant: expected FocusList cursor prefix %q, got %q", "❯ ", got)
 	}
@@ -149,7 +142,7 @@ func TestRenderRowLine_SelectedNormalCandidateDropsOldMarker(t *testing.T) {
 		Match:      MatchDirect,
 		Expandable: true,
 	}
-	got := renderRowLineText(m.renderRowLine(row, true, 40))
+	got := ansi.Strip(m.renderRowLine(row, true, 40))
 	if !strings.HasPrefix(got, "❯ ") {
 		t.Errorf("selected candidate: expected FocusList cursor prefix %q, got %q", "❯ ", got)
 	}
@@ -172,7 +165,7 @@ func TestRenderRowLine_PlainSelectedUsesUnicodeGutter(t *testing.T) {
 		Match:      MatchDirect,
 		Expandable: true,
 	}
-	got := renderRowLineText(m.renderRowLine(row, true, 40))
+	got := ansi.Strip(m.renderRowLine(row, true, 40))
 	if !strings.HasPrefix(got, "❯ ") {
 		t.Errorf("plain selected: expected Unicode gutter %q, got %q", "❯ ", got)
 	}
@@ -193,7 +186,7 @@ func TestRenderRowLine_ASCIISelectedUsesASCIIGutter(t *testing.T) {
 		Match:      MatchDirect,
 		Expandable: true,
 	}
-	got := renderRowLineText(m.renderRowLine(row, true, 40))
+	got := ansi.Strip(m.renderRowLine(row, true, 40))
 	if !strings.HasPrefix(got, "> ") {
 		t.Errorf("ASCII selected: expected ASCII gutter %q, got %q", "> ", got)
 	}
@@ -216,7 +209,7 @@ func TestRenderRowLine_NonSelectedUsesBlankMarker(t *testing.T) {
 		Match:      MatchDescendant,
 		Expandable: true,
 	}
-	got := renderRowLineText(m.renderRowLine(desc, false, 40))
+	got := ansi.Strip(m.renderRowLine(desc, false, 40))
 	if strings.HasPrefix(got, "❯") || strings.HasPrefix(got, ">") {
 		t.Errorf("non-selected descendant: unexpected gutter in %q", got)
 	}
@@ -231,7 +224,7 @@ func TestRenderRowLine_NonSelectedUsesBlankMarker(t *testing.T) {
 		Candidate:  herdrCandidate("backend", "/srv/backend", "w1"),
 		Expandable: true,
 	}
-	got = renderRowLineText(m.renderRowLine(ws, false, 40))
+	got = ansi.Strip(m.renderRowLine(ws, false, 40))
 	if strings.HasPrefix(got, "❯") || strings.HasPrefix(got, ">") {
 		t.Errorf("non-selected workspace: unexpected gutter in %q", got)
 	}
@@ -264,7 +257,7 @@ func TestRenderRowLine_MarkerGutterContract(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			m := newRenderTestModel(ThemeMocha, tt.focus)
 			m.layout.Icons = tt.icons
-			got := renderRowLineText(m.renderRowLine(row, tt.selected, 40))
+			got := ansi.Strip(m.renderRowLine(row, tt.selected, 40))
 			if !strings.HasPrefix(got, tt.gutter+"backend") {
 				t.Fatalf("row = %q, want two-cell gutter %q immediately followed by content", got, tt.gutter)
 			}
@@ -320,7 +313,7 @@ func TestRenderRowLine_TruncationOrder(t *testing.T) {
 		{"label keeps its start", plain, 12, "  filename.…"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			line := renderRowLineText(m.renderRowLine(tt.row, false, tt.width))
+			line := ansi.Strip(m.renderRowLine(tt.row, false, tt.width))
 			if got := ansi.StringWidth(line); got != tt.width {
 				t.Errorf("row width = %d, want %d", got, tt.width)
 			}
@@ -359,9 +352,9 @@ func TestRenderRowLine_TruncationMatchesCursorAtSameInnerWidth(t *testing.T) {
 	row := Row{Kind: RowCandidate, Candidate: source.Candidate{Path: "/workspace/services/catalog/filename.go"}}
 	const width = 12
 
-	nonCursor := strings.TrimRight(renderRowLineText(m.renderRowLine(row, false, width)), " ")
+	nonCursor := strings.TrimRight(ansi.Strip(m.renderRowLine(row, false, width)), " ")
 	nonCursor = strings.TrimPrefix(nonCursor, strings.Repeat(" ", cursorPrefixWidth))
-	cursor := strings.TrimRight(renderRowLineText(m.renderRowLine(row, true, width)), " ")
+	cursor := strings.TrimRight(ansi.Strip(m.renderRowLine(row, true, width)), " ")
 	cursor = strings.TrimPrefix(cursor, cursorGlyphUnicode+" ")
 	if cursor != nonCursor {
 		t.Errorf("cursor path = %q, want non-cursor path %q at the same total width", cursor, nonCursor)
@@ -389,7 +382,7 @@ func TestRenderRowLine_LeftTruncationPreservesIcon(t *testing.T) {
 	}
 
 	const width = 16
-	got := strings.TrimRight(renderRowLineText(m.renderRowLine(row, false, width)), " ")
+	got := strings.TrimRight(ansi.Strip(m.renderRowLine(row, false, width)), " ")
 
 	// The two-cell marker gutter precedes the row's protected icon prefix.
 	wantPrefix := strings.Repeat(" ", cursorPrefixWidth) + icon + " "
@@ -418,7 +411,7 @@ func TestRenderRowLine_LeftTruncationPreservesWideIcon(t *testing.T) {
 	}
 
 	const width = 18
-	got := renderRowLineText(m.renderRowLine(row, false, width))
+	got := ansi.Strip(m.renderRowLine(row, false, width))
 	if lipglossWidth(got) != width {
 		t.Fatalf("rendered width = %d, want exactly %d: %q", lipglossWidth(got), width, got)
 	}
@@ -450,7 +443,7 @@ func TestRenderRowLine_LeftTruncationPreservesTabTreeGlyph(t *testing.T) {
 	}
 
 	const width = 20
-	got := strings.TrimRight(renderRowLineText(m.renderRowLine(row, false, width)), " ")
+	got := strings.TrimRight(ansi.Strip(m.renderRowLine(row, false, width)), " ")
 	// two-cell marker gutter + kindPrefix's tree glyph + the tab icon — the
 	// whole thing is the row's protected fixed prefix; only the label/path body
 	// after it may be truncated.
@@ -477,7 +470,7 @@ func TestComposeMultiPartRow_PrimaryTruncationPreservesIcon(t *testing.T) {
 	}
 
 	const width = 20
-	got := strings.TrimRight(renderRowLineText(m.renderRowLine(row, false, width)), " ")
+	got := strings.TrimRight(ansi.Strip(m.renderRowLine(row, false, width)), " ")
 	if !strings.Contains(got, set.StatusIdle) {
 		t.Fatalf("truncated pane row = %q, want the intact idle status icon %q", got, set.StatusIdle)
 	}
@@ -508,8 +501,8 @@ func TestRenderRowLine_NonCursorReservesSameGutterAsCursorInFocusList(t *testing
 	row := Row{Kind: RowCandidate, Candidate: source.Candidate{Path: "backend"}}
 	const width = 40
 
-	cursorLine := renderRowLineText(m.renderRowLine(row, true, width))
-	nonCursorLine := renderRowLineText(m.renderRowLine(row, false, width))
+	cursorLine := ansi.Strip(m.renderRowLine(row, true, width))
+	nonCursorLine := ansi.Strip(m.renderRowLine(row, false, width))
 
 	if got, want := ansi.StringWidth(cursorLine), ansi.StringWidth(nonCursorLine); got != want {
 		t.Fatalf("cursor line width = %d, non-cursor line width = %d; want identical total width %d", got, want, width)
@@ -544,7 +537,7 @@ func TestRenderRowLine_ReclaimsBadgeWidth(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModelWidth(ThemeMocha, 120)
 	row := Row{Kind: RowCandidate, Candidate: source.Candidate{Path: "/workspace/services/catalog/filename.go", Source: config.SourceHerdr}}
-	got := stripNonSGRANSI(m.renderRowLine(row, false, 40))
+	got := ansi.Strip(m.renderRowLine(row, false, 40))
 	if strings.Contains(got, "HERDR") {
 		t.Errorf("row = %q, source badge must be absent", got)
 	}
@@ -559,7 +552,7 @@ func TestRenderRowLine_SelectionVisibleInPlain(t *testing.T) {
 	t.Parallel()
 	row := Row{Kind: RowCandidate, Candidate: source.Candidate{Path: "/a", Source: config.SourceHerdr}}
 	m := newRenderTestModelWidth(ThemePlain, 120)
-	got := stripNonSGRANSI(m.renderRowLine(row, true, 120))
+	got := ansi.Strip(m.renderRowLine(row, true, 120))
 	if !strings.HasPrefix(got, "❯ ") {
 		t.Errorf("plain selected row = %q, want the ❯ gutter", got)
 	}
@@ -568,7 +561,7 @@ func TestRenderRowLine_SelectionVisibleInPlain(t *testing.T) {
 	}
 
 	m.layout.Icons = IconsASCII
-	gotASCII := stripNonSGRANSI(m.renderRowLine(row, true, 120))
+	gotASCII := ansi.Strip(m.renderRowLine(row, true, 120))
 	if !strings.HasPrefix(gotASCII, "> ") {
 		t.Errorf("ASCII selected row = %q, want the > gutter", gotASCII)
 	}
@@ -584,7 +577,7 @@ func TestRenderRowLine_ASCIIEmitsNoUnicodeOnlyGlyphs(t *testing.T) {
 	m = m.withPresentation(nil)
 	group := source.Candidate{Label: "team", Path: "/a", Source: config.SourceWorkspaces, Meta: map[string]string{"group": "true"}}
 	m.rankingSnapshot = m.rankingSnapshot.WithPinned(ranking.PinKey(group), true)
-	got := stripNonSGRANSI(m.renderRowLine(Row{Kind: RowCandidate, Candidate: group}, false, 120))
+	got := ansi.Strip(m.renderRowLine(Row{Kind: RowCandidate, Candidate: group}, false, 120))
 	if reNonASCII.MatchString(got) {
 		t.Errorf("ASCII row = %q, contains a non-ASCII glyph", got)
 	}

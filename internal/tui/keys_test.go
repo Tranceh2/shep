@@ -4,9 +4,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
 )
@@ -21,57 +22,53 @@ func update(t *testing.T, m Model, msg tea.Msg) (Model, tea.Cmd) {
 	return mm, cmd
 }
 
-func key(s string) tea.KeyMsg {
-	switch s {
-	case "tab":
-		return tea.KeyMsg{Type: tea.KeyTab}
-	case "shift+tab":
-		return tea.KeyMsg{Type: tea.KeyShiftTab}
-	case "down":
-		return tea.KeyMsg{Type: tea.KeyDown}
-	case "up":
-		return tea.KeyMsg{Type: tea.KeyUp}
-	case "left":
-		return tea.KeyMsg{Type: tea.KeyLeft}
-	case "right":
-		return tea.KeyMsg{Type: tea.KeyRight}
-	case "enter":
-		return tea.KeyMsg{Type: tea.KeyEnter}
-	case "esc":
-		return tea.KeyMsg{Type: tea.KeyEsc}
-	case "ctrl+t":
-		return tea.KeyMsg{Type: tea.KeyCtrlT}
-	case "ctrl+p":
-		return tea.KeyMsg{Type: tea.KeyCtrlP}
-	case "ctrl+f":
-		return tea.KeyMsg{Type: tea.KeyCtrlF}
-	case "ctrl+l":
-		return tea.KeyMsg{Type: tea.KeyCtrlL}
-	case "ctrl+u":
-		return tea.KeyMsg{Type: tea.KeyCtrlU}
-	case "ctrl+d":
-		return tea.KeyMsg{Type: tea.KeyCtrlD}
-	case "ctrl+j":
-		return tea.KeyMsg{Type: tea.KeyCtrlJ}
-	case "ctrl+k":
-		return tea.KeyMsg{Type: tea.KeyCtrlK}
-	case "ctrl+g":
-		return tea.KeyMsg{Type: tea.KeyCtrlG}
-	case "pgup":
-		return tea.KeyMsg{Type: tea.KeyPgUp}
-	case "pgdown":
-		return tea.KeyMsg{Type: tea.KeyPgDown}
-	case "home":
-		return tea.KeyMsg{Type: tea.KeyHome}
-	case "end":
-		return tea.KeyMsg{Type: tea.KeyEnd}
-	case "backspace":
-		return tea.KeyMsg{Type: tea.KeyBackspace}
-	case "?":
-		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")}
-	default:
-		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+// keyCodes are the named keys tests press, by their tea.Key.String() name.
+var keyCodes = map[string]rune{
+	"enter": tea.KeyEnter, "esc": tea.KeyEscape, "tab": tea.KeyTab, "space": tea.KeySpace,
+	"backspace": tea.KeyBackspace, "up": tea.KeyUp, "down": tea.KeyDown, "left": tea.KeyLeft,
+	"right": tea.KeyRight, "pgup": tea.KeyPgUp, "pgdown": tea.KeyPgDown, "home": tea.KeyHome,
+	"end": tea.KeyEnd,
+}
+
+// key is the press of one key as the terminal decoder reports it: its name
+// with modifier prefixes in Bubble Tea's order ("ctrl+t", "alt+backspace",
+// "shift+tab") or one printable rune, which types its text.
+func key(s string) tea.KeyPressMsg {
+	var k tea.KeyPressMsg
+	for _, m := range []struct {
+		prefix string
+		mod    tea.KeyMod
+	}{{"ctrl+", tea.ModCtrl}, {"alt+", tea.ModAlt}, {"shift+", tea.ModShift}} {
+		if rest, ok := strings.CutPrefix(s, m.prefix); ok && rest != "" {
+			k.Mod |= m.mod
+			s = rest
+		}
 	}
+	if code, ok := keyCodes[s]; ok {
+		k.Code = code
+		if code == tea.KeySpace {
+			k.Text = " "
+		}
+		return k
+	}
+	r, size := utf8.DecodeRuneInString(s)
+	if size != len(s) {
+		panic("key: " + strconv.Quote(s) + " is not one key")
+	}
+	k.Code = r
+	if k.Mod == 0 {
+		k.Text = s
+	}
+	return k
+}
+
+// typeText presses one key per rune of text, as typing it does.
+func typeText(t *testing.T, m Model, text string) Model {
+	t.Helper()
+	for _, r := range text {
+		m, _ = update(t, m, key(string(r)))
+	}
+	return m
 }
 
 // TestListHalfPageKeys moves by half the visible list rows, including at
@@ -712,19 +709,19 @@ func TestHelpViewport_ScrollsAndRevealsHiddenContent(t *testing.T) {
 	if m.focus != FocusHelp {
 		t.Fatalf("setup: expected FocusHelp")
 	}
-	lines := strings.Split(m.helpBodyText(m.helpViewport.Width), "\n")
+	lines := strings.Split(m.helpBodyText(m.helpViewport.Width()), "\n")
 	lastLine := lines[len(lines)-1]
 	if strings.Contains(m.helpViewport.View(), lastLine) {
 		t.Fatalf("setup: last help line %q already visible at top of a short viewport; test needs content taller than the viewport", lastLine)
 	}
-	startOffset := m.helpViewport.YOffset
+	startOffset := m.helpViewport.YOffset()
 
 	for i := 0; i < 40 && !strings.Contains(m.helpViewport.View(), lastLine); i++ {
 		m, _ = update(t, m, key("down"))
 	}
 
-	if m.helpViewport.YOffset <= startOffset {
-		t.Errorf("helpViewport.YOffset = %d, want > %d after scrolling down", m.helpViewport.YOffset, startOffset)
+	if m.helpViewport.YOffset() <= startOffset {
+		t.Errorf("helpViewport.YOffset() = %d, want > %d after scrolling down", m.helpViewport.YOffset(), startOffset)
 	}
 	if !strings.Contains(m.helpViewport.View(), lastLine) {
 		t.Errorf("expected the last help line %q to become visible after scrolling, view:\n%s", lastLine, m.helpViewport.View())

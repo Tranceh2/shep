@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -64,8 +65,8 @@ func TestResultCount_TextStates(t *testing.T) {
 func TestResultCount_LoadingPrefixesSpinner(t *testing.T) {
 	t.Parallel()
 	m := NewModelWithLayout(nil, nil, Layout{Theme: testTheme(ThemeMocha)})
-	frame := m.spinner.View()
-	if got := m.renderResultCount(resultCount{shown: 3, total: 3, loading: true}); got != frame+" 3" {
+	frame := ansi.Strip(m.spinner.View())
+	if got := ansi.Strip(m.renderResultCount(resultCount{shown: 3, total: 3, loading: true})); got != frame+" 3" {
 		t.Errorf("loading tally = %q, want the spinner frame then the count", got)
 	}
 	if got := m.renderResultCount(resultCount{shown: 3, total: 3}); strings.Contains(got, frame) {

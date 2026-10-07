@@ -5,8 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -211,5 +210,3 @@ func (m *Model) refreshPreviewLoadingFlag() {
 		m.previewLoading = false
 	}
 }
-
-var _ = spinner.TickMsg{}

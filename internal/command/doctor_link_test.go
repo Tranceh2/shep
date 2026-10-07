@@ -32,7 +32,6 @@ func runDoctorWithLink(t *testing.T, fsys linkFS, home, ownExe, pathVar string) 
 	app.cfg.Workspaces = nil
 	app.probes = config.Probes{}
 	app.themeGetenv = func(string) string { return "" }
-	app.darkBackground = func() bool { return true }
 	cmd := app.rootCmd()
 	cmd.SetArgs([]string{"doctor"})
 	if err := cmd.Execute(); err != nil {
@@ -223,7 +222,6 @@ func TestDoctor_UnresolvableOwnPathIsNotReportedAsAMismatch(t *testing.T) {
 	app.cfg.Workspaces = nil
 	app.probes = config.Probes{}
 	app.themeGetenv = func(string) string { return "" }
-	app.darkBackground = func() bool { return true }
 	cmd := app.rootCmd()
 	cmd.SetArgs([]string{"doctor"})
 	if err := cmd.Execute(); err != nil {
@@ -256,7 +254,6 @@ func TestDoctor_UnresolvableHomeIsReportedNotFatal(t *testing.T) {
 	app.cfg.Workspaces = nil
 	app.probes = config.Probes{}
 	app.themeGetenv = func(string) string { return "" }
-	app.darkBackground = func() bool { return true }
 	cmd := app.rootCmd()
 	cmd.SetArgs([]string{"doctor"})
 	if err := cmd.Execute(); err != nil {

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
 )
@@ -67,7 +68,7 @@ func TestCurrentAccessory_RendersMutedAtTheRowEnd(t *testing.T) {
 		m = m.withPresentation(nil)
 		set := m.icons()
 		row := Row{Kind: RowTab, Depth: 1, IsLast: true, Candidate: source.Candidate{Label: "api", Meta: map[string]string{"tab_id": "t1"}}}
-		line := strings.TrimRight(stripNonSGRANSI(m.renderRowLine(row, false, 40)), " ")
+		line := strings.TrimRight(ansi.Strip(m.renderRowLine(row, false, 40)), " ")
 		if !strings.HasSuffix(line, " current") {
 			t.Errorf("[%s] tab row = %q, want the current accessory at its end", icons, line)
 		}

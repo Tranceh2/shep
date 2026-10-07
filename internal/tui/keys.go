@@ -6,48 +6,31 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/ranking"
 	"github.com/tranceh2/shep/internal/source"
 )
 
-// keyChord returns the chord name every key switch in this file matches
-// against. Bubble Tea v1 coalesces a fast typing burst or a tmux send-keys
-// string into ONE KeyRunes message whose String() is just those runes, so
-// typing "tab", "esc", "enter" or "up" quickly would otherwise be dispatched
-// as that named key (cycling the tab, cancelling, selecting a row) instead
-// of being searched for. Literal text — any KeyRunes message carrying more
-// than one rune, and any bracketed paste — therefore maps to "", which no
-// case matches, and reaches the query through queryInputRunes instead. A
-// single typed rune keeps its String(), so "?" still opens help and "y"
-// still confirms a close.
-func keyChord(msg tea.KeyMsg) string {
-	if msg.Type == tea.KeyRunes && (msg.Paste || len(msg.Runes) > 1) {
-		return ""
-	}
-	return msg.String()
-}
-
 // isDoubleEsc reports two Esc presses that reached the terminal in the same
-// read. Bubble Tea decodes "\x1b\x1b" as one alt-modified Esc ("alt+esc"),
-// so a quick double tap — the usual way to back out of a popup — would
-// otherwise match no binding and leave the picker open.
-func isDoubleEsc(msg tea.KeyMsg) bool {
-	return msg.Type == tea.KeyEscape && msg.Alt
+// read. Without key disambiguation the terminal sends them as "\x1b\x1b",
+// which decodes as one alt-modified Esc ("alt+esc"), so a quick double tap —
+// the usual way to back out of a popup — would otherwise match no binding
+// and leave the picker open.
+func isDoubleEsc(msg tea.KeyPressMsg) bool {
+	return msg.Code == tea.KeyEscape && msg.Mod.Contains(tea.ModAlt)
 }
 
 // replayEsc applies n plain Esc presses in order, exactly as if they had
 // arrived one by one: each may close help, cancel a pending close
 // confirmation, clear the query or cancel the picker. It stops as soon as one
 // press quits, so a cancel is never followed by further state changes.
-func (m Model) replayEsc(n int) (tea.Model, tea.Cmd) {
-	esc := tea.KeyMsg{Type: tea.KeyEscape}
+func (m Model) replayEsc(n int) (Model, tea.Cmd) {
 	cmds := make([]tea.Cmd, 0, n)
 	for range n {
-		next, cmd := m.handleKey(esc)
-		m = next.(Model)
+		var cmd tea.Cmd
+		m, cmd = m.handleInput("esc", "")
 		cmds = append(cmds, cmd)
 		if m.cancelled {
 			break
@@ -56,36 +39,25 @@ func (m Model) replayEsc(n int) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-// queryInputRunes returns the runes a key contributes to the query, or nil
-// when it is not text input. Text is a typed rune, a multi-rune burst, a
-// bracketed paste (Paste only changes String(), the runes are the same),
-// or space. Alt-modified keys are chords ("alt+x"), never text: the old
-// single-rune contract dropped them and so does this one.
-func queryInputRunes(msg tea.KeyMsg) []rune {
-	if msg.Alt {
-		return nil
+// keyText returns the text a key press types into the query: none for a
+// ctrl- or alt-modified chord ("alt+x" is a chord, never text).
+func keyText(msg tea.KeyPressMsg) string {
+	if msg.Mod.Contains(tea.ModCtrl) || msg.Mod.Contains(tea.ModAlt) {
+		return ""
 	}
-	switch msg.Type {
-	case tea.KeyRunes:
-		return msg.Runes
-	case tea.KeySpace:
-		// Bubble Tea reports space as its own key type; its Runes field is
-		// not guaranteed to be populated, so spell the rune out.
-		return []rune{' '}
-	}
-	return nil
+	return msg.Text
 }
 
-// appendQueryRunes returns query extended with the printable runes of
-// runes, and whether anything was added. Control runes (C0, DEL, C1) are
-// dropped instead of inserted: a bracketed paste delivers newlines, tabs
-// and carriage returns verbatim, the launcher query is a single line, and a
-// raw control character echoed back into the prompt row could drive the
-// terminal. They vanish rather than turning into spaces so a pasted
-// wrapped path stays one search term.
-func appendQueryRunes(query string, runes []rune) (string, bool) {
+// appendQueryText returns query extended with the printable runes of text,
+// and whether anything was added. Control runes (C0, DEL, C1) are dropped
+// instead of inserted: a bracketed paste delivers newlines, tabs and
+// carriage returns verbatim, the launcher query is a single line, and a raw
+// control character echoed back into the prompt row could drive the
+// terminal. They vanish rather than turning into spaces so a pasted wrapped
+// path stays one search term.
+func appendQueryText(query, text string) (string, bool) {
 	var added strings.Builder
-	for _, r := range runes {
+	for _, r := range text {
 		if !unicode.IsControl(r) {
 			added.WriteRune(r)
 		}
@@ -125,7 +97,7 @@ func deleteLastWord(query string) string {
 // pointer-receiver mutations of applyFilter and
 // syncPreviewAfterSelectionChange are guaranteed to land in the returned
 // model.
-func (m Model) setQuery(query string) (tea.Model, tea.Cmd) {
+func (m Model) setQuery(query string) (Model, tea.Cmd) {
 	m.query = query
 	cmd := tea.Batch(m.applyFilter(), m.syncPreviewAfterSelectionChange())
 	return m, cmd
@@ -135,7 +107,7 @@ func (m Model) setQuery(query string) (tea.Model, tea.Cmd) {
 // deleteLastWord for ctrl+w/alt+backspace) through setQuery. With an empty
 // query there is nothing to delete: the preview is re-synced, but rows are
 // not refiltered.
-func (m Model) deleteFromQuery(edit func(string) string) (tea.Model, tea.Cmd) {
+func (m Model) deleteFromQuery(edit func(string) string) (Model, tea.Cmd) {
 	if m.query == "" {
 		cmd := m.syncPreviewAfterSelectionChange()
 		return m, cmd
@@ -173,22 +145,34 @@ func scrollViewport(vp *viewport.Model, key string) bool {
 	return true
 }
 
-// handleKey applies one key press. FocusHelp is checked first and routes
+// handleKey applies one key press: its name selects a binding and its text,
+// when no binding takes it, goes to the query.
+func (m Model) handleKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
+	if isDoubleEsc(msg) {
+		return m.replayEsc(2)
+	}
+	return m.handleInput(msg.String(), keyText(msg))
+}
+
+// handlePaste applies a bracketed paste: text only, never a binding, so a
+// pasted "y" cannot confirm a close.
+func (m Model) handlePaste(msg tea.PasteMsg) (Model, tea.Cmd) {
+	return m.handleInput("", msg.Content)
+}
+
+// handleInput applies one input: chord is the pressed key's name ("" for a
+// paste) and text what it types. FocusHelp is checked first and routes
 // exclusively to handleHelpFocusedKey (help is modal: only "?"/Esc close it,
 // only ctrl+c/ctrl+g cancel through it, everything else is swallowed).
 // Otherwise the global bindings ("?"/esc/ctrl+c/ctrl+g/tab/shift+tab/ctrl+t/
 // ctrl+p/ctrl+x/ctrl+f) are checked, then the list's row-cursor and
 // query-editing keys (handleListFocusedKey). "q" is an ordinary query
-// character, not a cancel key. Every switch matches keyChord(msg), never the
-// raw String(), so a typing burst or a paste is always text, never a chord.
-func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if isDoubleEsc(msg) {
-		return m.replayEsc(2)
-	}
+// character, not a cancel key.
+func (m Model) handleInput(chord, text string) (Model, tea.Cmd) {
 	if m.closeConfirm != nil {
 		target := *m.closeConfirm
 		m.closeConfirm = nil
-		if keyChord(msg) == keyChordConfirm {
+		if chord == keyChordConfirm {
 			return m.startClose(target)
 		}
 		m.closeStatus = infoStatus("close cancelled")
@@ -198,9 +182,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.closeStatus = footerStatus{}
 	}
 	if m.focus == FocusHelp {
-		return m.handleHelpFocusedKey(msg)
+		return m.handleHelpFocusedKey(chord)
 	}
-	switch keyChord(msg) {
+	switch chord {
 	case "?":
 		m.focus = FocusHelp
 		return m, nil
@@ -232,19 +216,19 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	return m.handleListFocusedKey(msg)
+	return m.handleListFocusedKey(chord, text)
 }
 
 // handleHelpFocusedKey handles input while FocusHelp owns focus. Only "?"
 // and Esc close help, back to the list; ctrl+c/ctrl+g remain the
 // unconditional cancel escape hatch;
 // up/down/ctrl+j/ctrl+k/pgup/pgdown/home/end scroll helpViewport. Every
-// other key — text input (typed, burst or pasted), backspace, ctrl+w,
-// alt+backspace, ctrl+u, enter, ctrl+l, ctrl+t, ctrl+p, left/right — is
-// swallowed: reading help must never mutate the query, move the list
-// cursor, change layout, or select anything.
-func (m Model) handleHelpFocusedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch chord := keyChord(msg); chord {
+// other input — typed or pasted text, backspace, ctrl+w, alt+backspace,
+// ctrl+u, enter, ctrl+l, ctrl+t, ctrl+p, left/right — is swallowed: reading
+// help must never mutate the query, move the list cursor, change layout, or
+// select anything.
+func (m Model) handleHelpFocusedKey(chord string) (Model, tea.Cmd) {
+	switch chord {
 	case "?", "esc":
 		m.focus = FocusList
 		return m, nil
@@ -258,7 +242,7 @@ func (m Model) handleHelpFocusedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) togglePin() (tea.Model, tea.Cmd) {
+func (m Model) togglePin() (Model, tea.Cmd) {
 	row, ok := m.currentRow()
 	if !ok {
 		return m, nil
@@ -292,7 +276,7 @@ func (m Model) togglePin() (tea.Model, tea.Cmd) {
 	}
 }
 
-func (m Model) cycleTabForward() (tea.Model, tea.Cmd) {
+func (m Model) cycleTabForward() (Model, tea.Cmd) {
 	next := m.adjacentTab(1)
 	m.activeTab = next.ID
 	m.cursor = 0
@@ -300,7 +284,7 @@ func (m Model) cycleTabForward() (tea.Model, tea.Cmd) {
 	return m, tea.Batch(m.maybeLoadGroup(), m.applyFilter(), m.syncPreviewAfterSelectionChange())
 }
 
-func (m Model) cycleTabBackward() (tea.Model, tea.Cmd) {
+func (m Model) cycleTabBackward() (Model, tea.Cmd) {
 	next := m.adjacentTab(-1)
 	m.activeTab = next.ID
 	m.cursor = 0
@@ -317,17 +301,15 @@ func (m Model) cycleTabBackward() (tea.Model, tea.Cmd) {
 // intentionally NOT bound to movement here so they fall through to the
 // query instead. ctrl+u stays half-page up (it does not clear the query);
 // backspace deletes the last rune and ctrl+w/alt+backspace the last word.
-func (m Model) handleListFocusedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch chord := keyChord(msg); chord {
+func (m Model) handleListFocusedKey(chord, text string) (Model, tea.Cmd) {
+	switch chord {
 	case "enter":
 		return m.handleEnter()
 	case "ctrl+l":
 		m.cycleOrientationOverride()
 		return m, nil
 	case "pgup", "pgdown":
-		if scrollViewport(&m.viewport, chord) {
-			return m, nil
-		}
+		scrollViewport(&m.viewport, chord)
 		return m, nil
 	case "down", "ctrl+j":
 		return m.moveListCursor(1)
@@ -348,7 +330,7 @@ func (m Model) handleListFocusedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+w", "alt+backspace":
 		return m.deleteFromQuery(deleteLastWord)
 	default:
-		if query, ok := appendQueryRunes(m.query, queryInputRunes(msg)); ok {
+		if query, ok := appendQueryText(m.query, text); ok {
 			return m.setQuery(query)
 		}
 		return m, m.syncPreviewAfterSelectionChange()
@@ -357,7 +339,7 @@ func (m Model) handleListFocusedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // moveListCursor shares the row navigation side effects for single-step and
 // half-page movement. The cursor always stays inside the available rows.
-func (m Model) moveListCursor(delta int) (tea.Model, tea.Cmd) {
+func (m Model) moveListCursor(delta int) (Model, tea.Cmd) {
 	m.cursorTouched = true
 	if len(m.rows) > 0 {
 		m.cursor = max(0, min(len(m.rows)-1, m.cursor+delta))
@@ -370,7 +352,7 @@ func (m Model) moveListCursor(delta int) (tea.Model, tea.Cmd) {
 // selectedAction is sourced from the shared rowActionDescriptor — the same
 // single source of truth the footer and help overlay read (SPEC-NAV-1.8
 // parity) — so Enter behavior can never drift from the displayed copy.
-func (m Model) handleEnter() (tea.Model, tea.Cmd) {
+func (m Model) handleEnter() (Model, tea.Cmd) {
 	row, ok := m.currentRow()
 	if !ok {
 		return m, nil
@@ -386,7 +368,7 @@ func (m Model) handleEnter() (tea.Model, tea.Cmd) {
 // A row whose candidate does not support a current-workspace target is a
 // silent no-op — mirrors the previous picker's behavior, now expressed over
 // Row instead of a raw candidate index.
-func (m Model) selectWithTarget(target string) (tea.Model, tea.Cmd) {
+func (m Model) selectWithTarget(target string) (Model, tea.Cmd) {
 	// Eligibility is checked BEFORE the missing-pane diagnostic (SPEC-NAV-4.1):
 	// an invalid/ineligible row can never target the current workspace, so it
 	// is a fully silent no-op even when there is no focused pane — it must not
@@ -458,7 +440,7 @@ func (m *Model) collapseCurrent() tea.Cmd {
 }
 
 // closeSelectedRow resolves the displayed row before starting any side effect.
-func (m Model) closeSelectedRow() (tea.Model, tea.Cmd) {
+func (m Model) closeSelectedRow() (Model, tea.Cmd) {
 	if m.closePending {
 		return m, nil
 	}
@@ -506,7 +488,7 @@ func closeTargetFor(row Row) (closeTarget, bool) {
 	return target, target.id != ""
 }
 
-func (m Model) startClose(target closeTarget) (tea.Model, tea.Cmd) {
+func (m Model) startClose(target closeTarget) (Model, tea.Cmd) {
 	m.closePending = true
 	m.closeStatus = infoStatus("closing " + target.kind + "...")
 	closer, ctx := m.layout.Closer, m.renderCtx

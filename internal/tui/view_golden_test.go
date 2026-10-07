@@ -13,13 +13,9 @@
 // intended scenario(s); the default (no -update-golden) is compare-only and
 // never writes.
 //
-// Two Go-test gotchas worth knowing: (1) the flag is named -update-golden
-// (not -update) because the transitive teatest ->
-// github.com/charmbracelet/x/exp/golden dependency already registers a
-// package-level -update flag at init, so -update would panic with "flag
-// redefined" at test binary startup; (2) -update-golden is a test-binary
-// flag, so it MUST come AFTER the package selector — placing it before the
-// package makes 'go test' try to build "." and fail with "no Go files in .".
+// -update-golden is a test-binary flag, so it MUST come AFTER the package
+// selector — placing it before the package makes 'go test' try to build "."
+// and fail with "no Go files in .".
 package tui
 
 import (
@@ -31,7 +27,8 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/ranking"
 	"github.com/tranceh2/shep/internal/source"
@@ -46,80 +43,16 @@ const targetDir = "testdata/view/target"
 
 // --- normalization helpers (unit-tested below; defined later in this file) ---
 
-// ANSI escape classifiers used by the fixture normalization pipeline.
-// Compiled once at package load; all are read-only and safe to share across
-// tests. Non-SGR ANSI stripping (OSC, DCS, APC, PM, SOS, and every non-SGR
-// CSI final byte) is NOT duplicated here at all — the production
-// sanitizePaneCapture scanner (sanitize.go) is now the single, provably
-// closure-safe containment boundary and fully covers that scope (fix round
-// 1, R1-001/R1-002), including fail-closed handling of any ESC-introduced
-// sequence it cannot classify. Only what remains genuinely test-only
-// (SGR-dedup for fixture noise, spinner-frame freezing) has its own regex
-// here.
-var (
-	// reSGR matches a single SGR sequence (\x1b[...m). Used by collapseDupSGR;
-	// Go's RE2 regexp has no backreferences, so consecutive-identical collapse
-	// is done with a manual scan rather than a (\1)+ pattern.
-	reSGR = regexp.MustCompile(`\x1b\[[0-9;]*m`)
-	// reSpinner matches any single braille spinner frame (spinner.MiniDot's
-	// full frame set) so a loading indicator's animation frame can never
-	// make a golden fixture flake.
-	reSpinner = regexp.MustCompile(`[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]`)
-)
-
-// stripNonSGRANSI removes every ANSI escape sequence that is not an SGR
-// (\x1b[...m) by delegating entirely to the production sanitizePaneCapture
-// scanner — the same security boundary the TUI applies to real pane
-// captures, so the golden-fixture normalization and the production
-// containment can never drift apart. Kept as a named step in the
-// normalization pipeline (see normalizeView) for readability/discoverability
-// rather than because it adds behavior of its own.
-func stripNonSGRANSI(s string) string {
-	return sanitizePaneCapture(s)
-}
+// reSpinner matches any single braille spinner frame (spinner.MiniDot's full
+// frame set) so a loading indicator's animation frame can never make a golden
+// fixture flake.
+var reSpinner = regexp.MustCompile(`[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]`)
 
 // normalizeSpinnerFrames replaces any braille spinner frame rune with the
 // stable placeholder ⠿ so a loading indicator's current animation frame can
 // never differ between two runs of the same scenario.
 func normalizeSpinnerFrames(s string) string {
 	return reSpinner.ReplaceAllString(s, "⠿")
-}
-
-// collapseDupSGR collapses runs of byte-identical, immediately adjacent SGR
-// sequences to a single occurrence, taming lipgloss's tendency to emit the
-// same reset/style twice in a row without changing what the eye sees. Go's
-// RE2 regexp has no backreferences, so this walks the SGR matches by hand:
-// an SGR is dropped only when the previously emitted token was the exact same
-// SGR with no text in between.
-func collapseDupSGR(s string) string {
-	matches := reSGR.FindAllStringIndex(s, -1)
-	if len(matches) == 0 {
-		return s
-	}
-	var b strings.Builder
-	cursor := 0
-	prevSGR := ""
-	prevWasSGR := false
-	for _, idx := range matches {
-		start, end := idx[0], idx[1]
-		if start > cursor {
-			b.WriteString(s[cursor:start])
-			prevWasSGR = false
-		}
-		seq := s[start:end]
-		if prevWasSGR && seq == prevSGR {
-			// Immediately adjacent duplicate: drop it.
-		} else {
-			b.WriteString(seq)
-			prevSGR = seq
-			prevWasSGR = true
-		}
-		cursor = end
-	}
-	if cursor < len(s) {
-		b.WriteString(s[cursor:])
-	}
-	return b.String()
 }
 
 // trimTrailingWSPerLine removes trailing spaces, tabs, and CR from every
@@ -134,55 +67,16 @@ func trimTrailingWSPerLine(s string) string {
 	return strings.Join(lines, "\n")
 }
 
-// normalizeView is the full golden-fixture pipeline: strip non-SGR ANSI,
-// freeze the spinner frame, collapse duplicate SGR, trim per-line trailing
-// whitespace, and drop the final trailing newline. Applied to View() output
-// before comparison and before writing a fixture.
+// normalizeView is the full golden-fixture pipeline: strip ANSI (fixtures
+// pin text and layout; colors have their own tests), freeze the spinner
+// frame, trim per-line trailing whitespace, and drop the final trailing
+// newline. Applied to View() output before comparison and before writing a
+// fixture.
 func normalizeView(s string) string {
-	s = stripNonSGRANSI(s)
+	s = ansi.Strip(s)
 	s = normalizeSpinnerFrames(s)
-	s = collapseDupSGR(s)
 	s = trimTrailingWSPerLine(s)
 	return strings.TrimRight(s, "\n")
-}
-
-// TestNormalizeStripNonSGR proves non-SGR ANSI (OSC, DCS, cursor/other CSI)
-// is stripped while SGR (\x1b[...m) is preserved, via the production
-// sanitizePaneCapture scanner stripNonSGRANSI now delegates to entirely.
-//
-// The last two cases (a lone ESC control, and a charset designation) changed
-// expected values in Phase 5 fix round 1 (R1-002): the production scanner
-// fails closed on any ESC-introduced sequence it cannot classify as
-// CSI/OSC/DCS/APC/PM/SOS, dropping the REST of the input rather than just
-// that one unrecognized sequence — an intentionally more conservative
-// posture than the old test-only regex, which only stripped the specific
-// lone-control bytes it recognized and left the rest of the string alone.
-func TestNormalizeStripNonSGR(t *testing.T) {
-	tests := []struct {
-		name, in, want string
-	}{
-		{"OSC ended by BEL removed", "before\x1b]0;title\x07after", "beforeafter"},
-		{"OSC ended by ST removed", "x\x1b]2;win\x1b\\y", "xy"},
-		{"DCS removed", "x\x1bPfoo\x1b\\y", "xy"},
-		{"cursor CSI removed", "x\x1b[2Jy\x1b[H z", "xy z"},
-		{"private-mode CSI removed", "\x1b[?25hvisible", "visible"},
-		{"SGR kept", "x\x1b[31mred\x1b[0my", "x\x1b[31mred\x1b[0my"},
-		// Unrecognized ESC introducer ('7' is not [, ], P, _, ^, or X):
-		// fails closed, dropping everything from that ESC to end-of-input —
-		// "save\x1b8" is dropped along with the ESC 7 itself.
-		{"lone ESC control fails closed (drops rest of input)", "\x1b7save\x1b8", ""},
-		// Same fail-closed rule: '(' is not a recognized introducer, so
-		// everything from that ESC onward ("\x1b(Bb") is dropped; only the
-		// leading "a" (already copied through before the ESC) survives.
-		{"charset designation fails closed (drops rest of input)", "a\x1b(Bb", "a"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := stripNonSGRANSI(tt.in); got != tt.want {
-				t.Errorf("stripNonSGRANSI(%q) = %q, want %q", tt.in, got, tt.want)
-			}
-		})
-	}
 }
 
 // TestNormalizeSpinnerFrames proves every braille spinner frame rune collapses
@@ -194,33 +88,11 @@ func TestNormalizeSpinnerFrames(t *testing.T) {
 		{"single frame", "⠋ loading…", "⠿ loading…"},
 		{"all frames", "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏", "⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿"},
 		{"no frames", "no spinner here", "no spinner here"},
-		{"frame next to SGR kept", "⠋\x1b[31m⠙", "⠿\x1b[31m⠿"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := normalizeSpinnerFrames(tt.in); got != tt.want {
 				t.Errorf("normalizeSpinnerFrames(%q) = %q, want %q", tt.in, got, tt.want)
-			}
-		})
-	}
-}
-
-// TestCollapseDupSGR proves runs of byte-identical consecutive SGR sequences
-// collapse to one, while distinct SGR sequences are left intact.
-func TestCollapseDupSGR(t *testing.T) {
-	tests := []struct {
-		name, in, want string
-	}{
-		{"two resets to one", "\x1b[0m\x1b[0m", "\x1b[0m"},
-		{"three identical", "\x1b[31m\x1b[31m\x1b[31m", "\x1b[31m"},
-		{"around text", "a\x1b[31m\x1b[31mb", "a\x1b[31mb"},
-		{"distinct SGR untouched", "\x1b[31m\x1b[0m", "\x1b[31m\x1b[0m"},
-		{"no SGR", "plain", "plain"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := collapseDupSGR(tt.in); got != tt.want {
-				t.Errorf("collapseDupSGR(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
 	}
@@ -258,9 +130,9 @@ func TestNormalizeView(t *testing.T) {
 			"⠿ loading",
 		},
 		{
-			"dup sgr + trailing spaces + newline",
+			"sgr + trailing spaces + newline",
 			"\x1b[0m\x1b[0mhi  \n",
-			"\x1b[0mhi",
+			"hi",
 		},
 		{
 			"multiline preserves internal newlines",
@@ -809,7 +681,7 @@ func TestViewGolden(t *testing.T) {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
 			m := sc.setup(t)
-			raw := m.View()
+			raw := m.View().Content
 			if sc.evidence != nil {
 				sc.evidence(t, raw)
 			}

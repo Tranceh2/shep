@@ -6,17 +6,13 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/tranceh2/shep/internal/ranking"
 	"github.com/tranceh2/shep/internal/source"
 )
 
-func pinKeyMsg() tea.KeyMsg {
-	return tea.KeyMsg{Type: tea.KeyCtrlF}
-}
-
-func plainKeyMsg(r rune) tea.KeyMsg {
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}}
+func pinKeyMsg() tea.KeyPressMsg {
+	return key("ctrl+f")
 }
 
 func TestPrintableFAndPWithPinTogglerAppendQueryAndDoNotPersist(t *testing.T) {
@@ -34,7 +30,7 @@ func TestPrintableFAndPWithPinTogglerAppendQueryAndDoNotPersist(t *testing.T) {
 				},
 			})
 			m, _ = update(t, m, sizeMsg(120, 36))
-			m, _ = update(t, m, plainKeyMsg(r))
+			m, _ = update(t, m, key(string(r)))
 			if m.query != string(r) {
 				t.Fatalf("plain %c produced query=%q, want %q", r, m.query, string(r))
 			}
@@ -46,7 +42,7 @@ func TestPrintableFAndPWithPinTogglerAppendQueryAndDoNotPersist(t *testing.T) {
 }
 
 func TestCtrlFWithPinTogglerInvokesPersistence(t *testing.T) {
-
+	t.Parallel()
 	candidate := source.Candidate{Source: "projects", Path: "/repo", Label: "repo"}
 	called := false
 	m := NewModelWithLayout([]source.Candidate{candidate}, nil, Layout{
@@ -162,7 +158,7 @@ func TestPinResultRetainsCursorIdentityAfterReordering(t *testing.T) {
 		},
 	})
 	m, _ = update(t, m, sizeMsg(120, 36))
-	m, _ = update(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = update(t, m, key("down"))
 	if m.rows[m.cursor].Candidate.Label != "second" {
 		t.Fatal("setup did not move cursor to second row")
 	}

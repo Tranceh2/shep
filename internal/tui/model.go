@@ -32,9 +32,9 @@ import (
 	"slices"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/preview"
 	"github.com/tranceh2/shep/internal/ranking"
@@ -104,6 +104,11 @@ type Layout struct {
 	// layer before the program starts). The zero Theme means Herdr's default
 	// theme, catppuccin.
 	Theme theme.Theme
+	// LightTheme, when set, is Theme's variant for a light terminal: the
+	// theme follows the terminal's appearance (Herdr's auto_switch), so the
+	// picker asks the terminal for its background and switches on a light
+	// one.
+	LightTheme *theme.Theme
 	// SourceOrder is the configured group iteration order (config's
 	// general.sources, in declaration order — the same order
 	// source.Registry.Enabled() already collects candidates in). Threaded
@@ -336,7 +341,7 @@ type Model struct {
 
 	// spinner animates the "loading…" preview indicator. spinnerRunning
 	// guards against scheduling more than one tick loop: a fresh
-	// spinner.Tick() Cmd is only ever issued on the false->true edge of
+	// spinner.Tick Cmd is only ever issued on the false->true edge of
 	// previewLoading (see syncPreviewAfterSelectionChange/handleSpinnerTick),
 	// and the loop self-terminates (returns no further Cmd) the moment
 	// previewLoading goes false, rather than ticking forever in the
@@ -537,10 +542,7 @@ func newModelWithLayout(candidates []source.Candidate, renderer preview.Renderer
 	if renderCtx == nil {
 		renderCtx = context.TODO()
 	}
-	th := layout.Theme
-	if th.Name == "" {
-		th = defaultTheme()
-	}
+	th := orDefaultTheme(layout.Theme)
 	presentation := layout.Presentation
 	if presentation == nil {
 		defaults := config.DefaultPresentations(layout.Icons)
@@ -586,6 +588,32 @@ func newModelWithLayout(candidates []source.Candidate, renderer preview.Renderer
 	m.applyFilter()
 	m.refreshPreviewLoadingFlag()
 	return m
+}
+
+// orDefaultTheme is th, or Herdr's default theme for the zero Theme.
+func orDefaultTheme(th theme.Theme) theme.Theme {
+	if th.Name == "" {
+		return defaultTheme()
+	}
+	return th
+}
+
+// useAppearance switches to the theme variant for the terminal's appearance
+// (see Layout.LightTheme) and drops every cache drawn with the old styles.
+func (m *Model) useAppearance(dark bool) {
+	if m.layout.LightTheme == nil {
+		return
+	}
+	th := orDefaultTheme(m.layout.Theme)
+	if !dark {
+		th = *m.layout.LightTheme
+	}
+	m.theme = th
+	m.styles = newPalette(th, m.formats.iconRefs)
+	m.spinner.Style = m.styles.previewLoadingStyle
+	m.invalidateRowWindow()
+	m.preview = previewMemo{}
+	m.helpKey = helpKey{}
 }
 
 // loadingSpinner picks the shared spinner's frames for the icon tier: the
@@ -705,6 +733,9 @@ func (m Model) Init() tea.Cmd {
 		waitForStatusCmd(m.renderCtx, m.liveStatusEvents),
 		waitForLiveStatusReadyCmd(m.renderCtx, m.liveStatus),
 	}
+	if m.layout.LightTheme != nil {
+		cmds = append(cmds, tea.RequestBackgroundColor)
+	}
 	for i, producer := range m.producers {
 		cmds = append(cmds, m.makeProducerCmd(i, producer))
 	}
@@ -788,14 +819,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+	case tea.BackgroundColorMsg:
+		m.useAppearance(msg.IsDark())
 	case liveStatusReadyMsg:
 		m, cmd = m.handleLiveStatusReady(msg)
 	case spinner.TickMsg:
 		m, cmd = m.handleSpinnerTick(msg)
-	case tea.KeyMsg:
-		var next tea.Model
-		next, cmd = m.handleKey(msg)
-		m = next.(Model)
+	case tea.KeyPressMsg:
+		m, cmd = m.handleKey(msg)
+	case tea.PasteMsg:
+		m, cmd = m.handlePaste(msg)
 	}
 	m.ensureCursorVisible()
 	m.syncRowWindow()
@@ -1507,58 +1540,44 @@ func RunWithProducers(ctx context.Context, producers []SourceProducer, query str
 	return runProgramWithPane(ctx, m)
 }
 
-func runProgramWithPane(ctx context.Context, m Model, opts ...tea.ProgramOption) (source.Candidate, RowAction, string, *source.Pane, bool, error) {
-	ls := startLiveStatus(ctx, m.layout.StatusDialer)
-	if ls != nil {
-		defer func() {
-			_ = ls.Close()
-		}()
-		m = m.withLiveStatus(ls)
-	}
-	p := tea.NewProgram(m, programOptions(ctx, opts)...)
-	final, err := p.Run()
+func runProgramWithPane(ctx context.Context, m Model) (source.Candidate, RowAction, string, *source.Pane, bool, error) {
+	final, err := runModel(ctx, m)
 	if err != nil {
 		return source.Candidate{}, RowActionOpen, "", nil, false, err
 	}
-	finalModel := final.(Model)
-	cand, action, target, ok, ferr := finalizeRun(finalModel)
-	return cand, action, target, finalModel.CurrentPane(), ok, ferr
+	cand, action, target, ok, ferr := finalizeRun(final)
+	return cand, action, target, final.CurrentPane(), ok, ferr
 }
 
 // runProgram drives m through a real Bubble Tea program and turns its
 // terminated state into the (Candidate, RowAction, target, ok, error)
 // quintuple both Run and RunWithSnapshot return.
-//
+func runProgram(ctx context.Context, m Model, opts ...tea.ProgramOption) (source.Candidate, RowAction, string, bool, error) {
+	final, err := runModel(ctx, m, opts...)
+	if err != nil {
+		return source.Candidate{}, RowActionOpen, "", false, err
+	}
+	return finalizeRun(final)
+}
+
 // rendererFPS is the renderer's frame rate, Bubble Tea's maximum. A
 // keystroke's echo waits for the next frame, so the rate bounds the latency
 // the renderer adds to typing; a frame with nothing new writes nothing.
 const rendererFPS = 120
 
-// programOptions are the options every picker program runs with, then opts.
-// The alternate screen is required (see runProgram).
-func programOptions(ctx context.Context, opts []tea.ProgramOption) []tea.ProgramOption {
-	return append([]tea.ProgramOption{tea.WithContext(ctx), tea.WithAltScreen(), tea.WithFPS(rendererFPS)}, opts...)
-}
-
-// WithAltScreen is required: without it, Bubble Tea renders inline and
-// repaints by moving the cursor up N lines on every update, which desyncs
-// against any render taller than the previous one. This is not
-// unit-testable (tea.ProgramOption values close over unexported Program
-// fields); verified manually.
-func runProgram(ctx context.Context, m Model, opts ...tea.ProgramOption) (source.Candidate, RowAction, string, bool, error) {
-	ls := startLiveStatus(ctx, m.layout.StatusDialer)
-	if ls != nil {
-		defer func() {
-			_ = ls.Close()
-		}()
+// runModel runs m in a Bubble Tea program, with its live status subscription
+// for the program's lifetime, and returns the terminated model.
+func runModel(ctx context.Context, m Model, opts ...tea.ProgramOption) (Model, error) {
+	if ls := startLiveStatus(ctx, m.layout.StatusDialer); ls != nil {
+		defer func() { _ = ls.Close() }()
 		m = m.withLiveStatus(ls)
 	}
-	p := tea.NewProgram(m, programOptions(ctx, opts)...)
-	final, err := p.Run()
+	opts = append([]tea.ProgramOption{tea.WithContext(ctx), tea.WithFPS(rendererFPS)}, opts...)
+	final, err := tea.NewProgram(m, opts...).Run()
 	if err != nil {
-		return source.Candidate{}, RowActionOpen, "", false, err
+		return Model{}, err
 	}
-	return finalizeRun(final.(Model))
+	return final.(Model), nil
 }
 
 // finalizeRun turns a terminated model's end state into Run's return

@@ -1,28 +1,15 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	"charm.land/bubbles/v2/spinner"
+	"github.com/charmbracelet/x/ansi"
 )
 
-// Follow-up style alignment — strict TDD. internal/tui's other tests never
-// force lipgloss color output, so a rendered style's ANSI escapes are always
-// stripped by the package's own no-tty detection and every Render() call
-// collapses to the same plain glyph regardless of which style was actually
-// used (see status_icon_test.go / icons_test.go's working-status tests,
-// which therefore only assert glyph identity, not color). This file forces
-// a real color profile for the one assertion that needs to distinguish
-// styles by their rendered ANSI, then restores the previous profile so it
-// never leaks into the rest of the (parallel) suite.
-//
-// Not marked t.Parallel(): Go defers every t.Parallel() test in this
-// package until every non-parallel top-level test (this one included) has
-// returned, so mutating the package-level lipgloss color profile here for
-// the duration of this test body is safe — no parallel test's Render call
-// can observe it.
+// Lip Gloss renders every style's ANSI, so these tests tell styles apart by
+// their rendered escapes; the other status-icon tests assert glyph identity.
 
 // TestAgentStatusIcon_WorkingUsesStatusWorkingStyle proves the working-status
 // pane icon for the unicode tier renders the shared spinner's current frame
@@ -33,10 +20,7 @@ import (
 // component (and its single tick loop), but they are two distinct UI
 // affordances and must not visually collapse into the same color/weight.
 func TestAgentStatusIcon_WorkingUsesStatusWorkingStyle(t *testing.T) {
-	orig := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() { lipgloss.SetColorProfile(orig) })
-
+	t.Parallel()
 	m := newRenderTestModelWithIcons(ThemeMocha, IconsUnicode)
 	m.spinner = spinner.New(
 		spinner.WithSpinner(spinner.MiniDot),
@@ -58,14 +42,14 @@ func TestAgentStatusIcon_WorkingUsesStatusWorkingStyle(t *testing.T) {
 		t.Errorf("agentStatusIcon(\"working\") = %q, must NOT equal the spinner's own previewLoadingStyle rendering %q", got, wrongPreviewStyled)
 	}
 
-	if !reSGR.MatchString(got) {
-		t.Fatalf("agentStatusIcon(\"working\") = %q, want an SGR-colored render (color profile forced to TrueColor for this test)", got)
+	if !strings.Contains(got, "\x1b[") {
+		t.Fatalf("agentStatusIcon(\"working\") = %q, want an SGR-colored render", got)
 	}
 
 	// The animation source is unchanged: the rendered text still carries the
 	// spinner's current MiniDot frame glyph, not the ASCII-tier static
 	// fallback ("o").
-	plain := reSGR.ReplaceAllString(got, "")
+	plain := ansi.Strip(got)
 	if plain != frame {
 		t.Errorf("agentStatusIcon(\"working\") plain glyph = %q, want the spinner frame %q (animation must be preserved)", plain, frame)
 	}
@@ -76,10 +60,7 @@ func TestAgentStatusIcon_WorkingUsesStatusWorkingStyle(t *testing.T) {
 // with statusWorkingStyle — see agentStatusIcon) must not change behavior
 // from this fix, which only touches the animated-spinner branch.
 func TestAgentStatusIcon_WorkingASCIITierUnaffected(t *testing.T) {
-	orig := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() { lipgloss.SetColorProfile(orig) })
-
+	t.Parallel()
 	m := newRenderTestModelWithIcons(ThemeMocha, IconsASCII)
 	set := resolveIconSet(IconsASCII)
 	got := m.agentStatusIcon("working")
@@ -87,7 +68,7 @@ func TestAgentStatusIcon_WorkingASCIITierUnaffected(t *testing.T) {
 	if got != want {
 		t.Errorf("agentStatusIcon(\"working\") under ascii tier = %q, want %q", got, want)
 	}
-	if plain := reSGR.ReplaceAllString(got, ""); plain != "o" {
+	if plain := ansi.Strip(got); plain != "o" {
 		t.Errorf("agentStatusIcon(\"working\") under ascii tier plain glyph = %q, want static \"o\"", plain)
 	}
 }

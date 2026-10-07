@@ -4,31 +4,24 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/tranceh2/shep/internal/source"
 )
 
-// === Query input correctness: bursts, paste, rune-safe and word deletion ===
+// === Query input correctness: paste, rune-safe and word deletion ===
 //
-// Bubble Tea v1 delivers a fast key burst, a tmux send-keys string, or a
-// bracketed paste as ONE KeyRunes message carrying several runes. These
-// tests prove all of them reach the query (printable runes only), that
-// deletion never splits a multi-byte rune, and that ctrl+w/alt+backspace
-// delete the previous word, from either focus state.
+// Bubble Tea v2 decodes one key press per grapheme and delivers a bracketed
+// paste as one tea.PasteMsg. These tests prove pasted text reaches the query
+// as text only (printable runes, never a binding), that deletion never
+// splits a multi-byte rune, and that ctrl+w/alt+backspace delete the
+// previous word, from either focus state.
 
-// burst is a multi-rune KeyRunes message, as Bubble Tea emits for fast typing.
-func burst(s string) tea.KeyMsg {
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
-}
-
-// paste is a bracketed-paste KeyRunes message (msg.String() is "[...]").
-func paste(s string) tea.KeyMsg {
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s), Paste: true}
-}
+// paste is a bracketed paste of s.
+func paste(s string) tea.PasteMsg { return tea.PasteMsg{Content: s} }
 
 var (
-	keyCtrlW        = tea.KeyMsg{Type: tea.KeyCtrlW}
-	keyAltBackspace = tea.KeyMsg{Type: tea.KeyBackspace, Alt: true}
+	keyCtrlW        = key("ctrl+w")
+	keyAltBackspace = key("alt+backspace")
 )
 
 func queryInputModel() Model {
@@ -39,67 +32,54 @@ func queryInputModel() Model {
 	}, nil)
 }
 
-// TestQueryInput_DeleteChordSpelling locks the exact String() Bubble Tea
-// v1.3.10 produces for the two word-deletion chords keys.go matches on
-// (alt+backspace is ESC+DEL, i.e. KeyBackspace with Alt set).
+// TestQueryInput_DeleteChordSpelling locks the String() Bubble Tea produces
+// for the two word-deletion chords keys.go matches on (alt+backspace is
+// ESC+DEL, i.e. KeyBackspace with ModAlt).
 func TestQueryInput_DeleteChordSpelling(t *testing.T) {
 	t.Parallel()
 	if got := keyCtrlW.String(); got != "ctrl+w" {
-		t.Errorf("KeyCtrlW.String() = %q, want \"ctrl+w\"", got)
+		t.Errorf("ctrl+w String() = %q, want \"ctrl+w\"", got)
 	}
 	if got := keyAltBackspace.String(); got != "alt+backspace" {
-		t.Errorf("alt KeyBackspace.String() = %q, want \"alt+backspace\"", got)
+		t.Errorf("alt+backspace String() = %q, want \"alt+backspace\"", got)
 	}
 }
 
-// TestQueryInput_MultiRuneBurstAppendsAllRunes proves a burst is appended
-// in full (it used to be dropped because only single runes were accepted)
-// and refilters exactly like a single typed rune.
-func TestQueryInput_MultiRuneBurstAppendsAllRunes(t *testing.T) {
+// TestQueryInput_TypingRefilters proves typed runes build the query,
+// refilter the rows and re-sync the preview.
+func TestQueryInput_TypingRefilters(t *testing.T) {
 	t.Parallel()
 	m := queryInputModel()
 	seq := m.previewSeq
-	m, _ = update(t, m, burst("shep"))
-	if m.query != "shep" {
-		t.Fatalf("query after burst = %q, want \"shep\"", m.query)
+	m = typeText(t, m, "shep")
+	if m.query != "shep" || m.lastAppliedQuery != "shep" {
+		t.Fatalf("query = %q (applied %q), want \"shep\" refiltered", m.query, m.lastAppliedQuery)
 	}
-	if m.lastAppliedQuery != "shep" {
-		t.Errorf("lastAppliedQuery = %q, want \"shep\" (burst must refilter)", m.lastAppliedQuery)
-	}
-	if m.previewSeq != seq+1 {
-		t.Errorf("previewSeq = %d, want %d (burst must re-sync the preview)", m.previewSeq, seq+1)
+	if m.previewSeq <= seq {
+		t.Errorf("previewSeq = %d, want past %d (typing must re-sync the preview)", m.previewSeq, seq)
 	}
 	if row, ok := m.currentRow(); !ok || row.Candidate.Label != "shep" {
 		t.Errorf("highlighted row = %+v (ok=%v), want the \"shep\" candidate", row.Candidate.Label, ok)
 	}
-
-	m, _ = update(t, m, key("x"))
-	m, _ = update(t, m, burst("yz"))
-	if m.query != "shepxyz" {
-		t.Errorf("query after single rune + burst = %q, want \"shepxyz\"", m.query)
-	}
 }
 
-// TestQueryInput_BurstSpellingAChordIsText proves a burst whose runes spell
-// a chord name is still text: Bubble Tea's String() of the runes "esc" is
-// exactly "esc", so matching on String() would cancel, select, or move.
-func TestQueryInput_BurstSpellingAChordIsText(t *testing.T) {
+// TestQueryInput_PasteSpellingAChordIsText proves a paste whose text spells
+// a binding is still text: matching it as a key name would cancel, select,
+// move or confirm a close.
+func TestQueryInput_PasteSpellingAChordIsText(t *testing.T) {
 	t.Parallel()
-	for _, text := range []string{"esc", "tab", "enter", "up", "down", "end", "ctrl+t", "ctrl+x", "backspace", "ctrl+w"} {
-		for _, focus := range []Focus{FocusList} {
-			m := queryInputModel()
-			m.focus = focus
-			startTab := m.activeTab
-			m, _ = update(t, m, burst(text))
-			if m.query != text {
-				t.Errorf("focus %v, burst %q: query = %q, want the burst inserted as text", focus, text, m.query)
-			}
-			if m.focus != FocusList {
-				t.Errorf("focus %v, burst %q: focus = %v, want FocusList", focus, text, m.focus)
-			}
-			if m.cancelled || m.hasSelected || m.activeTab != startTab || m.closeConfirm != nil || m.closePending || m.closeStatus != (footerStatus{}) {
-				t.Errorf("focus %v, burst %q acted as a chord: cancelled=%v selected=%v tab=%q->%q close=%q", focus, text, m.cancelled, m.hasSelected, startTab, m.activeTab, m.closeStatus.text)
-			}
+	for _, text := range []string{"esc", "tab", "enter", "up", "down", "end", "ctrl+t", "ctrl+x", "backspace", "ctrl+w", "?", "y"} {
+		m := queryInputModel()
+		startTab := m.activeTab
+		m, _ = update(t, m, paste(text))
+		if m.query != text {
+			t.Errorf("paste %q: query = %q, want the paste inserted as text", text, m.query)
+		}
+		if m.focus != FocusList {
+			t.Errorf("paste %q: focus = %v, want FocusList", text, m.focus)
+		}
+		if m.cancelled || m.hasSelected || m.activeTab != startTab || m.closeConfirm != nil || m.closePending || m.closeStatus != (footerStatus{}) {
+			t.Errorf("paste %q acted as a chord: cancelled=%v selected=%v tab=%q->%q close=%q", text, m.cancelled, m.hasSelected, startTab, m.activeTab, m.closeStatus.text)
 		}
 	}
 }
@@ -124,51 +104,22 @@ func TestQueryInput_BracketedPasteDropsLineBreaksAndTabs(t *testing.T) {
 	}
 }
 
-// TestQueryInput_SinglePastedRuneIsText proves a one-rune paste reaches the
-// query (its String() is "[?]", which the old single-rune check rejected)
-// and never triggers the "?" help chord, while a typed "?" still opens help.
-func TestQueryInput_SinglePastedRuneIsText(t *testing.T) {
-	t.Parallel()
-	m := queryInputModel()
-	m, _ = update(t, m, paste("?"))
-	if m.query != "?" || m.focus != FocusList {
-		t.Errorf("after pasting \"?\": query = %q focus = %v, want \"?\" and FocusList", m.query, m.focus)
-	}
-	m, _ = update(t, m, key("?"))
-	if m.focus != FocusHelp || m.query != "?" {
-		t.Errorf("after typing \"?\": focus = %v query = %q, want FocusHelp and the query untouched", m.focus, m.query)
-	}
-}
-
 // TestQueryInput_ControlRunesDropped proves C0 controls, DEL and C1
-// controls never enter the query (a raw ESC echoed into the prompt row
-// would drive the terminal), while the printable runes around them do.
+// controls in a paste never enter the query (a raw ESC echoed into the
+// prompt row would drive the terminal), while the printable runes around
+// them do; input with nothing printable leaves the query unfiltered.
 func TestQueryInput_ControlRunesDropped(t *testing.T) {
 	t.Parallel()
-	for _, msg := range []tea.KeyMsg{burst("a\x00b\x1bc\x7fd\u009be"), paste("a\x00b\x1bc\x7fd\u009be")} {
-		m := queryInputModel()
-		m, _ = update(t, m, msg)
-		if m.query != "abcde" {
-			t.Errorf("%q: query = %q, want \"abcde\"", msg.String(), m.query)
-		}
-	}
-}
-
-// TestQueryInput_NothingPrintableIsUnboundKey proves input with no
-// printable rune (a paste of only line breaks) behaves like any other
-// unbound key: the query is not refiltered.
-func TestQueryInput_NothingPrintableIsUnboundKey(t *testing.T) {
-	t.Parallel()
 	m := queryInputModel()
+	m, _ = update(t, m, paste("a\x00b\x1bc\x7fd\u009be"))
+	if m.query != "abcde" {
+		t.Errorf("query = %q, want \"abcde\"", m.query)
+	}
 	m.query = "al"
 	m.applyFilter()
 	m, cmd := update(t, m, paste("\n\t\r\n"))
 	if m.query != "al" || cmd != nil {
 		t.Errorf("control-only paste: query = %q cmd = %v, want \"al\", nil", m.query, cmd != nil)
-	}
-	m, _ = update(t, m, burst("\x01\x02"))
-	if m.query != "al" {
-		t.Errorf("control-only burst from list: query = %q, want \"al\"", m.query)
 	}
 }
 
@@ -177,7 +128,7 @@ func TestQueryInput_NothingPrintableIsUnboundKey(t *testing.T) {
 func TestQueryInput_AltRunesAreNotText(t *testing.T) {
 	t.Parallel()
 	m := queryInputModel()
-	m, _ = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a"), Alt: true})
+	m, _ = update(t, m, key("alt+a"))
 	if m.query != "" {
 		t.Errorf("alt+a: query = %q, want empty", m.query)
 	}
@@ -189,7 +140,7 @@ func TestQueryInput_AltRunesAreNotText(t *testing.T) {
 func TestQueryInput_BackspaceDeletesWholeRune(t *testing.T) {
 	t.Parallel()
 	m := queryInputModel()
-	m, _ = update(t, m, burst("canción"))
+	m = typeText(t, m, "canción")
 	for _, want := range []string{"canció", "canci", "canc"} {
 		m, _ = update(t, m, key("backspace"))
 		if m.query != want || !utf8.ValidString(m.query) {
@@ -222,7 +173,7 @@ func TestQueryInput_WordDeletion(t *testing.T) {
 		{"año café", "año "},
 		{"", ""},
 	}
-	for _, chord := range []tea.KeyMsg{keyCtrlW, keyAltBackspace} {
+	for _, chord := range []tea.KeyPressMsg{keyCtrlW, keyAltBackspace} {
 		for _, tc := range cases {
 			m := queryInputModel()
 			m.query = tc.query
@@ -242,7 +193,7 @@ func TestQueryInput_WordDeletion(t *testing.T) {
 }
 
 // TestQueryInput_HelpSwallowsTextAndDeletion proves the modal help overlay
-// ignores bursts, pastes and word deletion, including a burst that spells
+// ignores typing, pastes and word deletion, including a paste that spells
 // its own close chord ("esc").
 func TestQueryInput_HelpSwallowsTextAndDeletion(t *testing.T) {
 	t.Parallel()
@@ -253,10 +204,10 @@ func TestQueryInput_HelpSwallowsTextAndDeletion(t *testing.T) {
 	if m.focus != FocusHelp {
 		t.Fatalf("setup: focus = %v, want FocusHelp", m.focus)
 	}
-	for _, msg := range []tea.KeyMsg{burst("esc"), burst("shep"), paste("x"), keyCtrlW, keyAltBackspace} {
+	for _, msg := range []tea.Msg{paste("esc"), key("s"), paste("x"), keyCtrlW, keyAltBackspace} {
 		m, _ = update(t, m, msg)
 		if m.focus != FocusHelp || m.query != "foo bar" {
-			t.Errorf("%q while help is open: focus = %v query = %q, want FocusHelp and \"foo bar\"", msg.String(), m.focus, m.query)
+			t.Errorf("%v while help is open: focus = %v query = %q, want FocusHelp and \"foo bar\"", msg, m.focus, m.query)
 		}
 	}
 }
@@ -280,23 +231,27 @@ func TestQueryEditHelpers(t *testing.T) {
 			t.Errorf("deleteLastWord(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
-	if got, ok := appendQueryRunes("ab", []rune("\n\t\x1b")); ok || got != "ab" {
-		t.Errorf("appendQueryRunes(control only) = %q, %v; want \"ab\", false", got, ok)
+	if got, ok := appendQueryText("ab", "\n\t\x1b"); ok || got != "ab" {
+		t.Errorf("appendQueryText(control only) = %q, %v; want \"ab\", false", got, ok)
 	}
-	if got, ok := appendQueryRunes("ab", nil); ok || got != "ab" {
-		t.Errorf("appendQueryRunes(nil) = %q, %v; want \"ab\", false", got, ok)
+	if got, ok := appendQueryText("ab", ""); ok || got != "ab" {
+		t.Errorf("appendQueryText(\"\") = %q, %v; want \"ab\", false", got, ok)
 	}
-	if got, ok := appendQueryRunes("ab", []rune("c d\ne")); !ok || got != "abc de" {
-		t.Errorf("appendQueryRunes(\"c d\\ne\") = %q, %v; want \"abc de\", true", got, ok)
+	if got, ok := appendQueryText("ab", "c d\ne"); !ok || got != "abc de" {
+		t.Errorf("appendQueryText(\"c d\\ne\") = %q, %v; want \"abc de\", true", got, ok)
 	}
-	if got := queryInputRunes(tea.KeyMsg{Type: tea.KeySpace}); string(got) != " " {
-		t.Errorf("queryInputRunes(space) = %q, want \" \"", string(got))
+	if got := keyText(key("space")); got != " " {
+		t.Errorf("keyText(space) = %q, want \" \"", got)
+	}
+	if got := keyText(key("ctrl+a")); got != "" {
+		t.Errorf("keyText(ctrl+a) = %q, want none", got)
 	}
 }
 
-// keyDoubleEsc is two Esc presses delivered in one read: Bubble Tea decodes
-// "\x1b\x1b" as an alt-modified Esc.
-var keyDoubleEsc = tea.KeyMsg{Type: tea.KeyEscape, Alt: true}
+// keyDoubleEsc is two Esc presses delivered in one read: without key
+// disambiguation the terminal sends "\x1b\x1b", decoded as an alt-modified
+// Esc.
+var keyDoubleEsc = key("alt+esc")
 
 // TestDoubleEsc_ActsAsTwoPresses proves a quick double tap of Esc behaves
 // exactly like two separate presses instead of matching nothing (the picker
@@ -310,7 +265,7 @@ func TestDoubleEsc_ActsAsTwoPresses(t *testing.T) {
 	t.Run("empty query cancels", func(t *testing.T) {
 		t.Parallel()
 		next, _ := queryInputModel().handleKey(keyDoubleEsc)
-		if !next.(Model).Cancelled() {
+		if !next.Cancelled() {
 			t.Fatal("double Esc on an empty query did not cancel")
 		}
 	})
@@ -320,8 +275,7 @@ func TestDoubleEsc_ActsAsTwoPresses(t *testing.T) {
 		m := queryInputModel()
 		m.query = "shep"
 		next, _ := m.handleKey(keyDoubleEsc)
-		got := next.(Model)
-		if !got.Cancelled() {
+		if !next.Cancelled() {
 			t.Fatal("double Esc with a query did not cancel after clearing it")
 		}
 	})
@@ -332,7 +286,7 @@ func TestDoubleEsc_ActsAsTwoPresses(t *testing.T) {
 		m.query = "shep"
 		m.focus = FocusHelp
 		next, _ := m.handleKey(keyDoubleEsc)
-		got := next.(Model)
+		got := next
 		if got.focus != FocusList {
 			t.Fatalf("focus = %v, want FocusList after help closed", got.focus)
 		}
@@ -350,7 +304,7 @@ func TestDoubleEsc_ActsAsTwoPresses(t *testing.T) {
 		m.query = "shep"
 		m.closeConfirm = &closeTarget{kind: "tab", id: "t1", label: "api"}
 		next, _ := m.handleKey(keyDoubleEsc)
-		got := next.(Model)
+		got := next
 		if got.closeConfirm != nil {
 			t.Fatal("double Esc left the close confirmation pending")
 		}

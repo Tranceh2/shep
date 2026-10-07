@@ -48,11 +48,8 @@ func TestAgentStatusIcon_GlyphsAndColors(t *testing.T) {
 
 // TestAgentStatusIcon_WorkingUsesSpinner proves "working" still renders the
 // model's shared animated spinner (glyph unchanged) — only its color role
-// changed (asserted with a forced color profile in
-// TestAgentStatusIcon_WorkingUsesStatusWorkingStyle, spinner_style_test.go,
-// since this package's tests never force lipgloss color output and a
-// zero-value spinner's Style has no visible effect on the "(error)"
-// placeholder rendered here), not the glyph source itself.
+// changed (see TestAgentStatusIcon_WorkingUsesStatusWorkingStyle), not the
+// glyph source itself.
 func TestAgentStatusIcon_WorkingUsesSpinner(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
@@ -84,8 +81,8 @@ func TestAgentStatusIcon_PlainRendersGlyphsNoColor(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.status, func(t *testing.T) {
 			got := m.agentStatusIcon(tt.status)
-			if reSGR.MatchString(got) {
-				t.Errorf("plain agentStatusIcon(%q) = %q, contains an SGR color escape, want none", tt.status, got)
+			if hasColor(got) {
+				t.Errorf("plain agentStatusIcon(%q) = %q, contains a color, want none", tt.status, got)
 			}
 			if !strings.Contains(got, tt.glyph) {
 				t.Errorf("plain agentStatusIcon(%q) = %q, want it to contain glyph %q", tt.status, got, tt.glyph)
@@ -99,8 +96,8 @@ func TestAgentStatusIcon_PlainRendersGlyphsNoColor(t *testing.T) {
 	if working == "" {
 		t.Error("plain agentStatusIcon(\"working\") empty, want the spinner glyph to still render")
 	}
-	if reSGR.MatchString(working) {
-		t.Errorf("plain agentStatusIcon(\"working\") = %q, contains an SGR color escape, want none", working)
+	if hasColor(working) {
+		t.Errorf("plain agentStatusIcon(\"working\") = %q, contains a color, want none", working)
 	}
 }
 

@@ -28,7 +28,6 @@ func runDoctorWithEnv(t *testing.T, cfg *config.Config, env map[string]string) (
 	app.cfg = cfg
 	app.probes = config.Probes{}
 	app.themeGetenv = func(k string) string { return env[k] }
-	app.darkBackground = func() bool { return true }
 	cmd := app.rootCmd()
 	cmd.SetArgs([]string{"doctor"})
 	err := cmd.Execute()

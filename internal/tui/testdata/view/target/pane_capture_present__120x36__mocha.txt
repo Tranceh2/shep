@@ -8,7 +8,7 @@
                                                                  │ ┌────────┐
                                                                  │ │ pane 1 │
                                                                  │ └────────┘
-                                                                 │ [31mred error line[0m
+                                                                 │ red error line
                                                                  │ this is a very long line that is far wider than the
                                                                  │
                                                                  │

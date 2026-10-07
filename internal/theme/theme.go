@@ -84,6 +84,10 @@ type Source struct {
 	Herdr string
 	// HerdrPath is the Herdr configuration file consulted for Herdr.
 	HerdrPath string
+	// FollowsAppearance reports a theme inheriting a Herdr configuration
+	// with auto_switch on: it has a variant for each terminal appearance
+	// (see Options.Light).
+	FollowsAppearance bool
 	// Notes explain ignored settings and fallbacks: an unknown or invalid
 	// SHEP_THEME, a missing or unreadable Herdr configuration, Herdr's own
 	// diagnostics for its theme settings.

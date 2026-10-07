@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
 )
@@ -75,15 +76,15 @@ func TestRenderPreviewTitle_TruncatesByKind(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemePlain, FocusList)
 	m.rows = []Row{{Kind: RowCandidate, Candidate: source.Candidate{Label: "/srv/a/very/long/path/to/whiterose-db/", Source: config.SourceZoxide}}}
-	if got := strings.TrimSpace(m.renderPreviewTitle(20)); got != "whiterose-db  folder" {
+	if got := strings.TrimSpace(ansi.Strip(m.renderPreviewTitle(20))); got != "whiterose-db  folder" {
 		t.Errorf("filename-first title = %q, want the name and its kind", got)
 	}
 	m.rows = []Row{{Kind: RowCandidate, Candidate: source.Candidate{Label: "Refactor the render path of shep", Source: config.SourceAgents}}}
-	if got := strings.TrimSpace(m.renderPreviewTitle(20)); !strings.HasPrefix(got, "Refactor") || !strings.HasSuffix(got, "…") {
+	if got := strings.TrimSpace(ansi.Strip(m.renderPreviewTitle(20))); !strings.HasPrefix(got, "Refactor") || !strings.HasSuffix(got, "…") {
 		t.Errorf("label title = %q, want the right-truncated start with the kind dropped", got)
 	}
 	m.rows = []Row{{Kind: RowPane, Depth: 2, Candidate: source.Candidate{Path: "/"}}}
-	if got := strings.Fields(m.renderPreviewTitle(20)); len(got) != 2 || got[0] != "/" || got[1] != "pane" {
+	if got := strings.Fields(ansi.Strip(m.renderPreviewTitle(20))); len(got) != 2 || got[0] != "/" || got[1] != "pane" {
 		t.Errorf("root pane title = %q", got)
 	}
 }

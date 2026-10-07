@@ -11,8 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/ranking"
 	"github.com/tranceh2/shep/internal/resolver"
@@ -39,12 +40,12 @@ func TestConfiguredTabs_FilterAndNavigation(t *testing.T) {
 		t.Errorf("footer = %q, want the next tab named in the tab hint", footerText(m))
 	}
 	next, _ := m.cycleTabForward()
-	m = next.(Model)
+	m = next
 	if m.ActiveTab() != "projects" || len(m.rows) != 1 || m.rows[0].Candidate.Label != "project" {
 		t.Fatalf("projects tab = %q, rows = %+v", m.ActiveTab(), m.rows)
 	}
 	next, _ = m.cycleTabBackward()
-	m = next.(Model)
+	m = next
 	if m.ActiveTab() != "review" {
 		t.Errorf("backward tab = %q", m.ActiveTab())
 	}
@@ -56,12 +57,12 @@ func TestConfiguredTabs_SingleAndHiddenAgents(t *testing.T) {
 		t.Fatalf("explicit agents tab = %q", m.ActiveTab())
 	}
 	next, _ := m.cycleTabForward()
-	m = next.(Model)
+	m = next
 	if m.ActiveTab() != "projects" {
 		t.Fatalf("forward from hidden agents = %q", m.ActiveTab())
 	}
 	next, _ = m.cycleTabForward()
-	m = next.(Model)
+	m = next
 	if m.ActiveTab() != "projects" {
 		t.Errorf("single tab wrap = %q", m.ActiveTab())
 	}
@@ -170,7 +171,7 @@ func TestConfiguredTabs_QueryTabOnlyProviderPreservesAll(t *testing.T) {
 		t.Fatalf("all rows = %+v, lazy calls = %d", m.rows, calls)
 	}
 	next, cmd := m.cycleTabForward()
-	m = next.(Model)
+	m = next
 	if cmd == nil || calls != 0 {
 		t.Fatalf("provider not lazy: calls = %d, cmd = %v", calls, cmd)
 	}
@@ -190,7 +191,7 @@ func TestConfiguredTabs_QueryTabOnlyProviderPreservesAll(t *testing.T) {
 		t.Fatalf("review rows = %+v, calls = %d", m.rows, calls)
 	}
 	next, _ = m.cycleTabBackward()
-	m = next.(Model)
+	m = next
 	if len(m.rows) != 2 || m.rows[0].Candidate.Source != config.SourceWorkspaces {
 		t.Fatalf("all gained tab-only candidates: %+v", m.rows)
 	}
@@ -209,7 +210,7 @@ func TestConfiguredTabs_GroupLoadsLazilyOnce(t *testing.T) {
 		t.Fatal("group loaded before activation")
 	}
 	next, cmd := m.cycleTabForward()
-	m = next.(Model)
+	m = next
 	if cmd == nil || calls != 0 {
 		t.Fatalf("group load should be scheduled, calls = %d", calls)
 	}
@@ -230,9 +231,9 @@ func TestConfiguredTabs_GroupLoadsLazilyOnce(t *testing.T) {
 		t.Fatalf("group rows = %+v, loads = %d", m.rows, calls)
 	}
 	next, _ = m.cycleTabBackward()
-	m = next.(Model)
+	m = next
 	next, cmd = m.cycleTabForward()
-	m = next.(Model)
+	m = next
 	if calls != 1 || m.groupLoading["team"] {
 		t.Errorf("group reloaded: %d", calls)
 	}
@@ -300,7 +301,7 @@ func TestConfiguredTabs_GroupRefreshRecollectsCurrentGeneration(t *testing.T) {
 	}})
 	m, _ = update(t, m, SourceResultMsg{Source: config.SourceHerdr, Snapshot: &source.Snapshot{Workspaces: []source.Workspace{{ID: "old", Label: "old"}}}})
 	next, cmd := m.cycleTabForward()
-	m = next.(Model)
+	m = next
 	var deliver func(tea.Msg)
 	deliver = func(msg tea.Msg) {
 		switch value := msg.(type) {
@@ -325,9 +326,9 @@ func TestConfiguredTabs_GroupRefreshRecollectsCurrentGeneration(t *testing.T) {
 		t.Fatalf("refreshed rows = %+v, cursor = %d, loads = %d", m.rows, m.cursor, calls)
 	}
 	next, _ = m.cycleTabBackward()
-	m = next.(Model)
+	m = next
 	next, _ = m.cycleTabForward()
-	m = next.(Model)
+	m = next
 	if calls != 2 || m.groupLoading["team"] {
 		t.Fatalf("unchanged generation loaded again: %d", calls)
 	}
@@ -392,7 +393,7 @@ func TestConfiguredTabs_GroupOrderAndSelection(t *testing.T) {
 	if len(m.rows) != 2 || m.rows[0].Candidate.Source != config.SourceProjects {
 		t.Fatalf("group source order = %+v", m.rows)
 	}
-	m, _ = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = update(t, m, key("enter"))
 	selected, ok := m.Selected()
 	if !ok || selected.Path != "/p" {
 		t.Fatalf("selected = %+v, ok = %v", selected, ok)
@@ -409,7 +410,7 @@ func TestConfiguredTabs_SourceUsesUndeduplicatedProviderRows(t *testing.T) {
 		t.Fatalf("all rows = %+v", m.rows)
 	}
 	next, _ := m.cycleTabForward()
-	m = next.(Model)
+	m = next
 	if len(m.rows) != 1 || m.rows[0].Candidate.Label != "pull request" {
 		t.Fatalf("custom source rows = %+v", m.rows)
 	}
@@ -425,7 +426,7 @@ func TestConfiguredTabs_AllKeepsEnabledRowOnPathCollision(t *testing.T) {
 		t.Fatalf("all collision rows = %+v", m.rows)
 	}
 	next, _ := m.cycleTabForward()
-	m = next.(Model)
+	m = next
 	if len(m.rows) != 1 || m.rows[0].Candidate.Label != "pull request" {
 		t.Fatalf("custom source collision rows = %+v", m.rows)
 	}
@@ -786,7 +787,7 @@ func TestAgentScope_EnterDispatchesFocus(t *testing.T) {
 	m = withActiveTab(m, "agents")
 	m.applyFilter()
 
-	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, cmd := m.Update(key("enter"))
 	if cmd == nil {
 		t.Fatal("expected quit cmd on Enter")
 	}
@@ -906,7 +907,7 @@ func TestAgentScope_RowPrimaryText_SessionNameAndStatusIconOnly(t *testing.T) {
 	}
 
 	primary, prefixRunes := m.rowPrimaryText(agentRow)
-	icon := m.agentStatusIcon("blocked")
+	icon := ansi.Strip(m.agentStatusIcon("blocked"))
 	want := icon + " security scan"
 	if primary != want {
 		t.Errorf("agent row primary = %q, want %q", primary, want)
@@ -941,7 +942,7 @@ func TestAgentScope_RowPrimaryText_SessionNameAndStatusIconOnly(t *testing.T) {
 		},
 	}
 	nestedPrimary, _ := m.rowPrimaryText(nestedTreeRow)
-	if !strings.HasSuffix(nestedPrimary, m.agentStatusIcon("idle")+" p1") {
+	if !strings.HasSuffix(nestedPrimary, ansi.Strip(m.agentStatusIcon("idle"))+" p1") {
 		t.Errorf("nested tree pane primary %q should end with its status glyph and label", nestedPrimary)
 	}
 	nestedTreeRow.Candidate.Label = ""
@@ -1715,7 +1716,7 @@ func TestAgentScope_SnapshotRefreshFillsEmptyAgentsSliceAndKeepsIcon(t *testing.
 	if row.Presentation == nil || row.Presentation.Icon != sourceIcon {
 		t.Errorf("agents row presentation = %+v, want icon %q", row.Presentation, sourceIcon)
 	}
-	if got := renderRowLineText(m.renderRowLine(Row{Kind: RowCandidate, Candidate: *row}, false, 50)); !strings.Contains(got, sourceIcon+" "+m.agentStatusIcon("working")) {
+	if got := ansi.Strip(m.renderRowLine(Row{Kind: RowCandidate, Candidate: *row}, false, 50)); !strings.Contains(got, sourceIcon+" "+ansi.Strip(m.agentStatusIcon("working"))) {
 		t.Errorf("refreshed agent row = %q, want source icon before status", got)
 	}
 	m.activeTab = "agents"
@@ -1723,7 +1724,7 @@ func TestAgentScope_SnapshotRefreshFillsEmptyAgentsSliceAndKeepsIcon(t *testing.
 	if len(m.rows) == 0 || m.rows[0].Candidate.Presentation == nil || m.rows[0].Candidate.Presentation.Icon != sourceIcon {
 		t.Fatalf("agents view row did not retain the resolved icon after refresh: %+v", m.rows)
 	}
-	if got := renderRowLineText(m.renderRowLine(m.rows[0], false, 50)); !strings.Contains(got, sourceIcon+" "+m.agentStatusIcon("working")) {
+	if got := ansi.Strip(m.renderRowLine(m.rows[0], false, 50)); !strings.Contains(got, sourceIcon+" "+ansi.Strip(m.agentStatusIcon("working"))) {
 		t.Errorf("agents view row after refresh = %q, want source icon before status", got)
 	}
 	m.activeTab = "all"
@@ -1861,7 +1862,7 @@ func TestView_ConfiguredTabsNeverDeduplicates(t *testing.T) {
 		key("ctrl+t"), key("ctrl+t"), key("ctrl+t"), key("esc"),
 	} {
 		m, _ = update(t, m, msg)
-		_ = m.View()
+		_ = m.View().Content
 	}
 	if *dedups != before {
 		t.Errorf("frames and keystrokes deduplicated %d times, want none", *dedups-before)

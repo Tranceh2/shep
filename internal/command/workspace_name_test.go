@@ -221,7 +221,7 @@ func TestWorkspaceNameIsSeparateFromPresentationAcrossRuntimeBoundaries(t *testi
 	presentation := config.DefaultPresentations("")
 	presentation.Projects.Label = "{{.Label}}"
 	tuiRows := tui.NewModelWithLayout([]source.Candidate{cand}, nil, tui.Layout{Presentation: &presentation})
-	if body := tuiRows.View(); strings.Contains(body, "rendered-name") || !strings.Contains(body, cand.Label) {
+	if body := tuiRows.View().Content; strings.Contains(body, "rendered-name") || !strings.Contains(body, cand.Label) {
 		t.Fatalf("TUI view changed presentation: %q", body)
 	}
 	deduped := resolver.Dedup([]source.Candidate{cand})

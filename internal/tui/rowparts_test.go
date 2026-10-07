@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/ranking"
 	"github.com/tranceh2/shep/internal/source"
@@ -177,7 +177,7 @@ func TestPresentation_ExplicitEmptyPartsAreKept(t *testing.T) {
 	if got := m.drawnParts(row); got != (drawnParts{"", "repo", "", ""}) || v.fixedW != 0 {
 		t.Errorf("parts = %q (fixed %d cells), want the label alone", got, v.fixedW)
 	}
-	if line := renderRowLineText(m.renderRowLine(row, false, 30)); line != "  repo"+strings.Repeat(" ", 24) {
+	if line := ansi.Strip(m.renderRowLine(row, false, 30)); line != "  repo"+strings.Repeat(" ", 24) {
 		t.Errorf("row = %q, want the label right after the gutter", line)
 	}
 }
@@ -185,12 +185,8 @@ func TestPresentation_ExplicitEmptyPartsAreKept(t *testing.T) {
 // TestPresentation_StyleAndLiveFunctions proves custom templates style their
 // parts with the semantic functions and place live markers anywhere: each
 // run draws in its role, and a marker with nothing to show leaves no gap.
-// Not t.Parallel: it swaps lipgloss's global color profile.
 func TestPresentation_StyleAndLiveFunctions(t *testing.T) {
-	orig := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() { lipgloss.SetColorProfile(orig) })
-
+	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList).withPresentation(func(p *config.Presentations) {
 		p.Herdr.Icon = "{{ status }}"
 		p.Herdr.Label = "{{ bold .Label }} {{ pin }}"
@@ -332,13 +328,13 @@ func TestRowView_AgentIconBeforeStatusAndTitle(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("agent rows = %d, want 1", len(rows))
 	}
-	if got := renderRowLineText(m.renderRowLine(rows[0], false, 40)); !strings.Contains(got, "X  "+m.agentStatusIcon("idle")+" title") {
+	if got := ansi.Strip(m.renderRowLine(rows[0], false, 40)); !strings.Contains(got, "X  "+ansi.Strip(m.agentStatusIcon("idle"))+" title") {
 		t.Errorf("agents tab rendered %q, want icon before status and title", got)
 	}
 	for _, kind := range []RowKind{RowPane, RowCandidate} {
 		row := Row{Kind: kind, Candidate: source.Candidate{Source: config.SourceAgents, Label: "security scan", Meta: map[string]string{"agent_status": "blocked"}}}
 		primary, prefix := m.rowPrimaryText(row)
-		if want := "X  " + m.agentStatusIcon("blocked") + " security scan"; primary != want || prefix != 3 {
+		if want := "X  " + ansi.Strip(m.agentStatusIcon("blocked")) + " security scan"; primary != want || prefix != 3 {
 			t.Errorf("kind %d: primary = %q (prefix %d), want %q (prefix 3)", kind, primary, prefix, want)
 		}
 	}

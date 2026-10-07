@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/fuzzy"
 	"github.com/tranceh2/shep/internal/source"
@@ -64,7 +65,7 @@ func TestFooterHints_HerdrSegmentsMatchSharedKeyBindingValues(t *testing.T) {
 
 // helpLines renders the cheat sheet at width as plain lines.
 func helpLines(m Model, width int) []string {
-	return strings.Split(stripNonSGRANSI(m.helpBodyText(width)), "\n")
+	return strings.Split(ansi.Strip(m.helpBodyText(width)), "\n")
 }
 
 // TestKeyMap_FooterBindingsAppearInHelpBody is the drift guard: every
@@ -106,7 +107,7 @@ func TestHelpColumn_KeyWidthFromContent(t *testing.T) {
 	lines := m.helpColumn(sections, 40, false)
 	want := []string{"A", "  x          one", "  ctrl+long  two"}
 	for i, line := range lines {
-		if got := strings.TrimRight(stripNonSGRANSI(line), " "); got != want[i] {
+		if got := strings.TrimRight(ansi.Strip(line), " "); got != want[i] {
 			t.Errorf("line %d = %q, want %q", i, got, want[i])
 		}
 	}

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
@@ -207,9 +207,9 @@ func TestSurfaceDimensions_NeverNegativeAcrossBoundaries(t *testing.T) {
 			// Help overlay viewport (syncHelpViewport, exercised indirectly via
 			// Update, which runs it unconditionally every frame regardless of
 			// focus).
-			if m.helpViewport.Width < 0 || m.helpViewport.Height < 0 {
+			if m.helpViewport.Width() < 0 || m.helpViewport.Height() < 0 {
 				t.Errorf("width=%d height=%d mode=%q: helpViewport = (%d,%d), want both >= 0",
-					w, h, m.mode, m.helpViewport.Width, m.helpViewport.Height)
+					w, h, m.mode, m.helpViewport.Width(), m.helpViewport.Height())
 			}
 
 			if m.mode != modeListOnly && (prevW < 1 || prevH < 1) {
@@ -337,7 +337,7 @@ func TestBody_DividerStraightAtEveryCapacity(t *testing.T) {
 	}
 }
 
-// TestViewHeight_EqualsTerminalHeight proves that m.View() total line count
+// TestViewHeight_EqualsTerminalHeight proves that m.View().Content total line count
 // equals m.height whenever m.height >= 12, across various candidate counts and scopes.
 func TestViewHeight_EqualsTerminalHeight(t *testing.T) {
 	t.Parallel()
@@ -362,7 +362,7 @@ func TestViewHeight_EqualsTerminalHeight(t *testing.T) {
 						m := withActiveTab(NewModel(cands, nil), tab)
 						m, _ = update(t, m, sizeMsg(w, h))
 
-						view := m.View()
+						view := m.View().Content
 						gotH := lipgloss.Height(view)
 						if gotH != h {
 							t.Errorf("width=%d height=%d count=%d tab=%s: View() height = %d, want %d",

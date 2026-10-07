@@ -2,10 +2,11 @@ package theme
 
 import (
 	"fmt"
+	"image/color"
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 type colorKind uint8
@@ -157,11 +158,11 @@ func (c Color) String() string {
 	}
 }
 
-// Lipgloss converts c for lipgloss: an RGB color becomes a lipgloss.Color
-// hex string (lipgloss degrades it to the terminal's color profile), a named
-// color becomes the lipgloss.ANSIColor with its standard 0-15 index, and
-// Reset becomes lipgloss.NoColor{} so the terminal default shows through.
-func (c Color) Lipgloss() lipgloss.TerminalColor {
+// Lipgloss converts c for lipgloss: an RGB color stays true color (Bubble Tea
+// degrades it to the terminal's color profile), a named color becomes the
+// lipgloss.ANSIColor with its standard 0-15 index, and Reset becomes
+// lipgloss.NoColor{} so the terminal default shows through.
+func (c Color) Lipgloss() color.Color {
 	switch c.kind {
 	case kindRGB:
 		return lipgloss.Color(c.String())

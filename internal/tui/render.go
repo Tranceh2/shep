@@ -3,21 +3,29 @@ package tui
 import (
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/source"
 	"github.com/tranceh2/shep/internal/tmpl"
 )
 
-// View renders the borderless grid (see geometry.go): the tab strip, the
+// View draws the picker on the alternate screen (see screen).
+func (m Model) View() tea.View {
+	v := tea.NewView(m.screen())
+	v.AltScreen = true
+	return v
+}
+
+// screen renders the borderless grid (see geometry.go): the tab strip, the
 // prompt row beside the preview title, the rule, the body and the footer.
 // modeWide shows the list and preview columns side by side around the
 // divider; modeListOnly keeps the same rows without the preview column. The
 // "?" help overlay (m.focus == FocusHelp) keeps the tab strip and replaces
-// everything below it. View is a pure projection of state settled by Update
+// everything below it. It is a pure projection of state settled by Update
 // (mode, viewport sizes and content).
-func (m Model) View() string {
+func (m Model) screen() string {
 	g := m.geometry()
 	f := newFrame(g.Margin)
 	f.line(m.renderTabStrip(g.ContentWidth))
@@ -129,7 +137,7 @@ func (m Model) writeBody(f *frame, g pickerGeometry, divider string) {
 // from the viewport's scroll offset, each already fitted to width.
 func (m Model) previewWindow(width, height int) []string {
 	lines := m.previewLines(width, height)
-	offset := clamp(m.viewport.YOffset, 0, max(0, len(lines)-height))
+	offset := clamp(m.viewport.YOffset(), 0, max(0, len(lines)-height))
 	return lines[offset:min(len(lines), offset+height)]
 }
 

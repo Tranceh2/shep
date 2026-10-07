@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/bubbles/spinner"
+	"charm.land/bubbles/v2/spinner"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
 	"github.com/tranceh2/shep/internal/config"
@@ -184,7 +184,7 @@ func TestRowDisplayText_PaneRow_PathPrimarySecondaryPaneID(t *testing.T) {
 		if secondary != "" {
 			t.Errorf("status=%q: secondary = %q, want empty (RowPane secondary removed entirely by Change 2)", status, secondary)
 		}
-		full := stripNonSGRANSI(primary + " " + secondary)
+		full := ansi.Strip(primary + " " + secondary)
 		for _, word := range []string{"working", "idle", "done", "blocked", "unknown"} {
 			if strings.Contains(full, word) {
 				t.Errorf("status=%q: rendered row text contains literal status word %q: %q", status, word, full)
@@ -207,10 +207,10 @@ func TestRowDisplayText_PaneRow_NoStatusMeansNoIcon(t *testing.T) {
 	}}
 	primaryWith, _ := m.rowDisplayText(withStatus)
 	primaryWithout, _ := m.rowDisplayText(withoutStatus)
-	if ansi.StringWidth(stripNonSGRANSI(primaryWithout)) >= ansi.StringWidth(stripNonSGRANSI(primaryWith)) {
+	if ansi.StringWidth(ansi.Strip(primaryWithout)) >= ansi.StringWidth(ansi.Strip(primaryWith)) {
 		t.Errorf("no-status primary %q should be shorter than idle-status primary %q (no icon prepended)", primaryWithout, primaryWith)
 	}
-	if strings.Contains(stripNonSGRANSI(primaryWithout), "✓") {
+	if strings.Contains(ansi.Strip(primaryWithout), "✓") {
 		t.Errorf("no-status primary must not contain the idle icon: %q", primaryWithout)
 	}
 }

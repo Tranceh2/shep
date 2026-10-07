@@ -2,13 +2,13 @@ package tui_test
 
 import (
 	"context"
+	"io"
 	"strings"
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/charmbracelet/x/exp/teatest"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/preview"
 	"github.com/tranceh2/shep/internal/source"
@@ -29,23 +29,40 @@ func cands() []source.Candidate {
 	}
 }
 
-// TestTUI_EnterSelectsFirstCandidate drives a full teatest program end to
-// end: highlight the first candidate, press enter, expect it selected.
+// runPicker runs m in a real Bubble Tea program without a terminal, sends
+// msgs once it runs, and returns the terminated model.
+func runPicker(t *testing.T, m tui.Model, msgs ...tea.Msg) tui.Model {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	p := tea.NewProgram(m, tea.WithContext(ctx), tea.WithInput(nil), tea.WithOutput(io.Discard), tea.WithWindowSize(120, 30), tea.WithoutSignals())
+	go func() {
+		for _, msg := range msgs {
+			p.Send(msg)
+		}
+	}()
+	final, err := p.Run()
+	if err != nil {
+		t.Fatalf("program: %v", err)
+	}
+	return final.(tui.Model)
+}
+
+func press(code rune) tea.KeyPressMsg { return tea.KeyPressMsg{Code: code} }
+
+func typed(text string) []tea.Msg {
+	var msgs []tea.Msg
+	for _, r := range text {
+		msgs = append(msgs, tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	return msgs
+}
+
+// TestTUI_EnterSelectsFirstCandidate drives a real program end to end: the
+// first candidate is highlighted at construction, enter selects it.
 func TestTUI_EnterSelectsFirstCandidate(t *testing.T) {
 	t.Parallel()
-	m := tui.NewModel(cands(), nil)
-	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 30))
-	// retainSelection already lands the cursor on the first SELECTABLE row
-	// (skipping the non-actionable group header) at construction, so no
-	// initial KeyDown is needed here.
-	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
-	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
-
-	fm := tm.FinalModel(t)
-	mm, ok := fm.(tui.Model)
-	if !ok {
-		t.Fatalf("FinalModel returned %T, want tui.Model", fm)
-	}
+	mm := runPicker(t, tui.NewModel(cands(), nil), press(tea.KeyEnter))
 	got, ok := mm.Selected()
 	if !ok {
 		t.Fatal("expected a selection")
@@ -61,13 +78,7 @@ func TestTUI_EnterSelectsFirstCandidate(t *testing.T) {
 // TestTUI_EscCancels proves esc quits without a selection.
 func TestTUI_EscCancels(t *testing.T) {
 	t.Parallel()
-	m := tui.NewModel(cands(), nil)
-	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 30))
-	tm.Send(tea.KeyMsg{Type: tea.KeyEsc})
-	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
-
-	fm := tm.FinalModel(t)
-	mm := fm.(tui.Model)
+	mm := runPicker(t, tui.NewModel(cands(), nil), press(tea.KeyEscape))
 	if !mm.Cancelled() {
 		t.Error("expected Cancelled()=true after esc")
 	}
@@ -79,15 +90,7 @@ func TestTUI_EscCancels(t *testing.T) {
 // TestTUI_TypeQueryFilters proves typing narrows the visible rows.
 func TestTUI_TypeQueryFilters(t *testing.T) {
 	t.Parallel()
-	m := tui.NewModel(cands(), nil)
-	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 30))
-	for _, r := range "gamma" {
-		tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-	}
-	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
-	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
-
-	mm := tm.FinalModel(t).(tui.Model)
+	mm := runPicker(t, tui.NewModel(cands(), nil), append(typed("gamma"), press(tea.KeyEnter))...)
 	got, ok := mm.Selected()
 	if !ok || got.Label != "gamma" {
 		t.Errorf("Selected() = %+v (ok=%v), want gamma", got, ok)
@@ -104,7 +107,7 @@ func TestTUI_ViewFitsWithinReportedWidth(t *testing.T) {
 	}}
 	m := tui.NewModel(long, nil)
 	m, _ = sendSize(t, m, 60, 20)
-	view := m.View()
+	view := m.View().Content
 	for _, line := range strings.Split(view, "\n") {
 		if w := lipglossWidth(line); w > 60 {
 			t.Errorf("line width %d exceeds reported width 60: %q", w, line)
@@ -119,7 +122,7 @@ func TestTUI_LoadingIndicatorShownBeforePreviewResolves(t *testing.T) {
 	t.Parallel()
 	m := tui.NewModel(cands(), fixedRenderer{text: "resolved preview"})
 	m, _ = sendSize(t, m, 100, 30)
-	view := m.View()
+	view := m.View().Content
 	if strings.Contains(view, "resolved preview") {
 		t.Error("expected the synchronous render to NOT already be visible before Init's Cmd resolves")
 	}
@@ -133,7 +136,7 @@ func TestTUI_EmptyState_NoCandidatesAtAll(t *testing.T) {
 	t.Parallel()
 	m := tui.NewModel(nil, nil)
 	m, _ = sendSize(t, m, 100, 30)
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, "No candidates available") {
 		t.Errorf("expected the empty-candidates state message, got view:\n%s", view)
 	}
@@ -145,12 +148,10 @@ func TestTUI_NoResultState_QueryMatchesNothing(t *testing.T) {
 	t.Parallel()
 	m := tui.NewModel(cands(), nil)
 	m, _ = sendSize(t, m, 100, 30)
-	for _, r := range "zzzznomatch" {
-		var cmd tea.Cmd
-		m, cmd = sendKey(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-		_ = cmd
+	for _, msg := range typed("zzzznomatch") {
+		m, _ = sendKey(t, m, msg)
 	}
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, "No matches for") {
 		t.Errorf("expected the no-matches state message, got view:\n%s", view)
 	}
@@ -172,7 +173,7 @@ func TestTUI_PreviewErrorState(t *testing.T) {
 	if sizeCmd != nil {
 		m, _ = sendKey(t, m, sizeCmd())
 	}
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, "Preview unavailable") {
 		t.Errorf("expected a visible preview error indicator, got view:\n%s", view)
 	}

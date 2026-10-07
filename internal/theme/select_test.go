@@ -32,7 +32,7 @@ func TestSelect_Precedence(t *testing.T) {
 		herdrName string
 		accent    Color
 		notes     []string // substrings the notes must contain
-		darkCalls int
+		follows   bool     // Source.FollowsAppearance
 	}{
 		{
 			name: "NO_COLOR beats everything", env: map[string]string{"NO_COLOR": "1", "SHEP_THEME": "dracula"},
@@ -131,20 +131,20 @@ func TestSelect_Precedence(t *testing.T) {
 			notes:  []string{`unknown theme name theme.name = "catppucin"`},
 		},
 		{
-			name: "auto_switch asks for the appearance: light", herdr: autoHerdr, dark: false,
+			name: "auto_switch light variant", herdr: autoHerdr, dark: false,
 			wantName: "inherit", kind: SourceInherit, setting: "default", herdrName: "tokyo-night-day",
-			accent: builtinPalettes["tokyo-night-day"].Get(TokenAccent), darkCalls: 1,
+			accent: builtinPalettes["tokyo-night-day"].Get(TokenAccent), follows: true,
 		},
 		{
-			name: "auto_switch asks for the appearance: dark", herdr: autoHerdr, dark: true,
+			name: "auto_switch dark variant", herdr: autoHerdr, dark: true,
 			wantName: "inherit", kind: SourceInherit, setting: "default", herdrName: "tokyo-night",
-			accent: builtinPalettes["tokyo-night"].Get(TokenAccent), darkCalls: 1,
+			accent: builtinPalettes["tokyo-night"].Get(TokenAccent), follows: true,
 		},
 		{
-			name: "appearance asked once across SHEP_THEME and config", env: map[string]string{"SHEP_THEME": "badherdr"},
+			name: "auto_switch variant after an ignored SHEP_THEME", env: map[string]string{"SHEP_THEME": "badherdr"},
 			config: "onherdr", herdr: autoHerdr, dark: false,
 			wantName: "onherdr", kind: SourceCustom, setting: "tui.theme", herdrName: "tokyo-night-day",
-			accent: RGB(4, 5, 6), darkCalls: 1,
+			accent: RGB(4, 5, 6), follows: true,
 			notes: []string{`SHEP_THEME="badherdr" ignored: themes.badherdr.accent`},
 		},
 	}
@@ -163,17 +163,13 @@ func TestSelect_Precedence(t *testing.T) {
 			case "-":
 				path = ""
 			}
-			calls := 0
 			got, err := Select(Options{
 				ConfigTheme:     tt.config,
 				Customs:         customs,
 				Getenv:          func(k string) string { return tt.env[k] },
 				HerdrConfigPath: path,
-				Dark:            func() bool { calls++; return tt.dark },
+				Light:           !tt.dark,
 			})
-			if calls != tt.darkCalls {
-				t.Errorf("Dark called %d times, want %d", calls, tt.darkCalls)
-			}
 			if tt.wantErr != "" {
 				if err == nil || !strings.HasPrefix(err.Error(), tt.wantErr) {
 					t.Fatalf("error = %v, want prefix %q", err, tt.wantErr)
@@ -195,6 +191,9 @@ func TestSelect_Precedence(t *testing.T) {
 			}
 			if tt.herdrName == "" && src.HerdrPath != "" {
 				t.Errorf("HerdrPath = %q for a theme that does not inherit", src.HerdrPath)
+			}
+			if got.Source.FollowsAppearance != tt.follows {
+				t.Errorf("FollowsAppearance = %v, want %v", got.Source.FollowsAppearance, tt.follows)
 			}
 			if c := got.Role(RoleAccent); c != tt.accent {
 				t.Errorf("accent = %v, want %v", c, tt.accent)

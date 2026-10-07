@@ -4,8 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/fuzzy"
 	"github.com/tranceh2/shep/internal/source"
@@ -38,22 +37,22 @@ func TestAgentPresentation_RightTruncationAndHighlight(t *testing.T) {
 	if v := m.buildRowView(agent); maskedRunes(v.label.text, v.label.hl) != "sec" || !v.keepStart {
 		t.Fatalf("agent view = %+v, want the title highlighted and kept from its start", v)
 	}
-	prefix := "X " + m.agentStatusIcon("idle") + " "
-	width := cursorPrefixWidth + len([]rune(prefix)) + 11
+	prefix := "X " + ansi.Strip(m.agentStatusIcon("idle")) + " "
+	width := cursorPrefixWidth + ansi.StringWidth(prefix) + 11
 	for _, cursor := range []bool{false, true} {
-		got := renderRowLineText(m.renderRowLine(agent, cursor, width))
+		got := ansi.Strip(m.renderRowLine(agent, cursor, width))
 		if !strings.HasSuffix(got, prefix+"security s…") {
 			t.Errorf("cursor=%v agent row = %q, want the title's start and a trailing ellipsis", cursor, got)
 		}
 	}
 	pane := agent
 	pane.Kind = RowPane // the agents tab derives flat pane rows from the snapshot
-	if got := renderRowLineText(m.renderRowLine(pane, true, width)); !strings.HasSuffix(got, prefix+"security s…") {
+	if got := ansi.Strip(m.renderRowLine(pane, true, width)); !strings.HasSuffix(got, prefix+"security s…") {
 		t.Errorf("agents tab pane row = %q, want the same right truncation", got)
 	}
 
 	other := Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceProjects, Label: "~/security/scan/long/title"}}
-	if got := renderRowLineText(m.renderRowLine(other, false, width-2)); !strings.HasSuffix(got, "X …long/title") {
+	if got := ansi.Strip(m.renderRowLine(other, false, width-2)); !strings.HasSuffix(got, "X …long/title") {
 		t.Errorf("project row = %q, want the path label's tail behind a leading ellipsis", got)
 	}
 
@@ -191,13 +190,9 @@ func TestHighlight_ControlCharLabelMasksDisplayedRunes(t *testing.T) {
 
 // TestWriteRuns_OneRenderPerStyleRun proves highlighted text renders as
 // style runs — one Render per run of equally styled runes, never one per
-// rune — and keeps the visible text unchanged. Not t.Parallel: it swaps
-// lipgloss's global color profile so styles are distinguishable.
+// rune — and keeps the visible text unchanged.
 func TestWriteRuns_OneRenderPerStyleRun(t *testing.T) {
-	orig := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() { lipgloss.SetColorProfile(orig) })
-
+	t.Parallel()
 	s := newPalette(testTheme(ThemeMocha), nil)
 	base, hl := s.rowStyle, s.queryStyle
 	for _, tc := range []struct {
@@ -215,7 +210,7 @@ func TestWriteRuns_OneRenderPerStyleRun(t *testing.T) {
 		if got := b.String(); got != tc.want {
 			t.Errorf("writeRuns(%q, %v) = %q, want %q", tc.text, tc.mask, got, tc.want)
 		}
-		if got := reSGR.ReplaceAllString(b.String(), ""); got != tc.text {
+		if got := ansi.Strip(b.String()); got != tc.text {
 			t.Errorf("writeRuns(%q) visible text = %q", tc.text, got)
 		}
 	}

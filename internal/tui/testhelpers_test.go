@@ -3,11 +3,13 @@ package tui
 import (
 	"context"
 	"errors"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/preview"
@@ -101,12 +103,12 @@ func treeFromFake(driver *fakeTreeDriver) *TreeExpander {
 // footerText is the footer row as the user reads it: plain text without the
 // row's padding, at the model's own content width.
 func footerText(m Model) string {
-	return strings.TrimSpace(stripNonSGRANSI(m.renderFooter(m.geometry().ContentWidth)))
+	return strings.TrimSpace(ansi.Strip(m.renderFooter(m.geometry().ContentWidth)))
 }
 
 // promptText is the prompt row (list column) as plain text without padding.
 func promptText(m Model) string {
-	return strings.TrimSpace(stripNonSGRANSI(m.renderPromptRow(m.geometry().ListWidth)))
+	return strings.TrimSpace(ansi.Strip(m.renderPromptRow(m.geometry().ListWidth)))
 }
 
 // hasHint reports whether hints offers key with label.
@@ -121,7 +123,7 @@ func hasHintKey(hints []footerHint, key string) bool {
 
 // viewLines renders m and splits the plain-text frame into its lines.
 func viewLines(m Model) []string {
-	return strings.Split(stripNonSGRANSI(m.View()), "\n")
+	return strings.Split(ansi.Strip(m.View().Content), "\n")
 }
 
 // renderRowLine renders row as one list line of width cells, isCursor
@@ -338,4 +340,21 @@ func (phase4ZoxideRenderer) Render(context.Context, source.Candidate) (preview.R
 		"drwxr-xr-x 5 user staff 160 Jul 10 ..",
 	}, "\n")
 	return preview.Result{Text: text, Sections: sections}, nil
+}
+
+// reSGRParams captures the parameters of each SGR sequence (\x1b[...m).
+var reSGRParams = regexp.MustCompile(`\x1b\[([0-9;:]*)m`)
+
+// hasColor reports whether s sets a foreground or background color (SGR
+// 30-49, 90-107); attributes such as bold, faint or underline are not
+// colors.
+func hasColor(s string) bool {
+	for _, m := range reSGRParams.FindAllStringSubmatch(s, -1) {
+		for _, p := range strings.FieldsFunc(m[1], func(r rune) bool { return r == ';' || r == ':' }) {
+			if n, err := strconv.Atoi(p); err == nil && (n >= 30 && n <= 49 || n >= 90 && n <= 107) {
+				return true
+			}
+		}
+	}
+	return false
 }

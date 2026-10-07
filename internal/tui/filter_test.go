@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tranceh2/shep/internal/source"
 )
 
@@ -98,7 +97,7 @@ func TestUpdate_PrintableQueryChangeResetsCursor(t *testing.T) {
 	}, nil)
 	m.cursor = 2 // beta remains visible for query "a" but must not be retained.
 
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	next, _ := m.Update(key("a"))
 	m, ok := next.(Model)
 	if !ok {
 		t.Fatalf("Update returned %T, want Model", next)

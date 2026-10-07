@@ -374,7 +374,7 @@ func (a *App) pickerLayoutForConfig(cfg *config.Config, order []string, matches 
 	layout := layoutFromConfig(cfg, order)
 	layout.ConfirmClose = append([]string(nil), cfg.TUI.ConfirmClose...)
 	layout.Templates = a.templateEngine()
-	layout.Theme = a.selectedTheme(cfg)
+	layout.Theme, layout.LightTheme = a.selectedTheme(cfg)
 	settings := a.settings()
 	layout.IconColors = settings.IconColors()
 	layout.Resolve = settings.Attach

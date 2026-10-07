@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/tranceh2/shep/internal/ranking"
 	"github.com/tranceh2/shep/internal/resolver"
 	"github.com/tranceh2/shep/internal/source"
@@ -274,7 +274,7 @@ func TestSharedRankingSnapshotAcrossFzfAndTUI(t *testing.T) {
 	}
 	model := tui.NewModelWithLayout([]source.Candidate{first, second}, nil, tui.Layout{RankingSnapshot: snapshot})
 	updatedModel, _ := model.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
-	next, _ := updatedModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, _ := updatedModel.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	selected, ok := next.(tui.Model).Selected()
 	if !ok || selected.Label != "B" {
 		t.Fatalf("TUI selection = %+v, ok=%v; want B", selected, ok)

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/preview"
 	"github.com/tranceh2/shep/internal/source"
@@ -170,7 +170,7 @@ func TestSnapshotRefresh_EligibleKeyBatchesRefreshCommand(t *testing.T) {
 	m := newSnapshotModel(driver, initial, nil)
 	m.lastSnapshotAt = time.Now().Add(-snapshotTTL)
 
-	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	next, cmd := m.Update(key("w"))
 	m = next.(Model)
 	if !m.snapshotRefreshing {
 		t.Fatal("eligible key activity did not start a refresh")
@@ -310,7 +310,7 @@ func TestSnapshotRefresh_ResolvesInTheCommandNotInUpdate(t *testing.T) {
 	}
 
 	m.lastSnapshotAt = time.Now().Add(-snapshotTTL)
-	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	next, cmd := m.Update(key("w"))
 	m = next.(Model)
 	if resolver.calls != 1 {
 		t.Fatalf("a keystroke resolved candidates (%d calls)", resolver.calls)
@@ -321,10 +321,10 @@ func TestSnapshotRefresh_ResolvesInTheCommandNotInUpdate(t *testing.T) {
 	}
 	next, _ = m.Update(refresh)
 	m = next.(Model)
-	_ = m.View()
+	_ = m.View().Content
 	next, _ = m.Update(paneStatusMsg{PaneID: "w2:p1", WorkspaceID: "w2", TabID: "w2:t1", Status: "blocked"})
 	m = next.(Model)
-	_ = m.View()
+	_ = m.View().Content
 	if resolver.calls != 3 {
 		t.Fatalf("Update or View resolved candidates: %d calls, want 3", resolver.calls)
 	}
@@ -445,7 +445,7 @@ func TestSnapshotRefresh_FailureBacksOffBeforeRetry(t *testing.T) {
 		t.Fatalf("failed refresh state = refreshing:%t diagnostic:%q candidates:%+v", m.snapshotRefreshing, m.previewErr, m.baseCandidates)
 	}
 
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	next, _ = m.Update(key("w"))
 	m = next.(Model)
 	if m.snapshotRefreshing || driver.calls != 1 {
 		t.Fatalf("immediate activity state = refreshing:%t calls:%d, want false and 1", m.snapshotRefreshing, driver.calls)
