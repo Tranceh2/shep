@@ -423,11 +423,12 @@ tabs = ["all", "agents"]
 # Layout orientation:
 # - "landscape": Forces side-by-side split (list on left, preview on right).
 # - omit or "": Responsive auto (side-by-side on wide terminals, list-only on narrow).
-layout = "landscape"
+# layout = "landscape"
 
-# Width split ratios: either "auto" or percentage string like "60%"
-list_width = "auto"
-preview_width = "60%"
+# Width split ratios: either "auto" or percentage string like "60%".
+# Unset (the default) means a 35% list and a 65% preview.
+# list_width = "35%"
+# preview_width = "65%"
 
 # Color theme: "inherit" (default: Herdr's own theme), a built-in theme such as
 # "nord", "plain" (no colors) or a [themes.<name>] table. See Customization › Themes.

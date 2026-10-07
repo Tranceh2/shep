@@ -1724,7 +1724,7 @@ func TestExampleTOML_MatchesCanonicalModel(t *testing.T) {
 	got := ExampleTOML()
 	for _, want := range []string{
 		"\nversion = 3\n", "[general]", "source_order = [", "[defaults]",
-		"template = ", "[tui]", "list_width", "preview_width", `layout = "landscape"`, "[preview]",
+		"template = ", "[tui]", `# list_width = "35%"`, `# preview_width = "65%"`, `# layout = "landscape"`, "[preview]",
 		"[preview.commands.", "# title = ", "[sources.herdr]", "[sources.herdr.tab]", "[sources.herdr.pane]",
 		"[sources.sessions]", "[sources.agents]", "[sources.projects]",
 		"markers = ", "[templates.default]", "[templates.k8s]", "[[sources.custom]]",
@@ -1760,6 +1760,12 @@ func TestExampleTOML_MatchesCanonicalModel(t *testing.T) {
 	}
 	if !cfg.Ranking.Enabled {
 		t.Error("example config must load with ranking.enabled = true")
+	}
+	// shep init must produce the look shep has with no config at all, so the
+	// split and orientation stay at their defaults (only commented examples).
+	if cfg.TUI.ListWidth != defaultTUIListWidth || cfg.TUI.PreviewWidth != defaultTUIPreviewWidth || cfg.TUI.Layout != "" {
+		t.Errorf("example [tui] = list %q preview %q layout %q, want the defaults %q / %q / responsive",
+			cfg.TUI.ListWidth, cfg.TUI.PreviewWidth, cfg.TUI.Layout, defaultTUIListWidth, defaultTUIPreviewWidth)
 	}
 	// Load() normalizes an absent preview.default to the generic fallback list,
 	// so nil/absent must be checked against the raw document, not the loaded

@@ -97,9 +97,11 @@ template = "default"
 # from terminal width); ctrl+l toggles session-only auto/landscape while the
 # picker is open.
 [tui]
-list_width = "auto"
-preview_width = "60%"
-layout = "landscape"
+# The defaults below are what shep uses with nothing set: a 35% list and a
+# 65% preview, side by side on wide terminals and list-only on narrow ones.
+# list_width = "35%"
+# preview_width = "65%"
+# layout = "landscape" # force side-by-side at every width
 # theme is "inherit" (the default: Herdr's own theme, [theme.custom]
 # included), a built-in theme or alias (catppuccin, catppuccin-latte,
 # catppuccin-frappe, catppuccin-macchiato, tokyo-night, dracula, nord,
