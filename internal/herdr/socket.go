@@ -65,15 +65,15 @@ var (
 
 // HerdrRPCError is a rejection produced by the server itself: it was reached,
 // understood the request, and declined it. Code is a symbolic string such as
-// "workspace_not_found" or "invalid_layout".
+// "workspace_not_found" or "invalid_layout". Callers wrap it with the request
+// it answers, so its text is the server's verdict alone.
 type HerdrRPCError struct {
-	Method  string
 	Code    string
 	Message string
 }
 
 func (e *HerdrRPCError) Error() string {
-	return fmt.Sprintf("herdr %s: %s: %s", e.Method, e.Code, e.Message)
+	return e.Code + ": " + e.Message
 }
 
 // unknownMethod reports a rejection that means "this Herdr does not speak
@@ -158,7 +158,7 @@ func callSocket(ctx context.Context, path, id, method string, params any, limit 
 	// answers some other request, and trusting it would attribute an
 	// unrelated outcome to this one.
 	if resp.Error != nil && (resp.ID == id || resp.ID == "") {
-		return nil, &HerdrRPCError{Method: method, Code: resp.Error.Code, Message: resp.Error.Message}
+		return nil, &HerdrRPCError{Code: resp.Error.Code, Message: resp.Error.Message}
 	}
 	if resp.ID != id {
 		return nil, fmt.Errorf("%w: %s: response id %q does not match request id %q", ErrHerdrMalformedResponse, method, resp.ID, id)

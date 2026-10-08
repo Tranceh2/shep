@@ -26,6 +26,8 @@ All notable changes to this project are documented in this file.
 - `ctrl+u` moves the cursor half a page up instead of clearing the query;
   `esc` clears it, `backspace` deletes a character and `ctrl+w` /
   `alt+backspace` a word.
+- The layout key moves from `ctrl+l` to `ctrl+r`, and `ctrl+l` / `ctrl+h`
+  now expand and collapse like `right` / `left`.
 
 ### Added
 
@@ -53,6 +55,17 @@ All notable changes to this project are documented in this file.
   where it came from and Herdr's theme diagnostics.
 - Preview command sections take an optional `title` (`""` hides the
   heading); `shep list --format json` includes `meta`.
+- `ctrl+e` renames the highlighted open workspace, tab or pane in place of
+  the search prompt (`enter` applies, `esc` cancels).
+- `ctrl+n` on a row inside a Git repository asks for a branch, creates the
+  worktree and a focused workspace on it through Herdr, and names and lays
+  it out like any workspace shep creates (`repo@branch` by default).
+- `ctrl+b` jumps to the next blocked agent in the agents view; the footer
+  offers it while one is blocked.
+- `ctrl+y` brings back earlier searches, newest first: the queries that
+  ended in a selection, kept in `$XDG_STATE_HOME/shep/queries`.
+- `right` on an expanded workspace moves onto its first tab, and `left` on a
+  tab or pane moves back to its workspace and collapses it.
 
 ### Changed
 
@@ -88,6 +101,10 @@ All notable changes to this project are documented in this file.
   and pane rows; an unnamed tab's number is shown once in the preview Tabs
   table.
 - `nix build` works again: the flake's `vendorHash` follows `go.mod`.
+- The layout key always changes what is visible: the list alone while the
+  preview shows, both side by side otherwise. It used to switch between auto
+  and landscape, which look the same from 80 columns, so in the Herdr popup
+  it never changed anything.
 
 ### Performance
 
@@ -101,6 +118,17 @@ All notable changes to this project are documented in this file.
   key with a long ranking history, under a third of the memory, and a third of
   the terminal output. The renderer runs at 120 frames per second, so a
   key's echo waits at most 8 ms for its frame.
+- Inside Herdr every request (the snapshot behind the workspace rows, the
+  preview's pane capture, focusing or creating on `enter`, `jump-back`) goes
+  straight to the Herdr socket instead of launching the `herdr` CLI, and the
+  plugin's open action asks for the popup through shep: launching the CLI
+  costs about 200 ms once the system has evicted it. After a while unused,
+  Herdr's rows appear about 100 ms after the picker starts instead of
+  260-360 ms, and the popup opens 125-300 ms after the shortcut instead of
+  480-520 ms.
+- The projects scan and custom source commands show their last result the
+  moment the picker opens and refresh in the background
+  (`$XDG_CACHE_HOME/shep/sources`).
 
 ## v0.1.1
 
