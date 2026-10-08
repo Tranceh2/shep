@@ -3,6 +3,9 @@
 package herdrplugin
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -114,6 +117,9 @@ func TestManifest_ExactlyOneBuildStepCompilingBinary(t *testing.T) {
 	}
 }
 
+// TestManifest_BuildsFromHerdrPluginWorkingDirectory proves the build step,
+// building from source (SHEP_PLUGIN_BUILD=source), compiles the checkout into
+// the plugin's bin/ from the plugin directory Herdr runs it in.
 func TestManifest_BuildsFromHerdrPluginWorkingDirectory(t *testing.T) {
 	m := loadManifest(t)
 	if len(m.Build) != 1 {
@@ -127,7 +133,7 @@ func TestManifest_BuildsFromHerdrPluginWorkingDirectory(t *testing.T) {
 	pluginRoot := filepath.Join(disposableRoot, "contrib", "herdr-plugin")
 	cmd := exec.Command(m.Build[0].Command[0], m.Build[0].Command[1:]...)
 	cmd.Dir = pluginRoot
-	cmd.Env = append(os.Environ(), "GOPROXY=off")
+	cmd.Env = append(os.Environ(), "GOPROXY=off", "SHEP_PLUGIN_BUILD=source")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("build command %v failed from plugin cwd: %v\n%s", m.Build[0].Command, err, output)
@@ -796,5 +802,122 @@ func TestOpenPickerScript_WithoutASocketUsesTheHerdrCLI(t *testing.T) {
 	}
 	if want := "plugin\npane\nopen\n--plugin\ntranceh2.shep\n--entrypoint\npicker\n--placement\npopup"; herdr != want {
 		t.Errorf("herdr argv = %q, want %q", herdr, want)
+	}
+}
+
+// buildScriptRun runs a copy of scripts/build.sh from a temporary plugin root
+// (manifest and scripts only, no checkout to build) with PATH set to path, and
+// releases served from releases (file:// URLs). It returns the combined
+// output, the plugin root and the run error.
+func buildScriptRun(t *testing.T, path, releases string) (out, pluginRoot string, err error) {
+	t.Helper()
+	pluginRoot = filepath.Join(t.TempDir(), "contrib", "herdr-plugin")
+	if err := os.MkdirAll(filepath.Join(pluginRoot, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repo := repositoryRoot(t)
+	for _, rel := range []string{"herdr-plugin.toml", "scripts/build.sh"} {
+		if err := copyPath(filepath.Join(repo, "contrib/herdr-plugin", rel), filepath.Join(pluginRoot, rel)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := exec.Command("bash", filepath.Join(pluginRoot, "scripts", "build.sh"))
+	cmd.Dir = pluginRoot
+	cmd.Env = []string{"PATH=" + path, "HOME=" + t.TempDir(), "SHEP_RELEASE_URL=file://" + releases}
+	data, err := cmd.CombinedOutput()
+	return string(data), pluginRoot, err
+}
+
+// fakeRelease writes the release of the manifest's version for this
+// platform under a new directory: an archive holding a stand-in shep, and a
+// checksums.txt that matches it unless corrupt.
+func fakeRelease(t *testing.T, version string, corrupt bool) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "v"+version)
+	staging := t.TempDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "shep"), []byte("#!/bin/sh\necho release-binary\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	archive := fmt.Sprintf("shep_%s_%s_%s.tar.gz", version, runtime.GOOS, runtime.GOARCH)
+	if out, err := exec.Command("tar", "-czf", filepath.Join(dir, archive), "-C", staging, "shep").CombinedOutput(); err != nil {
+		t.Fatalf("tar: %v\n%s", err, out)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, archive))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(data)
+	digest := hex.EncodeToString(sum[:])
+	if corrupt {
+		digest = strings.Repeat("0", len(digest))
+	}
+	if err := os.WriteFile(filepath.Join(dir, "checksums.txt"), []byte(digest+"  "+archive+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Dir(dir)
+}
+
+// fakeGo writes a stand-in go that records its arguments and writes the -o
+// output, so a source build can be observed without compiling.
+func fakeGo(t *testing.T) (dir, record string) {
+	t.Helper()
+	dir = t.TempDir()
+	record = filepath.Join(dir, "go.args")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" >" + record + "\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = -o ]; then printf '#!/bin/sh\\necho source-binary\\n' >\"$2\"; chmod +x \"$2\"; fi\n  shift\ndone\n"
+	if err := os.WriteFile(filepath.Join(dir, "go"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir, record
+}
+
+// TestBuildScript_InstallsTheVerifiedReleaseWithoutGo proves the plugin build
+// needs no Go toolchain: it downloads the release archive of the manifest's
+// version for this platform, checks it against checksums.txt and installs
+// its binary.
+func TestBuildScript_InstallsTheVerifiedReleaseWithoutGo(t *testing.T) {
+	m := loadManifest(t)
+	out, pluginRoot, err := buildScriptRun(t, "/usr/bin:/bin", fakeRelease(t, m.Version, false))
+	if err != nil {
+		t.Fatalf("build.sh: %v\n%s", err, out)
+	}
+	if got := strings.TrimSpace(runBinary(t, filepath.Join(pluginRoot, "bin", "shep"))); got != "release-binary" {
+		t.Errorf("bin/shep printed %q, want the release binary\n%s", got, out)
+	}
+}
+
+// TestBuildScript_RefusesABadChecksumAndBuildsFromSource proves an archive
+// that does not match the release checksum is never installed: the build
+// says so and compiles the checkout instead.
+func TestBuildScript_RefusesABadChecksumAndBuildsFromSource(t *testing.T) {
+	m := loadManifest(t)
+	goDir, record := fakeGo(t)
+	out, pluginRoot, err := buildScriptRun(t, goDir+":/usr/bin:/bin", fakeRelease(t, m.Version, true))
+	if err != nil {
+		t.Fatalf("build.sh: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "does not match the release checksum") {
+		t.Errorf("output %q, want the checksum refusal", out)
+	}
+	if got := strings.TrimSpace(runBinary(t, filepath.Join(pluginRoot, "bin", "shep"))); got != "source-binary" {
+		t.Errorf("bin/shep printed %q, want the source build", got)
+	}
+	if args, _ := os.ReadFile(record); !strings.Contains(string(args), "main.version="+m.Version) {
+		t.Errorf("go build args %q, want the manifest version for a tagless checkout", args)
+	}
+}
+
+// TestBuildScript_WithoutReleaseOrGoFailsClearly proves the build fails with
+// a message naming what is missing when there is neither a release to
+// download nor a Go toolchain to build with.
+func TestBuildScript_WithoutReleaseOrGoFailsClearly(t *testing.T) {
+	out, _, err := buildScriptRun(t, "/usr/bin:/bin", t.TempDir())
+	if err == nil {
+		t.Fatalf("build.sh succeeded without a release or Go:\n%s", out)
+	}
+	if !strings.Contains(out, "needs Go 1.26.4+") {
+		t.Errorf("output %q, want it to say Go is needed", out)
 	}
 }
