@@ -76,7 +76,9 @@ type CloseResultMsg struct {
 // Closer executes an argv-based close outside the TUI update loop.
 type Closer func(context.Context, string, string) CloseResultMsg
 
-type closeTarget struct {
+// herdrItem is an open Herdr item a row stands for: what ctrl+x closes and
+// ctrl+e renames.
+type herdrItem struct {
 	kind, id, label string
 }
 
@@ -143,6 +145,12 @@ type Layout struct {
 	PinToggler      PinToggler
 	Closer          Closer
 	ConfirmClose    []string
+	// Renamer renames the highlighted open Herdr item (ctrl+e); nil
+	// disables renaming.
+	Renamer Renamer
+	// WorktreeCreator opens a new Git worktree of the highlighted row's
+	// repository (ctrl+n); nil disables it.
+	WorktreeCreator WorktreeCreator
 	AckClearer      AckClearer
 	// InitialTab is the tab the picker opens on; empty means the first tab.
 	InitialTab string
@@ -281,15 +289,26 @@ type Model struct {
 	chosenTarget string
 	// pinPending prevents overlapping toggles for the same visible action and
 	// pinStatus is the truthful, short feedback shown in the footer.
-	pinPending          bool
-	pinKey              string
-	pinStatus           footerStatus
-	closePending        bool
-	closeRefreshPending bool
+	pinPending   bool
+	pinKey       string
+	pinStatus    footerStatus
+	closePending bool
+	// herdrRefreshPending makes the response of a snapshot refresh that was
+	// already in flight when the picker changed Herdr request a newer one.
+	herdrRefreshPending bool
 	// closeConfirm is the close awaiting its y/n answer; the footer renders
-	// the question from it. closeStatus is the close flow's latest message.
-	closeConfirm *closeTarget
-	closeStatus  footerStatus
+	// the question from it. actionStatus is the latest message of a Herdr
+	// action started from the picker (close, rename, new worktree).
+	closeConfirm *herdrItem
+	actionStatus footerStatus
+	// edit is the line edit open in place of the search prompt (see
+	// lineEdit); actionPending blocks starting a rename or worktree while one
+	// runs.
+	edit          lineEdit
+	actionPending bool
+	// finished reports the picker completed its own action (a created
+	// worktree) and quits without a selection, quietly like a cancel.
+	finished bool
 
 	// renderer produces the preview pane content asynchronously for a
 	// RowCandidate row. nil degrades to a built-in label/path/source
@@ -810,23 +829,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.closePending {
 			m.closePending = false
 			if msg.Err != nil {
-				m.closeStatus = errorStatus("close failed: " + msg.Err.Error())
+				m.actionStatus = errorStatus("close failed: " + msg.Err.Error())
 			} else {
-				m.closeStatus = successStatus("closed " + msg.Kind)
-				// Reuse the TTL-gated snapshot owner; expire it only after a successful
-				// close so a fresh snapshot cannot leave the closed row visible.
-				if m.snapshotDriver != nil {
-					m.closeRefreshPending = true
-					if !m.snapshotRefreshing {
-						m.lastSnapshotAt = m.now().Add(-snapshotTTL)
-						cmd = m.maybeRefreshSnapshot()
-						if cmd != nil {
-							m.closeRefreshPending = false
-						}
-					}
-				}
+				m.actionStatus = successStatus("closed " + msg.Kind)
+				// Expire the snapshot only after a successful close so a
+				// fresh one cannot leave the closed row visible.
+				cmd = m.refreshAfterHerdrChange()
 			}
 		}
+	case RenameResultMsg:
+		m, cmd = m.handleRenameResult(msg)
+	case WorktreeResultMsg:
+		m, cmd = m.handleWorktreeResult(msg)
 	case tea.BackgroundColorMsg:
 		m.useAppearance(msg.IsDark())
 	case liveStatusReadyMsg:
@@ -1276,10 +1290,10 @@ func (m Model) handleSnapshotResponse(msg snapshotResponseMsg) (Model, tea.Cmd) 
 	}
 	m.snapshotRefreshing = false
 	m.addNormalizedPaths(msg.normalized)
-	if m.closeRefreshPending {
+	if m.herdrRefreshPending {
 		// A refresh that was already in flight when close completed can still
 		// contain the open row. Request a new generation through the same owner.
-		m.closeRefreshPending = false
+		m.herdrRefreshPending = false
 		m.lastSnapshotAt = m.now().Add(-snapshotTTL)
 		return m, m.maybeRefreshSnapshot()
 	}
@@ -1592,7 +1606,7 @@ func runModel(ctx context.Context, m Model, opts ...tea.ProgramOption) (Model, e
 // quintuple. Factored out so cancellation handling is unit-testable without
 // driving a real Bubble Tea program.
 func finalizeRun(m Model) (source.Candidate, RowAction, string, bool, error) {
-	if m.Cancelled() {
+	if m.Cancelled() || m.finished {
 		return source.Candidate{}, RowActionOpen, "", false, ErrCancelled
 	}
 	res, ok := m.Selected()

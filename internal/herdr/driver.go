@@ -623,37 +623,65 @@ func (d *Driver) RenameWorkspace(ctx context.Context, workspaceID, label string)
 // worktreeCreatedResult is the result of `worktree.create` (`herdr worktree
 // create`): the new worktree and the focused workspace Herdr opened on it.
 //
-//	{"type":"worktree_created","workspace":{...},"tab":{...},"root_pane":{...},
-//	  "worktree":{"path":...,"branch":...,...}}
+//	{"type":"worktree_created","workspace":{...,"worktree":{"repo_name":...}},
+//	  "tab":{...},"root_pane":{...},"worktree":{"path":...,"branch":...}}
 type worktreeCreatedResult struct {
-	workspaceCreatedResult
+	Workspace struct {
+		rawWorkspace
+		Worktree *struct {
+			RepoName string `json:"repo_name"`
+		} `json:"worktree"`
+	} `json:"workspace"`
+	Tab      rawTab  `json:"tab"`
+	RootPane rawPane `json:"root_pane"`
 	Worktree struct {
-		Path string `json:"path"`
+		Path   string `json:"path"`
+		Branch string `json:"branch"`
 	} `json:"worktree"`
 }
 
-// CreateWorktree creates a Git worktree of the repository at repoPath on a new
-// branch, and a focused workspace on it, in one `worktree.create` request:
-// Herdr picks the worktree's location. It returns the workspace like
-// FocusOrCreate does for a created one, plus the worktree's path.
-func (d *Driver) CreateWorktree(ctx context.Context, repoPath, branch string) (source.FocusResult, string, error) {
+// CreatedWorktree is a Git worktree Herdr created and the focused workspace
+// it opened on it. RepoName is empty when Herdr did not report one.
+type CreatedWorktree struct {
+	WorkspaceID    string
+	WorkspaceLabel string
+	RootTabID      string
+	RootPaneID     string
+	Path           string
+	Branch         string
+	RepoName       string
+}
+
+// CreateWorktree creates a Git worktree of the repository holding repoPath on
+// a new branch, and a focused workspace on it, in one `worktree.create`
+// request: Herdr picks the worktree's location.
+func (d *Driver) CreateWorktree(ctx context.Context, repoPath, branch string) (CreatedWorktree, error) {
 	if repoPath == "" || branch == "" {
-		return source.FocusResult{}, "", errors.New("herdr worktree create: empty repository path or branch")
+		return CreatedWorktree{}, errors.New("herdr worktree create: empty repository path or branch")
 	}
 	var created worktreeCreatedResult
 	params := map[string]any{"cwd": repoPath, "branch": branch, "focus": true}
 	if err := d.send(ctx, &created, "worktree.create", params, "worktree", "create", "--cwd", repoPath, "--branch", branch, "--focus"); err != nil {
-		return source.FocusResult{}, "", fmt.Errorf("herdr worktree create: %w", err)
+		return CreatedWorktree{}, fmt.Errorf("herdr worktree create: %w", err)
 	}
 	if created.Workspace.WorkspaceID == "" || created.Tab.TabID == "" || created.RootPane.PaneID == "" || created.Worktree.Path == "" {
-		return source.FocusResult{}, "", errors.New("herdr worktree create: incomplete response")
+		return CreatedWorktree{}, errors.New("herdr worktree create: incomplete response")
 	}
-	return source.FocusResult{
-		WorkspaceID: created.Workspace.WorkspaceID,
-		Action:      source.HerdrActionCreated,
-		RootTabID:   created.Tab.TabID,
-		RootPaneID:  created.RootPane.PaneID,
-	}, created.Worktree.Path, nil
+	wt := CreatedWorktree{
+		WorkspaceID:    created.Workspace.WorkspaceID,
+		WorkspaceLabel: created.Workspace.Label,
+		RootTabID:      created.Tab.TabID,
+		RootPaneID:     created.RootPane.PaneID,
+		Path:           created.Worktree.Path,
+		Branch:         created.Worktree.Branch,
+	}
+	if wt.Branch == "" {
+		wt.Branch = branch
+	}
+	if created.Workspace.Worktree != nil {
+		wt.RepoName = created.Workspace.Worktree.RepoName
+	}
+	return wt, nil
 }
 
 // OpenPluginPane opens a plugin pane entrypoint, focused, in placement

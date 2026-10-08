@@ -307,6 +307,8 @@ The picker is one grid with a single frame (Herdr's popup border when it runs as
 | `Ctrl+P` | Inside Herdr | Open selected entry as a split pane in current workspace |
 | `Ctrl+F` | List | Toggle persistent pin status on the selected top-level candidate, when pinning is configured |
 | `Ctrl+X` | List | Close the highlighted open Herdr pane, tab, or workspace (with confirmation if configured) |
+| `Ctrl+E` | List | Rename the highlighted open Herdr workspace, tab, or pane (`Enter` applies, `Esc` cancels; an empty pane name clears it) |
+| `Ctrl+N` | List | Create a Git worktree on a new branch of the highlighted row's repository and open it, named and laid out like any workspace shep creates |
 | `Ctrl+R` | List | Show or hide the preview for the session |
 | `Backspace` | List | Delete the last query character |
 | `Ctrl+W` / `Alt+Backspace` | List | Delete the last query word |

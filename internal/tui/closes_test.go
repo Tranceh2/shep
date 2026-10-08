@@ -194,7 +194,7 @@ func TestCloseRefreshRemovesAgentFromAgentsAndSourceTabs(t *testing.T) {
 			}
 			m, cmd := update(t, m, closeKey())
 			if cmd == nil {
-				t.Fatalf("close unavailable: row=%+v status=%q", m.rows[m.cursor], m.closeStatus.text)
+				t.Fatalf("close unavailable: row=%+v status=%q", m.rows[m.cursor], m.actionStatus.text)
 			}
 			m, refresh := update(t, m, cmd())
 			m, next := update(t, m, refresh())
@@ -349,9 +349,9 @@ func TestCloseTargetFor_TreeRows(t *testing.T) {
 		{"custom source tab-like row", Row{Kind: RowTab, Candidate: source.Candidate{Source: "prs", Meta: map[string]string{"workspace_id": "w1", "tab_id": "t1"}}}, "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			target, ok := closeTargetFor(tc.row)
+			target, ok := herdrItemFor(tc.row)
 			if ok != (tc.kind != "") || target.kind != tc.kind || target.id != tc.id {
-				t.Errorf("closeTargetFor = %+v, %v; want %s %s", target, ok, tc.kind, tc.id)
+				t.Errorf("herdrItemFor = %+v, %v; want %s %s", target, ok, tc.kind, tc.id)
 			}
 		})
 	}

@@ -169,6 +169,9 @@ func (m Model) tabStyle(tab TabDefinition, active, agentsBlocked bool) lipgloss.
 // cut for the count: the count is dropped first, then the query loses its
 // start — the cursor end, where typing happens, stays visible.
 func (m Model) renderPromptRow(width int) string {
+	if m.edit.open() {
+		return m.renderEditPrompt(width)
+	}
 	glyph := m.icons().SearchPrompt
 	prompt := m.styles.promptStyle.Render(glyph) + " "
 	room := width - ansi.StringWidth(glyph) - 2 // cells left after the prompt and the cursor
@@ -204,6 +207,20 @@ func (m Model) renderPromptRow(width int) string {
 		return fitWidth(left, width)
 	}
 	return fitWidth(left, width-countW) + count
+}
+
+// renderEditPrompt renders the open line edit in place of the search prompt:
+// what it is for, the prompt glyph, and the text with the block cursor after
+// it. Like the query, the text keeps its end, where typing happens, when it
+// does not fit.
+func (m Model) renderEditPrompt(width int) string {
+	lead := m.styles.warnStyle.Render(m.edit.prompt) + " " + m.styles.promptStyle.Render(m.icons().SearchPrompt) + " "
+	room := max(0, width-ansi.StringWidth(lead)-1)
+	text := m.edit.text
+	if ansi.StringWidth(text) > room {
+		text = truncateFromLeftToWidth(text, room)
+	}
+	return fitWidth(lead+m.styles.queryTextStyle.Render(text)+m.styles.queryCursorStyle.Render(" "), width)
 }
 
 // placeholderShort is the placeholder every view falls back to when its
@@ -421,6 +438,7 @@ const (
 	hintPriorityClose
 	hintPriorityNewTab
 	hintPriorityNewPane
+	hintPriorityRename
 )
 
 // footerHint is one "key label" pair of the footer.
@@ -457,9 +475,12 @@ func (m Model) footerHints() []footerHint {
 			footerHint{keyBindingCtrlP.footerChord, keyBindingCtrlP.footerLabel, hintPriorityNewPane},
 		)
 	}
-	if hasRow && m.layout.Closer != nil {
-		if _, ok := closeTargetFor(row); ok {
+	if _, isItem := herdrItemFor(row); hasRow && isItem {
+		if m.layout.Closer != nil {
 			hints = append(hints, footerHint{keyBindingClose.footerChord, keyBindingClose.footerLabel, hintPriorityClose})
+		}
+		if m.layout.Renamer != nil {
+			hints = append(hints, footerHint{keyBindingRename.footerChord, keyBindingRename.footerLabel, hintPriorityRename})
 		}
 	}
 	escLabel := keyBindingEsc.footerLabel
@@ -479,12 +500,17 @@ func (m Model) footerHints() []footerHint {
 // it fits — or in place of the lowest-priority hints when it does not.
 func (m Model) renderFooter(width int) string {
 	switch {
+	case m.edit.open():
+		return m.renderHintLine([]footerHint{
+			{keyChordEnter, m.edit.submitLabel(), hintPriorityEnter},
+			{keyBindingEditCancel.footerChord, keyBindingEditCancel.footerLabel, hintPriorityEsc},
+		}, footerStatus{}, width)
 	case m.closeConfirm != nil:
 		return fitWidth(m.renderCloseConfirm(*m.closeConfirm), width)
-	case m.closeStatus.text != "" && m.closeStatus.tone != toneSuccess:
-		return fitWidth(m.renderStatus(m.closeStatus), width)
+	case m.actionStatus.text != "" && m.actionStatus.tone != toneSuccess:
+		return fitWidth(m.renderStatus(m.actionStatus), width)
 	}
-	status := m.closeStatus
+	status := m.actionStatus
 	if status.text == "" {
 		status = m.pinStatus
 	}
@@ -557,7 +583,7 @@ func renderKeycap(s *styleSet, key, label string) string {
 // renderCloseConfirm renders the close confirmation that replaces the hints:
 // the question in the warn color, y as the one confirming key, and a muted
 // reminder that any other key backs out.
-func (m Model) renderCloseConfirm(target closeTarget) string {
+func (m Model) renderCloseConfirm(target herdrItem) string {
 	sep := m.styles.ruleStyle.Render(" " + m.icons().HintSeparator + " ")
 	return m.styles.warnStyle.Render(target.question()) + "  " +
 		renderKeycap(m.styles, keyBindingConfirmClose.footerChord, keyBindingConfirmClose.footerLabel) + sep +
@@ -609,7 +635,7 @@ func (m Model) renderStatus(s footerStatus) string {
 }
 
 // question is the confirmation prompt for closing target.
-func (t closeTarget) question() string {
+func (t herdrItem) question() string {
 	return fmt.Sprintf("close %s %q?", t.kind, t.label)
 }
 

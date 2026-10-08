@@ -175,14 +175,17 @@ func (m Model) handleInput(chord, text string) (Model, tea.Cmd) {
 		if chord == keyChordConfirm {
 			return m.startClose(target)
 		}
-		m.closeStatus = infoStatus("close cancelled")
+		m.actionStatus = infoStatus("close cancelled")
 		return m, nil
 	}
-	if !m.closePending {
-		m.closeStatus = footerStatus{}
+	if !m.closePending && !m.actionPending {
+		m.actionStatus = footerStatus{}
 	}
 	if m.focus == FocusHelp {
 		return m.handleHelpFocusedKey(chord)
+	}
+	if m.edit.open() {
+		return m.handleEditKey(chord, text)
 	}
 	switch chord {
 	case "?":
@@ -210,6 +213,10 @@ func (m Model) handleInput(chord, text string) (Model, tea.Cmd) {
 		return m.selectWithTarget("pane")
 	case keyChordClose:
 		return m.closeSelectedRow()
+	case keyChordRename:
+		return m.startRename()
+	case keyChordWorktree:
+		return m.startWorktree()
 	case "ctrl+f":
 		if m.layout.PinToggler != nil {
 			return m.togglePin()
@@ -466,36 +473,36 @@ func (m Model) closeSelectedRow() (Model, tea.Cmd) {
 	}
 	row, ok := m.currentRow()
 	if !ok {
-		m.closeStatus = errorStatus("not an open Herdr item")
+		m.actionStatus = errorStatus("not an open Herdr item")
 		return m, nil
 	}
-	target, ok := closeTargetFor(row)
+	target, ok := herdrItemFor(row)
 	if !ok {
-		m.closeStatus = errorStatus("not an open Herdr item")
+		m.actionStatus = errorStatus("not an open Herdr item")
 		return m, nil
 	}
 	if m.layout.Closer == nil {
-		m.closeStatus = errorStatus("Herdr close unavailable")
+		m.actionStatus = errorStatus("Herdr close unavailable")
 		return m, nil
 	}
 	if slices.Contains(m.layout.ConfirmClose, target.kind) {
 		m.closeConfirm = &target
-		m.closeStatus = footerStatus{}
+		m.actionStatus = footerStatus{}
 		return m, nil
 	}
 	return m.startClose(target)
 }
 
-// closeTargetFor resolves what ctrl+x would close on row: an open Herdr pane
+// herdrItemFor resolves what ctrl+x would close on row: an open Herdr pane
 // (a tree pane row or an agent row), tab or workspace. Tree rows are
 // synthesized under an open workspace with no Source of their own (see
 // synthesizeWorkspaceChildren) and are recognized by the workspace id they
 // carry. ok is false for every other row; closeSelectedRow refuses it and
 // the footer leaves the close hint out.
-func closeTargetFor(row Row) (closeTarget, bool) {
+func herdrItemFor(row Row) (herdrItem, bool) {
 	c := row.Candidate
 	herdrChild := c.Source == config.SourceHerdr || (c.Source == "" && c.Meta["workspace_id"] != "")
-	target := closeTarget{label: c.Label}
+	target := herdrItem{label: c.Label}
 	switch {
 	case row.Kind == RowPane && (herdrChild || c.Source == config.SourceAgents),
 		row.Kind == RowCandidate && c.Source == config.SourceAgents:
@@ -508,9 +515,9 @@ func closeTargetFor(row Row) (closeTarget, bool) {
 	return target, target.id != ""
 }
 
-func (m Model) startClose(target closeTarget) (Model, tea.Cmd) {
+func (m Model) startClose(target herdrItem) (Model, tea.Cmd) {
 	m.closePending = true
-	m.closeStatus = infoStatus("closing " + target.kind + "...")
+	m.actionStatus = infoStatus("closing " + target.kind + "...")
 	closer, ctx := m.layout.Closer, m.renderCtx
 	return m, func() tea.Msg {
 		result := closer(ctx, target.kind, target.id)

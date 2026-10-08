@@ -15,11 +15,13 @@
    ctrl+f                 pin/unpin                             status:working  agent status: idle working blocked done
    ctrl+x                 close the open Herdr item (y/n                        unknown
                           when configured)                      agent:claude    agent name contains
-                                                                source:zoxide   source: herdr workspaces zoxide
- Search                                                                         projects sessions agents, or a custom
-   type                   filter the list                                       name
-   backspace              delete a character                    path:allsafe    path contains
-   ctrl+w, alt+backspace  delete a word                         s:blocked       short forms s: a: src: p:
+   ctrl+e                 rename the open Herdr item            source:zoxide   source: herdr workspaces zoxide
+   ctrl+n                 new worktree of this repo                             projects sessions agents, or a custom
+                                                                                name
+ Search                                                         path:allsafe    path contains
+   type                   filter the list                       s:blocked       short forms s: a: src: p:
+   backspace              delete a character
+   ctrl+w, alt+backspace  delete a word
    esc                    clear search, then quit
 
  Layout
@@ -27,8 +29,6 @@
 
  Session
    ctrl+c, ctrl+g         quit
-
-
 
 
 

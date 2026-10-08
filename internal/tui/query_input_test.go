@@ -78,8 +78,8 @@ func TestQueryInput_PasteSpellingAChordIsText(t *testing.T) {
 		if m.focus != FocusList {
 			t.Errorf("paste %q: focus = %v, want FocusList", text, m.focus)
 		}
-		if m.cancelled || m.hasSelected || m.activeTab != startTab || m.closeConfirm != nil || m.closePending || m.closeStatus != (footerStatus{}) {
-			t.Errorf("paste %q acted as a chord: cancelled=%v selected=%v tab=%q->%q close=%q", text, m.cancelled, m.hasSelected, startTab, m.activeTab, m.closeStatus.text)
+		if m.cancelled || m.hasSelected || m.activeTab != startTab || m.closeConfirm != nil || m.closePending || m.actionStatus != (footerStatus{}) {
+			t.Errorf("paste %q acted as a chord: cancelled=%v selected=%v tab=%q->%q close=%q", text, m.cancelled, m.hasSelected, startTab, m.activeTab, m.actionStatus.text)
 		}
 	}
 }
@@ -302,7 +302,7 @@ func TestDoubleEsc_ActsAsTwoPresses(t *testing.T) {
 		t.Parallel()
 		m := queryInputModel()
 		m.query = "shep"
-		m.closeConfirm = &closeTarget{kind: "tab", id: "t1", label: "api"}
+		m.closeConfirm = &herdrItem{kind: "tab", id: "t1", label: "api"}
 		next, _ := m.handleKey(keyDoubleEsc)
 		got := next
 		if got.closeConfirm != nil {

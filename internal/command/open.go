@@ -144,18 +144,12 @@ func (a *App) selectorFactory(matches []source.Candidate) *selector.Cascade {
 	if a.startupSnapshot != nil {
 		layout := a.pickerLayout(cfg.General.SourceOrder, matches)
 		layout.RankingSnapshot = a.rankingSnapshot(matches)
-		layout.StatusDialer = a.resolveStatusDialer()
-		layout.PinToggler = a.pinToggler()
-		layout.Closer = a.herdrCloser()
-		layout.AckClearer = a.ackClearer()
+		a.attachPickerActions(&layout)
 		return snapshotCascadeFor(cfg.General.Selector, a.buildPreviewRendererForSnapshot(*a.startupSnapshot), a.currentPane, a.setChosenTarget, a.setChosenAction, *a.startupSnapshot, a.Driver(), a.buildPreviewRendererForSnapshot, matches, layout)
 	}
 	layout := a.pickerLayout(cfg.General.SourceOrder, matches)
 	layout.RankingSnapshot = a.rankingSnapshot(matches)
-	layout.StatusDialer = a.resolveStatusDialer()
-	layout.PinToggler = a.pinToggler()
-	layout.Closer = a.herdrCloser()
-	layout.AckClearer = a.ackClearer()
+	a.attachPickerActions(&layout)
 	return cascadeFor(cfg.General.Selector, a.buildPreviewRenderer(), a.currentPane, a.setChosenTarget, a.setChosenAction, layout)
 }
 
@@ -291,18 +285,12 @@ func (a *App) selectorFactoryForOrder(order []string, matches []source.Candidate
 	if a.startupSnapshot != nil {
 		layout := a.pickerLayout(order, matches)
 		layout.RankingSnapshot = a.rankingSnapshot(matches)
-		layout.StatusDialer = a.resolveStatusDialer()
-		layout.PinToggler = a.pinToggler()
-		layout.Closer = a.herdrCloser()
-		layout.AckClearer = a.ackClearer()
+		a.attachPickerActions(&layout)
 		return snapshotCascadeFor(cfg.General.Selector, a.buildPreviewRendererForSnapshot(*a.startupSnapshot), a.currentPane, a.setChosenTarget, a.setChosenAction, *a.startupSnapshot, a.Driver(), a.buildPreviewRendererForSnapshot, matches, layout)
 	}
 	layout := a.pickerLayout(order, matches)
 	layout.RankingSnapshot = a.rankingSnapshot(matches)
-	layout.StatusDialer = a.resolveStatusDialer()
-	layout.PinToggler = a.pinToggler()
-	layout.Closer = a.herdrCloser()
-	layout.AckClearer = a.ackClearer()
+	a.attachPickerActions(&layout)
 	return cascadeFor(cfg.General.Selector, a.buildPreviewRenderer(), a.currentPane, a.setChosenTarget, a.setChosenAction, layout)
 }
 
@@ -1012,10 +1000,7 @@ func (a *App) runOpenWithView(cmd *cobra.Command, query, pathFlag, targetFlag, v
 		}
 		layout.InitialTab = view
 	}
-	layout.StatusDialer = a.resolveStatusDialer()
-	layout.PinToggler = a.pinToggler()
-	layout.Closer = a.herdrCloser()
-	layout.AckClearer = a.ackClearer()
+	a.attachPickerActions(&layout)
 	waitRanking = a.openRankingInBackground(cmd.Context())
 
 	producers := a.streamingProducersForView(cmd.Context(), view)

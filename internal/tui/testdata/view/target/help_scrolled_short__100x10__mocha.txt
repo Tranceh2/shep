@@ -1,10 +1,10 @@
   all   agents
  Keyboard & search
  ──────────────────────────────────────────────────────────────────────────────────────────────────
+   api|web                either term (OR)
+   'api                   exact text, closing quote optional
    "api gw"               exact phrase ('api gw' too)
    ^back                  starts with
    end$                   ends with
    ^shep$                 the whole text is exactly
-   /v[0-9]+/              regular expression
-   !test                  exclude matches
  esc close · ↑↓ scroll

@@ -18,6 +18,8 @@ const (
 	keyChordLayout    = "ctrl+r"
 	keyChordPin       = "ctrl+f"
 	keyChordClose     = "ctrl+x"
+	keyChordRename    = "ctrl+e"
+	keyChordWorktree  = "ctrl+n"
 	keyChordEsc       = "esc"
 	keyChordQuestion  = "?"
 	keyChordCtrlC     = "ctrl+c"
@@ -83,7 +85,12 @@ var (
 		chord: keyChordClose, help: "close the open Herdr item (y/n when configured)",
 		footerChord: keyChordClose, footerLabel: "close",
 	}
-	keyBindingHelp = keyBinding{
+	keyBindingRename = keyBinding{
+		chord: keyChordRename, help: "rename the open Herdr item",
+		footerChord: keyChordRename, footerLabel: "rename",
+	}
+	keyBindingWorktree = keyBinding{chord: keyChordWorktree, help: "new worktree of this repo"}
+	keyBindingHelp     = keyBinding{
 		chord: keyChordQuestion, help: "this help",
 		footerChord: keyChordQuestion, footerLabel: "help",
 	}
@@ -98,6 +105,7 @@ var (
 	keyBindingHelpClose    = keyBinding{footerChord: keyChordEsc, footerLabel: "close"}
 	keyBindingHelpScroll   = keyBinding{footerChord: keyChordScrollArrows, footerLabel: "scroll"}
 	keyBindingConfirmClose = keyBinding{footerChord: keyChordConfirm, footerLabel: "confirm"}
+	keyBindingEditCancel   = keyBinding{footerChord: keyChordEsc, footerLabel: "cancel"}
 )
 
 // closeCancelHint follows the close confirmation's y hint: every key but
@@ -121,7 +129,7 @@ var keyMap = []helpSection{
 		{chord: "←/→, ctrl+h/ctrl+l", chordASCII: "left/right, ctrl+h/ctrl+l", help: "collapse/expand"},
 		keyBindingTab,
 	}},
-	{"Act", []keyBinding{keyBindingEnter, keyBindingCtrlT, keyBindingCtrlP, keyBindingPin, keyBindingClose}},
+	{"Act", []keyBinding{keyBindingEnter, keyBindingCtrlT, keyBindingCtrlP, keyBindingPin, keyBindingClose, keyBindingRename, keyBindingWorktree}},
 	{"Search", []keyBinding{
 		{chord: "type", help: "filter the list"},
 		{chord: keyChordBackspace, help: "delete a character"},

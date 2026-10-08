@@ -190,19 +190,19 @@ func TestFooter_StatusPlacement(t *testing.T) {
 	m, _ = update(t, m, sizeMsg(120, 36))
 
 	confirm := m
-	confirm.closeConfirm = &closeTarget{kind: "workspace", id: "w1", label: "backend"}
+	confirm.closeConfirm = &herdrItem{kind: "workspace", id: "w1", label: "backend"}
 	if got := footerText(confirm); got != `close workspace "backend"?  y confirm · any other key cancels` {
 		t.Errorf("confirmation footer = %q", got)
 	}
 
 	failed := m
-	failed.closeStatus = errorStatus("close failed: boom")
+	failed.actionStatus = errorStatus("close failed: boom")
 	if got := footerText(failed); got != "close failed: boom" {
 		t.Errorf("error footer = %q, want the error alone", got)
 	}
 
 	closed := m
-	closed.closeStatus = successStatus("closed tab")
+	closed.actionStatus = successStatus("closed tab")
 	line := ansi.Strip(closed.renderFooter(closed.geometry().ContentWidth))
 	if !strings.HasPrefix(line, "enter open") || !strings.HasSuffix(line, "  closed tab") || ansi.StringWidth(line) != closed.geometry().ContentWidth {
 		t.Errorf("success footer = %q, want hints with the status right-aligned", line)
@@ -210,7 +210,7 @@ func TestFooter_StatusPlacement(t *testing.T) {
 
 	narrow := closed
 	narrow, _ = update(t, narrow, sizeMsg(40, 20))
-	narrow.closeStatus = successStatus("closed workspace")
+	narrow.actionStatus = successStatus("closed workspace")
 	if got := footerText(narrow); !strings.HasSuffix(got, "closed workspace") || !strings.HasPrefix(got, "enter open") || strings.Contains(got, "esc") {
 		t.Errorf("narrow success footer = %q, want low-priority hints replaced by the status", got)
 	}

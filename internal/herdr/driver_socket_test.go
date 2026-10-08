@@ -47,7 +47,7 @@ const (
 	createdResult  = `{"type":"workspace_created","workspace":{"workspace_id":"w9"},"tab":{"tab_id":"w9:t1"},"root_pane":{"pane_id":"w9:p1"}}`
 	tabResult      = `{"type":"tab_created","tab":{"tab_id":"w1:t2","workspace_id":"w1"},"root_pane":{"pane_id":"w1:p4"}}`
 	splitResult    = `{"type":"pane_info","pane":{"pane_id":"w1:p5"}}`
-	worktreeResult = `{"type":"worktree_created","workspace":{"workspace_id":"w9"},"tab":{"tab_id":"w9:t1"},"root_pane":{"pane_id":"w9:p1"},"worktree":{"path":"/r/app-worktrees/feat"}}`
+	worktreeResult = `{"type":"worktree_created","workspace":{"workspace_id":"w9","label":"feat","worktree":{"repo_name":"app"}},"tab":{"tab_id":"w9:t1"},"root_pane":{"pane_id":"w9:p1"},"worktree":{"path":"/r/app-worktrees/feat","branch":"feat"}}`
 	okResult       = `{"type":"ok"}`
 )
 
@@ -100,7 +100,7 @@ func TestDriver_SocketRequestsMatchTheCLI(t *testing.T) {
 			`{"method":"pane.read","params":{"pane_id":"w1:p1","source":"recent","lines":50,"format":"ansi","strip_ansi":true}}`},
 		{"rename a workspace", okResult, func(d *Driver) error { return d.RenameWorkspace(ctx, "w1", "nuevo") },
 			`{"method":"workspace.rename","params":{"workspace_id":"w1","label":"nuevo"}}`},
-		{"create a worktree", worktreeResult, func(d *Driver) error { _, _, err := d.CreateWorktree(ctx, "/r/app", "feat"); return err },
+		{"create a worktree", worktreeResult, func(d *Driver) error { _, err := d.CreateWorktree(ctx, "/r/app", "feat"); return err },
 			`{"method":"worktree.create","params":{"cwd":"/r/app","branch":"feat","focus":true}}`},
 		{"open the picker popup", okResult, func(d *Driver) error { return d.OpenPluginPane(ctx, "tranceh2.shep", "picker", "popup") },
 			`{"method":"plugin.pane.open","params":{"plugin_id":"tranceh2.shep","entrypoint":"picker","placement":"popup","focus":true}}`},
@@ -146,9 +146,10 @@ func TestDriver_SocketResultsDecodeLikeTheCLI(t *testing.T) {
 	}
 
 	srv = newMockHerdrServer(t, replyWith(worktreeResult))
-	res, path, err := New("herdr", WithRunner(cliMustNotRun{t}), WithSocketPath(srv.path)).CreateWorktree(ctx, "/r/app", "feat")
-	if err != nil || res.WorkspaceID != "w9" || res.RootPaneID != "w9:p1" || res.Action != source.HerdrActionCreated || path != "/r/app-worktrees/feat" {
-		t.Errorf("CreateWorktree = %+v, %q, %v; want workspace w9 at /r/app-worktrees/feat", res, path, err)
+	wt, err := New("herdr", WithRunner(cliMustNotRun{t}), WithSocketPath(srv.path)).CreateWorktree(ctx, "/r/app", "feat")
+	want := CreatedWorktree{WorkspaceID: "w9", WorkspaceLabel: "feat", RootTabID: "w9:t1", RootPaneID: "w9:p1", Path: "/r/app-worktrees/feat", Branch: "feat", RepoName: "app"}
+	if err != nil || wt != want {
+		t.Errorf("CreateWorktree = %+v, %v; want %+v", wt, err, want)
 	}
 }
 
