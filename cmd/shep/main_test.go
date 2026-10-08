@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"testing"
 
 	"github.com/tranceh2/shep/internal/command"
@@ -91,5 +92,36 @@ func TestWatchHistorySubcommand_StartupFailureExitsNonZero(t *testing.T) {
 	}
 	if exitErr.ExitCode() != 1 {
 		t.Fatalf("watch-history with no socket exit code = %d, want 1; output=%s", exitErr.ExitCode(), output)
+	}
+}
+
+// TestBuildVersion_FallsBackToTheBuildInformation proves a binary built by
+// `go install module@version`, which the linker leaves at "dev", reports the
+// module's version, a checkout build its VCS revision, and that versions the
+// release builds inject are kept.
+func TestBuildVersion_FallsBackToTheBuildInformation(t *testing.T) {
+	info := func(main string, settings ...debug.BuildSetting) func() (*debug.BuildInfo, bool) {
+		return func() (*debug.BuildInfo, bool) {
+			return &debug.BuildInfo{Main: debug.Module{Version: main}, Settings: settings}, true
+		}
+	}
+	rev := debug.BuildSetting{Key: "vcs.revision", Value: "6de00450cec8349e6b3eec428a943c5669d82cc1"}
+	for _, tc := range []struct {
+		name                 string
+		version, commit      string
+		read                 func() (*debug.BuildInfo, bool)
+		wantVersion, wantCom string
+	}{
+		{"go install module@v1.0.0", "dev", "none", info("v1.0.0"), "1.0.0", "none"},
+		{"checkout build", "dev", "none", info("(devel)", rev), "dev", "6de0045"},
+		{"release build", "1.0.0", "6de0045", info("v0.9.0", rev), "1.0.0", "6de0045"},
+		{"no build information", "dev", "none", func() (*debug.BuildInfo, bool) { return nil, false }, "dev", "none"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			version, commit := buildVersion(tc.version, tc.commit, tc.read)
+			if version != tc.wantVersion || commit != tc.wantCom {
+				t.Errorf("buildVersion = %q, %q; want %q, %q", version, commit, tc.wantVersion, tc.wantCom)
+			}
+		})
 	}
 }
