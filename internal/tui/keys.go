@@ -217,6 +217,8 @@ func (m Model) handleInput(chord, text string) (Model, tea.Cmd) {
 		return m.startRename()
 	case keyChordWorktree:
 		return m.startWorktree()
+	case keyChordBlocked:
+		return m.nextBlockedAgent()
 	case "ctrl+f":
 		if m.layout.PinToggler != nil {
 			return m.togglePin()
@@ -281,6 +283,38 @@ func (m Model) togglePin() (Model, tea.Cmd) {
 		msg.Candidate = candidate
 		return msg
 	}
+}
+
+// nextBlockedAgent moves the cursor to the next agent waiting on the user
+// (ctrl+b), cycling past the last row. It switches to the agents view first
+// when the picker has one and shows another; without a blocked agent among
+// the rows the footer says so.
+func (m Model) nextBlockedAgent() (Model, tea.Cmd) {
+	var cmds []tea.Cmd
+	from := m.cursor
+	if m.activeDefinition().Kind != TabAgents {
+		for _, tab := range m.tabs() {
+			if tab.Kind == TabAgents {
+				m.activeTab = tab.ID
+				m.cursor, m.cursorTouched = 0, false
+				cmds = append(cmds, m.maybeLoadGroup(), m.applyFilter())
+				from = -1
+				break
+			}
+		}
+	}
+	for step := 1; step <= len(m.rows); step++ {
+		i := (from + step) % len(m.rows)
+		if i < 0 {
+			i += len(m.rows)
+		}
+		if m.rows[i].Candidate.Meta["agent_status"] == "blocked" {
+			m.cursor, m.cursorTouched = i, true
+			return m, tea.Batch(append(cmds, m.syncPreviewAfterSelectionChange())...)
+		}
+	}
+	m.actionStatus = infoStatus("no blocked agents")
+	return m, tea.Batch(append(cmds, m.syncPreviewAfterSelectionChange())...)
 }
 
 func (m Model) cycleTabForward() (Model, tea.Cmd) {

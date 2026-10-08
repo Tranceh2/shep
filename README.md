@@ -302,6 +302,7 @@ The picker is one grid with a single frame (Herdr's popup border when it runs as
 | `PageUp` / `PageDown` | List | Scroll the preview viewport up / down one page without moving the list cursor |
 | `Left` / `Right`, `Ctrl+H` / `Ctrl+L` | List | Collapse / expand a workspace's tabs and panes; `Right` on an expanded workspace enters its first tab, `Left` on a tab or pane returns to its workspace |
 | `Tab` / `Shift+Tab` | Global (except help) | Cycle configured top tabs in order (defaults to `all` ↔ `agents`) |
+| `Ctrl+B` | List | Jump to the next blocked agent, in the agents view (cycles; shown in the footer while an agent is blocked) |
 | `Enter` | List | Open the highlighted row |
 | `Ctrl+T` | Inside Herdr | Open selected entry as a new tab in current workspace |
 | `Ctrl+P` | Inside Herdr | Open selected entry as a split pane in current workspace |

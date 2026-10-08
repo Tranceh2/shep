@@ -20,6 +20,7 @@ const (
 	keyChordClose     = "ctrl+x"
 	keyChordRename    = "ctrl+e"
 	keyChordWorktree  = "ctrl+n"
+	keyChordBlocked   = "ctrl+b"
 	keyChordEsc       = "esc"
 	keyChordQuestion  = "?"
 	keyChordCtrlC     = "ctrl+c"
@@ -90,7 +91,11 @@ var (
 		footerChord: keyChordRename, footerLabel: "rename",
 	}
 	keyBindingWorktree = keyBinding{chord: keyChordWorktree, help: "new worktree of this repo"}
-	keyBindingHelp     = keyBinding{
+	keyBindingBlocked  = keyBinding{
+		chord: keyChordBlocked, help: "next blocked agent",
+		footerChord: keyChordBlocked, footerLabel: "blocked",
+	}
+	keyBindingHelp = keyBinding{
 		chord: keyChordQuestion, help: "this help",
 		footerChord: keyChordQuestion, footerLabel: "help",
 	}
@@ -128,6 +133,7 @@ var keyMap = []helpSection{
 		{chord: "pgup/pgdn", help: "scroll the preview"},
 		{chord: "←/→, ctrl+h/ctrl+l", chordASCII: "left/right, ctrl+h/ctrl+l", help: "collapse/expand"},
 		keyBindingTab,
+		keyBindingBlocked,
 	}},
 	{"Act", []keyBinding{keyBindingEnter, keyBindingCtrlT, keyBindingCtrlP, keyBindingPin, keyBindingClose, keyBindingRename, keyBindingWorktree}},
 	{"Search", []keyBinding{

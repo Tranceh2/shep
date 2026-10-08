@@ -439,6 +439,7 @@ const (
 	hintPriorityNewTab
 	hintPriorityNewPane
 	hintPriorityRename
+	hintPriorityBlocked
 )
 
 // footerHint is one "key label" pair of the footer.
@@ -482,6 +483,9 @@ func (m Model) footerHints() []footerHint {
 		if m.layout.Renamer != nil {
 			hints = append(hints, footerHint{keyBindingRename.footerChord, keyBindingRename.footerLabel, hintPriorityRename})
 		}
+	}
+	if m.AgentCounts().Blocked > 0 {
+		hints = append(hints, footerHint{keyBindingBlocked.footerChord, keyBindingBlocked.footerLabel, hintPriorityBlocked})
 	}
 	escLabel := keyBindingEsc.footerLabel
 	if m.query != "" {

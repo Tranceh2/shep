@@ -768,3 +768,56 @@ func TestHelpViewport_ScrollsAndRevealsHiddenContent(t *testing.T) {
 		t.Errorf("expected the last help line %q to become visible after scrolling, view:\n%s", lastLine, m.helpViewport.View())
 	}
 }
+
+// --- ctrl+b: next blocked agent ---
+
+// TestCtrlB_JumpsToTheNextBlockedAgent proves ctrl+b switches to the agents
+// view and lands on its first blocked agent, then walks the blocked ones in
+// order, cycling past the last; the footer offers it while one is blocked.
+func TestCtrlB_JumpsToTheNextBlockedAgent(t *testing.T) {
+	t.Parallel()
+	snapshot := &source.Snapshot{
+		Workspaces: []source.Workspace{{ID: "w1", Label: "fsociety", CWD: "/srv/fsociety"}},
+		Tabs:       []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "arcade"}},
+		Panes: []source.Pane{
+			{ID: "p_working", WorkspaceID: "w1", TabID: "t1", Agent: "agent", AgentStatus: "working", TerminalTitle: "working agent"},
+			{ID: "p_blocked_a", WorkspaceID: "w1", TabID: "t1", Agent: "agent", AgentStatus: "blocked", TerminalTitle: "first blocked"},
+			{ID: "p_idle", WorkspaceID: "w1", TabID: "t1", Agent: "agent", AgentStatus: "idle", TerminalTitle: "idle agent"},
+			{ID: "p_blocked_b", WorkspaceID: "w1", TabID: "t1", Agent: "agent", AgentStatus: "blocked", TerminalTitle: "second blocked"},
+		},
+	}
+	m := NewModelWithTree([]source.Candidate{herdrCandidate("fsociety", "/srv/fsociety", "w1")}, nil, NewTreeExpanderFromSnapshot(*snapshot), Layout{})
+	m.startupSnapshot = snapshot
+	m, _ = update(t, m, sizeMsg(120, 30))
+	if !hasHint(m.footerHints(), keyChordBlocked, "blocked") {
+		t.Errorf("footer hints %v, want ctrl+b while an agent is blocked", m.footerHints())
+	}
+
+	var visited []string
+	for range 3 {
+		m, _ = update(t, m, key("ctrl+b"))
+		if m.activeDefinition().Kind != TabAgents {
+			t.Fatalf("ctrl+b left the view on %q, want the agents view", m.activeTab)
+		}
+		visited = append(visited, m.rows[m.cursor].Candidate.Meta["pane_id"])
+	}
+	first, second := visited[0], visited[1]
+	if first == second || visited[2] != first || !strings.HasPrefix(first, "p_blocked") || !strings.HasPrefix(second, "p_blocked") {
+		t.Errorf("ctrl+b visited %v, want both blocked agents, then the first again", visited)
+	}
+}
+
+// TestCtrlB_WithoutBlockedAgentsSaysSo proves ctrl+b reports when no agent is
+// blocked, and the footer does not offer it.
+func TestCtrlB_WithoutBlockedAgentsSaysSo(t *testing.T) {
+	t.Parallel()
+	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
+	m, _ = update(t, m, sizeMsg(120, 30))
+	if hasHintKey(m.footerHints(), keyChordBlocked) {
+		t.Errorf("footer hints %v offer ctrl+b with no blocked agent", m.footerHints())
+	}
+	m, _ = update(t, m, key("ctrl+b"))
+	if !strings.Contains(footerText(m), "no blocked agents") {
+		t.Errorf("footer = %q, want it to say no agent is blocked", footerText(m))
+	}
+}

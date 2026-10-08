@@ -21,4 +21,4 @@
                                                                  │ step 28: parsed clause 84
                                                                  │ step 29: parsed clause 87
                                                                  │
- enter focus · tab all · ? help · esc quit
+ enter focus · tab all · ctrl+b blocked · ? help · esc quit

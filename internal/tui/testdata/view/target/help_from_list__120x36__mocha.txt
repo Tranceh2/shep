@@ -7,19 +7,20 @@
    pgup/pgdn              scroll the preview                    'api            exact text, closing quote optional
    ←/→, ctrl+h/ctrl+l     collapse/expand                       "api gw"        exact phrase ('api gw' too)
    tab/shift+tab          next/previous view                    ^back           starts with
-                                                                end$            ends with
- Act                                                            ^shep$          the whole text is exactly
-   enter                  open the highlighted row              /v[0-9]+/       regular expression
-   ctrl+t                 open as a tab here                    !test           exclude matches
-   ctrl+p                 open as a pane here                   !^tmp           negation works with every form
-   ctrl+f                 pin/unpin                             status:working  agent status: idle working blocked done
-   ctrl+x                 close the open Herdr item (y/n                        unknown
-                          when configured)                      agent:claude    agent name contains
-   ctrl+e                 rename the open Herdr item            source:zoxide   source: herdr workspaces zoxide
-   ctrl+n                 new worktree of this repo                             projects sessions agents, or a custom
-                                                                                name
- Search                                                         path:allsafe    path contains
-   type                   filter the list                       s:blocked       short forms s: a: src: p:
+   ctrl+b                 next blocked agent                    end$            ends with
+                                                                ^shep$          the whole text is exactly
+ Act                                                            /v[0-9]+/       regular expression
+   enter                  open the highlighted row              !test           exclude matches
+   ctrl+t                 open as a tab here                    !^tmp           negation works with every form
+   ctrl+p                 open as a pane here                   status:working  agent status: idle working blocked done
+   ctrl+f                 pin/unpin                                             unknown
+   ctrl+x                 close the open Herdr item (y/n        agent:claude    agent name contains
+                          when configured)                      source:zoxide   source: herdr workspaces zoxide
+   ctrl+e                 rename the open Herdr item                            projects sessions agents, or a custom
+   ctrl+n                 new worktree of this repo                             name
+                                                                path:allsafe    path contains
+ Search                                                         s:blocked       short forms s: a: src: p:
+   type                   filter the list
    backspace              delete a character
    ctrl+w, alt+backspace  delete a word
    esc                    clear search, then quit
@@ -29,7 +30,6 @@
 
  Session
    ctrl+c, ctrl+g         quit
-
 
 
 

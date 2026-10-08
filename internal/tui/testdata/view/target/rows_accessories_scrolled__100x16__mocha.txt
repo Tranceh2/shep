@@ -13,4 +13,4 @@
      repo-02  ~/src                                  │
      repo-03  ~/src                                  │
      repo-04  ~/src                                  │
- enter open · tab agents · ? help · esc quit
+ enter open · tab agents · ctrl+b blocked · ? help · esc quit
