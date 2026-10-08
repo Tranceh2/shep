@@ -125,10 +125,10 @@ herdr plugin log list --plugin tranceh2.shep
 
 ### Use `shep` from a shell (`shep link`)
 
-The shortcuts need nothing more. To also run `shep` yourself (`shep open
-<query>`, `shep list --format json`, scripts, the Television cable in
-[`cables/shep.toml`](cables/shep.toml), a `type = "popup"` keybinding),
-publish the plugin's binary to your `PATH`:
+`shep link` is optional: the shortcuts work without it. To also run `shep`
+yourself (`shep open <query>`, `shep list --format json`, scripts, the
+Television cable in [`cables/shep.toml`](cables/shep.toml), a
+`type = "popup"` keybinding), publish the plugin's binary to your `PATH`:
 
 ```sh
 ~/.config/herdr/plugins/github/tranceh2.shep-*/contrib/herdr-plugin/bin/shep link

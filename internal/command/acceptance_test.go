@@ -268,8 +268,8 @@ func TestAcceptance_ReadmeExplainsPluginActionDoesNotRequireShepLink(t *testing.
 		t.Fatalf("read README.md: %v", err)
 	}
 	for _, claim := range []string{
-		"shep link` is NOT required",
-		"`shep link` is **optional**",
+		"That is the whole installation.",
+		"`shep link` is optional: the shortcuts work without it.",
 	} {
 		if !bytes.Contains(data, []byte(claim)) {
 			t.Errorf("README.md: missing claim %q", claim)
@@ -277,41 +277,32 @@ func TestAcceptance_ReadmeExplainsPluginActionDoesNotRequireShepLink(t *testing.
 	}
 }
 
-// TestAcceptance_FirstRunChecklistVerifiesWithPluginDoctor pins the first-run
-// checklist's internally consistent verification path: the default doctor run
-// is the plugin action (usable with the plugin install alone, no bare `shep`
-// on PATH), while `shep doctor` appears only as an equivalent for an
-// operator who separately installed or linked the CLI. A bare `shep` is
-// unavailable in a plugin-only install, so a first-run checklist defaulting
-// to it would fail every fresh operator.
-func TestAcceptance_FirstRunChecklistVerifiesWithPluginDoctor(t *testing.T) {
+// TestAcceptance_InstallVerifiesWithPluginDoctor pins the install section's
+// verification path: the doctor check is the plugin action, usable with the
+// plugin install alone. A bare `shep` exists only once the CLI is linked, so
+// the section must not name `shep doctor` before it explains `shep link`;
+// an install guide defaulting to it would fail every fresh operator.
+func TestAcceptance_InstallVerifiesWithPluginDoctor(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
 	if err != nil {
 		t.Fatalf("read README.md: %v", err)
 	}
-	const firstRunSection = "## Recommended First-Run Setup"
-	idx := bytes.Index(data, []byte(firstRunSection))
+	idx := bytes.Index(data, []byte("\n## Install\n"))
 	if idx < 0 {
-		t.Fatal("README.md: missing Recommended First-Run Setup section")
+		t.Fatal("README.md: missing the Install section")
 	}
-	section := data[idx:]
+	section := data[idx+1:]
 	if end := bytes.Index(section, []byte("\n## ")); end >= 0 {
 		section = section[:end]
 	}
-	for _, claim := range []string{
-		"herdr plugin action invoke doctor --plugin tranceh2.shep",
-		"If you separately installed or linked the `shep` CLI",
-		"`shep doctor` is an",
-	} {
-		if !bytes.Contains(section, []byte(claim)) {
-			t.Errorf("README.md first-run section: missing claim %q", claim)
-		}
+	if !bytes.Contains(section, []byte("herdr plugin action invoke doctor --plugin tranceh2.shep")) {
+		t.Error("README.md install section: missing the plugin doctor action")
 	}
-	// Within the first-run section, a checklist/step default of `shep doctor`
-	// is the error this pins against: the section must not anywhere name
-	// `shep doctor` before establishing it as the linked-CLI equivalent.
-	intro := section[:bytes.Index(section, []byte("`shep doctor` is an"))]
-	if before := bytes.Index(intro, []byte("`shep doctor`")); before >= 0 && before < bytes.Index(intro, []byte("If you separately installed")) {
-		t.Errorf("README.md first-run section: `shep doctor` must not appear before the linked-CLI equivalent caveat:\n%s", intro)
+	beforeLink := section
+	if link := bytes.Index(section, []byte("### Use `shep` from a shell")); link >= 0 {
+		beforeLink = section[:link]
+	}
+	if bytes.Contains(beforeLink, []byte("`shep doctor`")) {
+		t.Errorf("README.md install section names `shep doctor` before `shep link` makes a bare shep available:\n%s", beforeLink)
 	}
 }
