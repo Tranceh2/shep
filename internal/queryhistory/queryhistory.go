@@ -34,6 +34,14 @@ func Load(path string) ([]string, error) {
 	return queries, nil
 }
 
+// Clear forgets every saved query. A missing file is already clear.
+func Clear(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 // Record saves query as the newest entry, dropping its older copy and
 // anything past Limit. A blank query is not saved.
 func Record(path, query string) error {

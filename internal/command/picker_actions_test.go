@@ -1,14 +1,18 @@
 package command
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/herdr"
+	"github.com/tranceh2/shep/internal/queryhistory"
 	"github.com/tranceh2/shep/internal/source"
+	"github.com/tranceh2/shep/internal/tui"
 )
 
 // worktreeDriver is an openDriver that also creates worktrees and renames
@@ -83,5 +87,41 @@ func TestWorktreeCreator_ReportsHerdrsRefusal(t *testing.T) {
 	msg := app.worktreeCreator()(context.Background(), source.Candidate{Path: t.TempDir(), Source: config.SourceZoxide}, "main")
 	if msg.Err == nil || len(driver.renamed) != 0 || len(driver.layouts) != 0 {
 		t.Errorf("err %v, renamed %v, layouts %v; want only the refusal", msg.Err, driver.renamed, driver.layouts)
+	}
+}
+
+// TestAttachPickerActions_SearchHistoryFollowsRanking proves the search
+// history is on with ranking and off without it: disabling ranking keeps the
+// picker from recording what the user searched.
+func TestAttachPickerActions_SearchHistoryFollowsRanking(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		app := New()
+		app.cfg = config.Defaults()
+		app.cfg.Ranking.Enabled = enabled
+		app.probes = config.Probes{}
+		var layout tui.Layout
+		app.attachPickerActions(&layout)
+		if got := layout.RecordQuery != nil; got != enabled {
+			t.Errorf("ranking enabled %v: search history recorded %v, want %v", enabled, got, enabled)
+		}
+	}
+}
+
+// TestRankingClear_ForgetsSavedSearches proves `shep ranking clear` also
+// forgets the searches ctrl+y brings back, which learn from use like ranking.
+func TestRankingClear_ForgetsSavedSearches(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	path := filepath.Join(state, "shep", "queries")
+	if err := queryhistory.Record(path, "allsafe"); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if err := New(WithStreams(&out, &errOut)).executeArgs([]string{"ranking", "clear"}); err != nil {
+		t.Fatalf("ranking clear: %v (%s)", err, errOut.String())
+	}
+	if got, _ := queryhistory.Load(path); got != nil {
+		t.Errorf("searches after ranking clear = %q, want none", got)
 	}
 }

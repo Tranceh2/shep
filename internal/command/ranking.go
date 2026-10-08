@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	"github.com/tranceh2/shep/internal/pathutil"
+	"github.com/tranceh2/shep/internal/queryhistory"
 	"github.com/tranceh2/shep/internal/ranking"
 )
 
@@ -14,7 +16,7 @@ func (a *App) rankingCmd() *cobra.Command {
 	}
 	cmd.AddCommand(&cobra.Command{
 		Use:   "clear",
-		Short: "Clear all local ranking history",
+		Short: "Clear all local ranking history: learned order, pins, acknowledgements and searches",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			store, err := ranking.Open()
@@ -24,6 +26,11 @@ func (a *App) rankingCmd() *cobra.Command {
 			defer func() { _ = store.Close() }()
 			if err := store.Clear(cmd.Context()); err != nil {
 				return fmt.Errorf("clear ranking state: %w", err)
+			}
+			if path, err := pathutil.StatePath("shep", "queries"); err == nil {
+				if err := queryhistory.Clear(path); err != nil {
+					return fmt.Errorf("clear search history: %w", err)
+				}
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "ranking history cleared")
 			return nil

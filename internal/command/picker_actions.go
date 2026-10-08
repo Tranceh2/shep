@@ -28,9 +28,13 @@ const (
 
 // attachPickerActions gives the picker its command-layer actions: live agent
 // status, pins, acknowledgement clearing, the search history, and the
-// actions that change Herdr (close, rename, new worktree).
+// actions that change Herdr (close, rename, new worktree). The search
+// history learns from use like ranking does, so [ranking].enabled = false
+// turns it off too.
 func (a *App) attachPickerActions(layout *tui.Layout) {
-	layout.QueryHistory, layout.RecordQuery = queryHistory()
+	if a.Config().Ranking.Enabled {
+		layout.QueryHistory, layout.RecordQuery = queryHistory()
+	}
 	layout.StatusDialer = a.resolveStatusDialer()
 	layout.PinToggler = a.pinToggler()
 	layout.Closer = a.herdrCloser()

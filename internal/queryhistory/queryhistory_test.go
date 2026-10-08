@@ -27,6 +27,25 @@ func TestRecord_NewestFirstWithoutDuplicates(t *testing.T) {
 	}
 }
 
+// TestClear_ForgetsEverySearch proves Clear empties the history and that
+// clearing a missing history is not an error.
+func TestClear_ForgetsEverySearch(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "queries")
+	if err := Clear(path); err != nil {
+		t.Fatalf("Clear(missing) = %v", err)
+	}
+	if err := Record(path, "allsafe"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Clear(path); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := Load(path); err != nil || got != nil {
+		t.Errorf("after Clear: %q, %v; want an empty history", got, err)
+	}
+}
+
 // TestRecord_KeepsTheNewestLimit proves the history keeps only the newest
 // Limit queries.
 func TestRecord_KeepsTheNewestLimit(t *testing.T) {
