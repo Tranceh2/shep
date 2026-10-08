@@ -484,6 +484,7 @@ func (a *App) rootCmd() *cobra.Command {
 	root.AddCommand(a.rankingCmd())
 	root.AddCommand(a.jumpBackCmd())
 	root.AddCommand(a.watchHistoryCmd())
+	root.AddCommand(a.popupCmd())
 
 	return root
 }

@@ -732,3 +732,69 @@ func equalSlice(got, want []string) bool {
 	}
 	return true
 }
+
+// openPickerRun runs a copy of open-picker.sh from a temporary plugin root
+// whose bin/shep and herdr binaries are fakes recording their argv, and
+// returns what each one recorded ("" when it did not run).
+func openPickerRun(t *testing.T, env ...string) (shep, herdr string) {
+	t.Helper()
+	pluginRoot := t.TempDir()
+	scriptDir := filepath.Join(pluginRoot, "scripts")
+	binDir := filepath.Join(pluginRoot, "bin")
+	for _, dir := range []string{scriptDir, binDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := copyPath(filepath.Join(repositoryRoot(t), "contrib/herdr-plugin/scripts/open-picker.sh"), filepath.Join(scriptDir, "open-picker.sh")); err != nil {
+		t.Fatal(err)
+	}
+	shepRecord, herdrRecord := filepath.Join(pluginRoot, "shep.rec"), filepath.Join(pluginRoot, "herdr.rec")
+	fake := func(path, record string) {
+		script := "#!/bin/sh\nprintf '%s\\n' \"$@\" >" + record + "\n"
+		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fake(filepath.Join(binDir, "shep"), shepRecord)
+	herdrBin := filepath.Join(pluginRoot, "herdr")
+	fake(herdrBin, herdrRecord)
+	cmd := exec.Command("/bin/sh", filepath.Join(scriptDir, "open-picker.sh"))
+	cmd.Env = append([]string{"PATH=/usr/bin:/bin", "HERDR_BIN_PATH=" + herdrBin}, env...)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("open-picker.sh: %v\n%s", err, output)
+	}
+	read := func(path string) string {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(data))
+	}
+	return read(shepRecord), read(herdrRecord)
+}
+
+// TestOpenPickerScript_InsideHerdrAsksShep proves the open action hands the
+// popup to the plugin's shep when Herdr provides its socket, so the shortcut
+// does not wait for the herdr CLI to start.
+func TestOpenPickerScript_InsideHerdrAsksShep(t *testing.T) {
+	shep, herdr := openPickerRun(t, "HERDR_SOCKET_PATH=/run/herdr.sock")
+	if want := "popup\n--plugin\ntranceh2.shep\n--entrypoint\npicker"; shep != want {
+		t.Errorf("shep argv = %q, want %q", shep, want)
+	}
+	if herdr != "" {
+		t.Errorf("herdr CLI ran with %q, want it untouched", herdr)
+	}
+}
+
+// TestOpenPickerScript_WithoutASocketUsesTheHerdrCLI proves the CLI still
+// opens the popup when no socket is known.
+func TestOpenPickerScript_WithoutASocketUsesTheHerdrCLI(t *testing.T) {
+	shep, herdr := openPickerRun(t)
+	if shep != "" {
+		t.Errorf("shep ran with %q, want the herdr CLI", shep)
+	}
+	if want := "plugin\npane\nopen\n--plugin\ntranceh2.shep\n--entrypoint\npicker\n--placement\npopup"; herdr != want {
+		t.Errorf("herdr argv = %q, want %q", herdr, want)
+	}
+}
