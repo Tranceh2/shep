@@ -865,6 +865,22 @@ func fakeRelease(t *testing.T, version string, corrupt bool) string {
 	return filepath.Dir(dir)
 }
 
+// toolsWithoutGo returns a PATH directory linking only the tools build.sh
+// uses, so a test can run it on a machine where Go is installed anywhere
+// (the CI image ships one in /usr/bin) and still see "no Go".
+func toolsWithoutGo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, tool := range []string{"bash", "sh", "dirname", "sed", "mktemp", "rm", "mkdir", "curl", "wget", "sha256sum", "shasum", "awk", "uname", "tar", "gzip", "chmod", "mv", "git", "cat"} {
+		if path, err := exec.LookPath(tool); err == nil {
+			if err := os.Symlink(path, filepath.Join(dir, tool)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	return dir
+}
+
 // fakeGo writes a stand-in go that records its arguments and writes the -o
 // output, so a source build can be observed without compiling.
 func fakeGo(t *testing.T) (dir, record string) {
@@ -884,7 +900,7 @@ func fakeGo(t *testing.T) (dir, record string) {
 // its binary.
 func TestBuildScript_InstallsTheVerifiedReleaseWithoutGo(t *testing.T) {
 	m := loadManifest(t)
-	out, pluginRoot, err := buildScriptRun(t, "/usr/bin:/bin", fakeRelease(t, m.Version, false))
+	out, pluginRoot, err := buildScriptRun(t, toolsWithoutGo(t), fakeRelease(t, m.Version, false))
 	if err != nil {
 		t.Fatalf("build.sh: %v\n%s", err, out)
 	}
@@ -899,7 +915,7 @@ func TestBuildScript_InstallsTheVerifiedReleaseWithoutGo(t *testing.T) {
 func TestBuildScript_RefusesABadChecksumAndBuildsFromSource(t *testing.T) {
 	m := loadManifest(t)
 	goDir, record := fakeGo(t)
-	out, pluginRoot, err := buildScriptRun(t, goDir+":/usr/bin:/bin", fakeRelease(t, m.Version, true))
+	out, pluginRoot, err := buildScriptRun(t, goDir+":"+toolsWithoutGo(t), fakeRelease(t, m.Version, true))
 	if err != nil {
 		t.Fatalf("build.sh: %v\n%s", err, out)
 	}
@@ -918,7 +934,7 @@ func TestBuildScript_RefusesABadChecksumAndBuildsFromSource(t *testing.T) {
 // a message naming what is missing when there is neither a release to
 // download nor a Go toolchain to build with.
 func TestBuildScript_WithoutReleaseOrGoFailsClearly(t *testing.T) {
-	out, _, err := buildScriptRun(t, "/usr/bin:/bin", t.TempDir())
+	out, _, err := buildScriptRun(t, toolsWithoutGo(t), t.TempDir())
 	if err == nil {
 		t.Fatalf("build.sh succeeded without a release or Go:\n%s", out)
 	}
