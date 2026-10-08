@@ -131,7 +131,7 @@ Television cable in [`cables/shep.toml`](cables/shep.toml), a
 `type = "popup"` keybinding), publish the plugin's binary to your `PATH`:
 
 ```sh
-~/.config/herdr/plugins/github/tranceh2.shep-*/contrib/herdr-plugin/bin/shep link
+"${XDG_CONFIG_HOME:-$HOME/.config}"/herdr/plugins/github/tranceh2.shep-*/contrib/herdr-plugin/bin/shep link
 ```
 
 It creates the symlink `~/.local/bin/shep` (or in `$SHEP_LINK_DIR` /
