@@ -219,6 +219,8 @@ func (m Model) handleInput(chord, text string) (Model, tea.Cmd) {
 		return m.startWorktree()
 	case keyChordBlocked:
 		return m.nextBlockedAgent()
+	case keyChordRecall:
+		return m.recallQuery()
 	case "ctrl+f":
 		if m.layout.PinToggler != nil {
 			return m.togglePin()
@@ -283,6 +285,27 @@ func (m Model) togglePin() (Model, tea.Cmd) {
 		msg.Candidate = candidate
 		return msg
 	}
+}
+
+// recallQuery replaces the query with an earlier search (ctrl+y): the newest
+// one first, one further back on each press while the recalled query is left
+// as it is, and the newest again past the oldest. A search equal to the
+// current query is skipped, so the first press always changes the query.
+func (m Model) recallQuery() (Model, tea.Cmd) {
+	history := m.layout.QueryHistory
+	if len(history) == 0 {
+		m.actionStatus = infoStatus("no earlier searches")
+		return m, nil
+	}
+	next := 0
+	if m.query != "" && m.query == m.recalled {
+		next = m.recallIdx + 1
+	} else if m.query == history[0] {
+		next = 1
+	}
+	next %= len(history)
+	m.recalled, m.recallIdx = history[next], next
+	return m.setQuery(history[next])
 }
 
 // nextBlockedAgent moves the cursor to the next agent waiting on the user

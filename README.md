@@ -313,6 +313,7 @@ The picker is one grid with a single frame (Herdr's popup border when it runs as
 | `Ctrl+R` | List | Show or hide the preview for the session |
 | `Backspace` | List | Delete the last query character |
 | `Ctrl+W` / `Alt+Backspace` | List | Delete the last query word |
+| `Ctrl+Y` | List | Bring back an earlier search: the newest first, one further back on each press (searches that ended in a selection are kept, up to 50) |
 | `?` | List | Open the in-app help overlay (`?` / `Esc` closes it) |
 | `Esc` | List | Clear search query; quit if query is already empty |
 | `Ctrl+C` / `Ctrl+G` | Global | Cancel and exit |

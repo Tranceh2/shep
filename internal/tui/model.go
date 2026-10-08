@@ -151,7 +151,12 @@ type Layout struct {
 	// WorktreeCreator opens a new Git worktree of the highlighted row's
 	// repository (ctrl+n); nil disables it.
 	WorktreeCreator WorktreeCreator
-	AckClearer      AckClearer
+	// QueryHistory is the recent searches ctrl+y brings back, newest first.
+	QueryHistory []string
+	// RecordQuery saves the query of a run that ended in a selection. It runs
+	// after the program exits, never from Update; nil saves nothing.
+	RecordQuery func(string)
+	AckClearer  AckClearer
 	// InitialTab is the tab the picker opens on; empty means the first tab.
 	InitialTab string
 	// HomeDir is the home directory displayed paths under it are shown
@@ -309,6 +314,11 @@ type Model struct {
 	// finished reports the picker completed its own action (a created
 	// worktree) and quits without a selection, quietly like a cancel.
 	finished bool
+	// recalled is the query ctrl+y last brought back, at recallIdx in
+	// Layout.QueryHistory: pressing it again while the query is unchanged
+	// goes one search further back.
+	recalled  string
+	recallIdx int
 
 	// renderer produces the preview pane content asynchronously for a
 	// RowCandidate row. nil degrades to a built-in label/path/source
@@ -1610,5 +1620,8 @@ func finalizeRun(m Model) (source.Candidate, RowAction, string, bool, error) {
 		return source.Candidate{}, RowActionOpen, "", false, ErrCancelled
 	}
 	res, ok := m.Selected()
+	if ok && m.query != "" && m.layout.RecordQuery != nil {
+		m.layout.RecordQuery(m.query)
+	}
 	return res, m.SelectedAction(), m.ChosenTarget(), ok, nil
 }

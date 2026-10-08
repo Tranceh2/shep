@@ -9,6 +9,8 @@ import (
 
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/herdr"
+	"github.com/tranceh2/shep/internal/pathutil"
+	"github.com/tranceh2/shep/internal/queryhistory"
 	"github.com/tranceh2/shep/internal/resolver"
 	"github.com/tranceh2/shep/internal/source"
 	"github.com/tranceh2/shep/internal/templates"
@@ -25,15 +27,28 @@ const (
 )
 
 // attachPickerActions gives the picker its command-layer actions: live agent
-// status, pins, acknowledgement clearing, and the ones that change Herdr
-// (close, rename, new worktree).
+// status, pins, acknowledgement clearing, the search history, and the
+// actions that change Herdr (close, rename, new worktree).
 func (a *App) attachPickerActions(layout *tui.Layout) {
+	layout.QueryHistory, layout.RecordQuery = queryHistory()
 	layout.StatusDialer = a.resolveStatusDialer()
 	layout.PinToggler = a.pinToggler()
 	layout.Closer = a.herdrCloser()
 	layout.AckClearer = a.ackClearer()
 	layout.Renamer = a.herdrRenamer()
 	layout.WorktreeCreator = a.worktreeCreator()
+}
+
+// queryHistory loads the picker's recent searches from the shep state
+// directory and returns them with the function that saves a new one. Without
+// a state directory there is no history.
+func queryHistory() ([]string, func(string)) {
+	path, err := pathutil.StatePath("shep", "queries")
+	if err != nil {
+		return nil, nil
+	}
+	queries, _ := queryhistory.Load(path)
+	return queries, func(query string) { _ = queryhistory.Record(path, query) }
 }
 
 // herdrRenamer renames open Herdr items through the shared driver, as

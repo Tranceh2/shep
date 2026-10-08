@@ -23,6 +23,7 @@
    type                   filter the list
    backspace              delete a character
    ctrl+w, alt+backspace  delete a word
+   ctrl+y                 earlier searches, newest first
    esc                    clear search, then quit
 
  Layout
@@ -30,7 +31,6 @@
 
  Session
    ctrl+c, ctrl+g         quit
-
 
 
  esc close · ↑↓ scroll

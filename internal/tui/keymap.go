@@ -21,6 +21,7 @@ const (
 	keyChordRename    = "ctrl+e"
 	keyChordWorktree  = "ctrl+n"
 	keyChordBlocked   = "ctrl+b"
+	keyChordRecall    = "ctrl+y"
 	keyChordEsc       = "esc"
 	keyChordQuestion  = "?"
 	keyChordCtrlC     = "ctrl+c"
@@ -140,6 +141,7 @@ var keyMap = []helpSection{
 		{chord: "type", help: "filter the list"},
 		{chord: keyChordBackspace, help: "delete a character"},
 		{chord: keyChordCtrlW + ", " + keyChordAltBksp, help: "delete a word"},
+		{chord: keyChordRecall, help: "earlier searches, newest first"},
 		keyBindingEsc,
 	}},
 	{"Layout", []keyBinding{{chord: keyChordLayout, help: "show or hide the preview"}}},

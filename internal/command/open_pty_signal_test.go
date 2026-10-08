@@ -44,9 +44,17 @@ func TestMain(m *testing.M) {
 	default:
 		// No test may reach a live Herdr: a real driver built without an
 		// injected one talks to HERDR_SOCKET_PATH, which is set whenever the
-		// suite runs inside a Herdr pane.
+		// suite runs inside a Herdr pane. Nor may one write the user's state
+		// (the picker's search history).
 		_ = os.Unsetenv("HERDR_SOCKET_PATH")
-		os.Exit(m.Run())
+		state, err := os.MkdirTemp("", "shep-state")
+		if err != nil {
+			panic(err)
+		}
+		_ = os.Setenv("XDG_STATE_HOME", state)
+		code := m.Run()
+		_ = os.RemoveAll(state)
+		os.Exit(code)
 	}
 }
 

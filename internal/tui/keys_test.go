@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -757,7 +758,7 @@ func TestHelpViewport_ScrollsAndRevealsHiddenContent(t *testing.T) {
 	}
 	startOffset := m.helpViewport.YOffset()
 
-	for i := 0; i < 40 && !strings.Contains(m.helpViewport.View(), lastLine); i++ {
+	for i := 0; i < 100 && !strings.Contains(m.helpViewport.View(), lastLine); i++ {
 		m, _ = update(t, m, key("down"))
 	}
 
@@ -819,5 +820,77 @@ func TestCtrlB_WithoutBlockedAgentsSaysSo(t *testing.T) {
 	m, _ = update(t, m, key("ctrl+b"))
 	if !strings.Contains(footerText(m), "no blocked agents") {
 		t.Errorf("footer = %q, want it to say no agent is blocked", footerText(m))
+	}
+}
+
+// --- ctrl+y: earlier searches ---
+
+// TestCtrlY_BringsBackEarlierSearches proves ctrl+y fills the query with the
+// newest search, an older one on each further press, the newest again past
+// the oldest, and starts over from the newest once the query is edited.
+func TestCtrlY_BringsBackEarlierSearches(t *testing.T) {
+	t.Parallel()
+	m := NewModelWithLayout([]source.Candidate{zoxideCandidate("a", "/a")}, nil, Layout{QueryHistory: []string{"allsafe", "e corp", "dark army"}})
+	var got []string
+	for range 4 {
+		m, _ = update(t, m, key("ctrl+y"))
+		got = append(got, m.query)
+	}
+	if want := []string{"allsafe", "e corp", "dark army", "allsafe"}; !slices.Equal(got, want) {
+		t.Errorf("ctrl+y gave %q, want %q", got, want)
+	}
+	m, _ = update(t, m, key("x"))
+	m, _ = update(t, m, key("ctrl+y"))
+	if m.query != "allsafe" {
+		t.Errorf("after an edit ctrl+y gave %q, want the newest search again", m.query)
+	}
+}
+
+// TestCtrlY_SkipsTheCurrentQueryAndSaysWhenEmpty proves the first ctrl+y
+// skips a newest search equal to the query already typed, and an empty
+// history is reported instead of clearing anything.
+func TestCtrlY_SkipsTheCurrentQueryAndSaysWhenEmpty(t *testing.T) {
+	t.Parallel()
+	m := NewModelWithLayout([]source.Candidate{zoxideCandidate("a", "/a")}, nil, Layout{QueryHistory: []string{"allsafe", "e corp"}})
+	m = typeText(t, m, "allsafe")
+	m, _ = update(t, m, key("ctrl+y"))
+	if m.query != "e corp" {
+		t.Errorf("ctrl+y over the newest search gave %q, want the next one", m.query)
+	}
+
+	empty := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
+	empty, _ = update(t, empty, sizeMsg(120, 30))
+	empty = typeText(t, empty, "a")
+	empty, _ = update(t, empty, key("ctrl+y"))
+	if empty.query != "a" || !strings.Contains(footerText(empty), "no earlier searches") {
+		t.Errorf("empty history: query %q footer %q, want the query kept and a notice", empty.query, footerText(empty))
+	}
+}
+
+// TestFinalizeRun_RecordsTheQueryOfASelection proves the query of a run that
+// ended in a selection is saved, and that a cancelled run or an empty query
+// saves nothing.
+func TestFinalizeRun_RecordsTheQueryOfASelection(t *testing.T) {
+	t.Parallel()
+	var saved []string
+	layout := Layout{RecordQuery: func(q string) { saved = append(saved, q) }}
+	m := NewModelWithLayout([]source.Candidate{zoxideCandidate("allsafe", "/allsafe")}, nil, layout)
+	m = typeText(t, m, "alls")
+	m, _ = update(t, m, key("enter"))
+	if _, _, _, ok, err := finalizeRun(m); !ok || err != nil {
+		t.Fatalf("finalizeRun = %v, %v; want the selection", ok, err)
+	}
+
+	cancelled := NewModelWithLayout([]source.Candidate{zoxideCandidate("allsafe", "/allsafe")}, nil, layout)
+	cancelled = typeText(t, cancelled, "e corp")
+	cancelled, _ = update(t, cancelled, key("ctrl+c"))
+	_, _, _, _, _ = finalizeRun(cancelled)
+
+	plain := NewModelWithLayout([]source.Candidate{zoxideCandidate("allsafe", "/allsafe")}, nil, layout)
+	plain, _ = update(t, plain, key("enter"))
+	_, _, _, _, _ = finalizeRun(plain)
+
+	if !slices.Equal(saved, []string{"alls"}) {
+		t.Errorf("saved %q, want only the selection's query", saved)
 	}
 }
