@@ -74,9 +74,12 @@ selector = "builtin"
 # path. [[wildcards]] can set their own; existing workspaces keep their names.
 # workspace_name = '{{ .Path | base | lower }}'
 
-# [ranking] controls private local adaptive ordering. It stores only opaque
-# action/resource identities, bounded counts, and timestamps. It never stores
+# [ranking] controls private local adaptive ordering. Its store keeps only
+# opaque action/resource identities, bounded counts, and timestamps, never
 # labels, queries, templates, environment data, telemetry, or network state.
+# Separately, while it is enabled, the picker keeps the last 50 searches that
+# ended in a selection ($XDG_STATE_HOME/shep/queries) for ctrl+y. enabled =
+# false turns both off; "shep ranking clear" forgets both.
 [ranking]
 enabled = true
 
@@ -213,10 +216,13 @@ preview = ["identity", "dir"]
 
 [sources.projects]
 %%projects%%
-# recursive/max_depth bound how deep the projects source scans beneath a
-# group workspace's path. markers can be a file or a directory name; a
-# directory containing any of them is a project. ignore skips noisy
-# directories during the scan.
+# roots are the directories the projects source scans; there is no default,
+# so without roots only group workspaces scan, beneath their own path.
+# recursive descends into subdirectories (without it only the direct
+# children are checked) and max_depth bounds how deep. markers can be a file
+# or a directory name; a directory containing any of them is a project.
+# ignore skips noisy directories during the scan.
+# roots = ["~/code", "~/work"]
 recursive = true
 max_depth = 3
 markers = [".git", ".project", "package.json", "go.mod", "Cargo.toml", "pyproject.toml", "flake.nix"]
@@ -244,7 +250,7 @@ preview = ["identity", "git", "dir"]
 # "aliases": ["review", "bug"], "meta": {"context": "review"}}:
 # [[sources.custom]]
 # name = "prs"
-# command = ["/path/to/shep/scripts/list-prs.sh"]
+# command = ["/path/to/list-prs-for-shep"]
 # aliases = ["pull request", "review"]
 # timeout = "3s"
 # Custom rows take the same five presentation keys. The default icon is
@@ -308,8 +314,10 @@ preview = ["identity", "git", "dir"]
 # the global source order is used while the group's source membership remains
 # scoped. Declared custom sources can be listed here without being added to
 # general.source_order; they run lazily only after this group opens. A group's
-# template applies to the rows picked through it.
+# template applies to the rows picked through it. id is a stable name for the
+# group in [tui].tabs and "shep open --view".
 # [[workspaces]]
+# id = "projects"
 # name = "projects"
 # type = "group"
 # path = "~/projects"

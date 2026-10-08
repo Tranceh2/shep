@@ -14,7 +14,7 @@ shep list --format json
 shep list --format tsv
 
 # Start the interactive picker. Worktrees show a branch icon and branch name.
-shep
+shep open
 ```
 
 The default workspace name is `{{.RepoName}}@{{.Branch}}`. For example, the
@@ -64,3 +64,15 @@ Worktree rows use the `` branch icon and show the branch next to the project
 label. Searching by branch name finds the candidate. The preview Git section
 adds a `[worktree: <branch>]` badge, short commit from discovery metadata, and
 the normal clean or changed-file status.
+
+## Creating a worktree from the picker
+
+`Ctrl+N` on a row inside a Git repository (an open Herdr workspace, a
+project, a zoxide entry or a configured workspace) asks for a new branch
+name. Herdr then creates the worktree, in the location its own settings give
+worktrees, and opens a focused workspace on it (`worktree.create`); shep
+names that workspace as it names any worktree (`repo@branch` by default, or
+your `workspace_name`), lays it out with the template the row resolves to,
+and closes the picker. If Git or Herdr refuses (the branch already exists,
+for example), the reason stays in the picker's footer and nothing is
+created. The new worktree is listed by the projects source from then on.

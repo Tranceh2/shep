@@ -30,21 +30,23 @@ While the Shep picker is open, pane rows update their status icons (`idle`, `wor
 ### 2. Theme inheritance precedence
 When resolving colors, Shep applies the first matching rule:
 
-1. `NO_COLOR` set and non-empty -> `plain` (ANSI disabled)
-2. `SHEP_THEME` environment variable -> recognized flavor (`mocha`, `macchiato`, `frappe`, `latte`, `plain`)
-3. `[tui].theme` in Shep config -> explicit configured flavor, except `"inherit"`
-4. Herdr `[theme].name` in Herdr config -> mapped recognized flavor
-5. Default fallback -> `mocha`
+1. `NO_COLOR` set and non-empty -> no colors.
+2. `SHEP_THEME` -> a built-in theme or alias, `inherit`, `plain` or a
+   `[themes.<name>]`. An unknown value is ignored (an environment variable
+   never prevents startup) and `shep doctor` reports it.
+3. `[tui].theme` -> the same choices; empty means `inherit`. An unknown value
+   is a configuration error.
+4. `inherit` reads Herdr's own theme: its `[theme].name` (any of Herdr's 18
+   palettes, `catppuccin` included), `[theme.custom]` overrides, the
+   `auto_switch` light/dark variants and the `[ui].accent` fallback. When
+   Herdr's config is missing or unreadable, Herdr's default `catppuccin`
+   applies and `shep doctor` says why.
 
-The exact precedence is `NO_COLOR > SHEP_THEME > explicit config theme (except
-inherit) > Herdr theme > mocha`. `theme = "inherit"` delegates explicitly to
-Herdr.
-
-Theme resolution is a safe, bounded file read (<= 1 MiB) of Herdr's `config.toml`. It never executes shell commands or interpolates environment variables.
+Theme resolution is a safe, bounded file read (<= 1 MiB) of Herdr's `config.toml`. It never executes shell commands or interpolates environment variables. [Themes](../README.md#themes) in the README covers custom themes and roles.
 
 ### 3. Graceful degradation
 If live feedback is unavailable, Shep falls back seamlessly to static snapshots and periodic ticks:
-- **Socket absent**: If `HERDR_SOCKET_PATH` is unset or nonexistent, no connection is attempted and Shep operates statically.
+- **Socket absent**: If `HERDR_SOCKET_PATH` is unset, no connection is attempted and Shep operates statically; a path nothing listens on fails its dial at once with the same result.
 - **Subscription rejected / older Herdr**: If the daemon rejects the subscription event type, the failure is absorbed without blocking or error modals.
 - **Mid-session disconnect / EOF**: If the socket closes or disconnects, Shep keeps the last-known statuses and continues running without reconnect storms.
 - **Malformed payloads**: Unparseable or malformed payloads are safely discarded without crashing.
@@ -57,7 +59,6 @@ These are real constraints of the public Herdr contract and Shep's design, state
 |---|---|
 | **No sequence, cursor, or snapshot-cut marker.** Herdr's public event contract (Herdr 0.8.2, protocol 22) exposes no monotonic sequence number, stream cursor, or snapshot-cut marker. | Live agent status is **best-effort**. Undetectable event gaps remain possible. Shep never claims lossless or authoritative status delivery. |
 | **No fabricated state.** Shep never infers, extrapolates, or synthesizes an unobserved state after a gap. | If events stop arriving, pane rows retain their last observed status or show `unknown`. |
-| **Flavourless Herdr theme names are honest no-ops.** Herdr configuration often specifies a family name (e.g., `[theme].name = "catppuccin"`) without a specific flavor. | Flavourless names do not map to an arbitrary flavor; they fall through to Shep's default `mocha`. On such configurations, theme inheritance is visibly a no-op. |
 | **Buffered event queue with drop-oldest policy.** The internal live event queue has a bounded buffer of 32 items. | Under high event pressure, older unconsumed events are dropped to guarantee that the UI never blocks or stalls during rendering. |
 | **Single-dial lifecycle and no reconnect.** Live status opens exactly one connection bounded to the picker's lifetime and does not attempt reconnects if dropped. | Transient socket disconnects degrade cleanly to static snapshot refreshes for the remainder of the picker session. |
 | **No runtime daemon or plugin dependency.** Live feedback requires no external background daemon or plugin process outliving Shep. | All socket interactions are strictly bounded to the active picker process. |

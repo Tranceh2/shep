@@ -8,6 +8,12 @@
 
 It brings the instant session-hopping experience of tools like `tmux` + `sesh` into Herdr. Press a single global shortcut from anywhere to search across active workspaces, recent project directories, and background AI coding agents, and jump straight into context.
 
+<p align="center">
+  <img src="docs/media/shep-demo.gif" alt="shep in a Herdr popup: fuzzy search, a workspace's tabs and panes, the agents view with the jump to the blocked agent, the list-only layout, the help, and opening a workspace" width="100%">
+</p>
+
+<p align="center"><sub>The same demo as a <a href="docs/media/shep-demo.mp4">video</a> (3456×2234, 24 s).</sub></p>
+
 ---
 
 ## Story & Honest Disclaimer
@@ -28,7 +34,8 @@ I'm sharing it in case someone else in the Herdr or terminal community finds it 
 
 ## Features
 
-- ⚡ **Instant Zero-Delay Picker:** First frame renders immediately. Slower providers (like scanning filesystem directories) stream in asynchronously in the background. Zero disk I/O while typing.
+- ⚡ **Instant Picker, Even After Idle:** The first frame renders immediately and keys typed right after the shortcut are kept. Inside Herdr every request goes straight to Herdr's socket instead of launching the `herdr` CLI, so the popup and its workspace rows appear in about 100 ms even after the system has evicted the binaries from memory. Slow sources (the projects scan, custom commands) show their last result at once and refresh in the background. Zero disk I/O while typing.
+- ✍️ **Act Without Leaving the Picker:** Rename a workspace, tab or pane in place (`Ctrl+E`), close it (`Ctrl+X`), open a new Git worktree of a repository on a branch you name (`Ctrl+N`), jump to the next blocked agent (`Ctrl+B`), bring back an earlier search (`Ctrl+Y`), and walk a workspace's tabs and panes with the arrows or `Ctrl+H` / `Ctrl+L`.
 - 🤖 **AI Agents Attention Queue:** The `agents` tab (in the default `all` ↔ `agents` cycle) puts newly unacknowledged blocked (`◉`) or finished (`●`) agents first, then the previous agent even if idle. Other working and idle agents follow available history; the current pane is last unless it needs new attention. Herdr records prior workspace focus, not prior pane focus: if the immediately preceding workspace has no agents or multiple agents, Shep does not promote a guessed prior pane, even if an older Shep selection exists. Selecting an agent focuses its Herdr tab, not an individual pane.
 - 🔍 **Extended Fuzzy Filtering (fzf + Snacks style):** Space-separated AND terms, pipe `|` OR matching, exact `'terms`, prefix `^`, suffix `$`, negation `!term`, and field filters (`status:blocked`, `agent:claude`, `source:herdr`, `path:api`).
 - 🔁 **True MRU A↔B Jump-Back:** Ships with a native Herdr plugin action (`tranceh2.shep.jump-back`) to toggle back and forth between your two most recently visited workspaces like `prefix + L` in tmux.
@@ -40,8 +47,9 @@ I'm sharing it in case someone else in the Herdr or terminal community finds it 
 
 ## Requirements
 
-- **Go 1.26+** (built and tested with Go 1.26.4).
-- **[Herdr](https://herdr.dev)** (`herdr` executable on `$PATH`) — optional but strongly recommended. When Herdr is absent or stopped, `shep` prints the resolved project path to stdout so terminal scripts still work.
+- **Go 1.26.4+** to build (the version `go.mod` requires).
+- **[Herdr](https://herdr.dev) 0.8.2+** — optional but strongly recommended. Shep finds the `herdr` executable through `[herdr].binary`, then `HERDR_BIN_PATH` (set by Herdr for plugins), then `$PATH`; inside Herdr it talks to `HERDR_SOCKET_PATH` directly and uses the CLI only for what the socket does not serve (session lists, older Herdr versions). When Herdr is absent or stopped, `shep` prints the resolved project path to stdout so terminal scripts still work.
+- **[git](https://git-scm.com)** — optional; used for the `git` preview section, worktree rows in the projects source, and (through Herdr) `Ctrl+N` worktrees.
 - **[zoxide](https://github.com/ajeetdsouza/zoxide)** — optional; enabled by default to surface your most frequent directories.
 - **[fzf](https://github.com/junegunn/fzf)** — optional external selector fallback.
 - **Nerd Font** — required for the built-in source icons to render correctly; without it, those glyphs appear as replacement boxes. Herdr itself already assumes Nerd Fonts. On terminals that cannot render Unicode, `[tui].icons = "ascii"` draws 7-bit ASCII only: no default source icons and ASCII markers. Icons you configure are your own templates and are drawn as written.
@@ -92,7 +100,7 @@ nix run github:tranceh2/shep -- open
 ### Publishing to PATH (`shep link`)
 
 `shep link` is **optional**. Installing the Herdr plugin already provides
-every `type = "plugin_action"` keybinding (`shep open`, `jump-back`,
+every `type = "plugin_action"` keybinding (actions `open`, `jump-back`,
 `start-history`, `doctor`) with no linking step. Run `shep link` only when
 you also want a bare `shep` command available for: a direct shell command
 (`shep list --format tsv`), a script, the Television cable
@@ -176,7 +184,7 @@ To install a non-default branch or ref, pass it separately with `--ref`:
 herdr plugin install --ref <branch> Tranceh2/shep/contrib/herdr-plugin
 ```
 
-*Note: Requires Go 1.26+ installed. Herdr clones the repository and runs `bash scripts/build.sh`, which compiles the checkout into the plugin-local `bin/shep` with version and commit metadata.*
+*Note: Requires Herdr 0.8.2+ and Go 1.26.4+ installed. Herdr clones the repository and runs `bash scripts/build.sh`, which compiles the checkout into the plugin-local `bin/shep` with version and commit metadata.*
 
 **Or from a local checkout:**
 
@@ -220,6 +228,11 @@ Reload Herdr's configuration:
 herdr server reload-config
 ```
 
+The `open` action runs the plugin's own `shep`, which asks Herdr for the
+popup over `HERDR_SOCKET_PATH` (`shep popup`, an internal command), so the
+shortcut never waits for the `herdr` CLI to start; without a socket the
+action falls back to `herdr plugin pane open`.
+
 You can also invoke any action manually from the CLI for testing. The
 command takes the bare action ID (not the fully-qualified
 `tranceh2.shep.<id>` form used in `command =` above) plus
@@ -230,7 +243,7 @@ herdr plugin action invoke open --plugin tranceh2.shep
 herdr plugin action invoke jump-back --plugin tranceh2.shep
 ```
 
-When running inside a Herdr popup, `shep` detects the active pane and unlocks in-place actions:
+When running inside a Herdr popup, `shep` detects the active pane and unlocks in-place actions for zoxide, projects and command-only `[[workspaces]]` rows:
 - `Ctrl+T`: open the selected candidate as a new **tab** in the current workspace.
 - `Ctrl+P`: open the selected candidate as a **split pane** beside your current pane.
 
@@ -272,16 +285,9 @@ the full recovery and refusal taxonomy.
 
 The picker is one grid with a single frame (Herdr's popup border when it runs as a plugin): views on top, the search prompt and the list on the left, the preview on the right, and the shortcuts that apply to the selected row at the bottom.
 
-```text
- all   agents   dark-army
- ❯ eco█                               12/651 │ ecorp-ledger                   project
- ────────────────────────────────────────────┼──────────────────────────────────────────
- ❯ 󰳆  fsociety                             ⠋ │ ~/allsafe/ecorp-ledger
-     ecorp-ledger  ~/allsafe                 │ on main · 2 changes
-     Dark Army                             › │
-                                             │ Files ───────────────────────────────────
- enter open · tab agents · ctrl+f pin · ? help · esc clear
-```
+<p align="center">
+  <img src="docs/media/shep-picker.png" alt="The shep picker over a Herdr workspace: open workspaces with their agent state, a configured workspace, zoxide entries and projects on the left; the selected workspace's path, state, tabs and active pane on the right" width="100%">
+</p>
 
 - **Views** (`tab` / `shift+tab`) stay visible at every width; the active one is highlighted.
 - **Prompt**: what you typed, the cursor, and `matches/total` (just the total when nothing is typed). `?` opens the shortcut and search-syntax cheat sheet.
@@ -304,17 +310,18 @@ The picker is one grid with a single frame (Herdr's popup border when it runs as
 | `Tab` / `Shift+Tab` | Global (except help) | Cycle configured top tabs in order (defaults to `all` ↔ `agents`) |
 | `Ctrl+B` | List | Jump to the next blocked agent, in the agents view (cycles; shown in the footer while an agent is blocked) |
 | `Enter` | List | Open the highlighted row |
-| `Ctrl+T` | Inside Herdr | Open selected entry as a new tab in current workspace |
-| `Ctrl+P` | Inside Herdr | Open selected entry as a split pane in current workspace |
-| `Ctrl+F` | List | Toggle persistent pin status on the selected top-level candidate, when pinning is configured |
-| `Ctrl+X` | List | Close the highlighted open Herdr pane, tab, or workspace (with confirmation if configured) |
-| `Ctrl+E` | List | Rename the highlighted open Herdr workspace, tab, or pane (`Enter` applies, `Esc` cancels; an empty pane name clears it) |
-| `Ctrl+N` | List | Create a Git worktree on a new branch of the highlighted row's repository and open it, named and laid out like any workspace shep creates |
+| `Ctrl+T` | Inside Herdr | Open the selected zoxide, project or command-only `[[workspaces]]` entry as a new tab in the current workspace |
+| `Ctrl+P` | Inside Herdr | Open the same kinds of entry as a split pane beside the current pane |
+| `Ctrl+F` | List | Pin or unpin the selected top-level candidate; pinned rows stay first |
+| `Ctrl+X` | List | Close the highlighted open Herdr pane, tab, or workspace (for kinds in `[tui].confirm_close`, `y` confirms and any other key cancels) |
+| `Ctrl+E` | List | Rename the highlighted open Herdr workspace, tab, or pane in place of the search prompt (`Enter` applies, `Esc` cancels; an empty pane name clears it) |
+| `Ctrl+N` | List | On an open workspace, project, zoxide or configured workspace row inside a Git repository: name a new branch, and Herdr creates the worktree (where its own settings put worktrees) and a focused workspace on it, which shep names (`workspace_name`, `repo@branch` by default) and lays out with the row's template |
 | `Ctrl+R` | List | Show or hide the preview for the session |
 | `Backspace` | List | Delete the last query character |
 | `Ctrl+W` / `Alt+Backspace` | List | Delete the last query word |
-| `Ctrl+Y` | List | Bring back an earlier search: the newest first, one further back on each press (searches that ended in a selection are kept, up to 50) |
+| `Ctrl+Y` | List | Bring back an earlier search: the newest first, one further back on each press (with `[ranking]` enabled, searches that ended in a selection are kept, up to 50) |
 | `?` | List | Open the in-app help overlay (`?` / `Esc` closes it) |
+| `Up` / `Down`, `Ctrl+K` / `Ctrl+J`, `PageUp` / `PageDown`, `Home` / `End` | Help | Scroll the help overlay |
 | `Esc` | List | Clear search query; quit if query is already empty |
 | `Ctrl+C` / `Ctrl+G` | Global | Cancel and exit |
 
@@ -322,20 +329,24 @@ The picker is one grid with a single frame (Herdr's popup border when it runs as
 
 ## Search Syntax & Filter Cheatsheet
 
-Shep includes an extended fuzzy search engine inspired by `fzf` and modern editor pickers:
+Shep includes an extended fuzzy search engine inspired by `fzf` and modern editor pickers. Matching ignores case throughout, and `?` in the picker shows the same table:
 
 | Syntax | Example | Description |
 |---|---|---|
 | Space | `api auth` | **AND**: item must match both "api" and "auth" |
-| Pipe `\|` | `frontend \| web` | **OR**: item matches either "frontend" or "web" |
-| Single quote `'` | `'server` | **Exact substring**: matches literal "server" |
+| Pipe `\|` | `frontend\|web` | **OR**: item matches either "frontend" or "web" |
+| Single quote `'` | `'server` | **Exact substring**: matches literal "server" (closing quote optional) |
+| Double quotes | `"api gw"` | **Exact phrase**, spaces included (`'api gw'` works too) |
 | Caret `^` | `^core` | **Prefix match**: item label or path starts with "core" |
 | Dollar `$` | `service$` | **Suffix match**: item ends with "service" |
-| Exclamation `!` | `!test` | **Negation**: excludes items matching "test" |
-| `status:` | `status:blocked` | Filter agents by status: `blocked`, `working`, `done`, `idle` |
-| `agent:` | `agent:claude` | Filter agents by name: `claude`, `opencode`, `hermes`, etc. |
-| `source:` | `source:herdr` | Filter by source: `herdr`, `workspaces`, `zoxide`, `projects` |
+| Both | `^shep$` | **Whole text**: the text is exactly "shep" |
+| Slashes | `/v[0-9]+/` | **Regular expression** |
+| Exclamation `!` | `!test`, `!^tmp` | **Negation**: excludes items matching the term; works with every form above |
+| `status:` | `status:blocked` | Filter agents by status: `idle`, `working`, `blocked`, `done`, `unknown` |
+| `agent:` | `agent:claude` | Filter agents whose name contains the term: `claude`, `opencode`, `hermes`, etc. |
+| `source:` | `source:herdr` | Filter by source: `herdr`, `workspaces`, `zoxide`, `projects`, `sessions`, `agents`, or a custom source name |
 | `path:` | `path:backend` | Filter candidates whose filesystem path contains "backend" |
+| Short forms | `s:blocked` | `s:`, `a:`, `src:` and `p:` stand for `status:`, `agent:`, `source:` and `path:` |
 
 ---
 
@@ -387,7 +398,7 @@ selector = "builtin"
 # A template over the shared data and functions (see Customization).
 # Unset: worktrees are named "<repo>@<branch>", everything else by its full path.
 # [[wildcards]] can set their own; existing Herdr workspaces keep their names.
-workspace_name = '{{ .Path | base | lower }}'
+# workspace_name = '{{ .Path | base | lower }}'
 ```
 
 ---
@@ -397,11 +408,33 @@ workspace_name = '{{ .Path | base | lower }}'
 ```toml
 [ranking]
 # When true, shep learns from successful opens and elevates frequently/recently used
-# candidates. State is stored in private SQLite WAL at ~/.local/state/shep/ranking.sqlite3.
+# candidates. State is stored in private SQLite WAL at
+# $XDG_STATE_HOME/shep/ranking.sqlite3 (~/.local/state/shep by default), next to
+# your pins and the agent states you already looked at.
 enabled = true
 ```
 
-*Note: You can clear ranking history at any time with `shep ranking clear`.*
+The ranking store keeps only opaque identities, bounded counts and
+timestamps, never labels or queries. The search history `Ctrl+Y` brings back
+is separate: the last 50 queries that ended in a selection, in
+`$XDG_STATE_HOME/shep/queries`. Both learn from use, so `enabled = false`
+turns both off, and `shep ranking clear` forgets everything at once: learned
+order, pins, acknowledged agent states and searches.
+
+---
+
+### `[herdr]` — Herdr Binary
+
+```toml
+[herdr]
+# The herdr executable for what goes through the CLI (session lists, and
+# everything when shep runs outside Herdr). Empty: HERDR_BIN_PATH (which Herdr
+# sets for plugins), then "herdr" from PATH.
+# binary = "/opt/herdr/bin/herdr"
+```
+
+Inside Herdr, shep sends its requests to `HERDR_SOCKET_PATH` directly and
+needs the binary only as a fallback for older Herdr versions.
 
 ---
 
@@ -427,6 +460,7 @@ tabs = ["all", "agents"]
 # Layout orientation:
 # - "landscape": Forces side-by-side split (list on left, preview on right).
 # - omit or "": Responsive auto (side-by-side on wide terminals, list-only on narrow).
+# Ctrl+R shows or hides the preview for the session either way.
 # layout = "landscape"
 
 # Width split ratios: either "auto" or percentage string like "60%".
@@ -443,9 +477,9 @@ theme = "inherit"
 # - "ascii": 7-bit plain ASCII (for basic terminals or remote SSH)
 icons = "unicode"
 
-# Optional per-kind confirmation for ctrl+x; absent or [] closes immediately.
-# Allowed kinds: workspace, tab, pane (any subset, no duplicates).
-confirm_close = ["workspace", "tab"]
+# Optional per-kind confirmation for ctrl+x; absent or [] (the default) closes
+# immediately. Allowed kinds: workspace, tab, pane (any subset, no duplicates).
+# confirm_close = ["workspace", "tab"]
 ```
 
 ---
@@ -500,8 +534,9 @@ Each built-in source has a table: `[sources.herdr]`, `[sources.sessions]`,
 workspace have `[sources.herdr.tab]` and `[sources.herdr.pane]`. Every one of
 them takes the row presentation keys (`icon`, `icon_color`, `label_format`,
 `detail_format`, `marker_format`; see [Row parts](#row-parts)), and every
-source table takes a `preview` list. `sessions` and `agents` are opt-in: add
-them to `[general].source_order` (or `[tui].tabs`) to use them.
+source table takes a `preview` list. `sessions` and `agents` rows join the
+`all` view only when listed in `[general].source_order`; the default `agents`
+tab shows the agents either way.
 
 ```toml
 [sources.zoxide]
@@ -515,15 +550,23 @@ marker_format = '{{ .Agent }} {{ .Workspace | trimIcon | name }}'
 # preview = ["identity", "git"] # unset uses [preview].default; [] shows only identity
 
 [sources.projects]
-# Root directories to scan for project folders
+# Root directories to scan for project folders. There is no default: without
+# roots the projects source finds nothing.
 roots = ["~/projects", "~/work"]
-# Marker files or directories that identify a folder as a project root
+# Marker files or directories that identify a folder as a project root. There
+# is no default either.
 markers = [".git", "Cargo.toml", "go.mod", "package.json", "flake.nix"]
-# Maximum folder depth to traverse looking for markers
+# Descend into subdirectories. Without it only the roots' direct children are
+# checked and max_depth has no effect.
+recursive = true
+# Maximum folder depth to traverse looking for markers (with recursive = true)
 max_depth = 3
 # Directory names to completely skip while scanning
 ignore = [".cache", "node_modules", "vendor", "dist", "target"]
 ```
+
+The scan stops descending at a project, and lists a Git repository's other
+worktrees as rows of their own (marked with their branch).
 
 The projects scan and every `[[sources.custom]]` command are the slow
 sources: the picker shows their last result the moment it opens and replaces
@@ -557,7 +600,7 @@ max_lines = 50
 # source, so it stays a single obvious control rather than being silently
 # outranked. To change just one source, set `[sources.<name>].preview`, which
 # wins over both.
-default = ["identity", "git"]
+# default = ["identity", "git"]
 
 # Custom global preview commands (tokenized safely, no raw shell execution).
 # Each token is a template; title is the section's heading in the picker.
@@ -732,7 +775,7 @@ Besides Go's built-in template functions and actions (`if`, `with`, `range`, `an
 
 | Function | Result |
 |---|---|
-| `tilde` | Your home directory becomes `~`: `/home/me/work/api` → `~/work/api` |
+| `tilde` | Your home directory becomes `~`: `$HOME/work/api` → `~/work/api` |
 | `name` | The last element of a path-like string (starting with `~/` or `/`), any other text unchanged: `~/work/api` → `api`, `Platform` → `Platform` |
 | `parent` | The parent of a path-like string, `""` for anything else or when there is none: `~/work/api` → `~/work`, `~/api` → `~`, `/api` → `/`, `Platform` → `""` |
 | `trimIcon` | Drops leading icons, emoji, symbols and spaces: `" ~/work/api"` → `~/work/api` |
@@ -1062,13 +1105,68 @@ Without `trimIcon` the label does not read as a path, so `name` keeps it whole a
 
 ---
 
+## Command Reference
+
+Every command takes `--config <path>` to read another config file. `shep
+--help` and `shep <command> --help` print the full text.
+
+| Command | What it does |
+|---|---|
+| `shep open [query]` | Pick and open a workspace: the built-in picker, or straight to an exact match. `--view <id>` opens a view (`all`, `agents`, a source, a custom source or a group id) in the picker; `--target workspace\|tab\|pane` chooses where an entry opens (tab and pane need shep inside a Herdr pane); `--path <dir>` opens a directory without resolving a query; `shep open .` opens the current directory. |
+| `shep list [--format human\|tsv\|json]` | Print every candidate the enabled sources find. |
+| `shep preview <path> [--color]` | Print the preview of a path, as the picker draws it. |
+| `shep doctor` | Check configured workspace paths, report the picker's theme and where it came from, and what the published `shep` name resolves to. |
+| `shep init [--force]` | Write the commented default config. |
+| `shep link` / `shep unlink` | Publish or remove a `shep` symlink on your `PATH` (see [Publishing to PATH](#publishing-to-path-shep-link)). |
+| `shep jump-back` | Focus the previous distinct workspace of the current Herdr session (see [`docs/jump-back.md`](docs/jump-back.md)). |
+| `shep ranking clear` | Forget the learned order, pins, acknowledged agent states and saved searches. |
+| `shep completion bash\|zsh\|fish\|powershell` | Print a shell completion script. |
+
+Two more commands are internal to the Herdr plugin and hidden from `--help`:
+`shep watch-history` (the focus-history collector started by the plugin) and
+`shep popup` (the `open` action's fast path).
+
+---
+
+## Environment Variables
+
+| Variable | Effect |
+|---|---|
+| `SHEP_THEME` | Overrides `[tui].theme` for one run: a built-in theme or alias, `inherit`, `plain`, or a `[themes.<name>]`. |
+| `NO_COLOR` | Any value draws the picker without colors (structure and glyphs stay). |
+| `HERDR_SOCKET_PATH` | The Herdr session's socket, set by Herdr in its panes and plugin commands. Shep sends its requests there, follows agent states live, and keys `jump-back` history by it; unset, it uses the `herdr` CLI. |
+| `HERDR_BIN_PATH` | The `herdr` executable, set by Herdr for plugins; used when `[herdr].binary` is unset or unusable. |
+| `HERDR_SESSION` | The current Herdr session's name: the sessions source leaves it out. |
+| `SHEP_LINK_DIR`, `XDG_BIN_HOME` | Where `shep link` publishes the symlink (in that order; default `~/.local/bin`). |
+| `XDG_CONFIG_HOME` | Config directory (`~/.config` by default). |
+| `XDG_STATE_HOME` | State directory (`~/.local/state` by default). |
+| `XDG_CACHE_HOME` | Cache directory (`~/.cache` by default). |
+
+---
+
+## Files Shep Writes
+
+Everything is local and private to your user (`0600` files, `0700`
+directories); nothing is sent anywhere.
+
+| Path | Contents |
+|---|---|
+| `$XDG_CONFIG_HOME/shep/config.toml` | Your config (written only by `shep init`). |
+| `$XDG_STATE_HOME/shep/ranking.sqlite3` | Learned order, pins and acknowledged agent states (`[ranking]`). |
+| `$XDG_STATE_HOME/shep/queries` | The last 50 searches that ended in a selection, for `Ctrl+Y` (only with `[ranking].enabled`). |
+| `$XDG_STATE_HOME/shep/jump_history.sqlite3`, `jb-*.sock`, `jb-*.lock` | Focus history of each Herdr session and the collector's control socket and lock (see [`docs/jump-back.md`](docs/jump-back.md)). |
+| `$XDG_CACHE_HOME/shep/sources/` | The last result of the slow sources, shown while they run again; safe to delete. |
+| `~/.local/bin/shep` | The symlink `shep link` creates (see `SHEP_LINK_DIR`). |
+
+---
+
 ## Current Limitations & Roadmap
 
 Because this tool was built to solve my personal workflow, there are known technical boundaries:
 
 1. **Offline Status Cycles:** If an AI coding agent goes from `blocked` → `working` → `blocked` completely while `shep` is closed, the second blocked state is not detected as "new" because Herdr's current wire events do not expose a persistent transition generation. Real-time transitions observed while `shep` is open are cleared and re-prioritized immediately.
 2. **Terminal Height Under Extreme Sizes:** The TUI requires at least 12 rows of terminal height to render side-by-side previews comfortably. On very small terminals (<80x12), it automatically switches to a compact list-only view.
-3. **Large Monorepos:** Scanning project roots with `max_depth` greater than 5 across network mounts or huge monorepos can introduce noticeable delay on the first scan. We recommend setting tighter `markers` and `roots`.
+3. **Large Monorepos:** Scanning project roots with `max_depth` greater than 5 across network mounts or huge monorepos takes a while. Later opens show the last scan at once while it runs again, but the first one has nothing to show yet; tighter `markers` and `roots` keep it short.
 
 ---
 

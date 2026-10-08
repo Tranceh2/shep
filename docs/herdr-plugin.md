@@ -15,8 +15,11 @@ The plugin runtime uses its checked-in wrapper to add existing conventional per-
 - **Automatic History Collector (`watch-history`):** A lightweight background
   daemon started automatically by Herdr via `[[startup]]` that observes
   workspace focus events on the Herdr socket.
-- **Diagnostics (`doctor`):** Inspects configured workspace paths and the
-  published PATH link status.
+- **Diagnostics (`doctor`):** Inspects configured workspace paths, the
+  picker's color theme and where it came from, and the published PATH link
+  status.
+
+The plugin needs Herdr 0.8.2 or newer (`min_herdr_version` in the manifest).
 
 ---
 
@@ -24,7 +27,7 @@ The plugin runtime uses its checked-in wrapper to add existing conventional per-
 
 ### Option 1: Install from GitHub (Herdr Remote Install)
 
-If you have Go installed on your system (Go 1.26+), Herdr can clone the
+If you have Go installed on your system (Go 1.26.4+), Herdr can clone the
 repository and compile the binary automatically using the declared `[[build]]`
 hook:
 
@@ -69,10 +72,19 @@ The plugin registers four actions under the `tranceh2.shep` namespace:
 
 | Action ID | Title | Contexts | Description |
 |---|---|---|---|
-| `tranceh2.shep.open` | Open Shep picker | global, workspace, tab, pane | Opens the picker popup overlay |
+| `tranceh2.shep.open` | Open Shep picker | global, workspace, tab, pane | Opens the picker popup overlay (see below) |
 | `tranceh2.shep.jump-back` | Jump to previous workspace | workspace | Toggles between the two most recently focused workspaces |
 | `tranceh2.shep.start-history` | Start Shep history collector | workspace | Operator recovery to restart the background focus watcher |
 | `tranceh2.shep.doctor` | Shep doctor | global | Runs configuration and environment diagnostics |
+
+The `open` action runs `scripts/open-picker.sh`. Inside Herdr it hands the
+popup to the plugin's own `shep` (`shep popup --plugin tranceh2.shep
+--entrypoint picker`, an internal command), which sends one
+`plugin.pane.open` request to `HERDR_SOCKET_PATH`: the shortcut does not wait
+for the `herdr` CLI to start, which takes about 200 ms once the system has
+evicted it from memory. Without a socket the script runs
+`herdr plugin pane open` as before. The picker itself then talks to the same
+socket for its rows, previews and actions.
 
 You can invoke any action manually from the CLI. The command takes the bare
 action ID (not the `tranceh2.shep.<id>` form used in keybindings below) plus
@@ -131,9 +143,10 @@ command = "shep open"
 ## Publishing `shep` to PATH (`shep link`)
 
 Herdr plugin actions only execute fixed declared commands and accept no
-arbitrary arguments. To use commands such as `shep open <query>`,
-`shep list --format tsv`, `shep doctor`, or the Television cable, publish
-`shep` to your PATH using `shep link`:
+arbitrary arguments. To run shep from a shell with your own arguments, such
+as `shep open <query>`, `shep list --format tsv` or the Television cable,
+publish `shep` to your PATH using `shep link` (the doctor check does not need
+it: the plugin's `doctor` action runs it):
 
 ```sh
 # Inside the plugin directory or local build directory

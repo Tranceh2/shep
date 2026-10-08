@@ -22,7 +22,9 @@ selector = "builtin"
 
 [ranking]
 # Local adaptive ranking: learns from successful opens using a private
-# SQLite WAL store. It never records labels, queries, or network state.
+# SQLite WAL store that never records labels, queries, or network state.
+# While enabled, the picker also keeps your last 50 searches that ended in a
+# selection for ctrl+y; false turns both off.
 enabled = true
 
 [defaults]

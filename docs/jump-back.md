@@ -24,10 +24,12 @@ command = "tranceh2.shep.jump-back"
 description = "jump to previous workspace"
 ```
 
-The plugin-local action command is argv-only (`["./bin/shep", "jump-back"]`).
-Herdr injects `HERDR_SOCKET_PATH` for the current session and
-`HERDR_BIN_PATH` for the authoritative Herdr executable; Shep consumes both
-without shell evaluation.
+The plugin-local action command is argv-only
+(`["./scripts/run-shep.sh", "jump-back"]`, which runs the plugin's own
+`bin/shep`). Herdr injects `HERDR_SOCKET_PATH` for the current session and
+`HERDR_BIN_PATH` for the authoritative Herdr executable; Shep sends its
+snapshot and focus requests to the socket and uses the executable only as a
+fallback, all without shell evaluation.
 
 History is collected by `shep watch-history`, a hidden long-lived command that
 the bundled Herdr plugin starts automatically on launch. Until that collector
@@ -55,6 +57,7 @@ classified, never echoed verbatim.
 | `1` | `jump-back: focus failed for workspace <id>` | Validation passed but the Herdr focus operation itself failed. The failure is surfaced; the underlying cause stays in the error chain rather than being echoed, so an internal command line or payload never reaches your terminal. |
 | `2` | `jump-back: no previous workspace` | History is ready but holds no distinct live workspace other than the current one. |
 | `3` | `jump-back: history not ready` | No collector answered, the collector reports an unverified epoch, or the owner is hung. Nothing is focused. |
+| `3` | `jump-back: herdr is unavailable` | Shep has no Herdr to ask (no socket, no usable `herdr` executable). Nothing is focused. |
 | `4` | `jump-back: target session no longer available` | The resolved target vanished before focus, or the fresh snapshot could not be taken. |
 | `5` | `jump-back: current workspace changed during resolve` | Live state disagreed with the collector, or the current workspace changed between resolution and focus. |
 | `6` | `jump-back: history store error` | The collector reported a storage failure. The internal cause is not leaked. |
@@ -65,7 +68,8 @@ classified, never echoed verbatim.
    endpoint with a bounded timeout and reads readiness plus the ordered MRU. A
    dial or read failure is a not-ready signal, so an absent or hung collector
    fails closed. The CLI never reads the history database directly.
-2. **Agree on the current workspace.** A fresh `herdr api snapshot` must report
+2. **Agree on the current workspace.** A fresh Herdr snapshot (`session.snapshot`
+   over the socket, what `herdr api snapshot` prints) must report
    the same current workspace the collector reports. A disagreement exits `5`.
 3. **Resolve the previous distinct live target.** The MRU is walked
    newest-first, skipping the current workspace (so consecutive duplicates
