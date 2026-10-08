@@ -24,12 +24,12 @@ func Samples(kinds ...string) []Data {
 }
 
 func sample(kind string) (Data, bool) {
-	const project = SampleHome + "/Proyectos/shep"
-	const worktree = SampleHome + "/Proyectos/shep-worktrees/themes"
+	const project = SampleHome + "/code/fsociety"
+	const worktree = SampleHome + "/code/fsociety-worktrees/themes"
 	switch kind {
 	case KindWorkspace:
 		return Data{
-			Path: project, NormalizedPath: project, Label: "~/Proyectos/shep",
+			Path: project, NormalizedPath: project, Label: "~/code/fsociety",
 			Source: "herdr", Kind: kind,
 			Meta: map[string]string{"workspace_id": "w1", "active_tab_id": "w1:t1"},
 		}, true
@@ -52,17 +52,17 @@ func sample(kind string) (Data, bool) {
 		}, true
 	case KindProject:
 		return Data{
-			Path: project, NormalizedPath: project, Label: "~/Proyectos/shep",
+			Path: project, NormalizedPath: project, Label: "~/code/fsociety",
 			Source: "projects", Kind: kind,
 		}, true
 	case KindWorktree:
 		return Data{
-			Path: worktree, NormalizedPath: worktree, Label: "~/Proyectos/shep-worktrees/themes",
+			Path: worktree, NormalizedPath: worktree, Label: "~/code/fsociety-worktrees/themes",
 			Source: "projects", Kind: kind,
-			Branch: "feat/themes", Head: "a8083df", RepoName: "shep", IsWorktree: true,
+			Branch: "feat/themes", Head: "a8083df", RepoName: "fsociety", IsWorktree: true,
 			Meta: map[string]string{
 				"is_worktree": "true", "main_worktree": "false", "branch": "feat/themes",
-				"repo": "shep", "worktree_path": worktree, "head": "a8083df1c2b3d4e5f60718293a4b5c6d7e8f9012",
+				"repo": "fsociety", "worktree_path": worktree, "head": "a8083df1c2b3d4e5f60718293a4b5c6d7e8f9012",
 			},
 		}, true
 	case KindSession:
@@ -79,9 +79,9 @@ func sample(kind string) (Data, bool) {
 		return Data{
 			Path: project, NormalizedPath: project, Label: "claude: refactor the picker",
 			Source: "agents", Kind: kind,
-			Agent: "claude", AgentStatus: "working", TabLabel: "agents", Workspace: "~/Proyectos/shep",
+			Agent: "claude", AgentStatus: "working", TabLabel: "agents", Workspace: "~/code/fsociety",
 			Meta: map[string]string{
-				"workspace_id": "w1", "workspace_label": "~/Proyectos/shep", "tab_id": "w1:t2",
+				"workspace_id": "w1", "workspace_label": "~/code/fsociety", "tab_id": "w1:t2",
 				"tab_label": "agents", "pane_id": "w1:t2:p1", "agent": "claude",
 				"agent_status": "working", "terminal_title": "claude: refactor the picker", "kind": "agent",
 			},
@@ -89,18 +89,18 @@ func sample(kind string) (Data, bool) {
 	case KindTab:
 		return Data{
 			Path: project, Label: "2 editor", Kind: kind,
-			TabNumber: "2", TabLabel: "editor", Workspace: "~/Proyectos/shep",
+			TabNumber: "2", TabLabel: "editor", Workspace: "~/code/fsociety",
 			Meta: map[string]string{
-				"workspace_id": "w1", "workspace_label": "~/Proyectos/shep", "tab_id": "w1:t1",
+				"workspace_id": "w1", "workspace_label": "~/code/fsociety", "tab_id": "w1:t1",
 				"tab_number": "2", "tab_label": "editor",
 			},
 		}, true
 	case KindPane:
 		return Data{
 			Path: project, Label: "nvim", Kind: kind,
-			Agent: "claude", AgentStatus: "idle", TabLabel: "editor", Workspace: "~/Proyectos/shep",
+			Agent: "claude", AgentStatus: "idle", TabLabel: "editor", Workspace: "~/code/fsociety",
 			Meta: map[string]string{
-				"workspace_id": "w1", "workspace_label": "~/Proyectos/shep", "tab_id": "w1:t1",
+				"workspace_id": "w1", "workspace_label": "~/code/fsociety", "tab_id": "w1:t1",
 				"tab_label": "editor", "pane_id": "w1:t1:p1", "agent_status": "idle",
 				"agent": "claude", "terminal_title": "nvim",
 			},

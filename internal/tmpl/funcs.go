@@ -115,9 +115,9 @@ func shepFuncs(home string) template.FuncMap {
 }
 
 // tildeFunc returns the tilde helper: s with a leading home directory
-// replaced by "~" ("/home/me/x" → "~/x", "/home/me" → "~"). A path that only
-// shares a textual prefix with home ("/home/me2") and every string when home
-// is empty or "/" are returned unchanged.
+// replaced by "~" ("$HOME/x" → "~/x", "$HOME" → "~"). A path that only
+// shares a textual prefix with home (home followed by "2") and every string
+// when home is empty or "/" are returned unchanged.
 func tildeFunc(home string) func(string) string {
 	return func(s string) string {
 		if home == "" || home == "/" || !strings.HasPrefix(s, home) {
