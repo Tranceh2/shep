@@ -45,10 +45,143 @@ I'm sharing it in case someone else in the Herdr or terminal community finds it 
 
 ---
 
+## Install
+
+### With Herdr (recommended)
+
+You need [Herdr](https://herdr.dev) 0.8.2 or newer. Nothing else: the plugin
+downloads the shep binary for your platform from the matching
+[GitHub release](https://github.com/Tranceh2/shep/releases) and checks it
+against the release checksums.
+
+**1. Install the plugin.** Herdr asks you to confirm.
+
+```sh
+herdr plugin install Tranceh2/shep/contrib/herdr-plugin
+```
+
+**2. Add a shortcut** to `~/.config/herdr/config.toml`. Keys are written as
+`prefix+<key>`; the prefix is whatever `[keys].prefix` sets in that file,
+`ctrl+b` if you never changed it. This example opens shep with the prefix
+followed by `ctrl+f`:
+
+```toml
+[[keys.command]]
+key = "prefix+ctrl+f"
+type = "plugin_action"
+command = "tranceh2.shep.open"
+description = "open Shep picker"
+```
+
+**3. Reload Herdr's configuration and press the shortcut:**
+
+```sh
+herdr server reload-config
+```
+
+That is the whole installation. Without a shep config the picker already
+lists your open Herdr workspaces and your zoxide directories; everything
+below is optional.
+
+### Optional next steps
+
+**Add your project folders.** Create `~/.config/shep/config.toml`:
+
+```toml
+version = 3
+
+[sources.projects]
+roots = ["~/code"]        # the folders that hold your projects
+markers = [".git"]        # what makes a folder a project
+recursive = true
+max_depth = 3
+```
+
+The [Configuration Guide](#configuration-guide-configtoml) lists every
+setting, and [`examples/config.toml`](examples/config.toml) is a fuller
+starting point.
+
+**Jump back to the previous workspace** with another shortcut (the plugin
+keeps the focus history for it; see
+[Troubleshooting](#troubleshooting-prefixtab-does-nothing) if it says there
+is no previous workspace yet):
+
+```toml
+[[keys.command]]
+key = "prefix+tab"
+type = "plugin_action"
+command = "tranceh2.shep.jump-back"
+description = "jump to previous workspace"
+```
+
+**Check the setup.** The doctor action checks your configured workspaces,
+the picker's theme and the `shep` command; its report is in the plugin's
+log:
+
+```sh
+herdr plugin action invoke doctor --plugin tranceh2.shep
+herdr plugin log list --plugin tranceh2.shep
+```
+
+### Use `shep` from a shell (`shep link`)
+
+The shortcuts need nothing more. To also run `shep` yourself (`shep open
+<query>`, `shep list --format json`, scripts, the Television cable in
+[`cables/shep.toml`](cables/shep.toml), a `type = "popup"` keybinding),
+publish the plugin's binary to your `PATH`:
+
+```sh
+~/.config/herdr/plugins/github/tranceh2.shep-*/contrib/herdr-plugin/bin/shep link
+```
+
+It creates the symlink `~/.local/bin/shep` (or in `$SHEP_LINK_DIR` /
+`$XDG_BIN_HOME`), so plugin updates reach it. `shep unlink` removes it.
+
+### Update or uninstall
+
+Herdr has no update command: uninstall and install again.
+
+```sh
+herdr plugin uninstall tranceh2.shep
+herdr plugin install Tranceh2/shep/contrib/herdr-plugin
+```
+
+Add `--ref v1.0.1` (a tag or a branch) to `install` to pick a version. Your
+shep config, pins and history stay where they are.
+
+### Without Herdr
+
+Shep also works as a plain command. Without Herdr, `shep open` prints the
+project path it resolves, so shell scripts can `cd` to it.
+
+```sh
+go install github.com/tranceh2/shep/cmd/shep@latest   # Go 1.26.4+
+nix profile install github:tranceh2/shep               # or: nix run github:tranceh2/shep -- open
+```
+
+Or download a binary for Linux or macOS (arm64, amd64) from the
+[releases](https://github.com/Tranceh2/shep/releases), or build a clone with
+`make install` (to `$(go env GOPATH)/bin`) or `make build` (`./shep`).
+
+### Building the plugin from a checkout
+
+To run the plugin from your own clone (for development), link it and build
+it from source, which needs Go 1.26.4+:
+
+```sh
+herdr plugin link "$PWD/contrib/herdr-plugin"
+SHEP_PLUGIN_BUILD=source bash contrib/herdr-plugin/scripts/build.sh
+```
+
+`SHEP_PLUGIN_BUILD=release` only downloads, and unset it downloads first and
+builds when the download fails.
+
+---
+
 ## Requirements
 
-- **Go 1.26.4+** to build (the version `go.mod` requires).
 - **[Herdr](https://herdr.dev) 0.8.2+** — optional but strongly recommended. Shep finds the `herdr` executable through `[herdr].binary`, then `HERDR_BIN_PATH` (set by Herdr for plugins), then `$PATH`; inside Herdr it talks to `HERDR_SOCKET_PATH` directly and uses the CLI only for what the socket does not serve (session lists, older Herdr versions). When Herdr is absent or stopped, `shep` prints the resolved project path to stdout so terminal scripts still work.
+- **Go 1.26.4+** — only to build shep yourself (`go install`, a clone, `SHEP_PLUGIN_BUILD=source`); the plugin and the release binaries do not need it.
 - **[git](https://git-scm.com)** — optional; used for the `git` preview section, worktree rows in the projects source, and (through Herdr) `Ctrl+N` worktrees.
 - **[zoxide](https://github.com/ajeetdsouza/zoxide)** — optional; enabled by default to surface your most frequent directories.
 - **[fzf](https://github.com/junegunn/fzf)** — optional external selector fallback.
@@ -57,191 +190,23 @@ I'm sharing it in case someone else in the Herdr or terminal community finds it 
 
 ---
 
-## Installation
-
-### Via `go install`
-
-```sh
-go install github.com/tranceh2/shep/cmd/shep@latest
-```
-
-### Pre-compiled Binaries
-
-Download ready-to-run binaries for Linux and macOS (ARM64 and AMD64) from the [GitHub Releases](https://github.com/tranceh2/shep/releases) page.
-
-### From Source
-
-```sh
-git clone https://github.com/tranceh2/shep.git
-cd shep
-make install   # builds and installs shep to $(go env GOPATH)/bin
-```
-
-Or build locally:
-
-```sh
-make build     # produces ./shep
-```
-
-### Nix / Flake
-
-Install to your profile:
-
-```sh
-nix profile install github:tranceh2/shep
-```
-
-Or run directly without installing:
-
-```sh
-nix run github:tranceh2/shep -- open
-```
-
-### Publishing to PATH (`shep link`)
-
-`shep link` is **optional**. Installing the Herdr plugin already provides
-every `type = "plugin_action"` keybinding (actions `open`, `jump-back`,
-`start-history`, `doctor`) with no linking step. Run `shep link` only when
-you also want a bare `shep` command available for: a direct shell command
-(`shep list --format tsv`), a script, the Television cable
-([`cables/shep.toml`](cables/shep.toml)), or a native `type = "popup"`
-keybind (as opposed to `type = "plugin_action"`).
-
-To make `shep` available globally on your `$PATH`:
-- If installed via Herdr plugin: run `./bin/shep link` inside the plugin directory to create a symlink at `~/.local/bin/shep`.
-- From source or local build: run `./shep link` from your build directory.
-
-To remove the symlink:
-
-```sh
-shep unlink
-```
-
----
-
-## Quickstart
-
-```sh
-shep open                  # Launch the interactive picker
-shep open my-project       # Open or jump directly to matching candidate
-shep open .                 # Open current directory as a Herdr workspace
-shep list                  # Output discovered candidates as a plain table
-shep list --format json    # Output candidates as JSON (for scripts/tooling)
-shep doctor                 # Validate your configuration and workspace paths
-```
-
----
-
-## Recommended First-Run Setup
-
-1. **Write a config.** Copy [`examples/config.toml`](examples/config.toml) to
-   `~/.config/shep/config.toml` and edit the example paths, or run
-   `shep init` to generate the exhaustively-commented canonical default.
-2. **Install the Herdr plugin.** See [Herdr Integration](#herdr-integration)
-   below. This alone gives you every `plugin_action` keybinding — `shep link`
-   is a separate, optional step (see the callout in that section).
-3. **Add keybindings** to `~/.config/herdr/config.toml` and
-   `herdr server reload-config`.
-4. **Verify** with the plugin's doctor action, which works with the plugin
-   alone:
-   ```sh
-   herdr plugin action invoke doctor --plugin tranceh2.shep
-   ```
-   If you separately installed or linked the `shep` CLI (see
-   [Publishing to PATH](#publishing-to-path-shep-link)), `shep doctor` is an
-   equivalent check. Either way, finish with `herdr plugin list` to confirm
-   `tranceh2.shep` is enabled.
-
-Checklist:
-
-- [ ] `~/.config/shep/config.toml` exists and the plugin doctor action
-      (`herdr plugin action invoke doctor --plugin tranceh2.shep`) reports no
-      errors.
-- [ ] `herdr plugin list` shows `tranceh2.shep` enabled.
-- [ ] Your keybindings reload cleanly (`herdr server reload-config`).
-- [ ] `prefix+ctrl+f` (or your chosen key) opens the picker popup.
-- [ ] `prefix+tab` toggles between two focused workspaces (see
-      [Troubleshooting](#troubleshooting-prefixtab-does-nothing) if it does
-      not).
-
----
-
 ## Herdr Integration
 
-Shep integrates with Herdr through the unified plugin `tranceh2.shep` (which provides the interactive picker popup, focus history collector, and jump-back navigation).
-
-### 1. Install the Herdr Plugin
-
-**Via Herdr plugin install (recommended):**
-
-```sh
-herdr plugin install Tranceh2/shep/contrib/herdr-plugin
-```
-
-To install a non-default branch or ref, pass it separately with `--ref`:
+The plugin `tranceh2.shep` provides the picker popup (action `open`), the
+focus-history collector Herdr starts with the session (`watch-history`), the
+previous-workspace toggle (`jump-back`, recovered with `start-history`) and
+`doctor`. Keybindings name an action as `tranceh2.shep.<id>`; to run one by
+hand, give the bare id and the plugin:
 
 ```sh
-herdr plugin install --ref <branch> Tranceh2/shep/contrib/herdr-plugin
-```
-
-*Note: Requires Herdr 0.8.2+ and Go 1.26.4+ installed. Herdr clones the repository and runs `bash scripts/build.sh`, which compiles the checkout into the plugin-local `bin/shep` with version and commit metadata.*
-
-**Or from a local checkout:**
-
-```sh
-# From your shep repository clone
-herdr plugin link "$PWD/contrib/herdr-plugin"
-cd contrib/herdr-plugin
-bash scripts/build.sh
-```
-
-Installing the plugin (step 1) is all `type = "plugin_action"` keybindings
-need. **`shep link` is NOT required** for the keybindings below — it is a
-separate, optional step described in
-[Publishing to PATH](#publishing-to-path-shep-link), only needed for a bare
-`shep` shell command, a Television cable, or a native `type = "popup"`
-keybind.
-
-### 2. Configure Keybindings
-
-Add the keybindings to `~/.config/herdr/config.toml`:
-
-```toml
-# Open Shep picker popup
-[[keys.command]]
-key = "prefix+ctrl+f"  # Replace with your preferred shortcut
-type = "plugin_action"
-command = "tranceh2.shep.open"
-description = "open Shep picker"
-
-# Jump back to previous workspace (A<->B toggle)
-[[keys.command]]
-key = "prefix+tab"
-type = "plugin_action"
-command = "tranceh2.shep.jump-back"
-description = "jump to previous workspace"
-```
-
-Reload Herdr's configuration:
-
-```sh
-herdr server reload-config
+herdr plugin action invoke open --plugin tranceh2.shep
+herdr plugin action invoke jump-back --plugin tranceh2.shep
 ```
 
 The `open` action runs the plugin's own `shep`, which asks Herdr for the
 popup over `HERDR_SOCKET_PATH` (`shep popup`, an internal command), so the
 shortcut never waits for the `herdr` CLI to start; without a socket the
 action falls back to `herdr plugin pane open`.
-
-You can also invoke any action manually from the CLI for testing. The
-command takes the bare action ID (not the fully-qualified
-`tranceh2.shep.<id>` form used in `command =` above) plus
-`--plugin tranceh2.shep`:
-
-```sh
-herdr plugin action invoke open --plugin tranceh2.shep
-herdr plugin action invoke jump-back --plugin tranceh2.shep
-```
 
 When running inside a Herdr popup, `shep` detects the active pane and unlocks in-place actions for zoxide, projects and command-only `[[workspaces]]` rows:
 - `Ctrl+T`: open the selected candidate as a new **tab** in the current workspace.
@@ -1117,7 +1082,7 @@ Every command takes `--config <path>` to read another config file. `shep
 | `shep preview <path> [--color]` | Print the preview of a path, as the picker draws it. |
 | `shep doctor` | Check configured workspace paths, report the picker's theme and where it came from, and what the published `shep` name resolves to. |
 | `shep init [--force]` | Write the commented default config. |
-| `shep link` / `shep unlink` | Publish or remove a `shep` symlink on your `PATH` (see [Publishing to PATH](#publishing-to-path-shep-link)). |
+| `shep link` / `shep unlink` | Publish or remove a `shep` symlink on your `PATH` (see [Use `shep` from a shell](#use-shep-from-a-shell-shep-link)). |
 | `shep jump-back` | Focus the previous distinct workspace of the current Herdr session (see [`docs/jump-back.md`](docs/jump-back.md)). |
 | `shep ranking clear` | Forget the learned order, pins, acknowledged agent states and saved searches. |
 | `shep completion bash\|zsh\|fish\|powershell` | Print a shell completion script. |

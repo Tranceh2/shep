@@ -27,35 +27,44 @@ The plugin needs Herdr 0.8.2 or newer (`min_herdr_version` in the manifest).
 
 ### Option 1: Install from GitHub (Herdr Remote Install)
 
-If you have Go installed on your system (Go 1.26.4+), Herdr can clone the
-repository and compile the binary automatically using the declared `[[build]]`
-hook:
-
 ```sh
 herdr plugin install Tranceh2/shep/contrib/herdr-plugin
 ```
 
-To install a non-default branch or ref, pass it separately with `--ref`:
+To install a tag or a branch, pass it separately with `--ref`:
 
 ```sh
-herdr plugin install --ref <branch> Tranceh2/shep/contrib/herdr-plugin
+herdr plugin install --ref v1.0.1 Tranceh2/shep/contrib/herdr-plugin
 ```
 
 Herdr will:
 1. Clone the repository into its managed plugin cache.
-2. Run `bash scripts/build.sh` from the plugin directory; the script compiles from the checkout into plugin-local `bin/shep` with version and commit metadata.
+2. Run `bash scripts/build.sh` from the plugin directory. The script
+   downloads the release archive of the manifest's version for your platform
+   (`shep_<version>_<os>_<arch>.tar.gz` from the GitHub release), checks it
+   against the release's `checksums.txt`, and installs its binary as the
+   plugin-local `bin/shep`. No Go toolchain is needed. Only when the download
+   or the check fails does it build the checkout instead, which needs Go
+   1.26.4+.
 3. Register and enable `tranceh2.shep`.
+
+Herdr has no update command: `herdr plugin uninstall tranceh2.shep`, then
+install again.
 
 ### Option 2: Link from a Local Checkout (Development)
 
-For local development or when building from a cloned repository:
+For local development, link your clone and build it from source (Go
+1.26.4+), so the plugin runs your code rather than a release:
 
 ```sh
 # From the root of your shep repository clone
 herdr plugin link "$PWD/contrib/herdr-plugin"
 cd contrib/herdr-plugin
-bash scripts/build.sh
+SHEP_PLUGIN_BUILD=source bash scripts/build.sh
 ```
+
+`SHEP_PLUGIN_BUILD` is `auto` (download, then build if that fails) when
+unset, `release` to only download, or `source` to only build.
 
 Verify that Herdr sees the plugin:
 

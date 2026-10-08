@@ -4,7 +4,8 @@
 #   * Startup hook for the per-socket focus-history collector.
 #   * Interactive picker pane (popup placement) for shep open.
 #   * Declared actions for open, jump-back, start-history, and doctor.
-#   * Build step that compiles the binary from the cloned checkout into the plugin-local bin directory.
+#   * Build step that installs the checksum-verified release binary into the plugin-local bin directory
+#     (building the cloned checkout only if that fails).
 
 id = "tranceh2.shep"
 name = "Shep"
