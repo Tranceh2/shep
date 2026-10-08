@@ -85,8 +85,8 @@ func TestManifest_ParsesWithRequiredHerdrMetadata(t *testing.T) {
 	if m.Name != "Shep" {
 		t.Fatalf("name = %q, want Shep", m.Name)
 	}
-	if m.Version != "1.0.0" {
-		t.Fatalf("version = %q, want 1.0.0", m.Version)
+	if m.Version != "1.0.1" {
+		t.Fatalf("version = %q, want 1.0.1", m.Version)
 	}
 	if m.MinHerdrVersion != "0.8.2" {
 		t.Fatalf("min_herdr_version = %q, want 0.8.2", m.MinHerdrVersion)
@@ -151,6 +151,11 @@ func TestManifest_BuildsFromHerdrPluginWorkingDirectory(t *testing.T) {
 	versionOutput := runBinary(t, binaryPath, "--version")
 	if strings.TrimSpace(versionOutput) == "" || strings.Contains(versionOutput, "commit: )") {
 		t.Fatalf("version output has empty version or commit metadata: %q", versionOutput)
+	}
+	// The disposable copy has no tags, like Herdr's install checkout: the
+	// version comes from the manifest.
+	if want := "shep version " + m.Version + " "; !strings.HasPrefix(versionOutput, want) {
+		t.Fatalf("version output = %q, want it to start with %q", versionOutput, want)
 	}
 	if !strings.Contains(versionOutput, "commit: ") {
 		t.Fatalf("version output = %q, want commit metadata", versionOutput)

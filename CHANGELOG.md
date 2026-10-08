@@ -2,6 +2,25 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.0.1
+
+### Changed
+
+- Installing the Herdr plugin no longer needs Go: the build step downloads
+  the release binary of the plugin's version for your platform and checks it
+  against the release checksums, and builds the checkout only if that fails.
+  `SHEP_PLUGIN_BUILD=source` builds a local development link from source.
+- The README's installation starts with the plugin in three steps (install,
+  add a shortcut, reload), followed by the optional steps, updating, and the
+  command-line installs.
+
+### Fixed
+
+- `shep --version` names the release when shep was installed with
+  `go install github.com/tranceh2/shep/cmd/shep@<version>` (it printed `dev`)
+  or as a Herdr plugin (it printed the commit hash: Herdr's checkout has no
+  tags, so the plugin build now takes the version from its manifest).
+
 ## v1.0.0
 
 The first stable release: the picker is redesigned, every part of it is

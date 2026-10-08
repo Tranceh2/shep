@@ -9,7 +9,7 @@
 
 id = "tranceh2.shep"
 name = "Shep"
-version = "1.0.0"
+version = "1.0.1"
 min_herdr_version = "0.8.2"
 description = "Project, workspace, agent, and navigation tools for Herdr."
 platforms = ["linux", "macos"]
