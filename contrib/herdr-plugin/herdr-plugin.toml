@@ -8,7 +8,7 @@
 
 id = "tranceh2.shep"
 name = "Shep"
-version = "0.1.1"
+version = "1.0.0"
 min_herdr_version = "0.8.2"
 description = "Project, workspace, agent, and navigation tools for Herdr."
 platforms = ["linux", "macos"]
@@ -51,6 +51,6 @@ command = ["./scripts/run-shep.sh", "watch-history"]
 [[actions]]
 id = "doctor"
 title = "Shep doctor"
-description = "Check configured workspaces and published PATH name"
+description = "Check configured workspaces, the picker theme and the published PATH name"
 contexts = ["global"]
 command = ["./scripts/run-shep.sh", "doctor"]

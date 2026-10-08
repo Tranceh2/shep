@@ -2,7 +2,11 @@
 
 All notable changes to this project are documented in this file.
 
-## Unreleased
+## v1.0.0
+
+The first stable release: the picker is redesigned, every part of it is
+configurable, it acts on Herdr without leaving it, and it opens fast even
+after the system has evicted it from memory.
 
 ### Breaking
 
@@ -32,8 +36,8 @@ All notable changes to this project are documented in this file.
 ### Added
 
 - The picker shows configurable view tabs (`[tui].tabs`): `all`, `agents`, a
-  built-in source, a `[[sources.custom]]` name or a group workspace id,
-  cycled with `tab` / `shift+tab`. A source listed only there loads without
+  built-in source, a `[[sources.custom]]` name or a group workspace's `id`
+  (a new `[[workspaces]]` key), cycled with `tab` / `shift+tab`. A source listed only there loads without
   joining `all`. `shep open --view <id>` opens any of them directly.
 - `agents` is a built-in source: newly blocked or finished agents first, then
   the previous agent, then the rest by history.
@@ -62,8 +66,10 @@ All notable changes to this project are documented in this file.
   it out like any workspace shep creates (`repo@branch` by default).
 - `ctrl+b` jumps to the next blocked agent in the agents view; the footer
   offers it while one is blocked.
-- `ctrl+y` brings back earlier searches, newest first: the queries that
-  ended in a selection, kept in `$XDG_STATE_HOME/shep/queries`.
+- `ctrl+y` brings back earlier searches, newest first: the last 50 queries
+  that ended in a selection, kept in `$XDG_STATE_HOME/shep/queries` while
+  `[ranking]` is enabled. `shep ranking clear` forgets them along with the
+  learned order, pins and acknowledged agent states.
 - `right` on an expanded workspace moves onto its first tab, and `left` on a
   tab or pane moves back to its workspace and collapses it.
 
@@ -177,8 +183,8 @@ All notable changes to this project are documented in this file.
   re-focuses the Herdr workspace created under the old name — `shep open`
   for that entry now creates a brand-new workspace, leaving the old one open
   and orphaned. **Migration**: to rename an entry without losing its
-  existing workspace, `shep close` the old Herdr workspace first (or rename
-  it directly in Herdr), then edit the `name` field and `shep open` the
+  existing workspace, close the old Herdr workspace first (or rename it
+  directly in Herdr), then edit the `name` field and `shep open` the
   entry again to re-create it under the new name. **Why**: prevents
   cross-label collisions when two `[[workspaces]]` entries share the same
   `path` (a CWD-only match could previously focus the wrong entry's

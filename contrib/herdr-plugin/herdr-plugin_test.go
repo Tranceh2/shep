@@ -82,8 +82,8 @@ func TestManifest_ParsesWithRequiredHerdrMetadata(t *testing.T) {
 	if m.Name != "Shep" {
 		t.Fatalf("name = %q, want Shep", m.Name)
 	}
-	if m.Version != "0.1.1" {
-		t.Fatalf("version = %q, want 0.1.1", m.Version)
+	if m.Version != "1.0.0" {
+		t.Fatalf("version = %q, want 1.0.0", m.Version)
 	}
 	if m.MinHerdrVersion != "0.8.2" {
 		t.Fatalf("min_herdr_version = %q, want 0.8.2", m.MinHerdrVersion)
@@ -381,7 +381,7 @@ func TestManifest_DeclaresExpectedActions(t *testing.T) {
 		"doctor": {
 			ID:          "doctor",
 			Title:       "Shep doctor",
-			Description: "Check configured workspaces and published PATH name",
+			Description: "Check configured workspaces, the picker theme and the published PATH name",
 			Contexts:    []string{"global"},
 			Command:     []string{"./scripts/run-shep.sh", "doctor"},
 		},
