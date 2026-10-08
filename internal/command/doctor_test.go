@@ -106,12 +106,27 @@ func TestDoctor_ReportsTheThemeAndItsSource(t *testing.T) {
 				}
 			}
 			for _, not := range tc.not {
-				if strings.Contains(out, not) {
-					t.Errorf("doctor output must not contain %q:\n%s", not, out)
+				if strings.Contains(themeSection(out), not) {
+					t.Errorf("doctor's theme report must not contain %q:\n%s", not, out)
 				}
 			}
 		})
 	}
+}
+
+// themeSection is doctor's theme report: from "Theme:" to the next blank
+// line. The sections after it depend on the machine (the PATH notes), so a
+// test about the theme only reads this one.
+func themeSection(out string) string {
+	i := strings.Index(out, "Theme:")
+	if i < 0 {
+		return ""
+	}
+	section := out[i:]
+	if j := strings.Index(section, "\n\n"); j >= 0 {
+		section = section[:j]
+	}
+	return section
 }
 
 // TestDoctor_ReportsMissingWorkspacePath (requirement 11) confirms a
