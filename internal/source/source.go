@@ -137,8 +137,8 @@ type HerdrDriver interface {
 	// Detect reports whether Herdr is usable (binary present). Daemon liveness
 	// is discovered lazily by actual command calls; Detect is a cheap probe.
 	Detect(ctx context.Context) bool
-	// Snapshot returns one complete Herdr state generation through the official
-	// `herdr api snapshot` command.
+	// Snapshot returns one complete Herdr state generation (`session.snapshot`,
+	// what `herdr api snapshot` prints).
 	Snapshot(ctx context.Context) (Snapshot, error)
 	// ListSessions returns local session records through
 	// `herdr session list --json`.
@@ -146,43 +146,39 @@ type HerdrDriver interface {
 	// FocusOrCreate decides focus-or-create from the typed request: if
 	// request.Candidate.Source == config.SourceHerdr it focuses the workspace
 	// identified by request.Candidate.Meta["workspace_id"], otherwise it creates
-	// a new focused workspace via `herdr workspace create --cwd --label --focus`.
+	// a new focused workspace (`workspace.create` with cwd, label and focus).
 	// No pane/workspace scan is performed to find a CWD or label match. The
 	// returned result carries the workspace + root tab + root pane so callers can
 	// apply a template against a freshly created workspace.
 	FocusOrCreate(ctx context.Context, request WorkspaceLaunchRequest) (FocusResult, error)
 	// ReadPane returns the captured terminal buffer of a pane, with its real
-	// ANSI color codes preserved, via
-	// `herdr pane read <pane_id> --lines <lines> --format ansi`. lines caps
-	// the number of trailing lines returned; <= 0 means the daemon default.
+	// ANSI color codes preserved (`pane.read`, format ansi). lines caps the
+	// number of trailing lines returned; <= 0 means the daemon default.
 	ReadPane(ctx context.Context, paneID string, lines int) (string, error)
-	// CreateTab creates a new tab in workspaceID via
-	// `herdr tab create --workspace <id> --cwd <cwd> --label <label> [--focus|--no-focus]`,
-	// returning the new tab and its root pane. focus controls whether the new
-	// tab steals keyboard focus (--focus) or leaves the current tab focused
-	// (--no-focus). Focus is set at creation time for determinism.
+	// CreateTab creates a new tab in workspaceID with cwd and label
+	// (`tab.create`), returning the new tab and its root pane. focus controls
+	// whether the new tab steals keyboard focus or leaves the current tab
+	// focused. Focus is set at creation time for determinism.
 	CreateTab(ctx context.Context, workspaceID, cwd, label string, focus bool) (Tab, Pane, error)
-	// RenameTab renames tabID via `herdr tab rename <tab_id> <label>`.
+	// RenameTab renames tabID (`tab.rename`).
 	RenameTab(ctx context.Context, tabID, label string) error
 	// RenamePane renames or clears paneID's persistent Herdr label. A nil label
 	// is invalid; a non-nil empty label clears, and a non-empty label renames.
-	// The label is passed to Herdr as one argv element.
 	RenamePane(ctx context.Context, paneID string, label *string) error
-	// SplitPane splits paneID via
-	// `herdr pane split <pane_id> --direction <direction> --ratio <ratio> --cwd <cwd> [--focus|--no-focus]`,
-	// returning the newly created pane. direction is "down" or "right";
-	// ratio is the fraction of the ORIGINAL pane retained by paneID (the new
-	// pane gets 1-ratio); focus true passes --focus (new pane steals focus),
-	// false passes --no-focus (original pane keeps focus). Pane focus MUST be
-	// controlled here: there is no valid post-hoc "focus pane by id" command
-	// in Herdr (pane focus only accepts --direction).
+	// SplitPane splits paneID (`pane.split`), returning the newly created
+	// pane. direction is "down" or "right"; ratio is the fraction of the
+	// ORIGINAL pane retained by paneID (the new pane gets 1-ratio); focus true
+	// gives the new pane keyboard focus, false keeps it on the original pane.
+	// Pane focus MUST be controlled here: there is no valid post-hoc "focus
+	// pane by id" command in Herdr (pane focus only accepts a direction).
 	SplitPane(ctx context.Context, paneID, direction string, ratio float64, cwd string, focus bool) (Pane, error)
-	// RunPane runs command in paneID via `herdr pane run <pane_id> <command>`.
-	// An empty command is a no-op (the pane stays a plain shell). The command
+	// RunPane runs command in paneID (`pane.send_input` with Enter, what
+	// `herdr pane run` sends). An empty command is a no-op (the pane stays a
+	// plain shell). The command
 	// is typed into the pane's already-running interactive shell and submitted
 	// with Enter; it does NOT spawn the command as the pane's root process.
 	RunPane(ctx context.Context, paneID, command string) error
-	// FocusTab focuses tabID via `herdr tab focus <id>`. A valid fallback;
+	// FocusTab focuses tabID (`tab.focus`). A valid fallback;
 	// the primary focus mechanism is the creation-time flag on CreateTab.
 	FocusTab(ctx context.Context, tabID string) error
 }

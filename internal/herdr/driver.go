@@ -1,7 +1,9 @@
-// Package herdr implements the real shep <-> Herdr CLI bridge behind the
+// Package herdr implements the real shep <-> Herdr bridge behind the
 // source.HerdrDriver interface.
 //
-// Herdr ships a JSON envelope on every command:
+// Inside Herdr (HERDR_SOCKET_PATH set) every server request goes straight to
+// the server socket (socket.go); otherwise it goes through the herdr CLI,
+// which sends the same request and prints the same JSON envelope:
 //
 //	{"id":"cli:<command>","result":{...}}
 //
@@ -15,8 +17,8 @@
 //	              tab_id,cwd,foreground_cwd,focused,...}}}
 //
 // Workspaces do NOT carry a cwd; the driver joins workspaces to panes by
-// workspace_id to derive a representative cwd. All command execution goes
-// through a small CommandRunner so tests inject a fake instead of shelling out.
+// workspace_id to derive a representative cwd. CLI execution goes through a
+// small CommandRunner so tests inject a fake instead of shelling out.
 package herdr
 
 import (
@@ -82,17 +84,26 @@ func validBinaryPath(path string) bool {
 	return config.ValidBinaryPath(path)
 }
 
-// Driver is the real source.HerdrDriver backed by the herdr CLI. It is safe
-// to construct one per command invocation; all state lives in the JSON
-// envelopes returned by Herdr.
+// Driver is the real source.HerdrDriver, backed by the Herdr server socket
+// when it has one and by the herdr CLI otherwise. It is safe to construct one
+// per command invocation; all state lives in the JSON envelopes returned by
+// Herdr.
 type Driver struct {
 	binary   string
+	socket   string
 	run      CommandRunner
 	lookPath lookPathFn
 }
 
 // Option configures a Driver at construction.
 type Option func(*Driver)
+
+// WithSocketPath sends server requests to the Herdr socket at path instead of
+// launching the CLI for each one. Pass HERDR_SOCKET_PATH, which Herdr sets in
+// its panes and plugin commands; an empty path keeps every request on the CLI.
+func WithSocketPath(path string) Option {
+	return func(d *Driver) { d.socket = path }
+}
 
 // WithRunner injects a CommandRunner (intended for tests).
 func WithRunner(r CommandRunner) Option {
@@ -129,6 +140,50 @@ func (d *Driver) Detect(_ context.Context) bool {
 	return err == nil
 }
 
+// viaSocket sends one request to the server socket, decoding the response's
+// result into result unless it is nil. ok is false when the request did not
+// go out: the driver has no socket, or the server rejected the method as
+// unknown (an older Herdr), and the caller should use the CLI instead.
+func (d *Driver) viaSocket(ctx context.Context, method string, params, result any) (ok bool, err error) {
+	if d.socket == "" {
+		return false, nil
+	}
+	raw, err := callSocket(ctx, d.socket, nextRequestID(method), method, params, maxResponseBytes)
+	if unknownMethod(err) {
+		return false, nil
+	}
+	if err != nil || result == nil {
+		return true, err
+	}
+	if err := json.Unmarshal(raw, result); err != nil {
+		return true, fmt.Errorf("parse: %w", err)
+	}
+	return true, nil
+}
+
+// send performs one server request over the socket (see viaSocket), or by
+// running the CLI with cliArgs, whose stdout is the same response envelope.
+// The response's result is decoded into result unless it is nil.
+func (d *Driver) send(ctx context.Context, result any, method string, params any, cliArgs ...string) error {
+	if ok, err := d.viaSocket(ctx, method, params, result); ok {
+		return err
+	}
+	out, err := d.run.Run(ctx, d.binary, cliArgs...)
+	if err != nil || result == nil {
+		return err
+	}
+	var env struct {
+		Result json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(out, &env); err != nil {
+		return fmt.Errorf("parse: %w", err)
+	}
+	if err := json.Unmarshal(env.Result, result); err != nil {
+		return fmt.Errorf("parse: %w", err)
+	}
+	return nil
+}
+
 // --- JSON envelopes (captured against a live Herdr daemon) ---
 
 type rawWorkspace struct {
@@ -160,14 +215,11 @@ type rawTab struct {
 	PaneCount   int    `json:"pane_count"`
 }
 
-// snapshotEnvelope wraps `herdr api snapshot`. The command provides one
-// coherent state generation containing the workspace, tab, and pane records
-// that previously needed several independent calls.
-type snapshotEnvelope struct {
-	ID     string `json:"id"`
-	Result struct {
-		Snapshot rawSnapshot `json:"snapshot"`
-	} `json:"result"`
+// snapshotResult is the result of `session.snapshot` (`herdr api
+// snapshot`): one coherent state generation containing the workspace, tab,
+// and pane records that previously needed several independent calls.
+type snapshotResult struct {
+	Snapshot rawSnapshot `json:"snapshot"`
 }
 
 // sessionsEnvelope is the verified `herdr session list --json` 0.7.4 shape.
@@ -194,24 +246,21 @@ type rawSnapshot struct {
 	FocusedPaneID      string         `json:"focused_pane_id"`
 }
 
-// Snapshot obtains one full coherent state generation through the official
-// Herdr CLI. Records without their primary identity are ignored so a partial
-// daemon response cannot invalidate complete neighboring records.
+// Snapshot obtains one full coherent state generation. Records without their
+// primary identity are ignored so a partial daemon response cannot invalidate
+// complete neighboring records.
 func (d *Driver) Snapshot(ctx context.Context) (source.Snapshot, error) {
-	out, err := d.run.Run(ctx, d.binary, "api", "snapshot")
-	if err != nil {
+	var result snapshotResult
+	if err := d.send(ctx, &result, "session.snapshot", struct{}{}, "api", "snapshot"); err != nil {
 		return source.Snapshot{}, fmt.Errorf("herdr api snapshot: %w", err)
 	}
-	var env snapshotEnvelope
-	if err := json.Unmarshal(out, &env); err != nil {
-		return source.Snapshot{}, fmt.Errorf("herdr api snapshot: parse: %w", err)
-	}
-	return rawSnapshotToSnapshot(env.Result.Snapshot), nil
+	return rawSnapshotToSnapshot(result.Snapshot), nil
 }
 
-// ListSessions lists local Herdr sessions through the official CLI boundary.
-// Only the verified top-level 0.7.4 envelope is accepted; unknown fields are
-// ignored and incomplete records without a name are not actionable.
+// ListSessions lists local Herdr sessions through the official CLI boundary:
+// sessions span servers, so no server socket answers for them. Only the
+// verified top-level 0.7.4 envelope is accepted; unknown fields are ignored
+// and incomplete records without a name are not actionable.
 func (d *Driver) ListSessions(ctx context.Context) ([]source.Session, error) {
 	out, err := d.run.Run(ctx, d.binary, "session", "list", "--json")
 	if err != nil {
@@ -282,42 +331,30 @@ func rawSnapshotToSnapshot(raw rawSnapshot) source.Snapshot {
 	return snapshot
 }
 
-// workspaceCreatedEnvelope wraps `herdr workspace create`.
+// workspaceCreatedResult is the result of `workspace.create` (`herdr
+// workspace create`):
 //
-//	{"id":"cli:workspace:create","result":{"type":"workspace_created",
-//	  "workspace":{...},"tab":{...},"root_pane":{...}}}
-type workspaceCreatedEnvelope struct {
-	ID     string `json:"id"`
-	Result struct {
-		Type      string       `json:"type"`
-		Workspace rawWorkspace `json:"workspace"`
-		Tab       rawTab       `json:"tab"`
-		RootPane  rawPane      `json:"root_pane"`
-	} `json:"result"`
+//	{"type":"workspace_created","workspace":{...},"tab":{...},"root_pane":{...}}
+type workspaceCreatedResult struct {
+	Workspace rawWorkspace `json:"workspace"`
+	Tab       rawTab       `json:"tab"`
+	RootPane  rawPane      `json:"root_pane"`
 }
 
-// tabCreatedEnvelope wraps `herdr tab create`.
+// tabCreatedResult is the result of `tab.create` (`herdr tab create`):
 //
-//	{"id":"cli:tab:create","result":{"type":"tab_created","tab":{...},
-//	  "root_pane":{...}}}
-type tabCreatedEnvelope struct {
-	ID     string `json:"id"`
-	Result struct {
-		Type     string  `json:"type"`
-		Tab      rawTab  `json:"tab"`
-		RootPane rawPane `json:"root_pane"`
-	} `json:"result"`
+//	{"type":"tab_created","tab":{...},"root_pane":{...}}
+type tabCreatedResult struct {
+	Tab      rawTab  `json:"tab"`
+	RootPane rawPane `json:"root_pane"`
 }
 
-// paneInfoEnvelope wraps `herdr pane split` (and other pane_info results).
+// paneInfoResult is the result of `pane.split` (`herdr pane split`) and
+// other pane_info answers:
 //
-//	{"id":"cli:pane:split","result":{"type":"pane_info","pane":{...}}}
-type paneInfoEnvelope struct {
-	ID     string `json:"id"`
-	Result struct {
-		Type string  `json:"type"`
-		Pane rawPane `json:"pane"`
-	} `json:"result"`
+//	{"type":"pane_info","pane":{...}}
+type paneInfoResult struct {
+	Pane rawPane `json:"pane"`
 }
 
 // FocusOrCreate resumes or opens a workspace for cand, deciding solely from
@@ -339,7 +376,7 @@ func (d *Driver) FocusOrCreate(ctx context.Context, request source.WorkspaceLaun
 	cand := request.Candidate
 	if cand.Source == config.SourceHerdr {
 		id := cand.Meta["workspace_id"]
-		if _, err := d.run.Run(ctx, d.binary, "workspace", "focus", id); err != nil {
+		if err := d.send(ctx, nil, "workspace.focus", map[string]any{"workspace_id": id}, "workspace", "focus", id); err != nil {
 			return source.FocusResult{}, fmt.Errorf("herdr workspace focus %s: %w", id, err)
 		}
 		return source.FocusResult{WorkspaceID: id, Action: source.HerdrActionFocused}, nil
@@ -360,23 +397,19 @@ func (d *Driver) FocusOrCreate(ctx context.Context, request source.WorkspaceLaun
 	if label == "" {
 		label = filepath.Base(needle)
 	}
-	out, err := d.run.Run(ctx, d.binary, "workspace", "create",
-		"--cwd", cand.Path, "--label", label, "--focus")
-	if err != nil {
+	var created workspaceCreatedResult
+	params := map[string]any{"cwd": cand.Path, "label": label, "focus": true}
+	if err := d.send(ctx, &created, "workspace.create", params, "workspace", "create", "--cwd", cand.Path, "--label", label, "--focus"); err != nil {
 		return source.FocusResult{}, fmt.Errorf("herdr workspace create: %w", err)
 	}
-	var env workspaceCreatedEnvelope
-	if err := json.Unmarshal(out, &env); err != nil {
-		return source.FocusResult{}, fmt.Errorf("herdr workspace create: parse: %w", err)
-	}
-	if env.Result.Workspace.WorkspaceID == "" || env.Result.Tab.TabID == "" || env.Result.RootPane.PaneID == "" {
+	if created.Workspace.WorkspaceID == "" || created.Tab.TabID == "" || created.RootPane.PaneID == "" {
 		return source.FocusResult{}, errors.New("herdr workspace create: incomplete response")
 	}
 	return source.FocusResult{
-		WorkspaceID: env.Result.Workspace.WorkspaceID,
+		WorkspaceID: created.Workspace.WorkspaceID,
 		Action:      source.HerdrActionCreated,
-		RootTabID:   env.Result.Tab.TabID,
-		RootPaneID:  env.Result.RootPane.PaneID,
+		RootTabID:   created.Tab.TabID,
+		RootPaneID:  created.RootPane.PaneID,
 	}, nil
 }
 
@@ -392,39 +425,38 @@ func (d *Driver) CreateTab(ctx context.Context, workspaceID, cwd, label string, 
 		return source.Tab{}, source.Pane{}, errors.New("herdr tab create: empty workspace id")
 	}
 	args := []string{"tab", "create", "--workspace", workspaceID}
+	params := map[string]any{"workspace_id": workspaceID, "focus": focus}
 	if cwd != "" {
 		args = append(args, "--cwd", cwd)
+		params["cwd"] = cwd
 	}
 	if label != "" {
 		args = append(args, "--label", label)
+		params["label"] = label
 	}
 	if focus {
 		args = append(args, "--focus")
 	} else {
 		args = append(args, "--no-focus")
 	}
-	out, err := d.run.Run(ctx, d.binary, args...)
-	if err != nil {
+	var created tabCreatedResult
+	if err := d.send(ctx, &created, "tab.create", params, args...); err != nil {
 		return source.Tab{}, source.Pane{}, fmt.Errorf("herdr tab create: %w", err)
 	}
-	var env tabCreatedEnvelope
-	if err := json.Unmarshal(out, &env); err != nil {
-		return source.Tab{}, source.Pane{}, fmt.Errorf("herdr tab create: parse: %w", err)
-	}
-	if env.Result.Tab.TabID == "" || env.Result.RootPane.PaneID == "" {
+	if created.Tab.TabID == "" || created.RootPane.PaneID == "" {
 		return source.Tab{}, source.Pane{}, errors.New("herdr tab create: incomplete response")
 	}
-	if !validPaneID.MatchString(env.Result.RootPane.PaneID) {
-		return source.Tab{}, source.Pane{}, fmt.Errorf("herdr tab create: invalid pane id %q", env.Result.RootPane.PaneID)
+	if !validPaneID.MatchString(created.RootPane.PaneID) {
+		return source.Tab{}, source.Pane{}, fmt.Errorf("herdr tab create: invalid pane id %q", created.RootPane.PaneID)
 	}
 	return source.Tab{
-		ID:          env.Result.Tab.TabID,
-		WorkspaceID: env.Result.Tab.WorkspaceID,
-		Label:       env.Result.Tab.Label,
-		Focused:     env.Result.Tab.Focused,
-		Number:      env.Result.Tab.Number,
-		PaneCount:   env.Result.Tab.PaneCount,
-	}, rawPaneToPane(env.Result.RootPane), nil
+		ID:          created.Tab.TabID,
+		WorkspaceID: created.Tab.WorkspaceID,
+		Label:       created.Tab.Label,
+		Focused:     created.Tab.Focused,
+		Number:      created.Tab.Number,
+		PaneCount:   created.Tab.PaneCount,
+	}, rawPaneToPane(created.RootPane), nil
 }
 
 // RenameTab renames tabID via `herdr tab rename <tab_id> <label>`.
@@ -432,15 +464,16 @@ func (d *Driver) RenameTab(ctx context.Context, tabID, label string) error {
 	if tabID == "" {
 		return errors.New("herdr tab rename: empty tab id")
 	}
-	if _, err := d.run.Run(ctx, d.binary, "tab", "rename", tabID, label); err != nil {
+	if err := d.send(ctx, nil, "tab.rename", map[string]any{"tab_id": tabID, "label": label}, "tab", "rename", tabID, label); err != nil {
 		return fmt.Errorf("herdr tab rename %s: %w", tabID, err)
 	}
 	return nil
 }
 
 // RenamePane renames or clears paneID's persistent Herdr label. A nil label
-// is a caller error; a non-nil empty label maps to --clear. Non-empty labels
-// are passed as one argv element, preserving spaces and shell metacharacters.
+// is a caller error; a non-nil empty label clears it (--clear on the CLI).
+// The CLI takes a non-empty label as one argv element, preserving spaces and
+// shell metacharacters, but cannot take one starting with '-'.
 func (d *Driver) RenamePane(ctx context.Context, paneID string, label *string) error {
 	if paneID == "" {
 		return errors.New("herdr pane rename: empty pane id")
@@ -449,6 +482,16 @@ func (d *Driver) RenamePane(ctx context.Context, paneID string, label *string) e
 		return errors.New("herdr pane rename: nil label")
 	}
 	requested := *label
+	params := map[string]any{"pane_id": paneID}
+	if requested != "" {
+		params["label"] = requested
+	}
+	if ok, err := d.viaSocket(ctx, "pane.rename", params, nil); ok {
+		if err != nil {
+			return fmt.Errorf("herdr pane rename %s %q: %w", paneID, requested, err)
+		}
+		return nil
+	}
 	if requested == "" {
 		requested = "--clear"
 	} else if strings.HasPrefix(requested, "-") {
@@ -474,33 +517,33 @@ func (d *Driver) SplitPane(ctx context.Context, paneID, direction string, ratio 
 		return source.Pane{}, errors.New("herdr pane split: empty pane id")
 	}
 	args := []string{"pane", "split", paneID, "--direction", direction, "--ratio", strconv.FormatFloat(ratio, 'f', -1, 64)}
+	// right_click is the CLI's own default; it is sent for byte parity.
+	params := map[string]any{"target_pane_id": paneID, "direction": direction, "ratio": ratio, "focus": focus, "right_click": "herdr"}
 	if cwd != "" {
 		args = append(args, "--cwd", cwd)
+		params["cwd"] = cwd
 	}
 	if focus {
 		args = append(args, "--focus")
 	} else {
 		args = append(args, "--no-focus")
 	}
-	out, err := d.run.Run(ctx, d.binary, args...)
-	if err != nil {
+	var split paneInfoResult
+	if err := d.send(ctx, &split, "pane.split", params, args...); err != nil {
 		return source.Pane{}, fmt.Errorf("herdr pane split %s: %w", paneID, err)
 	}
-	var env paneInfoEnvelope
-	if err := json.Unmarshal(out, &env); err != nil {
-		return source.Pane{}, fmt.Errorf("herdr pane split %s: parse: %w", paneID, err)
-	}
-	if env.Result.Pane.PaneID == "" {
+	if split.Pane.PaneID == "" {
 		return source.Pane{}, errors.New("herdr pane split: incomplete response")
 	}
-	if !validPaneID.MatchString(env.Result.Pane.PaneID) {
-		return source.Pane{}, fmt.Errorf("herdr pane split: invalid pane id %q", env.Result.Pane.PaneID)
+	if !validPaneID.MatchString(split.Pane.PaneID) {
+		return source.Pane{}, fmt.Errorf("herdr pane split: invalid pane id %q", split.Pane.PaneID)
 	}
-	return rawPaneToPane(env.Result.Pane), nil
+	return rawPaneToPane(split.Pane), nil
 }
 
-// RunPane runs command in paneID via `herdr pane run <pane_id> <command>`.
-// An empty command is a no-op so a plain-shell leaf never shells out.
+// RunPane types command into paneID and submits it with Enter
+// (`pane.send_input`, which is what `herdr pane run` sends). An empty command
+// is a no-op so a plain-shell leaf never shells out.
 func (d *Driver) RunPane(ctx context.Context, paneID, command string) error {
 	if paneID == "" {
 		return errors.New("herdr pane run: empty pane id")
@@ -508,7 +551,8 @@ func (d *Driver) RunPane(ctx context.Context, paneID, command string) error {
 	if strings.TrimSpace(command) == "" {
 		return nil
 	}
-	if _, err := d.run.Run(ctx, d.binary, "pane", "run", paneID, command); err != nil {
+	params := map[string]any{"pane_id": paneID, "text": command, "keys": []string{"Enter"}}
+	if err := d.send(ctx, nil, "pane.send_input", params, "pane", "run", paneID, command); err != nil {
 		return fmt.Errorf("herdr pane run %s %q: %w", paneID, command, err)
 	}
 	return nil
@@ -525,7 +569,7 @@ func (d *Driver) FocusTab(ctx context.Context, tabID string) error {
 	if tabID == "" {
 		return errors.New("herdr tab focus: empty tab id")
 	}
-	if _, err := d.run.Run(ctx, d.binary, "tab", "focus", tabID); err != nil {
+	if err := d.send(ctx, nil, "tab.focus", map[string]any{"tab_id": tabID}, "tab", "focus", tabID); err != nil {
 		return fmt.Errorf("herdr tab focus %s: %w", tabID, err)
 	}
 	return nil
@@ -536,7 +580,7 @@ func (d *Driver) ClosePane(ctx context.Context, paneID string) error {
 	if paneID == "" {
 		return errors.New("herdr pane close: empty pane id")
 	}
-	if _, err := d.run.Run(ctx, d.binary, "pane", "close", paneID); err != nil {
+	if err := d.send(ctx, nil, "pane.close", map[string]any{"pane_id": paneID}, "pane", "close", paneID); err != nil {
 		return fmt.Errorf("herdr pane close %s: %w", paneID, closeError(err))
 	}
 	return nil
@@ -547,7 +591,7 @@ func (d *Driver) CloseTab(ctx context.Context, tabID string) error {
 	if tabID == "" {
 		return errors.New("herdr tab close: empty tab id")
 	}
-	if _, err := d.run.Run(ctx, d.binary, "tab", "close", tabID); err != nil {
+	if err := d.send(ctx, nil, "tab.close", map[string]any{"tab_id": tabID}, "tab", "close", tabID); err != nil {
 		return fmt.Errorf("herdr tab close %s: %w", tabID, closeError(err))
 	}
 	return nil
@@ -558,14 +602,73 @@ func (d *Driver) CloseWorkspace(ctx context.Context, workspaceID string) error {
 	if workspaceID == "" {
 		return errors.New("herdr workspace close: empty workspace id")
 	}
-	if _, err := d.run.Run(ctx, d.binary, "workspace", "close", workspaceID); err != nil {
+	if err := d.send(ctx, nil, "workspace.close", map[string]any{"workspace_id": workspaceID}, "workspace", "close", workspaceID); err != nil {
 		return fmt.Errorf("herdr workspace close %s: %w", workspaceID, closeError(err))
+	}
+	return nil
+}
+
+// RenameWorkspace relabels workspaceID (`workspace.rename`).
+func (d *Driver) RenameWorkspace(ctx context.Context, workspaceID, label string) error {
+	if workspaceID == "" {
+		return errors.New("herdr workspace rename: empty workspace id")
+	}
+	params := map[string]any{"workspace_id": workspaceID, "label": label}
+	if err := d.send(ctx, nil, "workspace.rename", params, "workspace", "rename", workspaceID, label); err != nil {
+		return fmt.Errorf("herdr workspace rename %s: %w", workspaceID, err)
+	}
+	return nil
+}
+
+// worktreeCreatedResult is the result of `worktree.create` (`herdr worktree
+// create`): the new worktree and the focused workspace Herdr opened on it.
+//
+//	{"type":"worktree_created","workspace":{...},"tab":{...},"root_pane":{...},
+//	  "worktree":{"path":...,"branch":...,...}}
+type worktreeCreatedResult struct {
+	workspaceCreatedResult
+	Worktree struct {
+		Path string `json:"path"`
+	} `json:"worktree"`
+}
+
+// CreateWorktree creates a Git worktree of the repository at repoPath on a new
+// branch, and a focused workspace on it, in one `worktree.create` request:
+// Herdr picks the worktree's location. It returns the workspace like
+// FocusOrCreate does for a created one, plus the worktree's path.
+func (d *Driver) CreateWorktree(ctx context.Context, repoPath, branch string) (source.FocusResult, string, error) {
+	if repoPath == "" || branch == "" {
+		return source.FocusResult{}, "", errors.New("herdr worktree create: empty repository path or branch")
+	}
+	var created worktreeCreatedResult
+	params := map[string]any{"cwd": repoPath, "branch": branch, "focus": true}
+	if err := d.send(ctx, &created, "worktree.create", params, "worktree", "create", "--cwd", repoPath, "--branch", branch, "--focus"); err != nil {
+		return source.FocusResult{}, "", fmt.Errorf("herdr worktree create: %w", err)
+	}
+	if created.Workspace.WorkspaceID == "" || created.Tab.TabID == "" || created.RootPane.PaneID == "" || created.Worktree.Path == "" {
+		return source.FocusResult{}, "", errors.New("herdr worktree create: incomplete response")
+	}
+	return source.FocusResult{
+		WorkspaceID: created.Workspace.WorkspaceID,
+		Action:      source.HerdrActionCreated,
+		RootTabID:   created.Tab.TabID,
+		RootPaneID:  created.RootPane.PaneID,
+	}, created.Worktree.Path, nil
+}
+
+// OpenPluginPane opens a plugin pane entrypoint, focused, in placement
+// (`plugin.pane.open`; "popup" for the picker).
+func (d *Driver) OpenPluginPane(ctx context.Context, pluginID, entrypoint, placement string) error {
+	params := map[string]any{"plugin_id": pluginID, "entrypoint": entrypoint, "placement": placement, "focus": true}
+	if err := d.send(ctx, nil, "plugin.pane.open", params, "plugin", "pane", "open", "--plugin", pluginID, "--entrypoint", entrypoint, "--placement", placement); err != nil {
+		return fmt.Errorf("herdr plugin pane open %s/%s: %w", pluginID, entrypoint, err)
 	}
 	return nil
 }
 
 // closeError includes Herdr's stderr from exec.ExitError, including the
 // workspace_group_close_required code, while preserving the original error.
+// A socket rejection already carries its code in its message.
 func closeError(err error) error {
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && len(exit.Stderr) > 0 {
@@ -593,11 +696,11 @@ func rawPaneToPane(p rawPane) source.Pane {
 	}
 }
 
-// ReadPane returns the captured terminal buffer of a pane via
-// `herdr pane read <pane_id> --lines <lines> --format ansi`. Unlike the list
-// methods, ReadPane does not parse a JSON envelope: `--format ansi` returns
-// the raw terminal buffer as stdout, preserving the pane's real ANSI color
-// codes (unlike `--format text`, which strips them). Preserving color is the
+// ReadPane returns the captured terminal buffer of a pane: `pane.read` over
+// the socket answers it as result.read.text, while the CLI (`herdr pane read
+// <pane_id> --lines <lines> --format ansi`) prints the same text as stdout
+// instead of an envelope. The ansi format preserves the pane's real ANSI
+// color codes (unlike `--format text`, which strips them). Preserving color is the
 // point: the "active_pane" preview section exists to show the user what the
 // pane actually looks like right now, colors included. This is safe because
 // internal/tui/model.go's truncateToWidth is ANSI-aware (it delegates to
@@ -609,10 +712,23 @@ func (d *Driver) ReadPane(ctx context.Context, paneID string, lines int) (string
 		return "", errors.New("herdr pane read: empty pane id")
 	}
 	args := []string{"pane", "read", paneID}
+	params := map[string]any{"pane_id": paneID, "source": "recent", "format": "ansi", "strip_ansi": true}
 	if lines > 0 {
 		args = append(args, "--lines", strconv.Itoa(lines))
+		params["lines"] = lines
 	}
 	args = append(args, "--format", "ansi")
+	var read struct {
+		Read struct {
+			Text string `json:"text"`
+		} `json:"read"`
+	}
+	if ok, err := d.viaSocket(ctx, "pane.read", params, &read); ok {
+		if err != nil {
+			return "", fmt.Errorf("herdr pane read %s: %w", paneID, err)
+		}
+		return read.Read.Text, nil
+	}
 	out, err := d.run.Run(ctx, d.binary, args...)
 	if err != nil {
 		return "", fmt.Errorf("herdr pane read %s: %w", paneID, err)

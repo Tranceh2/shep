@@ -42,6 +42,10 @@ func TestMain(m *testing.M) {
 	case "attach_child_sigint":
 		os.Exit(runAttachChildSigint())
 	default:
+		// No test may reach a live Herdr: a real driver built without an
+		// injected one talks to HERDR_SOCKET_PATH, which is set whenever the
+		// suite runs inside a Herdr pane.
+		_ = os.Unsetenv("HERDR_SOCKET_PATH")
 		os.Exit(m.Run())
 	}
 }

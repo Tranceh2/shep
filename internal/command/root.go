@@ -326,7 +326,9 @@ func (a *App) setChosenAction(action tui.RowAction) {
 
 // Driver returns the active Herdr driver, lazily building a real one from the
 // loaded config when one was not injected. A valid HERDR_BIN_PATH is accepted
-// independently of PATH, matching the Herdr plugin runtime contract.
+// independently of PATH, matching the Herdr plugin runtime contract, and
+// inside Herdr the driver talks to HERDR_SOCKET_PATH instead of launching the
+// CLI for every request.
 func (a *App) Driver() source.HerdrDriver {
 	return a.driverWithOptions()
 }
@@ -339,7 +341,7 @@ func (a *App) pluginDriver() source.HerdrDriver {
 		return a.herdrDriver
 	}
 	cfg := a.Config()
-	a.herdrDriver = herdr.New(config.HerdrBinaryWithEnv(cfg, os.LookupEnv))
+	a.herdrDriver = herdr.New(config.HerdrBinaryWithEnv(cfg, os.LookupEnv), herdr.WithSocketPath(currentHerdrSocketPath()))
 	return a.herdrDriver
 }
 
@@ -351,7 +353,7 @@ func (a *App) driverWithOptions() source.HerdrDriver {
 	if !a.Probes().Herdr {
 		return nil
 	}
-	a.herdrDriver = herdr.New(config.HerdrBinaryWithEnv(cfg, os.LookupEnv))
+	a.herdrDriver = herdr.New(config.HerdrBinaryWithEnv(cfg, os.LookupEnv), herdr.WithSocketPath(currentHerdrSocketPath()))
 	return a.herdrDriver
 }
 

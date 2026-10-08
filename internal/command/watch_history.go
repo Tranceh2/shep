@@ -82,11 +82,11 @@ func (a *App) watchHistoryCmd() *cobra.Command {
 				}
 			}()
 
-			// The snapshot adapter reuses the existing CLI driver, so bootstrap
-			// membership comes from the same authoritative `herdr api snapshot`
-			// path the rest of shep uses. It is called once per bootstrap and
-			// never per focus event.
-			driver := herdr.New(config.HerdrBinaryWithEnv(a.Config(), os.LookupEnv))
+			// The snapshot adapter reuses the shared driver, so bootstrap
+			// membership comes from the same authoritative snapshot the rest
+			// of shep uses. It is called once per bootstrap and never per
+			// focus event.
+			driver := herdr.New(config.HerdrBinaryWithEnv(a.Config(), os.LookupEnv), herdr.WithSocketPath(socket))
 
 			// Ctrl-C / SIGTERM cancel the run context; Run then closes owned
 			// I/O, joins its workers, releases the flock, and removes only its

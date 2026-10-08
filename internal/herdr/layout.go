@@ -1,21 +1,18 @@
 package herdr
 
-// layout.go implements the dedicated JSON-RPC client for Herdr Protocol 22's
-// `layout.apply` method over HERDR_SOCKET_PATH.
+// layout.go implements Herdr Protocol 22's `layout.apply` method over
+// HERDR_SOCKET_PATH (framing in socket.go).
 //
-// This is deliberately a separate transport from the CommandRunner driver in
-// driver.go. `layout.apply` is the only path that applies a whole pane tree
-// atomically, and atomicity is the entire point: a piecemeal sequence of
-// `herdr pane split` subprocesses can fail halfway and leave visible pane
-// clutter behind, while one socket round trip either applies the layout or
-// changes nothing.
+// `layout.apply` is the only path that applies a whole pane tree atomically,
+// and atomicity is the entire point: a piecemeal sequence of split requests
+// can fail halfway and leave visible pane clutter behind, while one round trip
+// either applies the layout or changes nothing.
 //
-// The wire framing was byte-verified against the bundled schema of Herdr
-// 0.8.2 (`herdr api schema --json`, protocol 22, schema_version 1):
+// The request and result shapes were byte-verified against the bundled schema
+// of Herdr 0.8.2 (`herdr api schema --json`, protocol 22, schema_version 1):
 //
 //	request  {"id":"<id>","method":"layout.apply","params":<LayoutApplyParams>}\n
 //	success  {"id":"<id>","result":{"type":"layout_apply","layout":<LayoutDescription>}}
-//	error    {"id":"<id>","error":{"code":"<string>","message":"<string>"}}
 //
 // Two details of that schema are easy to get wrong and are pinned by tests:
 // `LayoutNode.command` is an argv ARRAY (not a shell string), and the error
@@ -26,12 +23,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net"
-	"os"
 	"strconv"
 	"sync/atomic"
-	"time"
 )
 
 // Node types and split directions accepted by Protocol 22. LayoutNode is an
@@ -55,47 +48,11 @@ const (
 	// so the decoder reads through an io.LimitReader (the same defense
 	// herdrwatch applies to its control socket).
 	maxLayoutResponseBytes = 1 << 20 // 1 MiB
-
-	// defaultLayoutTimeout applies when the caller's context carries no
-	// deadline. Without it a silent daemon would block the caller forever.
-	defaultLayoutTimeout = 10 * time.Second
 )
 
-// Sentinel errors let callers branch on the failure class without matching on
-// message text.
-var (
-	// ErrHerdrSocketUnavailable means the layout never reached the daemon:
-	// the socket was missing, the dial failed, or the connection died before
-	// a complete answer arrived. It always means "nothing was applied", which
-	// is what makes fail-closed degradation safe.
-	ErrHerdrSocketUnavailable = errors.New("herdr layout: socket unavailable")
-
-	// ErrHerdrMalformedResponse means the daemon answered with something this
-	// client cannot trust: invalid JSON, a truncated frame, an answer to a
-	// different request id, or a success envelope with no layout body.
-	ErrHerdrMalformedResponse = errors.New("herdr layout: malformed response")
-
-	// ErrHerdrResponseTooLarge means the response exceeded
-	// maxLayoutResponseBytes and was refused rather than buffered.
-	ErrHerdrResponseTooLarge = errors.New("herdr layout: response exceeds size limit")
-
-	// ErrInvalidLayout means the request was rejected locally, before any
-	// byte reached the socket.
-	ErrInvalidLayout = errors.New("herdr layout: invalid layout")
-)
-
-// HerdrRPCError is a rejection produced by the daemon itself. It is distinct
-// from a transport failure: the daemon was reached, understood the request,
-// and declined it. Code is a string because Protocol 22 uses symbolic codes
-// such as "invalid_layout" or "workspace_not_found".
-type HerdrRPCError struct {
-	Code    string
-	Message string
-}
-
-func (e *HerdrRPCError) Error() string {
-	return fmt.Sprintf("herdr layout: daemon rejected layout.apply: %s: %s", e.Code, e.Message)
-}
+// ErrInvalidLayout means the request was rejected locally, before any byte
+// reached the socket.
+var ErrInvalidLayout = errors.New("herdr layout: invalid layout")
 
 // LayoutNode is one node of the layout tree, mirroring Protocol 22's
 // internally tagged LayoutNode union.
@@ -161,7 +118,6 @@ type layoutIDFunc func() string
 // closes. That keeps the client free of shared mutable state and safe for
 // concurrent use.
 type LayoutClient struct {
-	dialer net.Dialer
 	nextID layoutIDFunc
 }
 
@@ -199,27 +155,6 @@ func NewLayoutClient(opts ...LayoutOption) *LayoutClient {
 // Compile-time proof that the concrete client satisfies the seam.
 var _ LayoutApplier = (*LayoutClient)(nil)
 
-// layoutRequest is the outgoing JSON-RPC frame.
-type layoutRequest struct {
-	ID     string            `json:"id"`
-	Method string            `json:"method"`
-	Params LayoutApplyParams `json:"params"`
-}
-
-// layoutResponse is the union of the daemon's success and error envelopes.
-// Exactly one of Result or Error is populated.
-type layoutResponse struct {
-	ID     string `json:"id"`
-	Result *struct {
-		Type   string             `json:"type"`
-		Layout *LayoutApplyResult `json:"layout"`
-	} `json:"result"`
-	Error *struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
-	} `json:"error"`
-}
-
 // ApplyLayout applies params atomically through the daemon listening on
 // socketPath.
 //
@@ -233,131 +168,20 @@ func (c *LayoutClient) ApplyLayout(ctx context.Context, socketPath string, param
 	if err := validateLayoutParams(socketPath, params); err != nil {
 		return nil, err
 	}
-
-	deadline, ctxHasDeadline := ctx.Deadline()
-	if !ctxHasDeadline {
-		deadline = time.Now().Add(defaultLayoutTimeout)
-	}
-
-	conn, err := c.dialer.DialContext(ctx, "unix", socketPath)
+	raw, err := callSocket(ctx, socketPath, c.nextID(), "layout.apply", params, maxLayoutResponseBytes)
 	if err != nil {
-		return nil, fmt.Errorf("%w: dial %s: %w", ErrHerdrSocketUnavailable, socketPath, err)
+		return nil, err
 	}
-	// The connection is owned entirely by this call, on every return path.
-	// The close error is intentionally dropped: the layout outcome is already
-	// decided by the response, and a close fault must not mask it.
-	defer func() { _ = conn.Close() }()
-
-	// A deadline alone does not cover mid-call cancellation, so a watcher
-	// closes the connection when ctx ends. done stops that watcher before the
-	// function returns so it cannot outlive the connection it guards.
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = conn.Close()
-		case <-done:
-		}
-	}()
-
-	if err := conn.SetDeadline(deadline); err != nil {
-		return nil, fmt.Errorf("%w: set deadline: %w", ErrHerdrSocketUnavailable, err)
+	var result struct {
+		Layout *LayoutApplyResult `json:"layout"`
 	}
-
-	id := c.nextID()
-	if err := writeLayoutRequest(conn, layoutRequest{ID: id, Method: "layout.apply", Params: params}); err != nil {
-		return nil, classifyLayoutIOError(ctx, ctxHasDeadline, err)
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return nil, fmt.Errorf("%w: layout.apply: %w", ErrHerdrMalformedResponse, err)
 	}
-
-	res, err := readLayoutResponse(conn, id)
-	if err != nil {
-		return nil, classifyLayoutIOError(ctx, ctxHasDeadline, err)
-	}
-	return res, nil
-}
-
-// writeLayoutRequest encodes req as a single newline-terminated frame. The
-// daemon reads one line per request, so the terminator is part of the
-// protocol, not cosmetic.
-func writeLayoutRequest(w io.Writer, req layoutRequest) error {
-	payload, err := json.Marshal(req)
-	if err != nil {
-		return fmt.Errorf("encode layout.apply request: %w", err)
-	}
-	payload = append(payload, '\n')
-	if _, err := w.Write(payload); err != nil {
-		return fmt.Errorf("write layout.apply request: %w", err)
-	}
-	return nil
-}
-
-// readLayoutResponse decodes one bounded response frame and maps it onto the
-// error taxonomy. wantID is the id the daemon must echo.
-func readLayoutResponse(r io.Reader, wantID string) (*LayoutApplyResult, error) {
-	// Read one byte past the limit so an oversized frame is detectable rather
-	// than silently truncated into a "malformed" verdict.
-	limited := io.LimitReader(r, maxLayoutResponseBytes+1)
-	raw, err := io.ReadAll(limited)
-	if err != nil {
-		return nil, fmt.Errorf("read layout.apply response: %w", err)
-	}
-	if len(raw) > maxLayoutResponseBytes {
-		return nil, fmt.Errorf("%w: exceeded %d bytes", ErrHerdrResponseTooLarge, maxLayoutResponseBytes)
-	}
-	if len(raw) == 0 {
-		return nil, fmt.Errorf("%w: daemon closed the connection without a response", ErrHerdrMalformedResponse)
-	}
-
-	var resp layoutResponse
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrHerdrMalformedResponse, err)
-	}
-
-	// A mismatched id means this frame answers some other request; trusting it
-	// would attribute an unrelated outcome to this layout.
-	if resp.ID != wantID {
-		return nil, fmt.Errorf("%w: response id %q does not match request id %q",
-			ErrHerdrMalformedResponse, resp.ID, wantID)
-	}
-
-	// The daemon reached a verdict and declined. This is not a transport
-	// failure and must not be reported as one.
-	if resp.Error != nil {
-		return nil, &HerdrRPCError{Code: resp.Error.Code, Message: resp.Error.Message}
-	}
-
-	if resp.Result == nil || resp.Result.Layout == nil {
+	if result.Layout == nil {
 		return nil, fmt.Errorf("%w: success envelope carries no layout body", ErrHerdrMalformedResponse)
 	}
-	return resp.Result.Layout, nil
-}
-
-// classifyLayoutIOError maps a transport fault onto the sentinel taxonomy.
-// Context faults are wrapped alongside ErrHerdrSocketUnavailable so callers
-// can match either the cause (why it stopped) or the class (nothing applied).
-//
-// ctxHasDeadline records whether the caller's context supplied the deadline
-// installed on the connection. It is needed because the socket deadline and
-// the context deadline expire at the same instant: the kernel can surface
-// os.ErrDeadlineExceeded a hair before ctx.Err() becomes non-nil, which would
-// otherwise make an ordinary caller timeout report as an unclassified socket
-// fault in a timing-dependent way.
-func classifyLayoutIOError(ctx context.Context, ctxHasDeadline bool, err error) error {
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return fmt.Errorf("%w: %w: %w", ErrHerdrSocketUnavailable, ctxErr, err)
-	}
-	if ctxHasDeadline && errors.Is(err, os.ErrDeadlineExceeded) {
-		return fmt.Errorf("%w: %w: %w", ErrHerdrSocketUnavailable, context.DeadlineExceeded, err)
-	}
-	if errors.Is(err, ErrHerdrMalformedResponse) || errors.Is(err, ErrHerdrResponseTooLarge) {
-		return err
-	}
-	var rpcErr *HerdrRPCError
-	if errors.As(err, &rpcErr) {
-		return err
-	}
-	return fmt.Errorf("%w: %w", ErrHerdrSocketUnavailable, err)
+	return result.Layout, nil
 }
 
 // validateLayoutParams enforces every precondition that can be checked

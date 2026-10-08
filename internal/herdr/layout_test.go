@@ -13,10 +13,10 @@ import (
 	"time"
 )
 
-// mockLayoutServer is an in-process Unix domain socket server standing in for
+// mockHerdrServer is an in-process Unix domain socket server standing in for
 // the Herdr daemon (R9.1). It never shells out and never touches a live
 // daemon, so the whole layout suite stays hermetic under -race.
-type mockLayoutServer struct {
+type mockHerdrServer struct {
 	path string
 
 	mu       sync.Mutex
@@ -30,10 +30,10 @@ type mockLayoutServer struct {
 // daemon that accepts a connection and then goes silent.
 type respondFn func(raw []byte) []byte
 
-// newMockLayoutServer starts a listener under a short temporary directory.
+// newMockHerdrServer starts a listener under a short temporary directory.
 // Darwin caps sun_path at 104 bytes, so t.TempDir() (which embeds the test
 // name) is not usable for sockets here.
-func newMockLayoutServer(t *testing.T, respond respondFn) *mockLayoutServer {
+func newMockHerdrServer(t *testing.T, respond respondFn) *mockHerdrServer {
 	t.Helper()
 
 	dir, err := os.MkdirTemp("", "sh")
@@ -52,7 +52,7 @@ func newMockLayoutServer(t *testing.T, respond respondFn) *mockLayoutServer {
 		t.Fatalf("net.Listen: %v", err)
 	}
 
-	s := &mockLayoutServer{path: path, closed: make(chan struct{})}
+	s := &mockHerdrServer{path: path, closed: make(chan struct{})}
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -108,7 +108,7 @@ func newMockLayoutServer(t *testing.T, respond respondFn) *mockLayoutServer {
 }
 
 // gotRequests returns a copy of every request line the server observed.
-func (s *mockLayoutServer) gotRequests() [][]byte {
+func (s *mockHerdrServer) gotRequests() [][]byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([][]byte, len(s.requests))
@@ -142,7 +142,7 @@ func twoPaneParams() LayoutApplyParams {
 
 func TestApplyLayout_SuccessOverUnixSocket(t *testing.T) {
 	// R1.1: a valid request produces a decoded LayoutApplyResult and nil error.
-	srv := newMockLayoutServer(t, func(raw []byte) []byte {
+	srv := newMockHerdrServer(t, func(raw []byte) []byte {
 		var req struct {
 			ID string `json:"id"`
 		}
@@ -181,7 +181,7 @@ func TestApplyLayout_RequestMatchesProtocol22Envelope(t *testing.T) {
 	// R1.1: the bytes on the wire must match the daemon's byte-verified
 	// Protocol 22 request shape: a newline-terminated {id, method, params}
 	// frame whose params is LayoutApplyParams.
-	srv := newMockLayoutServer(t, func(raw []byte) []byte {
+	srv := newMockHerdrServer(t, func(raw []byte) []byte {
 		var req struct {
 			ID string `json:"id"`
 		}
@@ -312,7 +312,7 @@ func TestApplyLayout_EmptySocketPathFailsBeforeDial(t *testing.T) {
 func TestApplyLayout_DaemonErrorResponse(t *testing.T) {
 	// R1.3: a daemon error body becomes a typed HerdrRPCError that preserves
 	// the remote code and message.
-	srv := newMockLayoutServer(t, func(raw []byte) []byte {
+	srv := newMockHerdrServer(t, func(raw []byte) []byte {
 		var req struct {
 			ID string `json:"id"`
 		}
@@ -355,7 +355,7 @@ func TestApplyLayout_DaemonErrorResponse(t *testing.T) {
 func TestApplyLayout_ContextDeadlineOnSilentDaemon(t *testing.T) {
 	// R1.2 / threat matrix: a daemon that accepts and never replies must not
 	// hang the caller past its context deadline.
-	srv := newMockLayoutServer(t, func([]byte) []byte { return nil })
+	srv := newMockHerdrServer(t, func([]byte) []byte { return nil })
 
 	client := NewLayoutClient()
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
@@ -382,7 +382,7 @@ func TestApplyLayout_ContextDeadlineOnSilentDaemon(t *testing.T) {
 func TestApplyLayout_ContextCancellationOnSilentDaemon(t *testing.T) {
 	// A caller-side cancellation must unblock the read and surface as
 	// context.Canceled rather than a generic timeout.
-	srv := newMockLayoutServer(t, func([]byte) []byte { return nil })
+	srv := newMockHerdrServer(t, func([]byte) []byte { return nil })
 
 	client := NewLayoutClient()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -458,7 +458,7 @@ func TestApplyLayout_RejectsUnusableResponses(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			body := tt.body
-			srv := newMockLayoutServer(t, func([]byte) []byte { return body })
+			srv := newMockHerdrServer(t, func([]byte) []byte { return body })
 
 			client := NewLayoutClient(WithLayoutIDFunc(func() string { return "x" }))
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -481,7 +481,7 @@ func TestApplyLayout_RejectsUnusableResponses(t *testing.T) {
 func TestApplyLayout_InvalidNodeTypeFailsBeforeSocketWrite(t *testing.T) {
 	// R8.1: a structurally invalid layout is rejected before any byte reaches
 	// the socket, so a bad compile can never half-apply a layout.
-	srv := newMockLayoutServer(t, func([]byte) []byte {
+	srv := newMockHerdrServer(t, func([]byte) []byte {
 		return successBody("unused")
 	})
 
@@ -529,7 +529,7 @@ func TestApplyLayout_ClosesConnectionOnEveryOutcome(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			srv := newMockLayoutServer(t, tt.respond)
+			srv := newMockHerdrServer(t, tt.respond)
 			client := NewLayoutClient(WithLayoutIDFunc(func() string { return "x" }))
 
 			const iterations = 25
@@ -555,7 +555,7 @@ func TestLayoutClient_UsableThroughLayoutApplierSeam(t *testing.T) {
 	// D2: the seam consumed by internal/templates must be satisfied by the
 	// concrete client, and calling through the interface must reach the same
 	// working transport rather than merely type-check.
-	srv := newMockLayoutServer(t, func(raw []byte) []byte {
+	srv := newMockHerdrServer(t, func(raw []byte) []byte {
 		var req struct {
 			ID string `json:"id"`
 		}
