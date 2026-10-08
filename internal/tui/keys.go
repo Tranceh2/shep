@@ -409,10 +409,11 @@ func (m *Model) toggleLayout() {
 	m.mode = nextResponsiveMode(*m, m.mode)
 }
 
-// expandCurrent handles Right on the highlighted row: manually expands a
-// RowCandidate Herdr workspace's tab/pane children (progressive disclosure
-// at an empty query — see expandedWorkspaces' doc comment). A no-op for any
-// other row kind.
+// expandCurrent handles Right on the highlighted row: a collapsed Herdr
+// workspace shows its tab/pane children (progressive disclosure at an empty
+// query — see expandedWorkspaces' doc comment), and on a workspace whose
+// children already show the cursor moves onto the first of them. A no-op for
+// any other row kind.
 func (m *Model) expandCurrent() tea.Cmd {
 	row, ok := m.currentRow()
 	if !ok || row.Kind != RowCandidate || !row.Expandable {
@@ -422,17 +423,32 @@ func (m *Model) expandCurrent() tea.Cmd {
 	if wsID == "" {
 		return nil
 	}
+	if m.cursor+1 < len(m.rows) && m.rows[m.cursor+1].Depth > 0 {
+		m.cursor++
+		return nil
+	}
 	m.expandedWorkspaces[wsID] = true
 	return m.applyFilter()
 }
 
-// collapseCurrent handles Left on the highlighted row: manually collapses a
-// RowCandidate Herdr workspace's expanded tab/pane children. A no-op for any
-// other row kind (including a RowTab/RowPane row: only the owning workspace
-// collapses, there is nothing to collapse on a leaf).
+// collapseCurrent handles Left on the highlighted row: a Herdr workspace
+// hides its expanded tab/pane children, and on one of those children the
+// cursor moves up to the workspace, which collapses. A no-op for any other
+// row kind.
 func (m *Model) collapseCurrent() tea.Cmd {
 	row, ok := m.currentRow()
-	if !ok || row.Kind != RowCandidate || !row.Expandable {
+	if !ok {
+		return nil
+	}
+	if row.Depth > 0 {
+		// Children follow their workspace row directly, so the nearest
+		// top-level row above is the parent.
+		for m.cursor > 0 && m.rows[m.cursor].Depth > 0 {
+			m.cursor--
+		}
+		row = m.rows[m.cursor]
+	}
+	if row.Kind != RowCandidate || !row.Expandable {
 		return nil
 	}
 	wsID := row.Candidate.Meta["workspace_id"]

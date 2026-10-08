@@ -243,6 +243,36 @@ func TestLeftRight_ExpandCollapseWorkspace(t *testing.T) {
 	}
 }
 
+// TestLeftRight_MoveThroughTheTree proves the arrows move through an
+// expanded workspace like a tree: Right on a workspace whose children show
+// enters its first child, and Left on a child moves back up to the
+// workspace and collapses it.
+func TestLeftRight_MoveThroughTheTree(t *testing.T) {
+	t.Parallel()
+	driver := &fakeTreeDriver{
+		tabs:  []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}},
+		panes: []source.Pane{{ID: "p1", WorkspaceID: "w1", TabID: "t1", CWD: "/svc/api"}},
+	}
+	base := []source.Candidate{herdrCandidate("backend", "/svc", "w1"), herdrCandidate("frontend", "/web", "w2")}
+	m := NewModelWithTree(base, nil, treeFromFake(driver), Layout{})
+	m, _ = update(t, m, key("right"))
+	if m.cursor != 0 || len(m.rows) != 4 {
+		t.Fatalf("after expanding: cursor %d rows %v, want the tree under the first workspace", m.cursor, rowSummary(m.rows))
+	}
+	m, _ = update(t, m, key("ctrl+l"))
+	if m.rows[m.cursor].Kind != RowTab {
+		t.Fatalf("Right on an expanded workspace: cursor on %v, want its first tab", rowSummary(m.rows[m.cursor:m.cursor+1]))
+	}
+	m, _ = update(t, m, key("down"))
+	if m.rows[m.cursor].Kind != RowPane {
+		t.Fatalf("setup: cursor on %v, want the pane", rowSummary(m.rows[m.cursor:m.cursor+1]))
+	}
+	m, _ = update(t, m, key("ctrl+h"))
+	if m.cursor != 0 || len(m.rows) != 2 {
+		t.Errorf("Left on a pane: cursor %d rows %v, want the collapsed workspace highlighted", m.cursor, rowSummary(m.rows))
+	}
+}
+
 // --- ctrl+t / ctrl+p target matrix, incl. unsupported pane action semantics ---
 
 // TestSelectWithTarget_RequiresCurrentPaneAndSupportedCandidate proves
