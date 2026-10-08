@@ -224,7 +224,7 @@ func (m Model) handleInput(chord, text string) (Model, tea.Cmd) {
 // unconditional cancel escape hatch;
 // up/down/ctrl+j/ctrl+k/pgup/pgdown/home/end scroll helpViewport. Every
 // other input — typed or pasted text, backspace, ctrl+w, alt+backspace,
-// ctrl+u, enter, ctrl+l, ctrl+t, ctrl+p, left/right — is swallowed: reading
+// ctrl+u, enter, ctrl+r, ctrl+t, ctrl+p, left/right — is swallowed: reading
 // help must never mutate the query, move the list cursor, change layout, or
 // select anything.
 func (m Model) handleHelpFocusedKey(chord string) (Model, tea.Cmd) {
@@ -294,8 +294,8 @@ func (m Model) cycleTabBackward() (Model, tea.Cmd) {
 
 // handleListFocusedKey applies one key press while FocusList owns focus:
 // the classic row-cursor/query-editing key set, extended with Left/Right
-// expand-collapse, Enter to select, ctrl+l to cycle the layout override and
-// pgup/pgdown to scroll the preview.
+// (or ctrl+h/ctrl+l) expand-collapse, Enter to select, ctrl+r to toggle the
+// preview and pgup/pgdown to scroll the preview.
 // ctrl+j/ctrl+k always move the cursor regardless of focus's usual up/down
 // mapping (kept as a stable alternate binding); plain "j"/"k" are
 // intentionally NOT bound to movement here so they fall through to the
@@ -305,8 +305,8 @@ func (m Model) handleListFocusedKey(chord, text string) (Model, tea.Cmd) {
 	switch chord {
 	case "enter":
 		return m.handleEnter()
-	case "ctrl+l":
-		m.cycleOrientationOverride()
+	case keyChordLayout:
+		m.toggleLayout()
 		return m, nil
 	case "pgup", "pgdown":
 		scrollViewport(&m.viewport, chord)
@@ -319,10 +319,10 @@ func (m Model) handleListFocusedKey(chord, text string) (Model, tea.Cmd) {
 		return m.moveListCursor(max(1, m.geometry().ListInnerRows/2))
 	case "ctrl+u":
 		return m.moveListCursor(-max(1, m.geometry().ListInnerRows/2))
-	case "right":
+	case "right", "ctrl+l":
 		m.cursorTouched = true
 		return m, tea.Batch(m.expandCurrent(), m.syncPreviewAfterSelectionChange())
-	case "left":
+	case "left", "ctrl+h":
 		m.cursorTouched = true
 		return m, tea.Batch(m.collapseCurrent(), m.syncPreviewAfterSelectionChange())
 	case "backspace":
@@ -390,17 +390,21 @@ func (m Model) selectWithTarget(target string) (Model, tea.Cmd) {
 	return m, tea.Quit
 }
 
-// cycleOrientationOverride toggles the session-only layout override between
-// auto and landscape (ctrl+l): auto -> landscape -> auto. "auto" is the empty
-// Orientation value, which re-engages the responsive width-based mode (see
-// nextResponsiveMode). m.mode is recomputed immediately against the current
-// width/height so the visible layout reacts to ctrl+l in the same step,
-// instead of staying stale until the next WindowSizeMsg/render.
-func (m *Model) cycleOrientationOverride() {
-	if m.layout.Orientation == "" {
-		m.layout.Orientation = LayoutLandscape
-	} else {
-		m.layout.Orientation = ""
+// toggleLayout switches what the picker shows (ctrl+r): the list alone while
+// the preview is showing, list and preview side by side otherwise. The
+// override lasts for the session and is dropped whenever the configured
+// orientation already shows what was asked for, so the responsive layout
+// keeps following the terminal size. A terminal too short for the preview
+// keeps the list alone. m.mode is recomputed immediately so the layout
+// changes in the same step, not at the next WindowSizeMsg.
+func (m *Model) toggleLayout() {
+	want, force := modeWide, LayoutLandscape
+	if m.mode == modeWide || m.mode == "" {
+		want, force = modeListOnly, LayoutListOnly
+	}
+	m.layout.Orientation = m.baseOrientation
+	if nextResponsiveMode(*m, m.mode) != want {
+		m.layout.Orientation = force
 	}
 	m.mode = nextResponsiveMode(*m, m.mode)
 }

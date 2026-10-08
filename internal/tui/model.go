@@ -13,8 +13,8 @@
 // ranks empty queries by frecency while non-empty queries retain fuzzy dominance
 // with history only affecting ties and near-ties (see buildRows' doc comment).
 // Tab/Shift+Tab cycle the tabs (views); Enter opens a candidate/tab/pane row;
-// Left/Right expand/collapse a Herdr workspace's tab/pane children; ctrl+l
-// toggles the session-only layout override (auto -> landscape -> auto);
+// Left/Right (ctrl+h/ctrl+l) collapse/expand a Herdr workspace's tab/pane
+// children; ctrl+r toggles the preview for the session (see toggleLayout);
 // pgup/pgdown scroll the preview. "?" opens a modal, scrollable help overlay
 // (FocusHelp) that "?"/Esc close back to the list; esc/ctrl+c/ctrl+g cancels
 // (Run then returns ErrCancelled), except Esc first clears a non-empty query
@@ -94,8 +94,8 @@ const snapshotTTL = 5 * time.Second
 // override, color theme, and row presentations. ListWidth/PreviewWidth are
 // each "auto" (or empty) or a percentage string like "60%"; see
 // config.ParsePercent. Orientation is "" (auto — the responsive width-based
-// mode described in nextResponsiveMode applies) or LayoutLandscape (forces
-// wide/side-by-side mode).
+// mode described in nextResponsiveMode applies), LayoutLandscape (forces
+// wide/side-by-side mode) or, set only by the ctrl+r toggle, LayoutListOnly.
 type Layout struct {
 	ListWidth    string
 	PreviewWidth string
@@ -161,8 +161,12 @@ type Layout struct {
 // the responsive width-based mode (see nextResponsiveMode) picks wide vs.
 // list-only from the reported terminal size, with hysteresis so a borderline
 // resize never flaps between modes every frame. LayoutLandscape forces wide
-// mode (still subject to the terminal-height floor).
-const LayoutLandscape = "landscape"
+// mode (still subject to the terminal-height floor); LayoutListOnly, which
+// only the session's ctrl+r toggle sets, hides the preview.
+const (
+	LayoutLandscape = "landscape"
+	LayoutListOnly  = "list"
+)
 
 // ErrCancelled is the quiet cancellation sentinel returned by Run when the
 // user quits without selecting (esc/ctrl+c/ctrl+g). Callers use errors.Is to
@@ -247,6 +251,9 @@ type Model struct {
 	styles              *styleSet
 	// formats is every kind of row's prepared presentation (see rowparts.go).
 	formats *rowFormats
+	// baseOrientation is the configured Layout.Orientation: the ctrl+r
+	// toggle returns to it whenever it already shows what was asked for.
+	baseOrientation string
 
 	// currentPane is the Herdr pane shep is running inside, queried once by
 	// the caller and threaded in via WithCurrentPane. nil means "no current
@@ -563,6 +570,7 @@ func newModelWithLayout(candidates []source.Candidate, renderer preview.Renderer
 		renderer:           renderer,
 		renderCtx:          renderCtx,
 		layout:             layout,
+		baseOrientation:    layout.Orientation,
 		theme:              th,
 		styles:             styles,
 		formats:            formats,
@@ -643,7 +651,7 @@ func (m Model) SelectedAction() RowAction { return m.selectedAction }
 func (m Model) Cancelled() bool { return m.cancelled }
 
 // Layout returns the model's current session-only Layout (list/preview
-// widths, orientation override, theme), reflecting any live ctrl+l toggle.
+// widths, orientation override, theme), reflecting any live ctrl+r toggle.
 // It never reads back from — or writes to — the config.TUIConfig the caller
 // may have built it from.
 func (m Model) Layout() Layout { return m.layout }

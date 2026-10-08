@@ -300,14 +300,14 @@ The picker is one grid with a single frame (Herdr's popup border when it runs as
 | `Up` / `Down`, `Ctrl+K` / `Ctrl+J` | List | Move selection cursor up / down one row |
 | `Ctrl+U` / `Ctrl+D` | List | Move selection cursor up / down half the visible list rows (at least one) |
 | `PageUp` / `PageDown` | List | Scroll the preview viewport up / down one page without moving the list cursor |
-| `Left` / `Right` | List | Collapse / expand a workspace's tabs and panes |
+| `Left` / `Right`, `Ctrl+H` / `Ctrl+L` | List | Collapse / expand a workspace's tabs and panes |
 | `Tab` / `Shift+Tab` | Global (except help) | Cycle configured top tabs in order (defaults to `all` ↔ `agents`) |
 | `Enter` | List | Open the highlighted row |
 | `Ctrl+T` | Inside Herdr | Open selected entry as a new tab in current workspace |
 | `Ctrl+P` | Inside Herdr | Open selected entry as a split pane in current workspace |
 | `Ctrl+F` | List | Toggle persistent pin status on the selected top-level candidate, when pinning is configured |
 | `Ctrl+X` | List | Close the highlighted open Herdr pane, tab, or workspace (with confirmation if configured) |
-| `Ctrl+L` | List | Cycle layout override between auto and landscape |
+| `Ctrl+R` | List | Show or hide the preview for the session |
 | `Backspace` | List | Delete the last query character |
 | `Ctrl+W` / `Alt+Backspace` | List | Delete the last query word |
 | `?` | List | Open the in-app help overlay (`?` / `Esc` closes it) |

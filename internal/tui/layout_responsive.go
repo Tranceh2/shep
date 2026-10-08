@@ -29,12 +29,15 @@ const hysteresisMargin = 6
 
 // nextResponsiveMode computes the AUTO responsive mode for m.width, given the
 // previous mode prev (hysteresis band around wideBreakpoint — see
-// hysteresisMargin), UNLESS the user has forced an orientation via ctrl+l
-// (m.layout.Orientation == LayoutLandscape), in which case wide is forced
-// (still subject to the terminal-height floor so a forced layout can never
-// overflow a too-short terminal).
+// hysteresisMargin), UNLESS an orientation is forced: LayoutListOnly (the
+// ctrl+r toggle) hides the preview, and LayoutLandscape (config or ctrl+r)
+// forces wide, still subject to the terminal-height floor so a forced layout
+// can never overflow a too-short terminal.
 func nextResponsiveMode(m Model, prev string) string {
-	if forced := m.layout.Orientation; forced != "" {
+	switch m.layout.Orientation {
+	case LayoutListOnly:
+		return modeListOnly
+	case LayoutLandscape:
 		if heightForcesListOnly(m) {
 			return modeListOnly
 		}

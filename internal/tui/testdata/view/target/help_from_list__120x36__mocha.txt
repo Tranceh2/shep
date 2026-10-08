@@ -5,7 +5,7 @@
    ↑/↓, ctrl+k/ctrl+j     move                                  api web         both terms (space is AND)
    ctrl+u/ctrl+d          half page up/down                     api|web         either term (OR)
    pgup/pgdn              scroll the preview                    'api            exact text, closing quote optional
-   ←/→                    collapse/expand                       "api gw"        exact phrase ('api gw' too)
+   ←/→, ctrl+h/ctrl+l     collapse/expand                       "api gw"        exact phrase ('api gw' too)
    tab/shift+tab          next/previous view                    ^back           starts with
                                                                 end$            ends with
  Act                                                            ^shep$          the whole text is exactly
@@ -23,7 +23,7 @@
    esc                    clear search, then quit
 
  Layout
-   ctrl+l                 auto/landscape layout
+   ctrl+r                 show or hide the preview
 
  Session
    ctrl+c, ctrl+g         quit

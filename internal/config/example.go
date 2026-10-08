@@ -94,8 +94,8 @@ template = "default"
 # glyphs. list_width/preview_width are "auto" or a percentage like "60%"
 # (share of the split axis). layout is "landscape" (forces side-by-side) or
 # omitted for the responsive default (the picker chooses wide or list-only
-# from terminal width); ctrl+l toggles session-only auto/landscape while the
-# picker is open.
+# from terminal width); ctrl+r shows or hides the preview for the session
+# while the picker is open.
 [tui]
 # tabs lists the views cycled with tab / shift+tab, in order: all, agents, a
 # built-in source name, a [[sources.custom]] name, or a group workspace id. A

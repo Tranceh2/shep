@@ -15,7 +15,7 @@ const (
 	keyChordAltBksp   = "alt+backspace"
 	keyChordCtrlT     = "ctrl+t"
 	keyChordCtrlP     = "ctrl+p"
-	keyChordCtrlL     = "ctrl+l"
+	keyChordLayout    = "ctrl+r"
 	keyChordPin       = "ctrl+f"
 	keyChordClose     = "ctrl+x"
 	keyChordEsc       = "esc"
@@ -118,7 +118,7 @@ var keyMap = []helpSection{
 		{chord: "↑/↓, ctrl+k/ctrl+j", chordASCII: "up/down, ctrl+k/ctrl+j", help: "move"},
 		{chord: "ctrl+u/ctrl+d", help: "half page up/down"},
 		{chord: "pgup/pgdn", help: "scroll the preview"},
-		{chord: "←/→", chordASCII: "left/right", help: "collapse/expand"},
+		{chord: "←/→, ctrl+h/ctrl+l", chordASCII: "left/right, ctrl+h/ctrl+l", help: "collapse/expand"},
 		keyBindingTab,
 	}},
 	{"Act", []keyBinding{keyBindingEnter, keyBindingCtrlT, keyBindingCtrlP, keyBindingPin, keyBindingClose}},
@@ -128,7 +128,7 @@ var keyMap = []helpSection{
 		{chord: keyChordCtrlW + ", " + keyChordAltBksp, help: "delete a word"},
 		keyBindingEsc,
 	}},
-	{"Layout", []keyBinding{{chord: keyChordCtrlL, help: "auto/landscape layout"}}},
+	{"Layout", []keyBinding{{chord: keyChordLayout, help: "show or hide the preview"}}},
 	{"Session", []keyBinding{{chord: keyChordCtrlC + ", " + keyChordCtrlG, help: "quit"}}},
 }
 

@@ -328,7 +328,7 @@ func treeActiveFor(matches []source.Candidate) bool {
 // configured tabs, order (the source order the picker groups rows in — the
 // same order source.Registry.Enabled() collects candidates in) and the
 // resolved row presentations. This is the user's configured DEFAULT layout
-// for the session — the live ctrl+l keybinding may flip the orientation
+// for the session — the live ctrl+r keybinding may flip the orientation
 // in-memory afterwards without ever writing back to cfg. The theme is
 // selected separately, once per process (see App.selectedTheme).
 func layoutFromConfig(cfg *config.Config, order []string) tui.Layout {

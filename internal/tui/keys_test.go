@@ -211,38 +211,34 @@ func TestEnter_OnCandidateSelectsAndQuits(t *testing.T) {
 
 // --- Expand/collapse ---
 
-// TestLeftRight_ExpandCollapseWorkspace proves Right expands a workspace's
-// tab/pane children at an empty query and Left collapses them again.
+// TestLeftRight_ExpandCollapseWorkspace proves Right (or ctrl+l) expands a
+// workspace's tab/pane children at an empty query and Left (or ctrl+h)
+// collapses them again.
 func TestLeftRight_ExpandCollapseWorkspace(t *testing.T) {
 	t.Parallel()
-	driver := &fakeTreeDriver{tabs: []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}}}
-	tree := treeFromFake(driver)
-	base := []source.Candidate{herdrCandidate("backend", "/svc", "w1")}
-	m := NewModelWithTree(base, nil, tree, Layout{})
-	m.cursor = 0 // the workspace row (no group header anymore)
+	for _, keys := range [][2]string{{"right", "left"}, {"ctrl+l", "ctrl+h"}} {
+		driver := &fakeTreeDriver{tabs: []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}}}
+		tree := treeFromFake(driver)
+		base := []source.Candidate{herdrCandidate("backend", "/svc", "w1")}
+		m := NewModelWithTree(base, nil, tree, Layout{})
+		m.cursor = 0 // the workspace row (no group header anymore)
 
-	m, _ = update(t, m, key("right"))
-	foundTab := false
-	for _, r := range m.rows {
-		if r.Kind == RowTab {
-			foundTab = true
+		m, _ = update(t, m, key(keys[0]))
+		foundTab := false
+		for _, r := range m.rows {
+			if r.Kind == RowTab {
+				foundTab = true
+			}
 		}
-	}
-	if !foundTab {
-		t.Fatalf("expected a RowTab after Right on an expandable workspace, rows=%+v", m.rows)
-	}
+		if !foundTab {
+			t.Fatalf("expected a RowTab after %s on an expandable workspace, rows=%+v", keys[0], m.rows)
+		}
 
-	// Move cursor back onto the workspace row before collapsing (Left
-	// collapses whichever row is highlighted).
-	for i, r := range m.rows {
-		if r.Kind == RowCandidate {
-			m.cursor = i
-		}
-	}
-	m, _ = update(t, m, key("left"))
-	for _, r := range m.rows {
-		if r.Kind == RowTab {
-			t.Fatalf("expected no RowTab after Left collapses the workspace, rows=%+v", m.rows)
+		m, _ = update(t, m, key(keys[1]))
+		for _, r := range m.rows {
+			if r.Kind == RowTab {
+				t.Fatalf("expected no RowTab after %s collapses the workspace, rows=%+v", keys[1], m.rows)
+			}
 		}
 	}
 }
@@ -424,60 +420,75 @@ func TestSelectWithTarget_EligiblePaneDispatchUnchanged(t *testing.T) {
 	}
 }
 
-// --- ctrl+l layout cycling ---
+// --- ctrl+r layout toggle ---
 
-// TestCtrlL_TogglesAutoLandscapeAuto proves the two-state toggle.
-func TestCtrlL_TogglesAutoLandscapeAuto(t *testing.T) {
+// TestCtrlR_TogglesWhatIsVisible proves ctrl+r always changes the visible
+// layout, in the same key step: side by side becomes list only and back. At
+// a wide terminal (the Herdr popup) the responsive layout is already side by
+// side, so the first toggle must hide the preview; at a narrow one it must
+// show it. Toggling back returns to the configured orientation, so the
+// layout keeps following the terminal size.
+func TestCtrlR_TogglesWhatIsVisible(t *testing.T) {
 	t.Parallel()
-	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
-	if m.layout.Orientation != "" {
-		t.Fatalf("initial orientation = %q, want auto (\"\")", m.layout.Orientation)
-	}
-	m, _ = update(t, m, key("ctrl+l"))
-	if m.layout.Orientation != LayoutLandscape {
-		t.Errorf("after 1st ctrl+l: orientation = %q, want landscape", m.layout.Orientation)
-	}
-	m, _ = update(t, m, key("ctrl+l"))
-	if m.layout.Orientation != "" {
-		t.Errorf("after 2nd ctrl+l: orientation = %q, want back to auto", m.layout.Orientation)
+	for _, tc := range []struct {
+		name               string
+		width              int
+		start, toggled     string
+		toggledOrientation string
+	}{
+		{"wide terminal", 120, modeWide, modeListOnly, LayoutListOnly},
+		{"narrow terminal", 64, modeListOnly, modeWide, LayoutLandscape},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
+			m, _ = update(t, m, sizeMsg(tc.width, 30))
+			if m.mode != tc.start {
+				t.Fatalf("setup: mode = %q, want %q", m.mode, tc.start)
+			}
+			m, _ = update(t, m, key("ctrl+r"))
+			if m.mode != tc.toggled || m.layout.Orientation != tc.toggledOrientation {
+				t.Errorf("after ctrl+r: mode %q orientation %q, want %q %q", m.mode, m.layout.Orientation, tc.toggled, tc.toggledOrientation)
+			}
+			m, _ = update(t, m, key("ctrl+r"))
+			if m.mode != tc.start || m.layout.Orientation != "" {
+				t.Errorf("after 2nd ctrl+r: mode %q orientation %q, want %q back on auto", m.mode, m.layout.Orientation, tc.start)
+			}
+		})
 	}
 }
 
-// TestCtrlL_RecomputesModeImmediately proves that toggling the orientation
-// override recomputes m.mode in the same key handling step, instead of
-// leaving the cached mode stale until the next tea.WindowSizeMsg. A narrow
-// terminal (modeListOnly) forcing landscape via ctrl+l must show the
-// side-by-side layout right away — not only after a subsequent resize.
-func TestCtrlL_RecomputesModeImmediately(t *testing.T) {
+// TestCtrlR_KeepsAConfiguredLandscape proves toggling back restores a
+// configured landscape orientation rather than switching to auto.
+func TestCtrlR_KeepsAConfiguredLandscape(t *testing.T) {
 	t.Parallel()
-	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
-	m, _ = update(t, m, sizeMsg(64, 24)) // narrow: resolves modeListOnly
+	m := NewModelWithLayout([]source.Candidate{zoxideCandidate("a", "/a")}, nil, Layout{Orientation: LayoutLandscape})
+	m, _ = update(t, m, sizeMsg(64, 30))
+	m, _ = update(t, m, key("ctrl+r"))
 	if m.mode != modeListOnly {
-		t.Fatalf("setup: expected mode = modeListOnly at a narrow width, got %v", m.mode)
+		t.Fatalf("after ctrl+r: mode = %q, want list only", m.mode)
 	}
-	m, _ = update(t, m, key("ctrl+l")) // force landscape
-	if m.layout.Orientation != LayoutLandscape {
-		t.Fatalf("setup: expected orientation forced to landscape, got %q", m.layout.Orientation)
-	}
-	if m.mode != modeWide {
-		t.Errorf("mode after ctrl+l = %q, want modeWide immediately (must not wait for a WindowSizeMsg)", m.mode)
-	}
-
-	// Toggling back to auto at the same narrow width must revert mode to
-	// modeListOnly immediately too, not stay stuck on modeWide.
-	m, _ = update(t, m, key("ctrl+l")) // back to auto
-	if m.layout.Orientation != "" {
-		t.Fatalf("setup: expected orientation back to auto, got %q", m.layout.Orientation)
-	}
-	if m.mode != modeListOnly {
-		t.Errorf("mode after 2nd ctrl+l = %q, want modeListOnly immediately (auto at a narrow width)", m.mode)
+	m, _ = update(t, m, key("ctrl+r"))
+	if m.mode != modeWide || m.layout.Orientation != LayoutLandscape {
+		t.Errorf("after 2nd ctrl+r: mode %q orientation %q, want the configured landscape", m.mode, m.layout.Orientation)
 	}
 }
 
-// --- List-only actions (enter/ctrl+l/left/right) are no-ops off-List ---
+// TestCtrlR_TooShortTerminalKeepsTheListAlone proves a terminal below the
+// preview's height floor stays list only.
+func TestCtrlR_TooShortTerminalKeepsTheListAlone(t *testing.T) {
+	t.Parallel()
+	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
+	m, _ = update(t, m, sizeMsg(120, minPreviewHeight-1))
+	m, _ = update(t, m, key("ctrl+r"))
+	if m.mode != modeListOnly {
+		t.Errorf("mode = %q, want list only below the height floor", m.mode)
+	}
+}
 
-// TestListOnlyActions_NoOpInFocusHelp proves the same enter/ctrl+l/left/
-// right no-op contract while FocusHelp.
+// --- List-only actions (enter/ctrl+r/left/right) are no-ops off-List ---
+
+// TestListOnlyActions_NoOpInFocusHelp proves the same enter/ctrl+r/left/
+// right (and ctrl+h/ctrl+l) no-op contract while FocusHelp.
 func TestListOnlyActions_NoOpInFocusHelp(t *testing.T) {
 	t.Parallel()
 	driver := &fakeTreeDriver{tabs: []source.Tab{{ID: "t1", WorkspaceID: "w1", Label: "api"}}}
@@ -489,7 +500,7 @@ func TestListOnlyActions_NoOpInFocusHelp(t *testing.T) {
 	startOrientation := m.layout.Orientation
 	m.focus = FocusHelp
 
-	for _, k := range []string{"enter", "ctrl+l", "left", "right"} {
+	for _, k := range []string{"enter", "ctrl+r", "left", "right", "ctrl+h", "ctrl+l"} {
 		m, cmd := update(t, m, key(k))
 		if cmd != nil {
 			t.Errorf("%s while FocusHelp: expected no Cmd, got one", k)

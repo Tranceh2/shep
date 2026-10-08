@@ -67,9 +67,9 @@ func TestAutoWidthMode_Hysteresis(t *testing.T) {
 	}
 }
 
-// TestNextResponsiveMode_ForcedLandscapeForcesWide proves a ctrl+l forced
-// landscape orientation (Layout.Orientation set) always wins over the
-// width-based auto mode.
+// TestNextResponsiveMode_ForcedLandscapeForcesWide proves a forced landscape
+// orientation (config or ctrl+r) always wins over the width-based auto mode,
+// and so does ctrl+r's list-only override.
 func TestNextResponsiveMode_ForcedLandscapeForcesWide(t *testing.T) {
 	t.Parallel()
 	m := Model{width: 40, height: 40, layout: Layout{Orientation: LayoutLandscape}}
@@ -79,6 +79,10 @@ func TestNextResponsiveMode_ForcedLandscapeForcesWide(t *testing.T) {
 	m.layout.Orientation = ""
 	if got := nextResponsiveMode(m, ""); got != modeListOnly {
 		t.Errorf("auto at the same narrow width = %q, want modeListOnly", got)
+	}
+	m.width, m.layout.Orientation = 200, LayoutListOnly
+	if got := nextResponsiveMode(m, modeWide); got != modeListOnly {
+		t.Errorf("forced list only at a wide width = %q, want modeListOnly", got)
 	}
 }
 
