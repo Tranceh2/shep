@@ -23,6 +23,7 @@ import (
 	"github.com/tranceh2/shep/internal/resolver"
 	"github.com/tranceh2/shep/internal/selector"
 	"github.com/tranceh2/shep/internal/source"
+	"github.com/tranceh2/shep/internal/sourcecache"
 	"github.com/tranceh2/shep/internal/templates"
 	"github.com/tranceh2/shep/internal/tui"
 	"github.com/tranceh2/shep/internal/workspacename"
@@ -630,17 +631,22 @@ func (a *App) runAsyncTUI(ctx context.Context, producers []tui.SourceProducer, q
 // App.settings) in the producer's own goroutine.
 func (a *App) buildProviderProducer(p source.Provider) tui.SourceProducer {
 	settings := a.settings()
+	cache, cached := a.sourceCache(p.Name())
 	return func(ctx context.Context) tui.SourceResultMsg {
 		raw, err := p.List(ctx)
 		cands := make([]source.Candidate, 0, len(raw))
 		for _, c := range raw {
 			cands = append(cands, c.Clone())
 		}
+		normalized := resolver.NormalizedPaths(cands)
+		if cached && err == nil {
+			_ = sourcecache.Save(cache.dir, p.Name(), cache.fingerprint, sourcecache.Result{Candidates: cands, NormalizedPaths: normalized})
+		}
 		settings.Attach(cands)
 		return tui.SourceResultMsg{
 			Source:          p.Name(),
 			Candidates:      cands,
-			NormalizedPaths: resolver.NormalizedPaths(cands),
+			NormalizedPaths: normalized,
 			Err:             err,
 		}
 	}
@@ -849,6 +855,11 @@ func (a *App) streamingProducersForView(cmdCtx context.Context, view string) []t
 			// share the same generic producer builder (see
 			// App.buildProviderProducer): they all just call p.List(ctx) and
 			// stream the result through tui.SourceResultMsg.Err on failure.
+			// A slow source's last result streams first (see
+			// App.buildCachedProducer).
+			if cached := a.buildCachedProducer(p.Name()); cached != nil {
+				producers = append(producers, cached)
+			}
 			producers = append(producers, a.buildProviderProducer(p))
 		}
 	}

@@ -45,15 +45,16 @@ func TestMain(m *testing.M) {
 		// No test may reach a live Herdr: a real driver built without an
 		// injected one talks to HERDR_SOCKET_PATH, which is set whenever the
 		// suite runs inside a Herdr pane. Nor may one write the user's state
-		// (the picker's search history).
+		// or cache (the search history, saved source results).
 		_ = os.Unsetenv("HERDR_SOCKET_PATH")
-		state, err := os.MkdirTemp("", "shep-state")
+		scratch, err := os.MkdirTemp("", "shep-xdg")
 		if err != nil {
 			panic(err)
 		}
-		_ = os.Setenv("XDG_STATE_HOME", state)
+		_ = os.Setenv("XDG_STATE_HOME", filepath.Join(scratch, "state"))
+		_ = os.Setenv("XDG_CACHE_HOME", filepath.Join(scratch, "cache"))
 		code := m.Run()
-		_ = os.RemoveAll(state)
+		_ = os.RemoveAll(scratch)
 		os.Exit(code)
 	}
 }

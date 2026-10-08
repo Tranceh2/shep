@@ -525,6 +525,12 @@ max_depth = 3
 ignore = [".cache", "node_modules", "vendor", "dist", "target"]
 ```
 
+The projects scan and every `[[sources.custom]]` command are the slow
+sources: the picker shows their last result the moment it opens and replaces
+it when they answer again. The saved results live in
+`$XDG_CACHE_HOME/shep/sources` (`~/.cache/shep/sources` by default); one
+saved under a different configuration of the source is never shown.
+
 ---
 
 ### `[preview]` — Preview Pane Configuration

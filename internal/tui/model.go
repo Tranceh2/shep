@@ -249,13 +249,16 @@ type Model struct {
 	// state.
 	mode string
 
-	selected            source.Candidate
-	hasSelected         bool
-	selectedAction      RowAction
-	cancelled           bool
-	activeTab           string
-	groupCandidates     map[string][]source.Candidate
-	groupLoading        map[string]bool
+	selected        source.Candidate
+	hasSelected     bool
+	selectedAction  RowAction
+	cancelled       bool
+	activeTab       string
+	groupCandidates map[string][]source.Candidate
+	groupLoading    map[string]bool
+	// freshSources names the sources whose producer answered, so a saved
+	// result arriving later (SourceResultMsg.Cached) cannot replace theirs.
+	freshSources        map[string]bool
 	groupErrors         map[string]error
 	groupGeneration     int
 	snapshotUnavailable error
@@ -435,7 +438,11 @@ type SourceResultMsg struct {
 	CurrentPane     *source.Pane
 	RankingSnapshot *ranking.Snapshot
 	Err             error
-	producerID      int
+	// Cached marks a slow source's last saved result, shown until the
+	// source answers again: it never replaces the source's fresh result, and
+	// an empty one changes nothing.
+	Cached     bool
+	producerID int
 }
 
 // SourceProducer is an independent candidate or state loader executed concurrently
@@ -873,8 +880,18 @@ func (m Model) handleSourceResult(msg SourceResultMsg) (Model, tea.Cmd) {
 	if m.pendingProducers != nil {
 		delete(m.pendingProducers, msg.producerID)
 	}
-	m.addNormalizedPaths(msg.NormalizedPaths)
 	m.loadingCandidates = len(m.pendingProducers) > 0
+	if msg.Cached {
+		if len(msg.Candidates) == 0 || m.freshSources[msg.Source] {
+			return m, nil
+		}
+	} else if msg.Source != "ranking" {
+		if m.freshSources == nil {
+			m.freshSources = make(map[string]bool)
+		}
+		m.freshSources[msg.Source] = true
+	}
+	m.addNormalizedPaths(msg.NormalizedPaths)
 
 	if msg.RankingSnapshot != nil {
 		m.setRankingSnapshot(*msg.RankingSnapshot)

@@ -380,7 +380,7 @@ func TestBuildStreamingProducers_IncludesCustomSourceProviderCandidates(t *testi
 	var sawSource bool
 	for _, p := range producers {
 		msg := p(context.Background())
-		if msg.Source == "prs" {
+		if msg.Source == "prs" && !msg.Cached {
 			sawSource = true
 			if msg.Err != nil {
 				t.Fatalf("custom source producer Err = %v, want nil", msg.Err)
@@ -416,7 +416,7 @@ func TestBuildStreamingProducers_CustomSourceFailureSurfacesVisibleError(t *test
 	var sawErr bool
 	for _, p := range producers {
 		msg := p(context.Background())
-		if msg.Source == "prs" {
+		if msg.Source == "prs" && !msg.Cached {
 			if msg.Err == nil {
 				t.Fatal("expected a visible error from the failing custom source producer")
 			}
@@ -713,5 +713,44 @@ func TestOpen_FocusMRU_StaleClosedIDsFilteredInSynchronousPath(t *testing.T) {
 	mru := app.rankingData.WorkspaceMRU()
 	if len(mru) != 3 || mru[0] != "ws-c" || mru[1] != "ws-b" || mru[2] != "ws-a" {
 		t.Fatalf("filtered MRU = %v, want [ws-c ws-b ws-a]", mru)
+	}
+}
+
+// TestBuildStreamingProducers_SlowSourcesStreamTheirLastResultFirst proves a
+// custom source's fresh result is saved and the next picker streams it
+// first, marked Cached, while a changed configuration of the source streams
+// nothing saved.
+func TestBuildStreamingProducers_SlowSourcesStreamTheirLastResultFirst(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	cfg := config.Defaults()
+	cfg.General.SourceOrder = []string{"prs"}
+	cfg.Sources.Custom = []config.CustomSourceConfig{{
+		Name:    "prs",
+		Command: []string{"printf", `[{"label":"PR 42","command":"gh pr view 42"}]`},
+	}}
+	run := func(cfg *config.Config) (cached []source.Candidate, sawCached bool) {
+		app := New()
+		app.cfg = cfg
+		app.probes = config.Probes{}
+		for _, p := range app.streamingProducersForView(context.Background(), "") {
+			if msg := p(context.Background()); msg.Source == "prs" && msg.Cached {
+				sawCached = true
+				cached = append(cached, msg.Candidates...)
+			}
+		}
+		return cached, sawCached
+	}
+
+	if cached, saw := run(cfg); !saw || len(cached) != 0 {
+		t.Fatalf("first run: cached producer %v with %+v, want one with nothing saved yet", saw, cached)
+	}
+	cached, _ := run(cfg)
+	if len(cached) != 1 || cached[0].Label != "PR 42" || cached[0].Presentation == nil {
+		t.Fatalf("second run: cached %+v, want the saved PR 42 row with its presentation", cached)
+	}
+	changed := *cfg
+	changed.Sources.Custom = []config.CustomSourceConfig{{Name: "prs", Command: []string{"printf", "[]"}}}
+	if cached, _ := run(&changed); len(cached) != 0 {
+		t.Errorf("changed configuration: cached %+v, want nothing", cached)
 	}
 }

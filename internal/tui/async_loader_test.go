@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -819,5 +820,39 @@ func TestModel_AsyncLoader_FocusMRU_OrderingAndArrivalOrderInvariance(t *testing
 				t.Errorf("case 2: row[%d] = %q, want %q", i, m.rows[i].Candidate.Label, label)
 			}
 		}
+	}
+}
+
+// rowLabels lists the labels of m's rows.
+func rowLabels(m Model) []string {
+	var labels []string
+	for _, r := range m.rows {
+		labels = append(labels, r.Candidate.Label)
+	}
+	return labels
+}
+
+// TestSourceResult_SavedRowsShowUntilTheFreshOnes proves a slow source's saved
+// result (Cached) fills the list until the source answers, the fresh result
+// replaces it, and a saved result arriving after the fresh one, or an empty
+// saved one, changes nothing.
+func TestSourceResult_SavedRowsShowUntilTheFreshOnes(t *testing.T) {
+	t.Parallel()
+	m := NewModelWithProducers(nil, "", nil, context.Background(), Layout{})
+	m, _ = update(t, m, SourceResultMsg{Source: config.SourceProjects, Cached: true})
+	if len(m.rows) != 0 {
+		t.Fatalf("empty saved result: rows %v, want none", rowLabels(m))
+	}
+	m, _ = update(t, m, SourceResultMsg{Source: config.SourceProjects, Cached: true, Candidates: []source.Candidate{projectCandidate("allsafe", "/code/allsafe")}})
+	if got := rowLabels(m); !slices.Equal(got, []string{"allsafe"}) {
+		t.Fatalf("saved result: rows %v, want allsafe", got)
+	}
+	m, _ = update(t, m, SourceResultMsg{Source: config.SourceProjects, Candidates: []source.Candidate{projectCandidate("ecorp", "/code/ecorp")}})
+	if got := rowLabels(m); !slices.Equal(got, []string{"ecorp"}) {
+		t.Fatalf("fresh result: rows %v, want ecorp in place of the saved row", got)
+	}
+	m, _ = update(t, m, SourceResultMsg{Source: config.SourceProjects, Cached: true, Candidates: []source.Candidate{projectCandidate("allsafe", "/code/allsafe")}})
+	if got := rowLabels(m); !slices.Equal(got, []string{"ecorp"}) {
+		t.Errorf("late saved result: rows %v, want the fresh ecorp kept", got)
 	}
 }
