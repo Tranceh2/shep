@@ -506,7 +506,7 @@ func TestResolvePreviewNames_PerSourceDefaultsAndUserControl(t *testing.T) {
 	load := func(t *testing.T, body string) *config.Config {
 		t.Helper()
 		path := filepath.Join(t.TempDir(), "config.toml")
-		if err := os.WriteFile(path, []byte("version = 3\n"+body), 0o600); err != nil {
+		if err := os.WriteFile(path, []byte("version = 1\n"+body), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		cfg, err := config.Load(path)
@@ -580,7 +580,7 @@ func TestResolvePreviewNames_SessionsKeepTheirOwnFallback(t *testing.T) {
 	load := func(t *testing.T, body string) *config.Config {
 		t.Helper()
 		path := filepath.Join(t.TempDir(), "config.toml")
-		if err := os.WriteFile(path, []byte("version = 3\n"+body), 0o600); err != nil {
+		if err := os.WriteFile(path, []byte("version = 1\n"+body), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		cfg, err := config.Load(path)
@@ -616,7 +616,7 @@ func TestResolvePreviewNames_SessionsKeepTheirOwnFallback(t *testing.T) {
 func TestLoadedConfig_ExplicitEmptyPreviewDefaultDisablesTheDefault(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(path, []byte("version = 3\n[preview]\ndefault = []\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("version = 1\n[preview]\ndefault = []\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := config.Load(path)
@@ -1520,7 +1520,7 @@ func TestRender_CustomCommand_LoadedTemplateExecutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(t.TempDir(), "config.toml")
-	const doc = `version = 3
+	const doc = `version = 1
 [preview]
 default = ["path_probe"]
 
@@ -1648,7 +1648,7 @@ func TestResolvePreviewNames_AgentsHonorConfiguredPreview(t *testing.T) {
 	load := func(t *testing.T, body string) *config.Config {
 		t.Helper()
 		path := filepath.Join(t.TempDir(), "config.toml")
-		if err := os.WriteFile(path, []byte("version = 3\n"+body), 0o600); err != nil {
+		if err := os.WriteFile(path, []byte("version = 1\n"+body), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		cfg, err := config.Load(path)

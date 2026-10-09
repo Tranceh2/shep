@@ -42,7 +42,7 @@ func readmeBlock(t *testing.T, doc, marker string) string {
 func loadREADMEBlock(t *testing.T, block string) *Config {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(path, []byte(v3(block)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(block)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -159,18 +159,5 @@ func TestREADME_HerdrIconsExample(t *testing.T) {
 		if got, err := engine.Render(part.format, tmpl.Data{Label: name}); err != nil || got != part.want {
 			t.Errorf("%q on %q = %q (%v), want %q", part.format, name, got, err, part.want)
 		}
-	}
-}
-
-// TestREADME_VersionErrorPointsToTheMigrationSection proves the one schema
-// version error names a README section that exists.
-func TestREADME_VersionErrorPointsToTheMigrationSection(t *testing.T) {
-	t.Parallel()
-	doc := readme(t)
-	if !strings.Contains(doc, "\n### Migrating from version 2\n") {
-		t.Fatal(`README.md has no "### Migrating from version 2" section`)
-	}
-	if msg := versionError("x").Error(); !strings.Contains(msg, `"Migrating from version 2"`) || !strings.Contains(msg, "#migrating-from-version-2") {
-		t.Errorf("version error %q must name the README section and its anchor", msg)
 	}
 }

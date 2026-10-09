@@ -16,7 +16,7 @@ import (
 // the herdr tab and pane sub-tables and each custom source by name.
 func TestLayoutFromConfig_ThreadsPresentations(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
-	doc := `version = 3
+	doc := `version = 1
 [general]
 source_order = ["herdr", "prs"]
 

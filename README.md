@@ -88,7 +88,7 @@ below is optional.
 **Add your project folders.** Create `~/.config/shep/config.toml`:
 
 ```toml
-version = 3
+version = 1
 
 [sources.projects]
 roots = ["~/code"]        # the folders that hold your projects
@@ -321,7 +321,7 @@ Shep searches for its configuration in:
 1. `$XDG_CONFIG_HOME/shep/config.toml`
 2. `~/.config/shep/config.toml`
 
-Every configuration file starts with `version = 3`. A file with another version, or none, does not load: shep reports the one setting to change and points to [Migrating from version 2](#migrating-from-version-2).
+Every configuration file starts with `version = 1`. A file with another version, or none, does not load, and the error names the version shep needs.
 
 Generate a starter configuration file with defaults:
 
@@ -346,7 +346,7 @@ presentation, templates, themes and precedence are described once, in
 ### `[general]` — Global Settings
 
 ```toml
-version = 3
+version = 1
 
 [general]
 # Order in which sources appear in the picker.
@@ -1030,29 +1030,13 @@ A custom section — a `[preview.commands.<name>]` or a `[sources.custom.preview
 
 `preview = []` is a list that names no section: the row shows only the identity summary, and the empty list stops the precedence scan like any other value. Leave the key out to fall through to the next tier.
 
-### Migrating from version 2
-
-A version 2 file fails to load with `version = 3 is required (the file sets version = 2)`. To migrate:
-
-1. Set `version = 3`.
-2. Template functions have one name each: replace `osBase`, `osDir`, `osClean`, `osExt` and `osIsAbs` with `base`, `dir`, `clean`, `ext` and `isAbs`.
-3. Rows are drawn from explicit parts instead of an automatic name/parent split, and the defaults draw the last path element as the name and its parent as the detail. A `label_format` that only restated a version 2 default (`{{.Label}}`, `{{.Path}}`) now puts the whole text in the name: delete it to get the default layout, or split it with `name` and `parent` (see [Row parts](#row-parts)).
-4. `[sources.herdr].tab_label_format` and `pane_label_format` are gone: set `label_format` (and the other parts) in `[sources.herdr.tab]` and `[sources.herdr.pane]`.
-5. The status glyph is part of the agents and pane labels. A `[sources.agents]` or `[sources.herdr.pane]` `label_format` of your own must include `{{ status }}` to keep it.
-6. Theme names follow Herdr: `mocha` is `catppuccin`, `latte` is `catppuccin-latte`, `frappe` is `catppuccin-frappe` and `macchiato` is `catppuccin-macchiato` (the old names still resolve as aliases). `inherit`, the default, now reproduces Herdr's own theme with every Herdr theme and `[theme.custom]`; version 2 recognized only Herdr theme names matching its four Catppuccin themes and used Catppuccin Mocha otherwise. Set `theme = "catppuccin"` for a fixed Catppuccin Mocha palette.
-7. `[[wildcards]]` are scanned per setting: each setting comes from the first matching rule that sets it, where version 2 stopped at the first matching rule. Reorder rules that relied on an earlier match hiding a later one.
-8. `preview = []` on a `[[workspaces]]` entry now counts as a setting (identity only) instead of being skipped, and an empty list stops the scan on every tier. Delete it to fall through.
-9. `[defaults].type` and `[workspaces.sources.projects].preview` are gone (neither had an effect). Set a group's previews with its own `preview` list or `[sources.projects].preview`.
-10. Icons are templates. A `[[sources.custom]]` `icon` replaces the icon of every row of that source; write `icon = '{{ .Icon | default "x" }}'` to keep the icons the rows supply.
-11. An `icon = " "` copied from an older example draws a blank icon: delete the line to get the default glyph.
-
 ### Example: icons in Herdr workspace names
 
 Herdr's sidebar shows only workspace names, so an icon there has to be part of the name: `workspace_name` adds it when shep creates the workspace. shep then shows that name as the label of the open workspace's row; `trimIcon` keeps the icon out of the name-first layout, and the same rule gives every row under those folders the icon in the icon column instead.
 
 <!-- example:herdr-icons -->
 ```toml
-version = 3
+version = 1
 
 [[wildcards]]
 pattern = "~/fsociety/**"

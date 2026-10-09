@@ -34,7 +34,7 @@ func TestREADME_PrecedenceExample(t *testing.T) {
 	block := string(data)[i+len(marker):]
 	block = block[:strings.Index(block, "\n```\n")+1]
 	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(path, []byte("version = 3\n"+block), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("version = 1\n"+block), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := config.Load(path)

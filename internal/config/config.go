@@ -44,11 +44,8 @@ const (
 var defaultSourceOrder = []string{SourceHerdr, SourceWorkspaces, SourceZoxide, SourceProjects}
 
 // CurrentSchemaVersion is the only configuration schema version Load
-// accepts: a document must set version = 3 (see versionError).
-const CurrentSchemaVersion = 3
-
-// migrationGuide is where the README explains how to migrate an older file.
-const migrationGuide = `"Migrating from version 2" in the README (https://github.com/tranceh2/shep#migrating-from-version-2)`
+// accepts: a document must set version = 1 (see versionError).
+const CurrentSchemaVersion = 1
 
 var validSourceNames = map[string]bool{
 	SourceHerdr: true, SourceSessions: true, SourceWorkspaces: true, SourceZoxide: true, SourceProjects: true, SourceAgents: true,
@@ -759,7 +756,7 @@ func checkVersion(data []byte) error {
 
 // versionError is the one error for a document of another schema version.
 func versionError(found string) error {
-	return fmt.Errorf("unsupported configuration: version = %d is required (%s); see %s", CurrentSchemaVersion, found, migrationGuide)
+	return fmt.Errorf("unsupported configuration: version = %d is required (%s)", CurrentSchemaVersion, found)
 }
 
 // normalizeAliases trims aliases, drops empty values, and removes duplicate

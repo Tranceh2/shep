@@ -54,9 +54,8 @@ const exampleTOML = `# shep configuration — see https://github.com/tranceh2/sh
 # regenerate it. The README's "Customization" section documents every
 # template field, function, row part, theme token and role used below.
 
-# version is required: shep loads only schema version 3 (see "Migrating from
-# version 2" in the README for older files).
-version = 3
+# version is required: shep loads only schema version 1.
+version = 1
 
 [general]
 # source_order lists the enabled sources and their merge/display order.

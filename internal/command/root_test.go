@@ -101,7 +101,7 @@ func TestApp_PersistentPreRunE_PrintsConfigLoadError(t *testing.T) {
 	// close_on_exit on a leaf node with an empty command can never trigger,
 	// so config.Load rejects it at parse time (any other Load-time rejection
 	// would exercise the same PersistentPreRunE path just as well).
-	const contents = `version = 3
+	const contents = `version = 1
 [templates.dev]
 description = "test"
 [[templates.dev.tabs]]

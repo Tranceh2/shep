@@ -13,13 +13,13 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
-// v3 prefixes a test document with the schema version Load requires, unless
-// the document sets a version itself.
-func v3(doc string) string {
+// versioned prefixes a test document with the schema version Load requires,
+// unless the document sets a version itself.
+func versioned(doc string) string {
 	if strings.HasPrefix(doc, "version") || strings.Contains(doc, "\nversion =") {
 		return doc
 	}
-	return "version = 3\n" + doc
+	return "version = 1\n" + doc
 }
 
 func TestLoadConfirmClose(t *testing.T) {
@@ -34,7 +34,7 @@ func TestLoadConfirmClose(t *testing.T) {
 		{`confirm_close = ["other"]`, nil, "tui.confirm_close"},
 	} {
 		path := filepath.Join(t.TempDir(), "config.toml")
-		if err := os.WriteFile(path, []byte("version = 3\n[tui]\n"+tc.value+"\n"), 0o600); err != nil {
+		if err := os.WriteFile(path, []byte("version = 1\n[tui]\n"+tc.value+"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		cfg, err := Load(path)
@@ -58,7 +58,7 @@ func TestDefaults_EnableRanking(t *testing.T) {
 		t.Fatal("ranking should be enabled by default")
 	}
 	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(path, []byte(v3("[ranking]\nenabled = false\n")), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned("[ranking]\nenabled = false\n")), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -73,8 +73,8 @@ func TestDefaults_EnableRanking(t *testing.T) {
 func TestLoad_RejectsControlAliases(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.toml")
-	doc := "version = 3\n[[workspaces]]\nname = \"x\"\npath = \"/tmp/x\"\naliases = [\"safe\", \"bad\\nvalue\"]\n"
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	doc := "version = 1\n[[workspaces]]\nname = \"x\"\npath = \"/tmp/x\"\naliases = [\"safe\", \"bad\\nvalue\"]\n"
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -99,7 +99,7 @@ name = "kube-contexts"
 command = ["printf", "[]"]
 aliases = [" k8s ", "K8S", "kube"]
 `
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -184,7 +184,7 @@ func TestLoad_TemplateNodeLabelPresence(t *testing.T) {
 				doc += tc.labelLine + "\n"
 			}
 			path := filepath.Join(t.TempDir(), "config.toml")
-			if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			cfg, err := Load(path)
@@ -210,8 +210,8 @@ func TestLoad_TemplateNodeLabelPresence(t *testing.T) {
 
 func stringPtr(value string) *string { return &value }
 
-// TestLoad_UsesStructuredSourceOrderAndTypedProjectOverrides defines the clean
-// schema contract before the production model is migrated.
+// TestLoad_UsesStructuredSourceOrderAndTypedProjectOverrides proves
+// general.source_order and the typed per-group project overrides decode.
 func TestLoad_UsesStructuredSourceOrderAndTypedProjectOverrides(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.toml")
@@ -236,7 +236,7 @@ max_depth = 0
 markers = []
 ignore = []
 `
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -264,39 +264,22 @@ ignore = []
 	}
 }
 
-// TestLoad_RejectsLegacyListShapedSources protects the intentional clean schema
-// break: sources is reserved for structured provider tables.
-func TestLoad_RejectsLegacyListShapedSources(t *testing.T) {
+// TestLoad_RequiresSchemaVersion1 proves version = 1 is the only accepted
+// schema version and every other value, or none, fails with the one version
+// message, before any key of the document is decoded.
+func TestLoad_RequiresSchemaVersion1(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(path, []byte("version = 3\n[general]\nsources = [\"herdr\"]\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Load(path); err == nil {
-		t.Fatal("legacy general.sources list should be rejected")
-	}
-}
-
-// TestLoad_RequiresSchemaVersion3 proves version = 3 is the only accepted
-// schema version and every other value, or none, fails with the one
-// migration message, before any key the old schema named differently is
-// reported.
-func TestLoad_RequiresSchemaVersion3(t *testing.T) {
-	t.Parallel()
-	const guide = `version = 3 is required`
-	const readme = `see "Migrating from version 2" in the README (https://github.com/tranceh2/shep#migrating-from-version-2)`
+	const guide = `version = 1 is required`
 	cases := []struct {
 		name string
 		doc  string
 		want string
 	}{
-		{name: "current accepted", doc: "version = 3\n", want: ""},
+		{name: "current accepted", doc: "version = 1\n", want: ""},
 		{name: "missing", doc: "[general]\nselector = \"builtin\"\n", want: "(the file sets no version)"},
-		{name: "version 2", doc: "version = 2\n", want: "(the file sets version = 2)"},
-		{name: "version 2 with removed keys", doc: "version = 2\n[defaults]\ntype = \"shell\"\n[sources.herdr]\ntab_label_format = \"{{.Label}}\"\n", want: "(the file sets version = 2)"},
-		{name: "version 1", doc: "version = 1\n", want: "(the file sets version = 1)"},
-		{name: "future", doc: "version = 4\n", want: "(the file sets version = 4)"},
-		{name: "not an integer", doc: "version = \"3\"\n", want: "(the file sets version to a string)"},
+		{name: "zero", doc: "version = 0\n", want: "(the file sets version = 0)"},
+		{name: "future with unknown keys", doc: "version = 2\n[general]\nnot_a_key = true\n", want: "(the file sets version = 2)"},
+		{name: "not an integer", doc: "version = \"1\"\n", want: "(the file sets version to a string)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -315,7 +298,7 @@ func TestLoad_RequiresSchemaVersion3(t *testing.T) {
 			if err == nil {
 				t.Fatalf("Load() accepted %q", tc.doc)
 			}
-			for _, part := range []string{guide, tc.want, readme} {
+			for _, part := range []string{guide, tc.want} {
 				if !strings.Contains(err.Error(), part) {
 					t.Errorf("Load() error = %v, want it to contain %q", err, part)
 				}
@@ -329,7 +312,7 @@ func TestLoad_RejectsUnknownSourceName(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
 	doc := "[general]\nsource_order = [\"herdr\", \"cwd\"]\n"
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -349,7 +332,7 @@ func TestLoad_CustomSourceSchema(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.toml")
-			if err := os.WriteFile(path, []byte(v3(tc.doc)), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(versioned(tc.doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			_, err := Load(path)
@@ -377,7 +360,7 @@ timeout = "3s"
 label_format = "PR {{.Label}}"
 preview = ["identity"]
 `
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -413,7 +396,7 @@ func TestLoad_CustomSourceValidationFailsFast(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.toml")
-			if err := os.WriteFile(path, []byte(v3(tt.doc)), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(versioned(tt.doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			_, err := Load(path)
@@ -427,7 +410,7 @@ func TestLoad_CustomSourceValidationFailsFast(t *testing.T) {
 func TestLoad_CustomSourceTimeoutDefaultsToThreeSeconds(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(path, []byte(v3("[[sources.custom]]\nname = \"prs\"\ncommand = [\"printf\"]\n")), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned("[[sources.custom]]\nname = \"prs\"\ncommand = [\"printf\"]\n")), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -461,7 +444,7 @@ command = ["/path/kube-preview", "health", "{{ index .Meta \"context\" }}"]
 timeout = "1s"
 max_lines = 10
 `
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -509,7 +492,7 @@ func TestLoad_CustomSourcePreviewNamespaceValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.toml")
-			if err := os.WriteFile(path, []byte(v3(tt.doc)), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(versioned(tt.doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			_, err := Load(path)
@@ -537,7 +520,7 @@ preview = ["cluster"]
 [sources.custom.preview_commands.cluster]
 command = ["printf", "b"]
 `
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path); err != nil {
@@ -561,7 +544,7 @@ type = "group"
 path = "~/projects"
 source_order = ["kube-contexts"]
 `
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -576,7 +559,7 @@ source_order = ["kube-contexts"]
 func TestLoad_GroupSourceOrderRejectsUnknownSource(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.toml")
-	const doc = `version = 3
+	const doc = `version = 1
 
 [[workspaces]]
 name = "Kubernetes"
@@ -584,7 +567,7 @@ type = "group"
 path = "~/projects"
 source_order = ["not-declared"]
 `
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -599,7 +582,7 @@ func TestLoad_ParsesSchema(t *testing.T) {
 	t.Parallel()
 
 	const doc = `
-version = 3
+version = 1
 
 [general]
 source_order = ["herdr", "workspaces", "zoxide", "projects"]
@@ -653,7 +636,7 @@ description = "development workspace"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -743,7 +726,7 @@ label_format = "project {{.Path}}"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -841,7 +824,7 @@ func TestLoad_RejectsInvalidLabelFormats(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			path := filepath.Join(t.TempDir(), "config.toml")
-			if err := os.WriteFile(path, []byte(v3(tc.doc)), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(versioned(tc.doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 
@@ -878,7 +861,7 @@ func TestLoad_RejectsInvalidPreviewCommandTemplates(t *testing.T) {
 			t.Parallel()
 			path := filepath.Join(t.TempDir(), "config.toml")
 			doc := "[preview.commands.check]\ncommand = " + strconv.Quote(tc.command) + "\n"
-			if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 
@@ -927,7 +910,7 @@ label_format = "{{ if eq .Kind \"group\" }}[{{ .Label }}]{{ else }}{{ .Label }}{
 command = "echo {{.Meta.anything}} {{.Kind}} {{.Path|tilde}}"
 `
 	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(path, []byte(v3(valid)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(valid)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path); err != nil {
@@ -935,7 +918,7 @@ command = "echo {{.Meta.anything}} {{.Kind}} {{.Path|tilde}}"
 	}
 
 	invalid := "[sources.zoxide]\nlabel_format = \"{{ slice .Branch 0 3 }}\"\n"
-	if err := os.WriteFile(path, []byte(v3(invalid)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(invalid)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "sources.zoxide.label_format: template: shep:") {
@@ -1017,7 +1000,7 @@ func TestLoad_SelectorDefaultsToBuiltin(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3("[general]\nsource_order = [\"herdr\"]\n")), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned("[general]\nsource_order = [\"herdr\"]\n")), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -1052,7 +1035,7 @@ func TestLoad_SelectorTable(t *testing.T) {
 			t.Parallel()
 			tmp := t.TempDir()
 			path := filepath.Join(tmp, "config.toml")
-			if err := os.WriteFile(path, []byte(v3(tc.doc)), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(versioned(tc.doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			cfg, err := Load(path)
@@ -1188,7 +1171,7 @@ command = "git -C {{.Path}} log -n 5"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -1228,7 +1211,7 @@ command = "echo hi"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -1277,7 +1260,7 @@ func TestLoad_InvalidPreviewRejected(t *testing.T) {
 			t.Parallel()
 			tmp := t.TempDir()
 			path := filepath.Join(tmp, "config.toml")
-			if err := os.WriteFile(path, []byte(v3(tc.doc)), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(versioned(tc.doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			_, err := Load(path)
@@ -1310,7 +1293,7 @@ func TestLoad_RejectsUnknownPreviewNameAnywhere(t *testing.T) {
 			t.Parallel()
 			tmp := t.TempDir()
 			path := filepath.Join(tmp, "config.toml")
-			if err := os.WriteFile(path, []byte(v3(tc.doc)), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(versioned(tc.doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			_, err := Load(path)
@@ -1337,7 +1320,7 @@ command = "echo hi"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path); err != nil {
@@ -1358,7 +1341,7 @@ name = "x"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -1485,7 +1468,7 @@ command = "tail -f app.log"
 			t.Parallel()
 			tmp := t.TempDir()
 			path := filepath.Join(tmp, "config.toml")
-			if err := os.WriteFile(path, []byte(v3(tc.doc)), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(versioned(tc.doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			_, err := Load(path)
@@ -1525,7 +1508,7 @@ id = "logs"
 command = "tail -f app.log"
 `
 	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -1567,7 +1550,7 @@ root = "main"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -1610,7 +1593,7 @@ type = "bogus"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path); err == nil {
@@ -1635,7 +1618,7 @@ func TestLoad_RejectsUnknownTemplateReference(t *testing.T) {
 			t.Parallel()
 			tmp := t.TempDir()
 			path := filepath.Join(tmp, "config.toml")
-			if err := os.WriteFile(path, []byte(v3(tc.doc)), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(versioned(tc.doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := Load(path); err == nil {
@@ -1658,7 +1641,7 @@ source_order = ["projects", "roots"]
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path); err == nil {
@@ -1707,7 +1690,7 @@ func TestLoad_RejectsInvalidTUIWidth(t *testing.T) {
 	for _, doc := range cases {
 		tmp := t.TempDir()
 		path := filepath.Join(tmp, "config.toml")
-		if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+		if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := Load(path); err == nil {
@@ -1723,7 +1706,7 @@ func TestExampleTOML_MatchesCanonicalModel(t *testing.T) {
 	t.Parallel()
 	got := ExampleTOML()
 	for _, want := range []string{
-		"\nversion = 3\n", "[general]", "source_order = [", "[defaults]",
+		"\nversion = 1\n", "[general]", "source_order = [", "[defaults]",
 		"template = ", "[tui]", `# tabs = ["all", "agents"]`, `# list_width = "35%"`, `# preview_width = "65%"`, `# layout = "landscape"`, "[preview]",
 		"[preview.commands.", "# title = ", "[sources.herdr]", "[sources.herdr.tab]", "[sources.herdr.pane]",
 		"[sources.sessions]", "[sources.agents]", "[sources.projects]",
@@ -1740,9 +1723,7 @@ func TestExampleTOML_MatchesCanonicalModel(t *testing.T) {
 		}
 	}
 	for _, bad := range []string{
-		"[layouts", "kind =", "provider_order", "/Users/", "Proyectos", "default = [",
-		"version = 2", "[defaults]\ntype", "tab_label_format", "pane_label_format", "osBase", "osDir",
-		`icon = " "`, `theme = "mocha"`, "portrait",
+		"/Users/", "Proyectos", "default = [", `icon = " "`,
 	} {
 		if strings.Contains(got, bad) {
 			t.Errorf("ExampleTOML must not contain %q:\n%s", bad, got)
@@ -1922,7 +1903,7 @@ func TestTrackedExamplesConfigTOML_LoadsWithIntendedContract(t *testing.T) {
 	if len(cfg.Wildcards) != 1 || cfg.Wildcards[0].Icon == nil || cfg.Wildcards[0].IconColor == nil {
 		t.Errorf("examples/config.toml wildcard must set icon and icon_color")
 	}
-	for _, bad := range []string{`icon = " "`, "version = 2", `theme = "mocha"`, "limit ="} {
+	for _, bad := range []string{`icon = " "`, "limit ="} {
 		if strings.Contains(string(raw), bad) {
 			t.Errorf("examples/config.toml must not contain %q", bad)
 		}
@@ -1959,7 +1940,7 @@ command = ""
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -1996,7 +1977,7 @@ command = ""
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path); err != nil {
@@ -2005,39 +1986,32 @@ command = ""
 }
 
 // TestLoad_RejectsUnknownKeys (requirement: strict config) fails fast on any
-// unrecognised key — top-level, nested tables, arbitrary [sources.<name>]
-// entries and keys older schemas had alike — with the generic strict-decode
-// error instead of silently ignoring it.
+// unrecognised key — top-level, in nested tables and arbitrary
+// [sources.<name>] entries alike — with the generic strict-decode error
+// instead of silently ignoring it.
 func TestLoad_RejectsUnknownKeys(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name string
 		doc  string
 	}{
-		{name: "top-level source_order", doc: "source_order = [\"herdr\"]\n"},
-		{name: "top-level discovery table", doc: "[discovery]\nfoo = 1\n"},
-		{name: "top-level views table", doc: "[views]\nfoo = 1\n"},
+		{name: "top-level key", doc: "source_order = [\"herdr\"]\n"},
+		{name: "top-level table", doc: "[views]\nfoo = 1\n"},
+		{name: "general key", doc: "[general]\npreview_command = \"ls\"\n"},
 		{name: "preview sections table", doc: "[preview.sections.identity]\nfoo = 1\n"},
-		{name: "top-level preview_command", doc: "preview_command = \"ls\"\n"},
-		{name: "top-level preview_sections", doc: "preview_sections = [\"identity\"]\n"},
-		{name: "top-level default_sections", doc: "default_sections = [\"identity\"]\n"},
-		{name: "workspace legacy view field", doc: "[[workspaces]]\nname = \"x\"\npath = \"~/x\"\nview = \"grid\"\n"},
 		{name: "arbitrary sources table", doc: "[sources.foo]\nbar = 1\n"},
-		{name: "top-level layouts table", doc: "[layouts]\nfoo = 1\n"},
-		{name: "workspace legacy kind field", doc: "[[workspaces]]\nname = \"x\"\npath = \"~/x\"\nkind = \"shell\"\n"},
-		{name: "top-level provider_order", doc: "provider_order = [\"herdr\"]\n"},
+		{name: "source key", doc: "[sources.herdr]\ntitle_format = \"{{.Label}}\"\n"},
+		{name: "workspace key", doc: "[[workspaces]]\nname = \"x\"\npath = \"~/x\"\nview = \"grid\"\n"},
 		{name: "template preview field", doc: "[templates.dev]\npreview = [\"identity\"]\n"},
-		{name: "integrations table", doc: "[[integrations]]\nname = \"prs\"\ncommand = [\"printf\", \"[]\"]\n"},
-		{name: "defaults type", doc: "[defaults]\ntype = \"shell\"\n"},
+		{name: "defaults key", doc: "[defaults]\ntype = \"shell\"\n"},
 		{name: "group projects preview", doc: "[[workspaces]]\nname = \"g\"\ntype = \"group\"\npath = \"~/g\"\n[workspaces.sources.projects]\npreview = [\"git\"]\n"},
-		{name: "herdr tab_label_format", doc: "[sources.herdr]\ntab_label_format = \"{{.Label}}\"\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			tmp := t.TempDir()
 			path := filepath.Join(tmp, "config.toml")
-			if err := os.WriteFile(path, []byte(v3(tc.doc)), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(versioned(tc.doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := Load(path); err == nil {
@@ -2055,7 +2029,7 @@ func TestLoad_RejectsTUIWidthSumOverflow(t *testing.T) {
 	const doc = "[tui]\nlist_width = \"60%\"\npreview_width = \"60%\"\n"
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path); err == nil {
@@ -2074,7 +2048,7 @@ func TestLoad_AcceptsTUIWidthSumAtOrBelow100Percent(t *testing.T) {
 	for _, doc := range cases {
 		tmp := t.TempDir()
 		path := filepath.Join(tmp, "config.toml")
-		if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+		if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := Load(path); err != nil {
@@ -2090,7 +2064,7 @@ func TestLoad_TUILayout_DefaultsEmptyAndAccepted(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3("[tui]\nlist_width = \"auto\"\n")), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned("[tui]\nlist_width = \"auto\"\n")), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -2112,7 +2086,7 @@ func TestLoad_AcceptsValidTUILayoutValues(t *testing.T) {
 			tmp := t.TempDir()
 			path := filepath.Join(tmp, "config.toml")
 			doc := "[tui]\nlayout = \"" + val + "\"\n"
-			if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			cfg, err := Load(path)
@@ -2135,7 +2109,7 @@ func TestLoad_RejectsInvalidTUILayoutValue(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
 	const doc = "[tui]\nlayout = \"diagonal\"\n"
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2154,7 +2128,7 @@ func TestLoad_TUITheme_DefaultsEmptyAndAccepted(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3("[tui]\nlist_width = \"auto\"\n")), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned("[tui]\nlist_width = \"auto\"\n")), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -2176,7 +2150,7 @@ func TestLoad_AcceptsValidTUIThemeValues(t *testing.T) {
 			tmp := t.TempDir()
 			path := filepath.Join(tmp, "config.toml")
 			doc := "[tui]\ntheme = \"" + val + "\"\n"
-			if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			cfg, err := Load(path)
@@ -2197,7 +2171,7 @@ func TestLoad_RejectsInvalidTUIThemeValue(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
 	const doc = "[tui]\ntheme = \"not-a-theme\"\n"
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2217,7 +2191,7 @@ func TestLoad_TUIIcons_DefaultsEmptyAndAccepted(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3("[tui]\nlist_width = \"auto\"\n")), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned("[tui]\nlist_width = \"auto\"\n")), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -2239,7 +2213,7 @@ func TestLoad_AcceptsValidTUIIconsValues(t *testing.T) {
 			tmp := t.TempDir()
 			path := filepath.Join(tmp, "config.toml")
 			doc := "[tui]\nicons = \"" + val + "\"\n"
-			if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			cfg, err := Load(path)
@@ -2260,7 +2234,7 @@ func TestLoad_RejectsInvalidTUIIconsValue(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
 	const doc = "[tui]\nicons = \"emoji\"\n"
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2311,7 +2285,7 @@ root = "opencode"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -2359,7 +2333,7 @@ root = "shell"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -2390,7 +2364,7 @@ root = "main"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -2420,7 +2394,7 @@ root = "main"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2450,7 +2424,7 @@ root = "main"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2489,7 +2463,7 @@ root = "ai"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2516,7 +2490,7 @@ root = "main"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -2548,7 +2522,7 @@ root = "main"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2575,7 +2549,7 @@ focus = true
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2605,7 +2579,7 @@ root = "main"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2647,7 +2621,7 @@ root = "main"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2675,7 +2649,7 @@ close_on_exit = true
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -2706,7 +2680,7 @@ close_on_exit = true
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2736,7 +2710,7 @@ close_on_exit = true
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2762,7 +2736,7 @@ close_on_exit = true
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2786,7 +2760,7 @@ close_on_exit = true
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -2823,7 +2797,7 @@ root = "main"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2847,7 +2821,7 @@ close_on_exit = true
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2880,7 +2854,7 @@ root = "main"
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load(path)
@@ -2913,7 +2887,7 @@ workspace_name = "second"
 name = "explicit"
 path = "/srv/services/platform-api"
 `
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -2945,7 +2919,7 @@ func TestLoad_RejectsInvalidWorkspaceNameFieldsWithScope(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			path := filepath.Join(t.TempDir(), "config.toml")
-			if err := os.WriteFile(path, []byte(v3(tc.doc)), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(versioned(tc.doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			_, err := Load(path)
@@ -2985,7 +2959,7 @@ preview = ["identity", "active_pane"]
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := Load(path)
@@ -3016,7 +2990,7 @@ label_format = "{{ .InvalidSyntax "
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "bad_label.toml")
-	if err := os.WriteFile(path, []byte(v3(docBadLabel)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(docBadLabel)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "sources.agents.label_format") {
@@ -3029,7 +3003,7 @@ label_format = "{{ .InvalidSyntax "
 preview = ["nonexistent_section"]
 `
 	path2 := filepath.Join(tmp, "bad_preview.toml")
-	if err := os.WriteFile(path2, []byte(v3(docBadPreview)), 0o600); err != nil {
+	if err := os.WriteFile(path2, []byte(versioned(docBadPreview)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path2); err == nil || !strings.Contains(err.Error(), "sources.agents.preview") {
@@ -3049,7 +3023,7 @@ func TestConfig_AgentsSource_GroupRequiresRoot(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.toml")
 			doc := "[[workspaces]]\nname = \"agents-group\"\ntype = \"group\"\nsource_order = [\"agents\"]\n" + tt.path + "\n"
-			if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "workspaces[0]") || !strings.Contains(err.Error(), "path") {
@@ -3071,7 +3045,7 @@ source_order = ["agents", "herdr"]
 `
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "group_agents.toml")
-	if err := os.WriteFile(path, []byte(v3(doc)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -3104,7 +3078,7 @@ func TestLoad_TabsValidation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.toml")
-			if err := os.WriteFile(path, []byte(v3(tc.doc)), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(versioned(tc.doc)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			cfg, err := Load(path)

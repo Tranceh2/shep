@@ -1,4 +1,4 @@
-# shep example configuration (schema version 3)
+# shep example configuration
 #
 # This is a practical, path-agnostic starting point. It is NOT what
 # `shep init` writes (see internal/config/example.go / ExampleTOML() for the
@@ -11,7 +11,7 @@
 # when XDG_CONFIG_HOME is unset) and replace the example paths below with
 # your own.
 
-version = 3
+version = 1
 
 [general]
 # Built-ins, in merge/display order. "sessions" is opt-in: add it here only
