@@ -23,8 +23,7 @@ func TestSameDir_FastPathByteEqual(t *testing.T) {
 
 // TestSameDir_MissingPathReturnsFalse confirms that when either path cannot
 // be stat'd (does not exist, permission denied, etc.), SameDir reports false
-// rather than guessing. This preserves today's behavior for not-yet-created
-// candidates.
+// rather than guessing, so a not-yet-created candidate never matches.
 func TestSameDir_MissingPathReturnsFalse(t *testing.T) {
 	t.Parallel()
 	errStat := func(string) (os.FileInfo, error) {
@@ -78,9 +77,9 @@ func TestSameDir_RealDifferentInode(t *testing.T) {
 	}
 }
 
-// TestSameDir_CaseInsensitiveFilesystem is the regression test for the bug
-// report: on a case-insensitive-but-case-preserving filesystem (macOS APFS
-// default, Windows), a path that differs only in case from a real directory
+// TestSameDir_CaseInsensitiveFilesystem proves that on a
+// case-insensitive-but-case-preserving filesystem (macOS APFS default,
+// Windows), a path that differs only in case from a real directory
 // resolves via Stat to the SAME inode, so SameDir must report true. On a
 // case-sensitive filesystem (most Linux/ext4), the differently-cased lookup
 // fails outright, so this test is gated to darwin/windows — mirroring the

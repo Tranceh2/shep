@@ -4,12 +4,20 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- The configuration schema is version 1, shep's first stable schema:
+  configuration files set `version = 1`, and any other version fails to load
+  with a message naming the one shep needs.
+- Theme names are Herdr's own names and aliases, plus `catppuccin-frappe`,
+  `catppuccin-macchiato` and `plain`; the shorter `mocha`, `frappe` and
+  `macchiato` are not theme names.
+
 ### Fixed
 
 - Pinning a row pins that row only. It used to pin every row at the same
   directory: the open workspaces there, the group entries and the commands
-  rooted at it. A pin made before this fix may no longer show: pin the row
-  again.
+  rooted at it.
 - The pin star lines up across the list: it is the last marker of every row,
   a group's `›` included, and while the view holds a pinned row the other
   rows keep its cells blank.
@@ -38,31 +46,6 @@ All notable changes to this project are documented in this file.
 The first stable release: the picker is redesigned, every part of it is
 configurable, it acts on Herdr without leaving it, and it opens fast even
 after the system has evicted it from memory.
-
-### Breaking
-
-- Configuration files must declare `version = 3`. Any other version, or none,
-  fails to load with one message pointing to the README's
-  [Migrating from version 2](README.md#migrating-from-version-2). The main
-  steps: replace `osBase`, `osDir`, `osClean`, `osExt` and `osIsAbs` with
-  `base`, `dir`, `clean`, `ext` and `isAbs`; move
-  `[sources.herdr].tab_label_format` and `pane_label_format` to
-  `label_format` in `[sources.herdr.tab]` and `[sources.herdr.pane]`; a
-  custom agents or pane `label_format` must include `{{ status }}` to keep
-  the status glyph; delete `[defaults].type` and
-  `[workspaces.sources.projects].preview` (neither had an effect).
-- `[[integrations]]` is now `[[sources.custom]]`, with the same argv-only
-  JSON-row contract, previews and aliases. **Migration**: rename the table.
-- `shep open --agents` is removed. **Migration**: use `shep open --view agents`.
-- `[[wildcards]]` are scanned per setting: each setting comes from the first
-  matching rule that sets it, where it used to stop at the first matching
-  rule. An explicit `preview = []` on a rule or entry now means "no
-  sections", and a group's template beats wildcards for its children.
-- `ctrl+u` moves the cursor half a page up instead of clearing the query;
-  `esc` clears it, `backspace` deletes a character and `ctrl+w` /
-  `alt+backspace` a word.
-- The layout key moves from `ctrl+l` to `ctrl+r`, and `ctrl+l` / `ctrl+h`
-  now expand and collapse like `right` / `left`.
 
 ### Added
 
@@ -102,7 +85,9 @@ after the system has evicted it from memory.
   `[ranking]` is enabled. `shep ranking clear` forgets them along with the
   learned order, pins and acknowledged agent states.
 - `right` on an expanded workspace moves onto its first tab, and `left` on a
-  tab or pane moves back to its workspace and collapses it.
+  tab or pane moves back to its workspace and collapses it; `ctrl+l` and
+  `ctrl+h` act like `right` and `left`, and `ctrl+r` switches between the list
+  alone and the list with the preview.
 
 ### Changed
 
@@ -122,8 +107,8 @@ after the system has evicted it from memory.
   urgent agent state; the `dir` section lists names only.
 - `shep init` writes the defaults shep actually uses, as commented examples.
 - The TUI runs on Bubble Tea v2, Lip Gloss v2 and Bubbles v2. Keys typed
-  right after opening the picker are no longer lost (v1 queried the terminal
-  at startup and discarded them), a bracketed paste is always text and
+  right after opening the picker are no longer lost (Bubble Tea v1 queried the
+  terminal at startup and discarded them), a bracketed paste is always text and
   never a key binding, a theme following the terminal's appearance asks for
   the background without blocking startup, and the terminal gets its
   keyboard mode back when the picker exits.
@@ -138,10 +123,6 @@ after the system has evicted it from memory.
   and pane rows; an unnamed tab's number is shown once in the preview Tabs
   table.
 - `nix build` works again: the flake's `vendorHash` follows `go.mod`.
-- The layout key always changes what is visible: the list alone while the
-  preview shows, both side by side otherwise. It used to switch between auto
-  and landscape, which look the same from 80 columns, so in the Herdr popup
-  it never changed anything.
 
 ### Performance
 
@@ -167,66 +148,6 @@ after the system has evicted it from memory.
   moment the picker opens and refresh in the background
   (`$XDG_CACHE_HOME/shep/sources`).
 
-## v0.1.1
+## Earlier versions
 
-### Breaking
-
-- `close_on_exit` is now validated at config `Load`. Previously-ignored
-  combinations are now rejected with a hard error instead of being silently
-  no-op:
-  - `close_on_exit = true` on a `type = "group"` workspace.
-  - `close_on_exit = true` on a workspace that also sets `template = "..."`.
-  - `close_on_exit = true` on a top-level `[templates.<name>]` that also sets
-    `tabs` (per-tab/per-pane close-on-exit is the node-level feature).
-  - `close_on_exit = true` with no `command` set (it would never trigger).
-
-  **Migration**: set `close_on_exit = false` (or remove the key) on any
-  affected `[[workspaces]]` or `[templates.<name>]` entry.
-
-### Added
-
-- `shep open --target=workspace|tab|pane` selects where a Command-only entry
-  opens: `workspace` (default, unchanged behavior), `tab` (new tab in the
-  Herdr workspace shep is running inside), or `pane` (new pane split beside the
-  current one). `tab`/`pane` require shep to be running inside a Herdr
-  workspace pane and only support Command-only entries.
-- TUI keybindings `Ctrl+T` (open as new tab) and `Ctrl+P` (open as new pane)
-  mirror `--target=tab`/`--target=pane` from the interactive picker; `Enter`
-  keeps the previous default behavior.
-- `close_on_exit` now also works on a workspace top-level `command`
-  (`[[workspaces]]` with `command = "..."`) and on a simple-command
-  `[templates.<name>]` (no `tabs`), not just on template leaf nodes.
-- Herdr plugin builds now honor `HERDR_BIN_PATH` and resolve the Herdr
-  executable from the plugin runtime environment instead of silently dropping
-  the Herdr source when the host starts plugins with a minimal `PATH`.
-- First-run picker presentation now uses a 35/65 list/preview split, label-first
-  rows, per-source Nerd Font icons, and source-specific preview sections:
-  Herdr rows show workspace, active pane, and agent status; workspaces and
-  zoxide show identity and directory; projects show identity, Git, and
-  directory content.
-
-### Changed
-
-- `FocusOrCreate` no longer falls back to a CWD-only match for
-  `[[workspaces]]`-sourced candidates when the label doesn't match: a
-  candidate's identity is now its label plus its cwd together, not the cwd
-  alone. **Behavior**: renaming a `[[workspaces]]` entry's `name` no longer
-  re-focuses the Herdr workspace created under the old name — `shep open`
-  for that entry now creates a brand-new workspace, leaving the old one open
-  and orphaned. **Migration**: to rename an entry without losing its
-  existing workspace, close the old Herdr workspace first (or rename it
-  directly in Herdr), then edit the `name` field and `shep open` the
-  entry again to re-create it under the new name. **Why**: prevents
-  cross-label collisions when two `[[workspaces]]` entries share the same
-  `path` (a CWD-only match could previously focus the wrong entry's
-  workspace).
-- Session previews now apply the session-specific fallback before the global
-  default, while an explicit per-source session preview remains authoritative.
-  Explicit empty preview lists are preserved as an intentional request for no
-  sections instead of being replaced by defaults.
-- Errors from Cobra command dispatch and raw `RunE` failures now reach stderr
-  with an actionable message while preserving existing exit codes. Deliberate
-  quiet paths, including cancelled picker runs and sanitized jump-back
-  diagnostics, remain quiet.
-
-</content>
+The 0.x releases were previews; v1.0.0 is the first stable release.

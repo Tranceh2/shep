@@ -23,14 +23,13 @@ func (m Model) drawnParts(row Row) drawnParts {
 }
 
 // TestDefaultPresentations_ReproduceTheRowTexts proves the built-in
-// presentation templates draw every kind of row exactly as the picker drew it
-// before rows were built from templates: the name-first split of path-like
-// labels (home shown as "~"), the source icons and the worktree glyph, and the
-// markers in their order — current, a worktree's branch, a session's state,
-// missing, an open workspace's status, the pin, the group chevron; an agent's
-// status glyph before its title and its workspace's last path element on the
-// right; a tab's number and label; a pane's status glyph, name-first path
-// fallback and agent.
+// presentation templates draw every kind of row with its expected parts: the
+// name-first split of path-like labels (home shown as "~"), the source icons
+// and the worktree glyph, and the markers in their order — current, a
+// worktree's branch, a session's state, missing, an open workspace's status,
+// the pin, the group chevron; an agent's status glyph before its title and
+// its workspace's last path element on the right; a tab's number and label;
+// a pane's status glyph, name-first path fallback and agent.
 func TestDefaultPresentations_ReproduceTheRowTexts(t *testing.T) {
 	t.Parallel()
 	const (

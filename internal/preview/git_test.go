@@ -48,7 +48,7 @@ func newTestGit(t *testing.T, run execFunc, timeout time.Duration) *gitRunner {
 	return &gitRunner{run: run, gitBin: "git", timeout: timeout}
 }
 
-// TestGitSummary_Success (WP-1) parses branch and a clean porcelain status.
+// TestGitSummary_Success parses branch and a clean porcelain status.
 func TestGitSummary_Success(t *testing.T) {
 	t.Parallel()
 
@@ -68,7 +68,7 @@ func TestGitSummary_Success(t *testing.T) {
 	}
 }
 
-// TestGitSummary_DirtyCount (WP-1) counts porcelain lines as changes.
+// TestGitSummary_DirtyCount counts porcelain lines as changes.
 func TestGitSummary_DirtyCount(t *testing.T) {
 	t.Parallel()
 
@@ -97,7 +97,7 @@ func TestFormatGitSummary_Worktree(t *testing.T) {
 	}
 }
 
-// TestGitSummary_SlowMiss (WP-1) bypasses when execution exceeds the 50ms
+// TestGitSummary_SlowMiss bypasses when execution exceeds the 50ms
 // budget by returning an error (the renderer then skips the git line).
 func TestGitSummary_SlowMiss(t *testing.T) {
 	t.Parallel()
@@ -114,7 +114,7 @@ func TestGitSummary_SlowMiss(t *testing.T) {
 	}
 }
 
-// TestGitSummary_BinaryMissing (WP-1) surfaces a missing git binary as an
+// TestGitSummary_BinaryMissing surfaces a missing git binary as an
 // error so the renderer can bypass the git line cleanly.
 func TestGitSummary_BinaryMissing(t *testing.T) {
 	t.Parallel()

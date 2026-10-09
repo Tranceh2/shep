@@ -413,7 +413,7 @@ func agentStatusRank(status string) int {
 // skipped entirely (non-herdr candidate, no driver, no panes, read error,
 // or empty/whitespace-only buffer). An unavailable or empty capture never
 // produces a heading-only section — the TUI must not show an empty "Active
-// pane" block (R3-001 fix). Non-TUI consumers (shep preview) also see the
+// pane" block. Non-TUI consumers (shep preview) also see the
 // section omitted, since there is no useful content to display.
 func (r *defaultRenderer) renderActivePaneSection(ctx context.Context, cand source.Candidate) (string, bool) {
 	workspaceID := cand.Meta["workspace_id"]

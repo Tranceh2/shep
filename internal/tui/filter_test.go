@@ -112,7 +112,7 @@ func TestUpdate_PrintableQueryChangeResetsCursor(t *testing.T) {
 
 // TestApplyFilter_FallsBackToNearestSelectableWhenLost proves that when the
 // previously highlighted row disappears entirely, the cursor lands on the
-// nearest sensible selectable row instead of an invalid/header position.
+// nearest sensible selectable row instead of an invalid position.
 func TestApplyFilter_FallsBackToNearestSelectableWhenLost(t *testing.T) {
 	t.Parallel()
 	cands := []source.Candidate{
@@ -120,7 +120,7 @@ func TestApplyFilter_FallsBackToNearestSelectableWhenLost(t *testing.T) {
 		zoxideCandidate("beta", "/beta"),
 	}
 	m := NewModel(cands, nil)
-	m.cursor = 0 // "alpha" (no header anymore: alpha=0, beta=1)
+	m.cursor = 0 // "alpha" (alpha=0, beta=1)
 	m.query = "beta"
 	m.applyFilter()
 

@@ -11,8 +11,8 @@ import (
 // TestRowAction_SynthesizedTabPaneRowsAreFocusTab proves the typed RowAction
 // model: a synthesized RowTab/RowPane carries RowActionFocusTab (Enter focuses
 // its containing tab), while every RowCandidate carries the zero-value
-// RowActionOpen (the normal launch path). The launch decision no longer
-// depends on the candidate's Source string.
+// RowActionOpen (the normal launch path). The launch decision does not
+// depend on the candidate's Source string.
 func TestRowAction_SynthesizedTabPaneRowsAreFocusTab(t *testing.T) {
 	t.Parallel()
 	cands := []source.Candidate{herdrCandidate("backend", "/srv/backend", "w1")}

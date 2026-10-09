@@ -568,12 +568,12 @@ func TestResolvePreviewNames_PerSourceDefaultsAndUserControl(t *testing.T) {
 // TestResolvePreviewNames_SessionsKeepTheirOwnFallback locks the outcome that a
 // session candidate previews as session_info for an ordinary loaded config.
 //
-// This is a regression guard with real history: the sessions fallback was first
-// placed AFTER Preview.Default, which looked correct in isolation but became
-// unreachable the moment Preview.Default gained a built-in value — every loaded
-// config then rendered a session as an empty path instead. A session carries no
-// path, no git repository and no Herdr pane, so the general sections describe
-// nothing; only an explicit sources.sessions.preview may override it.
+// The sessions fallback must win over Preview.Default: Preview.Default always
+// carries a built-in value, so a fallback placed after it would be unreachable
+// and every loaded config would render a session as an empty path. A session
+// carries no path, no git repository and no Herdr pane, so the general
+// sections describe nothing; only an explicit sources.sessions.preview may
+// override it.
 func TestResolvePreviewNames_SessionsKeepTheirOwnFallback(t *testing.T) {
 	t.Parallel()
 
@@ -733,12 +733,11 @@ func TestResolvePreviewNames_TildeWorkspacePathExpands(t *testing.T) {
 	}
 }
 
-// TestResolvePreviewNames_SymlinkAliasMatches is a regression guard: this
-// scenario must keep matching after the pathutil.SameDir swap (os.SameFile
-// is the source of truth for case-fold and symlink equivalence, so no
-// separate Normalize pass is needed at this call site). A workspace
-// configured via a symlink must still match a candidate whose path is the
-// symlink's real target (and vice versa).
+// TestResolvePreviewNames_SymlinkAliasMatches proves a workspace configured
+// via a symlink matches a candidate whose path is the symlink's real target
+// (and vice versa) through pathutil.SameDir (os.SameFile is the source of
+// truth for case-fold and symlink equivalence, so no separate Normalize pass
+// is needed at this call site).
 func TestResolvePreviewNames_SymlinkAliasMatches(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
@@ -772,13 +771,12 @@ func TestResolvePreviewNames_SymlinkAliasMatches(t *testing.T) {
 	})
 }
 
-// TestResolvePreviewNames_CaseFoldMatches is a regression guard: this
-// scenario must keep matching after the pathutil.SameDir swap (os.SameFile
-// is the source of truth for case-fold and symlink equivalence). On a
-// case-insensitive filesystem (macOS APFS default, Windows), a workspace
-// path differing only in case from the candidate's real directory must
-// still match. Gated to darwin/windows because a case-sensitive filesystem
-// (most Linux/ext4) genuinely has two distinct directories here.
+// TestResolvePreviewNames_CaseFoldMatches proves that on a case-insensitive
+// filesystem (macOS APFS default, Windows) a workspace path differing only
+// in case from the candidate's real directory matches through
+// pathutil.SameDir (os.SameFile is the source of truth for case-fold and
+// symlink equivalence). Gated to darwin/windows because a case-sensitive
+// filesystem (most Linux/ext4) genuinely has two distinct directories here.
 func TestResolvePreviewNames_CaseFoldMatches(t *testing.T) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
 		t.Skip("case-insensitive match only guaranteed on darwin/windows")
@@ -1004,11 +1002,10 @@ func TestRender_HerdrSections_SkipOnNonHerdrCandidate(t *testing.T) {
 	}
 }
 
-// TestRender_CacheKey_DoesNotAliasCandidatesSharingPath is the regression
-// test for the real-world repro: multiple [[workspaces]] entries pointing at
-// the identical path (e.g. "ecorp", "allsafe", "fsociety" all at
-// ~/projects) must render their own identity, not a stale cached
-// preview bled over from whichever candidate was rendered first.
+// TestRender_CacheKey_DoesNotAliasCandidatesSharingPath proves multiple
+// [[workspaces]] entries pointing at the identical path (e.g. "ecorp",
+// "allsafe", "fsociety" all at ~/projects) render their own identity, not a
+// stale cached preview bled over from whichever candidate was rendered first.
 func TestRender_CacheKey_DoesNotAliasCandidatesSharingPath(t *testing.T) {
 	t.Parallel()
 
@@ -1034,7 +1031,7 @@ func TestRender_CacheKey_DoesNotAliasCandidatesSharingPath(t *testing.T) {
 }
 
 // TestRender_CacheKey_DoesNotAliasHerdrCandidatesSharingCWD covers the same
-// class of bug for Herdr-sourced candidates: multiple tabs/panes commonly
+// aliasing for Herdr-sourced candidates: multiple tabs/panes commonly
 // share the same cwd, and each must render its own workspace section instead
 // of whichever workspace happened to populate the cache first.
 func TestRender_CacheKey_DoesNotAliasHerdrCandidatesSharingCWD(t *testing.T) {
@@ -1152,10 +1149,10 @@ func renderAgentStatus(t *testing.T, snapshot source.Snapshot, cand source.Candi
 	return mustRender(t, r, cand)
 }
 
-// TestRenderAgentStatusSection_ReportsCandidateWorkspaceNotGlobalFocus is the
-// regression test for the real-session bug where every workspace preview said
-// "working": the section read the pane focused globally in Herdr (where shep
-// was launched) instead of the candidate workspace's own panes.
+// TestRenderAgentStatusSection_ReportsCandidateWorkspaceNotGlobalFocus proves
+// the section reads the candidate workspace's own panes, not the pane focused
+// globally in Herdr (where shep was launched), so a workspace preview never
+// reports another workspace's "working" status as its own.
 func TestRenderAgentStatusSection_ReportsCandidateWorkspaceNotGlobalFocus(t *testing.T) {
 	t.Parallel()
 
@@ -1292,7 +1289,7 @@ func TestRenderAgentStatusSection_AgentCandidateReportsItsOwnPane(t *testing.T) 
 // TestRender_ActivePaneSection_TimesOutGracefully mirrors the workspace
 // timeout test for the active_pane section, except active_pane's timeout
 // contract is stricter than workspace's: renderActivePaneSection returns
-// ok=false on any read error/timeout (R3-001), so the section must be
+// ok=false on any read error/timeout, so the section must be
 // omitted entirely — no "(active pane unavailable)" placeholder heading —
 // and Render falls back to the built-in identity section since active_pane
 // was the only configured section.
@@ -1639,9 +1636,8 @@ func TestRenderer_WithSnapshotBuildsImmutableGeneration(t *testing.T) {
 
 // TestResolvePreviewNames_AgentsHonorConfiguredPreview proves the agents
 // source participates in the preview contract: an explicit
-// [sources.agents].preview is applied to agents rows (it was previously
-// parsed and validated but silently ignored), and an unconfigured agents
-// source keeps falling through to preview.default.
+// [sources.agents].preview is applied to agents rows, and an unconfigured
+// agents source keeps falling through to preview.default.
 func TestResolvePreviewNames_AgentsHonorConfiguredPreview(t *testing.T) {
 	t.Parallel()
 

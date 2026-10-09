@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-// TestExitCodeError_DoesNotSelfReport is the structural guard for the R2/R3
-// fix: ExitCodeError must be a pure exit-code transport. If a future change
-// re-adds reportedToUser() directly on *ExitCodeError, this test fails
+// TestExitCodeError_DoesNotSelfReport is the structural guard that
+// ExitCodeError is a pure exit-code transport. If a future change adds
+// reportedToUser() directly on *ExitCodeError, this test fails
 // because a bare, never-printed ExitCodeError would then be silently
 // swallowed by Execute's fallback print (see
 // TestReportUnhandledError_UnreportedExitCodeErrorPrintsOnce below).
@@ -89,12 +89,11 @@ func TestReportUnhandledError_ReportedExitCodeErrorStaysSilent(t *testing.T) {
 	}
 }
 
-// TestReportedExitError_SatisfiesExitCoderDirectly guards the follow-up fix
-// to the advisory finding on reportedExitError: a caller that type-asserts
-// err.(ExitCoder) directly (bypassing errors.As/ExitCode) must still observe
-// the wrapped error's documented code. Before this fix, *reportedExitError
-// had no ExitCode() method of its own, so this direct assertion failed even
-// though errors.As-based consumers (ExitCode()) worked via Unwrap.
+// TestReportedExitError_SatisfiesExitCoderDirectly proves a caller that
+// type-asserts err.(ExitCoder) directly (bypassing errors.As/ExitCode)
+// observes the wrapped error's documented code: *reportedExitError has an
+// ExitCode() method of its own, so this direct assertion agrees with the
+// errors.As-based consumers (ExitCode()) that reach the code via Unwrap.
 func TestReportedExitError_SatisfiesExitCoderDirectly(t *testing.T) {
 	wrapped := markReported(&ExitCodeError{Code: 5, Err: errors.New("boom")})
 

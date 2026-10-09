@@ -272,7 +272,7 @@ func (a *App) openRankingForPins(ctx context.Context) error {
 }
 
 // selectorFactoryForOrder mirrors selectorFactory but threads an explicit
-// source order into the picker layout (R3-1). It is used ONLY on the nested
+// source order into the picker layout. It is used ONLY on the nested
 // group-recursion branch of resolveFromRegistry so the group's effective order
 // drives Layout.SourceOrder identically to ranking.SortBySourceOrder; the
 // top-level path keeps selectorFactory(matches) and cfg.General.SourceOrder
@@ -1201,7 +1201,7 @@ func (a *App) withStartupSnapshot(registry *source.Registry) *source.Registry {
 //
 // order is the effective source order for THIS resolution pass: nil means
 // "use cfg.General.SourceOrder" (the top-level pass), while a non-nil slice is
-// the group's effective order computed at the group-recursion boundary (R3-1).
+// the group's effective order computed at the group-recursion boundary.
 // The same order drives both ranking.SortBySourceOrder and the picker layout so
 // the nested cascade's row order and block layout never diverge.
 func (a *App) resolveFromRegistry(cmd *cobra.Command, registry *source.Registry, query, parentTemplate string, order []string, out, errOut io.Writer) (source.Candidate, bool, error) {
@@ -1267,7 +1267,7 @@ func (a *App) resolveFromRegistry(cmd *cobra.Command, registry *source.Registry,
 		if nestedTemplate == "" {
 			nestedTemplate = parentTemplate
 		}
-		// R3-1: compute the single effective order ONCE at the group boundary
+		// Compute the single effective order ONCE at the group boundary
 		// and thread it into both the scoped registry and nested recursion so
 		// ranking, provider execution, and layout honor the same order.
 		nestedOrder := effectiveGroupSourceOrder(a.Config(), groupWorkspace, hasWorkspace, groupSources)
@@ -1290,7 +1290,7 @@ func (a *App) resolveFromRegistry(cmd *cobra.Command, registry *source.Registry,
 }
 
 // effectiveGroupSourceOrder returns the single source order used for both
-// candidate ranking and picker layout inside a group's nested picker (R3-1).
+// candidate ranking and picker layout inside a group's nested picker.
 // Precedence: an explicit ws.SourceOrder when hasWorkspace && non-empty; else
 // the parsed group_sources list; else cfg.General.SourceOrder. The same slice
 // is handed to ranking.SortBySourceOrder and layoutFromConfig so the nested
@@ -1322,7 +1322,7 @@ func splitNonEmpty(s, sep string) []string {
 
 // launchOutcome classifies the result of App.launch so runOpenWithView can distinguish
 // a genuinely completed launch (open/focus/attach) from a degraded path-print
-// fallback (R3-2). It is package-private: no other package needs to know about
+// fallback. It is package-private: no other package needs to know about
 // launch completion semantics.
 type launchOutcome int
 
@@ -1346,7 +1346,7 @@ const (
 //
 // The returned launchOutcome distinguishes a genuinely completed launch
 // (Completed) from the two degraded path-print fallbacks (PathOnly) so runOpenWithView
-// records adaptive-ranking history only for real navigation (R3-2).
+// records adaptive-ranking history only for real navigation.
 // Failure/cancellation branches return (None, err).
 //
 // target selects where the candidate opens:
@@ -1418,7 +1418,7 @@ func (a *App) launch(ctx context.Context, cand source.Candidate, action tui.RowA
 // launchSessionAttach runs the session CLI after the picker has restored the
 // terminal. Session candidates are daemon identities, not paths, so this
 // dispatch intentionally precedes the generic Missing and driver fallbacks.
-// It returns launchOutcomeCompleted on a successful attach (R3-2) so runOpenWithView
+// It returns launchOutcomeCompleted on a successful attach so runOpenWithView
 // records the navigation; failure/cancellation return (None, err).
 func (a *App) launchSessionAttach(ctx context.Context, cand source.Candidate, errOut io.Writer) (launchOutcome, error) {
 	name := cand.Meta["session_name"]
@@ -1470,7 +1470,7 @@ func stripHerdrEnv(env []string) []string {
 // There is no rollback on failure — unlike launchInCurrentWorkspace's
 // CreateTab/SplitPane, no resource is created here, so a warning plus
 // errExitOne is the complete failure contract. Returns launchOutcomeCompleted
-// on success (R3-2) so runOpenWithView records the focused-tab navigation.
+// on success so runOpenWithView records the focused-tab navigation.
 func (a *App) launchChildTab(ctx context.Context, driver source.HerdrDriver, cand source.Candidate, errOut io.Writer) (launchOutcome, error) {
 	tabID := cand.Meta["tab_id"]
 	if tabID == "" {
@@ -1512,7 +1512,7 @@ func (a *App) workspaceLaunchRequest(cand source.Candidate) (source.WorkspaceLau
 // standalone Herdr workspace and apply the resolved template on creation. It
 // is the pre-target behaviour, factored out so the tab/pane branch reads at
 // the same level. Returns launchOutcomeCompleted on a successful
-// focus/create (R3-2); the FocusOrCreate-error path-print fallback returns
+// focus/create; the FocusOrCreate-error path-print fallback returns
 // (PathOnly, nil) so runOpenWithView does not record it as a completed navigation.
 func (a *App) launchWorkspace(ctx context.Context, driver source.HerdrDriver, cand source.Candidate, out, errOut io.Writer) (launchOutcome, error) {
 	request, err := a.workspaceLaunchRequest(cand)
@@ -1559,7 +1559,7 @@ func (a *App) launchWorkspace(ctx context.Context, driver source.HerdrDriver, ca
 // inside a workspace the user is already using, and applying a layout there
 // would replace the surrounding tab rather than fill the new pane. A
 // command-less candidate (zoxide/projects) leaves a plain shell — no RunPane
-// call at all. Returns launchOutcomeCompleted on success (R3-2) so runOpenWithView
+// call at all. Returns launchOutcomeCompleted on success so runOpenWithView
 // records the tab/pane navigation; failures return (None, errExitOne).
 func (a *App) launchInCurrentWorkspace(ctx context.Context, driver source.HerdrDriver, cand source.Candidate, target string, currentPane *source.Pane, errOut io.Writer) (launchOutcome, error) {
 	if currentPane == nil {

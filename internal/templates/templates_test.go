@@ -64,9 +64,8 @@ func countPanes(n *herdr.LayoutNode) int {
 }
 
 // fourPaneTemplate is a two-tab template whose first tab holds four panes.
-// Under the old subprocess dispatcher that tab alone cost three `pane split`
-// calls plus four `pane run` calls; under layout.apply it must cost exactly
-// one round trip.
+// Under layout.apply that tab must cost exactly one round trip, not three
+// `pane split` calls plus four `pane run` calls.
 func fourPaneTemplate() config.TemplateConfig {
 	return config.TemplateConfig{
 		Tabs: []config.TemplateTab{

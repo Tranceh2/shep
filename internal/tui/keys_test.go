@@ -194,8 +194,8 @@ func TestCycleFocus_NoOpInFocusHelp(t *testing.T) {
 // --- Enter: row selection ---
 
 // TestEnter_OnCandidateSelectsAndQuits proves Enter on a row selects it and
-// requests tea.Quit. Group headers no longer exist, so every row (including
-// row 0) is a plain candidate.
+// requests tea.Quit. Every row, including row 0, is a selectable
+// candidate.
 func TestEnter_OnCandidateSelectsAndQuits(t *testing.T) {
 	t.Parallel()
 	m := NewModel([]source.Candidate{zoxideCandidate("a", "/a")}, nil)
@@ -222,7 +222,7 @@ func TestLeftRight_ExpandCollapseWorkspace(t *testing.T) {
 		tree := treeFromFake(driver)
 		base := []source.Candidate{herdrCandidate("backend", "/svc", "w1")}
 		m := NewModelWithTree(base, nil, tree, Layout{})
-		m.cursor = 0 // the workspace row (no group header anymore)
+		m.cursor = 0 // the workspace row
 
 		m, _ = update(t, m, key(keys[0]))
 		foundTab := false
@@ -652,15 +652,13 @@ func TestEscPriority_EmptyQueryNoHelpCancels(t *testing.T) {
 	}
 }
 
-// --- 'q' is an ordinary query character, not a cancel key (fix round 1,
-// Candidate B) ---
+// --- 'q' is an ordinary query character, not a cancel key ---
 //
-// The global switch used to unconditionally cancel on "q" before any
-// focus-based routing, making it structurally impossible to ever type the
-// literal character 'q' into the search query — breaking fuzzy-finding for
-// any query containing it (queue, quick, sql, unique, sequence, ...). Only
-// esc/ctrl+c/ctrl+g remain unconditional cancel keys; 'q' now behaves like
-// any other printable rune.
+// The global switch never cancels on "q", so the literal character 'q' can
+// always be typed into the search query and fuzzy-finding works for any
+// query containing it (queue, quick, sql, unique, sequence, ...). Only
+// esc/ctrl+c/ctrl+g are unconditional cancel keys; 'q' behaves like any
+// other printable rune.
 
 // TestQ_ExtendsQueryInFocusList_DoesNotCancel proves "q" while FocusList
 // with a non-empty existing query extends the query and never cancels.

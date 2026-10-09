@@ -14,16 +14,13 @@ import (
 	"github.com/tranceh2/shep/internal/source"
 )
 
-// Corrective round — strict TDD. This file exercises the 5 specific
-// regressions/gaps fixed in this round: (1) the "shep" brand mark removed
-// from the header, (2) row order following the CONFIGURED general.sources
-// order instead of a hardcoded literal, (3) group headers removed entirely
-// (RowGroupHeader no longer exists as a type — the compiler itself enforces
-// this; the tests below additionally assert every row built is one of the
-// three remaining kinds and is selectable), (4) pane rows showing
-// path-as-primary/pane-id-as-secondary with a status ICON (never a literal
-// status word) that shares the model's single spinner tick loop, and (5) the
-// full path restored in the footer.
+// This file covers the picker's chrome and row contract: the chrome carries
+// no brand mark and draws no pane boxes, rows follow the CONFIGURED
+// general.sources order, every row built is one of the three selectable row
+// kinds, pane rows name the pane by its label with a status ICON (never a
+// literal status word) that shares the model's single spinner tick loop,
+// zoxide and project rows show their full label with no secondary text, and
+// the footer stays a path-free shortcut contract.
 
 // === 1. The chrome carries no brand and no pane boxes ===
 
@@ -46,7 +43,7 @@ func TestPromptRow_NoBrandCompactCount(t *testing.T) {
 		t.Errorf("prompt row = %q, want the compact count \"2\" right-aligned", prompt)
 	}
 	if strings.Contains(prompt, "[/]") || strings.Contains(prompt, "⌕") {
-		t.Errorf("prompt row = %q, must not carry the old keycap or search glyph", prompt)
+		t.Errorf("prompt row = %q, must not carry a keycap or search glyph", prompt)
 	}
 }
 
@@ -101,11 +98,11 @@ func TestBuildRows_NonDefaultConfiguredOrder(t *testing.T) {
 }
 
 // TestEmptyQueryKeepsSourceBlocksContiguousWithActiveRanking proves the
-// production wiring fix: with an ACTIVE ranking snapshot and an empty query,
+// production wiring: with an ACTIVE ranking snapshot and an empty query,
 // applyFilter composes strict contiguous source blocks (via
 // ranking.SortBySourceOrder) so a zoxide candidate never interleaves between
-// Herdr candidates. This is the end-to-end regression for the observed bug
-// where zoxide directories appeared among Herdr workspaces.
+// Herdr candidates. This is the end-to-end proof that zoxide directories
+// never appear among Herdr workspaces.
 func TestEmptyQueryKeepsSourceBlocksContiguousWithActiveRanking(t *testing.T) {
 	store, err := ranking.OpenPath(filepath.Join(t.TempDir(), "ranking.sqlite3"))
 	if err != nil {
@@ -137,11 +134,11 @@ func TestEmptyQueryKeepsSourceBlocksContiguousWithActiveRanking(t *testing.T) {
 	}
 }
 
-// === 3. Group headers removed entirely; every row is selectable ===
+// === 3. Every row is one of the selectable row kinds ===
 
 // TestBuildRows_OnlyKnownRowKinds proves every row buildRows ever produces is
-// one of the three remaining kinds (RowCandidate, RowTab, RowPane) — there is
-// no fourth "header" kind left to accidentally reintroduce.
+// one of the three row kinds (RowCandidate, RowTab, RowPane), all of which
+// are selectable.
 func TestBuildRows_OnlyKnownRowKinds(t *testing.T) {
 	t.Parallel()
 	rows := buildRows(rowBuildInput{candidates: goldenCandidates()})
@@ -158,12 +155,12 @@ func TestBuildRows_OnlyKnownRowKinds(t *testing.T) {
 
 // === 4. Pane row primary/secondary + status icon (never a literal word) ===
 
-// TestRowDisplayText_PaneRow_PathPrimarySecondaryPaneID proves a RowPane's
-// primary names the pane by its label (the default pane format no longer
-// repeats the path on every child), its secondary stays empty, and no
+// TestRowDisplayText_PaneRow_LabelPrimaryNoSecondary proves a RowPane's
+// primary names the pane by its label (the default pane format does not
+// repeat the path on every child), its secondary stays empty, and no
 // agent_status literal word ever appears in the rendered row text — only an
 // icon.
-func TestRowDisplayText_PaneRow_PathPrimarySecondaryPaneID(t *testing.T) {
+func TestRowDisplayText_PaneRow_LabelPrimaryNoSecondary(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	for _, status := range []string{"working", "idle", "done", "blocked", "", "totally-bogus"} {
@@ -182,7 +179,7 @@ func TestRowDisplayText_PaneRow_PathPrimarySecondaryPaneID(t *testing.T) {
 			t.Errorf("status=%q: primary = %q, want it to contain the pane id \"p1\"", status, primary)
 		}
 		if secondary != "" {
-			t.Errorf("status=%q: secondary = %q, want empty (RowPane secondary removed entirely by Change 2)", status, secondary)
+			t.Errorf("status=%q: secondary = %q, want empty (a RowPane has no secondary text)", status, secondary)
 		}
 		full := ansi.Strip(primary + " " + secondary)
 		for _, word := range []string{"working", "idle", "done", "blocked", "unknown"} {
@@ -293,9 +290,9 @@ func TestSpinner_DeArmsOnceNeitherConditionHolds(t *testing.T) {
 // === 6. Zoxide/project rows show full path, no secondary ===
 
 // TestRowDisplayText_ZoxideAndProjectsShowFullPathNoSecondary proves
-// SourceZoxide/SourceProjects rows no longer get the basename-first/
-// shortened-parent-path treatment: primary is the full label (or path when
-// label is empty) and secondary is always empty.
+// SourceZoxide/SourceProjects rows are not split into a basename and a
+// shortened parent path: primary is the full label (or path when label is
+// empty) and secondary is always empty.
 func TestRowDisplayText_ZoxideAndProjectsShowFullPathNoSecondary(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
@@ -307,7 +304,7 @@ func TestRowDisplayText_ZoxideAndProjectsShowFullPathNoSecondary(t *testing.T) {
 	for _, row := range cases {
 		primary, secondary := m.rowDisplayText(row)
 		if secondary != "" {
-			t.Errorf("candidate %q: secondary = %q, want empty (no basename/parent-path split anymore)", row.Candidate.Label, secondary)
+			t.Errorf("candidate %q: secondary = %q, want empty (zoxide and project rows have no basename/parent-path split)", row.Candidate.Label, secondary)
 		}
 		if !strings.Contains(primary, row.Candidate.Label) {
 			t.Errorf("candidate %q: primary = %q, want it to contain the full label", row.Candidate.Label, primary)

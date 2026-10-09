@@ -201,11 +201,10 @@ func TestRecordSuccessUsesCoherentSnapshotAndClearRetainsSchema(t *testing.T) {
 // TestRecordSuccessOnNilStoreIsSafe pins the nil-receiver contract that the
 // guard clauses in RecordSuccess exist to provide: a nil *Store (or one with
 // a nil db, e.g. after Close) must return nil without panicking, both when
-// called directly and via the exported Record wrapper. This is the
-// regression test for the SA5011 "possible nil pointer dereference" finding
-// at store.go:261-263, which staticcheck raised because a nil check was
-// duplicated after s.mu.Lock() — implying (falsely, per this test) that s
-// could still be nil at that point.
+// called directly and via the exported Record wrapper. The guard runs once,
+// before s.mu.Lock(): a nil check repeated after the lock would imply
+// (falsely, per this test) that s could still be nil at that point, which
+// staticcheck reports as SA5011 "possible nil pointer dereference".
 func TestRecordSuccessOnNilStoreIsSafe(t *testing.T) {
 	var nilStore *Store
 	if err := nilStore.RecordSuccess(context.Background(), Keys{Exact: "x"}); err != nil {

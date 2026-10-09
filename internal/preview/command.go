@@ -32,7 +32,7 @@ type commandRunner struct{}
 func NewCommandRunner() CommandRunner { return commandRunner{} }
 
 // Run executes argv[0] with argv[1:] in dir. Capture is stdout-only into the
-// returned string; a non-zero exit OR any stderr output is a failure (WP-3),
+// returned string; a non-zero exit OR any stderr output is a failure,
 // and the returned error includes stderr content capped during execution.
 // stdout is capped during execution by maxLines and a byte ceiling; a non-positive
 // maxLines means no line cap, but the byte ceiling still applies.

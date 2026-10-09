@@ -220,7 +220,7 @@ func TestAcceptance_R10S3_OperatorDocsExistAndAreRunnable(t *testing.T) {
 // `--plugin tranceh2.shep`. A regression here is silent until an operator
 // copy-pastes a doc command that Herdr rejects.
 func TestAcceptance_PluginActionInvokeSyntaxIsExact(t *testing.T) {
-	staleForms := []string{
+	qualifiedForms := []string{
 		"herdr plugin action invoke tranceh2.shep.open",
 		"herdr plugin action invoke tranceh2.shep.jump-back",
 		"herdr plugin action invoke tranceh2.shep.start-history",
@@ -235,9 +235,9 @@ func TestAcceptance_PluginActionInvokeSyntaxIsExact(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", doc, err)
 		}
-		for _, stale := range staleForms {
-			if bytes.Contains(data, []byte(stale)) {
-				t.Errorf("%s: contains stale fully-qualified invoke syntax %q; action invoke takes the bare action ID plus --plugin tranceh2.shep", doc, stale)
+		for _, qualified := range qualifiedForms {
+			if bytes.Contains(data, []byte(qualified)) {
+				t.Errorf("%s: contains fully-qualified invoke syntax %q; action invoke takes the bare action ID plus --plugin tranceh2.shep", doc, qualified)
 			}
 		}
 	}

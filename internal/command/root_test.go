@@ -83,14 +83,14 @@ func TestApp_HelpOutput(t *testing.T) {
 	}
 }
 
-// TestApp_PersistentPreRunE_PrintsConfigLoadError (regression): a config that
-// fails to Load (e.g. a strict-validation rejection) must print the failure
-// to stderr before exiting 1. root has SilenceErrors:true so cobra itself
+// TestApp_PersistentPreRunE_PrintsConfigLoadError proves a config that
+// fails to Load (e.g. a strict-validation rejection) prints the failure to
+// stderr before exiting 1. root has SilenceErrors:true so cobra itself
 // never prints PersistentPreRunE's returned error, and main.go's
 // `if err := app.Execute(); err != nil { os.Exit(1) }` never prints anything
 // either — every subcommand body is expected to print its own message before
 // returning errExitOne, but PersistentPreRunE runs before any subcommand
-// body even starts. Before this fix, an invalid --config silently exited 1
+// body even starts. Without that message an invalid --config would exit 1
 // with zero output on either stream, which is indistinguishable from the
 // process never having started at all.
 func TestApp_PersistentPreRunE_PrintsConfigLoadError(t *testing.T) {
@@ -219,9 +219,9 @@ func TestApp_ExecuteUnknownCommandReportsUsageHint(t *testing.T) {
 }
 
 // TestApp_ExecuteDoesNotDoublePrintAlreadyReportedErrors guards the other half
-// of the silent-error fix: a command that already wrote its own sanitized,
-// user-facing message (the established errExitOne / ExitCodeError contract)
-// must not have that message duplicated or wrapped by Execute's new
+// of the no-silent-error contract: a command that already wrote its own
+// sanitized, user-facing message (the errExitOne / ExitCodeError contract)
+// must not have that message duplicated or wrapped by Execute's
 // stderr-on-unreported-error path. jump-back's sanitized refusal is real
 // production code exercising that exact contract without a live Herdr socket.
 func TestApp_ExecuteDoesNotDoublePrintAlreadyReportedErrors(t *testing.T) {
@@ -245,7 +245,7 @@ func TestApp_ExecuteDoesNotDoublePrintAlreadyReportedErrors(t *testing.T) {
 	}
 }
 
-// TestApp_HelpListsPreviewCommand (WP-4, task 4.4) confirms `shep preview` is
+// TestApp_HelpListsPreviewCommand confirms `shep preview` is
 // registered on the root command tree and shows up in --help.
 func TestApp_HelpListsPreviewCommand(t *testing.T) {
 	t.Parallel()

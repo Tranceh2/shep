@@ -10,9 +10,9 @@ import (
 	"github.com/tranceh2/shep/internal/source"
 )
 
-// Phase 8 — strict TDD. This file exercises the icon fallback chain (Unicode
-// -> ASCII) resolved from [tui].icons (config.TUIConfig.Icons, threaded
-// through Layout.Icons -> resolveIconSet), and its effect on the two UI
+// This file exercises the icon fallback chain (Unicode -> ASCII) resolved
+// from [tui].icons (config.TUIConfig.Icons, threaded through Layout.Icons ->
+// resolveIconSet), and its effect on the two UI
 // surfaces that render shep's OWN semantic icons: agentStatusIcon (pane
 // agent-status glyphs) and kindPrefix (row kind/expand markers). It does NOT
 // cover source.Candidate.Icon ([sources.<name>].icon in config) — that is a
@@ -114,8 +114,8 @@ func newRenderTestModelWithIcons(themeName, icons string) Model {
 // TestModelIcons_DefaultsToUnicodeWhenLayoutIconsUnset proves a Model built
 // without ever setting Layout.Icons (the zero value, e.g. every existing
 // direct Model{} test literal) resolves the same "unicode" tier as an
-// explicit empty string — no test using the old zero-value construction
-// pattern needs to change for Phase 8.
+// explicit empty string, so a zero-value Model{} literal needs no icon
+// setup.
 func TestModelIcons_DefaultsToUnicodeWhenLayoutIconsUnset(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
@@ -217,7 +217,7 @@ func TestKindPrefix_RowCandidateNeverGetsExpandGlyph(t *testing.T) {
 // TestKindPrefix_TreeGlyphsRespectConfiguredIconSet proves the RowTab and
 // RowPane tree glyphs come from the resolved IconSet and distinguish last
 // siblings. Every RowTab/RowPane prefix is led by a fixed-width blank
-// active-marker slot (TRL-4) — m.currentPane is nil here, so isActiveFocusRow
+// active-marker slot — m.currentPane is nil here, so isActiveFocusRow
 // is always false and the slot is blank space, never the glyph itself (see
 // TestKindPrefix_TreeGlyphColumnsAlign in
 // active_focus_test.go for the alignment proof against an active row).

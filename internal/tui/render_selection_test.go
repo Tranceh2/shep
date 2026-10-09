@@ -123,17 +123,16 @@ func TestRenderRowLine_SelectedDescendantUsesCursorMarker(t *testing.T) {
 		t.Errorf("selected descendant: descendant marker must not occupy a second leading cell: %q", got)
 	}
 	if strings.Contains(got, ">") {
-		t.Errorf("selected descendant: old > cursor marker present, want gutter instead: %q", got)
+		t.Errorf("selected descendant: > cursor marker present, want the ❯ gutter instead: %q", got)
 	}
 }
 
-// TestRenderRowLine_SelectedNormalCandidateDropsOldMarker proves a selected
-// direct-match candidate shows the FocusList cursor prefix, and that a
-// RowCandidate never gets an expand/collapse glyph (TRL-3: per-source icons
-// already differentiate row types, so the ▸/▾ marker was removed from
-// workspace rows entirely — Left/Right/Enter still toggle Expandable/
-// Expanded state, only the glyph is gone).
-func TestRenderRowLine_SelectedNormalCandidateDropsOldMarker(t *testing.T) {
+// TestRenderRowLine_SelectedNormalCandidateHasNoExpandGlyph proves a
+// selected direct-match candidate shows the FocusList cursor prefix, and that
+// a RowCandidate never gets an expand/collapse glyph (per-source icons
+// differentiate row types, so workspace rows carry no ▸/▾ marker;
+// Left/Right/Enter toggle Expandable/Expanded state without one).
+func TestRenderRowLine_SelectedNormalCandidateHasNoExpandGlyph(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	row := Row{
@@ -147,7 +146,7 @@ func TestRenderRowLine_SelectedNormalCandidateDropsOldMarker(t *testing.T) {
 		t.Errorf("selected candidate: expected FocusList cursor prefix %q, got %q", "❯ ", got)
 	}
 	if strings.Contains(got, ">") {
-		t.Errorf("selected candidate: old > cursor marker present, want gutter: %q", got)
+		t.Errorf("selected candidate: > cursor marker present, want the ❯ gutter: %q", got)
 	}
 	if strings.Contains(got, "▸") || strings.Contains(got, "▾") {
 		t.Errorf("selected candidate: expand/collapse glyph present, want none for RowCandidate: %q", got)
@@ -218,7 +217,7 @@ func TestRenderRowLine_NonSelectedUsesBlankMarker(t *testing.T) {
 	}
 
 	// Non-selected expandable workspace gets no expand/collapse glyph
-	// (TRL-3) and keeps two blank marker cells.
+	// and keeps two blank marker cells.
 	ws := Row{
 		Kind:       RowCandidate,
 		Candidate:  herdrCandidate("backend", "/srv/backend", "w1"),
@@ -265,7 +264,7 @@ func TestRenderRowLine_MarkerGutterContract(t *testing.T) {
 				t.Fatalf("gutter %q width = %d, want 2", tt.gutter, gotWidth)
 			}
 			if strings.ContainsAny(got, "▌|") {
-				t.Errorf("row = %q, legacy gutter glyph rendered", got)
+				t.Errorf("row = %q, must not render a ▌ or | gutter glyph", got)
 			}
 			if tt.icons == IconsASCII && strings.HasPrefix(got, cursorGlyphUnicode) {
 				t.Errorf("ASCII row = %q, Unicode cursor leaked", got)
@@ -364,14 +363,13 @@ func TestRenderRowLine_TruncationMatchesCursorAtSameInnerWidth(t *testing.T) {
 	}
 }
 
-// --- Bug 1: left truncation must never eat a row's own icon ---
+// --- Left truncation must never eat a row's own icon ---
 
 // TestRenderRowLine_LeftTruncationPreservesIcon proves a RowCandidate's
 // icon is a fixed, non-truncatable prefix: at a width too narrow for the
 // full label, the icon glyph survives fully intact and only the label after
-// it is truncated — never inside/eating the icon itself (the confirmed bug:
-// truncateFromLeftToWidth used to cut the marker+icon prefix first, before
-// touching a single label character).
+// it is truncated — never inside/eating the icon itself, and never cutting
+// the marker+icon prefix before a single label character.
 func TestRenderRowLine_LeftTruncationPreservesIcon(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
@@ -486,15 +484,15 @@ func lipglossWidth(s string) int {
 	return ansi.StringWidth(s)
 }
 
-// --- Bug 2: cursor row content must not shift relative to non-cursor rows ---
+// --- Cursor row content must not shift relative to non-cursor rows ---
 
 // TestRenderRowLine_NonCursorReservesSameGutterAsCursorInFocusList proves
 // that in FocusList, EVERY row — cursor or not — reserves the identical
 // cursorPrefixWidth leading gutter, so a row's own content (icon/label)
 // starts at the exact same column whether or not the cursor currently sits
-// on it. Before the fix, only the cursor row reserved this gutter, so
-// selecting a row visibly shifted its content cursorPrefixWidth cells to the
-// right (and back left when the cursor moved off).
+// on it. Selecting a row therefore never shifts its content
+// cursorPrefixWidth cells to the right (and back left when the cursor moves
+// off).
 func TestRenderRowLine_NonCursorReservesSameGutterAsCursorInFocusList(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
@@ -531,9 +529,9 @@ func newRenderTestModelWidth(themeName string, width int) Model {
 	return m
 }
 
-// TestRenderRowLine_ReclaimsBadgeWidth proves source-name badges no longer
-// consume row width and configured icons remain the source distinction.
-func TestRenderRowLine_ReclaimsBadgeWidth(t *testing.T) {
+// TestRenderRowLine_SourceIconWithoutBadge proves rows carry no source-name
+// badge consuming row width and configured icons are the source distinction.
+func TestRenderRowLine_SourceIconWithoutBadge(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModelWidth(ThemeMocha, 120)
 	row := Row{Kind: RowCandidate, Candidate: source.Candidate{Path: "/workspace/services/catalog/filename.go", Source: config.SourceHerdr}}
@@ -547,7 +545,7 @@ func TestRenderRowLine_ReclaimsBadgeWidth(t *testing.T) {
 }
 
 // TestRenderRowLine_SelectionVisibleInPlain proves the plain theme keeps the
-// visible selection marker with source badge chrome removed.
+// visible selection marker and draws no source badge chrome.
 func TestRenderRowLine_SelectionVisibleInPlain(t *testing.T) {
 	t.Parallel()
 	row := Row{Kind: RowCandidate, Candidate: source.Candidate{Path: "/a", Source: config.SourceHerdr}}

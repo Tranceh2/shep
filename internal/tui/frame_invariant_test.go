@@ -225,7 +225,7 @@ func frameLineControlError(line string) string {
 	return ""
 }
 
-// TestView_CRLFCaptureKeepsListColumn reproduces the live bug's shape: the
+// TestView_CRLFCaptureKeepsListColumn reproduces a live session's shape: the
 // list scrolled (ctrl+d right after opening) and the newly selected
 // workspace's active-pane capture arriving with CRLF lines ("PASS foo\r\n"),
 // each line ending "\r" + SGR reset once fitted. No "\r" may reach the

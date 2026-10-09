@@ -327,15 +327,15 @@ func TestDriverListSessions_ParsesVerifiedEnvelope(t *testing.T) {
 	}
 }
 
-// TestDriverListSessions_RejectsUnverifiedOrBrokenEnvelope ensures legacy
-// result-wrapped payloads, malformed JSON, and CLI errors never become a
-// usable session list.
+// TestDriverListSessions_RejectsUnverifiedOrBrokenEnvelope ensures
+// undocumented result-wrapped payloads, malformed JSON, and CLI errors never
+// become a usable session list.
 func TestDriverListSessions_RejectsUnverifiedOrBrokenEnvelope(t *testing.T) {
 	for _, tt := range []struct {
 		name string
 		call fakeCall
 	}{
-		{name: "legacy result wrapper", call: fakeCall{match: "herdr session list --json", out: []byte(`{"result":{"sessions":[{"name":"legacy"}]}}`)}},
+		{name: "undocumented result wrapper", call: fakeCall{match: "herdr session list --json", out: []byte(`{"result":{"sessions":[{"name":"legacy"}]}}`)}},
 		{name: "malformed JSON", call: fakeCall{match: "herdr session list --json", out: []byte(`{`)}},
 		{name: "command error", call: fakeCall{match: "herdr session list --json", err: errors.New("daemon down")}},
 	} {

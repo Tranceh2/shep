@@ -124,7 +124,7 @@ func TestQueryInput_ControlRunesDropped(t *testing.T) {
 }
 
 // TestQueryInput_AltRunesAreNotText proves an alt-modified rune stays a
-// chord, never text, exactly as under the previous single-rune contract.
+// chord, never text.
 func TestQueryInput_AltRunesAreNotText(t *testing.T) {
 	t.Parallel()
 	m := queryInputModel()
@@ -136,7 +136,7 @@ func TestQueryInput_AltRunesAreNotText(t *testing.T) {
 
 // TestQueryInput_BackspaceDeletesWholeRune proves backspace removes the
 // last rune, not the last byte: deleting from "canción" never leaves half
-// of "ó" (the old byte slice produced "canci\xc3").
+// of "ó" (a byte slice would produce "canci\xc3").
 func TestQueryInput_BackspaceDeletesWholeRune(t *testing.T) {
 	t.Parallel()
 	m := queryInputModel()
@@ -254,8 +254,8 @@ func TestQueryEditHelpers(t *testing.T) {
 var keyDoubleEsc = key("alt+esc")
 
 // TestDoubleEsc_ActsAsTwoPresses proves a quick double tap of Esc behaves
-// exactly like two separate presses instead of matching nothing (the picker
-// used to stay open inside the Herdr popup).
+// exactly like two separate presses instead of matching nothing, which
+// would leave the picker open inside the Herdr popup.
 func TestDoubleEsc_ActsAsTwoPresses(t *testing.T) {
 	t.Parallel()
 	if got := keyDoubleEsc.String(); got != "alt+esc" {

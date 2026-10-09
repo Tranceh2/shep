@@ -55,10 +55,10 @@ func TestAgentStatusIcon_WorkingUsesStatusWorkingStyle(t *testing.T) {
 	}
 }
 
-// TestAgentStatusIcon_WorkingASCIITierUnaffected is a regression guard: the
-// ASCII tier's static "o" fallback (IconSet.StatusWorking, already styled
-// with statusWorkingStyle — see agentStatusIcon) must not change behavior
-// from this fix, which only touches the animated-spinner branch.
+// TestAgentStatusIcon_WorkingASCIITierUnaffected proves the ASCII tier keeps
+// its static "o" fallback (IconSet.StatusWorking, styled with
+// statusWorkingStyle — see agentStatusIcon) instead of the animated spinner
+// the unicode tier uses.
 func TestAgentStatusIcon_WorkingASCIITierUnaffected(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModelWithIcons(ThemeMocha, IconsASCII)

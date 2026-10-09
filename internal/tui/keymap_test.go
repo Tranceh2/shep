@@ -11,13 +11,13 @@ import (
 	"github.com/tranceh2/shep/internal/source"
 )
 
-// === Phase 7: footer/help KeyMap unification ===
+// === Footer/help KeyMap unification ===
 //
 // These tests prove the footer's compact hints and the full "?" help
 // overlay render their key-chord notation from the SAME keyBinding values
 // (keyBindingEnter, keyBindingTab, keyBindingCtrlT, keyBindingCtrlP,
 // keyBindingEsc, keyBindingHelp) instead of two independently hand-typed
-// string literals — the drift this phase closes.
+// string literals, so the two can never drift apart.
 
 // TestFooterHints_MatchSharedKeyBindingValues proves footerHints() builds
 // each hint from the shared keyBinding vars' footerChord/footerLabel fields,

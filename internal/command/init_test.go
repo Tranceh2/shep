@@ -125,8 +125,8 @@ func TestInit_ForceOverwrites(t *testing.T) {
 	}
 }
 
-// TestRoot_PreRunLoadsConfigAndProbes verifies the PersistentPreRunE wired in
-// this commit actually populates App.cfg and App.probes for a normal command.
+// TestRoot_PreRunLoadsConfigAndProbes verifies the root PersistentPreRunE
+// actually populates App.cfg and App.probes for a normal command.
 func TestRoot_PreRunLoadsConfigAndProbes(t *testing.T) {
 	t.Parallel()
 

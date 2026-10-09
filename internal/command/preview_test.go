@@ -28,7 +28,7 @@ func runPreviewFor(t *testing.T, cfg *config.Config, args ...string) (string, st
 	return out.String(), errOut.String(), err
 }
 
-// TestPreview_PlainTextDefaultOutput (WP-4) confirms a valid path renders the
+// TestPreview_PlainTextDefaultOutput confirms a valid path renders the
 // built-in default preview as plain text with no ANSI escape codes.
 func TestPreview_PlainTextDefaultOutput(t *testing.T) {
 	t.Parallel()
@@ -45,14 +45,12 @@ func TestPreview_PlainTextDefaultOutput(t *testing.T) {
 	}
 }
 
-// TestPreview_ColorFlagIgnoredWithoutTTY (WP-4) confirmed --color had no
-// effect when stdout was not a terminal. That gate defeated the entire
-// embedding use case (Television and any tool running `shep preview` as a
-// subprocess sees a pipe, never a tty), so the semantics changed to match
-// `lsd/eza/bat --color=always`: --color is now FORCED when passed,
-// regardless of whether stdout is a terminal. The two tests below lock the
-// new contract; TestPreview_DefaultStripsANSIWhenPiped keeps the default
-// (no --color) plain-text contract Television relies on.
+// --color is FORCED when passed, regardless of whether stdout is a terminal,
+// matching `lsd/eza/bat --color=always`: Television and any tool running
+// `shep preview` as a subprocess sees a pipe, never a tty, so a tty gate
+// would defeat the entire embedding use case. The two tests below lock that
+// contract; TestPreview_DefaultStripsANSIWhenPiped keeps the default (no
+// --color) plain-text contract Television relies on.
 
 // previewANSICfg builds a config whose default preview is a single custom
 // command that emits real ANSI (a true-color escape), so the renderer's
@@ -71,11 +69,10 @@ func previewANSICfg(t *testing.T) *config.Config {
 	return cfg
 }
 
-// TestPreview_ColorFlagPreservesANSIWhenPiped is the core regression for the
+// TestPreview_ColorFlagPreservesANSIWhenPiped is the core proof for the
 // Television use case: `shep preview --color <path>` invoked as a subprocess
 // (stdout is a pipe, here a bytes.Buffer — NOT a terminal) must still pass
-// the renderer's real ANSI color through unmodified. Under the old
-// isTerminalWriter gate this produced plain text, defeating the flag.
+// the renderer's real ANSI color through unmodified.
 func TestPreview_ColorFlagPreservesANSIWhenPiped(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -111,7 +108,7 @@ func TestPreview_DefaultStripsANSIWhenPiped(t *testing.T) {
 	}
 }
 
-// TestPreview_MissingPathReturnsCleanError (WP-4) asserts a missing path
+// TestPreview_MissingPathReturnsCleanError asserts a missing path
 // fails with a clean, user-facing stderr message and exit 1 — no raw
 // stack/panic-shaped leakage.
 func TestPreview_MissingPathReturnsCleanError(t *testing.T) {
@@ -129,7 +126,7 @@ func TestPreview_MissingPathReturnsCleanError(t *testing.T) {
 	}
 }
 
-// TestPreview_FileNotDirectoryReturnsError (WP-4) asserts a path that exists
+// TestPreview_FileNotDirectoryReturnsError asserts a path that exists
 // but is a regular file (not a workspace directory) fails cleanly.
 func TestPreview_FileNotDirectoryReturnsError(t *testing.T) {
 	t.Parallel()
@@ -147,7 +144,7 @@ func TestPreview_FileNotDirectoryReturnsError(t *testing.T) {
 	}
 }
 
-// TestPreview_EmptyPathReturnsError (WP-4) guards the empty-arg edge case.
+// TestPreview_EmptyPathReturnsError guards the empty-arg edge case.
 func TestPreview_EmptyPathReturnsError(t *testing.T) {
 	t.Parallel()
 	_, errOut, err := runPreviewFor(t, nil, "")
@@ -203,10 +200,10 @@ func TestPreviewCmd_ColorFlagRegistered(t *testing.T) {
 	}
 }
 
-// TestStripANSI_RemovesCSIOSCAndDCS is the regression test for the
-// hand-rolled stripANSI: the previous regex (\x1b\[[0-9;?]*[a-zA-Z]) only
-// matched CSI sequences, leaving OSC (window/title) and DCS (sixel/SLS)
-// escape sequences in the output. This is a Television-safety contract —
+// TestStripANSI_RemovesCSIOSCAndDCS proves stripANSI removes OSC
+// (window/title) and DCS (sixel/SLS) escape sequences as well as CSI ones; a
+// CSI-only regex such as \x1b\[[0-9;?]*[a-zA-Z] would leave them in the
+// output. This is a Television-safety contract —
 // `shep preview` (default, no --color) must emit zero escape codes so it
 // embeds safely inside any picker — so stripANSI must handle the full
 // ANSI/CTL set, not just CSI. Delegates to charmbracelet/x/ansi.Strip, the
@@ -274,7 +271,7 @@ func TestStripANSI_LeavesZeroEscapeBytes(t *testing.T) {
 
 // TestWritePreview_StyledPlainTextStaysPlain and TestWritePreview_PlainNoANSI
 // cover the CLI-layer color decision directly, keeping the ANSI on/off
-// contract unit-testable without a real pty. writePreview no longer flattens
+// contract unit-testable without a real pty. writePreview does not flatten
 // the body to a single accent color, so plain (never-colored) renderer text —
 // like the built-in identity/git/workspace sections — must stay plain even
 // when styled=true.
@@ -344,8 +341,8 @@ func TestWritePreview_DefaultStripsRealRendererANSI(t *testing.T) {
 	}
 }
 
-// TestWritePreview_StyledPreservesRealRendererANSI is the core regression
-// test for this fix: when styled=true (--color plus a real terminal), the
+// TestWritePreview_StyledPreservesRealRendererANSI proves that when
+// styled=true (--color plus a real terminal), the
 // renderer's own ANSI color (dir/active_pane's real colors) must survive
 // byte-for-byte, matching what the interactive picker shows, instead of
 // being stripped or flattened into a single accent color.

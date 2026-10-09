@@ -77,15 +77,14 @@ func TestDedup_SymlinkCollapse(t *testing.T) {
 	}
 }
 
-// TestDedup_CaseFoldCollapse is the bug-reproduction test: two candidates
-// with the SAME label whose paths differ only in case (e.g. a Herdr
-// candidate at "ECORP" and a zoxide candidate at "ecorp") must collapse to
-// one entry when the filesystem itself considers them the same directory
+// TestDedup_CaseFoldCollapse proves two candidates with the SAME label whose
+// paths differ only in case (e.g. a Herdr candidate at "ECORP" and a zoxide
+// candidate at "ecorp") must collapse to one entry when the filesystem itself considers them the same directory
 // (case-insensitive, e.g. macOS APFS default / Windows). This is gated to
 // darwin/windows because a case-sensitive filesystem (most Linux/ext4)
 // genuinely has two distinct directories here — SameDir correctly reports
 // false in that case, so asserting collapse would be wrong off-darwin. Both
-// candidates are non-herdr so the herdr exemption (R2) does not apply and the
+// candidates are non-herdr so the herdr exemption does not apply and the
 // collapse this test targets still happens.
 func TestDedup_CaseFoldCollapse(t *testing.T) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
@@ -111,16 +110,14 @@ func TestDedup_CaseFoldCollapse(t *testing.T) {
 	}
 }
 
-// TestDedup_CaseFoldLabelCollapse is the bug-reproduction test: two
-// candidates pointing at the exact same literal path (SameDir's byte-equal
-// fast path, no filesystem case-insensitivity involved) whose auto-derived
-// Labels differ only in case (e.g. a workspaces candidate labeled "ECORP" and a
-// zoxide candidate at the same path labeled "ecorp") must collapse to one
-// entry. Before the fix, the `kept.Label == c.Label` comparison was
-// case-sensitive, so these two visually-duplicate rows for the same real
-// directory survived Dedup untouched. Both candidates are non-herdr so the
-// herdr exemption (R2) does not apply and the collapse this test targets
-// still happens.
+// TestDedup_CaseFoldLabelCollapse proves two candidates pointing at the
+// exact same literal path (SameDir's byte-equal fast path, no filesystem
+// case-insensitivity involved) whose auto-derived Labels differ only in case
+// (e.g. a workspaces candidate labeled "ECORP" and a zoxide candidate at the
+// same path labeled "ecorp") must collapse to one entry: Dedup compares labels case-insensitively, so two visually-duplicate
+// rows for the same real directory never both survive. Both candidates are
+// non-herdr so the herdr exemption does not apply and the collapse this test
+// targets still happens.
 func TestDedup_CaseFoldLabelCollapse(t *testing.T) {
 	tmp := t.TempDir()
 	real := filepath.Join(tmp, "real")
@@ -237,7 +234,7 @@ func TestDedup_PathBackedCustomSourceUsesExactIdentityButSharesResource(t *testi
 // from the registry is the visible tiebreaker. A true duplicate (same path
 // AND same label) is collapsed; the first-seen survivor wins.
 func TestDedup_OrderPreserved(t *testing.T) {
-	// All three are non-herdr so the herdr exemption (R2) does not apply and
+	// All three are non-herdr so the herdr exemption does not apply and
 	// the first-seen duplicate collapse this test targets still happens.
 	cands := []source.Candidate{
 		{Path: "/a", Label: "first", Source: "zoxide"},
@@ -274,7 +271,7 @@ func TestDedup_DefensiveCopy(t *testing.T) {
 	}
 }
 
-// TestDedup_HerdrExempt (R2) proves Dedup never collapses a pair when either
+// TestDedup_HerdrExempt proves Dedup never collapses a pair when either
 // candidate is herdr-sourced, while ordinary non-herdr duplicates still
 // collapse first-seen. herdr candidates model already-open Herdr workspaces:
 // two of them may legitimately share a label+path (two open workspaces at the
@@ -565,11 +562,11 @@ func (fakeWorkspacesDriver) FocusTab(context.Context, string) error {
 	return errors.New("fakeWorkspacesDriver does not implement FocusTab")
 }
 
-// TestDedup_HerdrExempt_AcrossRegistry (R2, end-to-end through the real
+// TestDedup_HerdrExempt_AcrossRegistry (end-to-end through the real
 // collect→dedup pipeline) proves a herdr-sourced candidate and a
 // [[workspaces]] candidate at the same path+label survive as TWO distinct
-// candidates regardless of general.sources order, instead of the pre-R2
-// collapse-to-one. This is the picker-level guarantee that "resume an
+// candidates regardless of general.sources order, never collapsing to one.
+// This is the picker-level guarantee that "resume an
 // already-open workspace" and "open a new one" stay unambiguous.
 func TestDedup_HerdrExempt_AcrossRegistry(t *testing.T) {
 	t.Parallel()
@@ -583,7 +580,7 @@ func TestDedup_HerdrExempt_AcrossRegistry(t *testing.T) {
 		t.Fatalf("resolve foo: %v", err)
 	}
 	// Both providers surface the same path with the same label "foo" so the
-	// pair WOULD have collapsed pre-R2; R2's herdr exemption keeps both.
+	// pair would collapse without the herdr exemption, which keeps both.
 	herdrCand := source.Workspace{ID: "wfoo", Label: "foo", CWD: foo}
 
 	for _, order := range [][]string{

@@ -8,11 +8,9 @@ import (
 	"testing"
 )
 
-// TestNormalize_Table is the consolidated spec for Normalize, covering the
-// same cases previously pinned separately by internal/resolver's
-// TestNormalize_Table and internal/herdr's normalizePath usage: tilde
-// expansion, absolute resolution, trailing-slash trimming, dot cleanup and
-// that an unresolvable symlink still returns a stable, non-empty key.
+// TestNormalize_Table is the spec for Normalize: tilde expansion, absolute
+// resolution, trailing-slash trimming, dot cleanup and that an unresolvable
+// symlink still returns a stable, non-empty key.
 func TestNormalize_Table(t *testing.T) {
 	tmp := t.TempDir()
 	target := filepath.Join(tmp, "real")
@@ -77,9 +75,8 @@ func TestNormalize_Table(t *testing.T) {
 }
 
 // TestNormalize_TildeExpansion confirms Normalize expands a leading ~ before
-// making the path absolute — the one behavior herdr's pre-consolidation
-// normalizePath duplicate silently lacked (its real inputs were always
-// already-absolute pane CWDs, so the gap never surfaced there).
+// making the path absolute, so a "~/..." input never resolves against the
+// process cwd.
 func TestNormalize_TildeExpansion(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

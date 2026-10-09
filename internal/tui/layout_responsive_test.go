@@ -12,9 +12,8 @@ import (
 )
 
 // TestAutoWidthMode_Breakpoints proves the plain width->mode mapping with no
-// prior mode (fresh session) picks the expected mode at each breakpoint. With
-// the stacked mode removed there is a single breakpoint: below it list-only,
-// at/above it wide.
+// prior mode (fresh session) picks the expected mode at each breakpoint.
+// There is a single breakpoint: below it list-only, at/above it wide.
 func TestAutoWidthMode_Breakpoints(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

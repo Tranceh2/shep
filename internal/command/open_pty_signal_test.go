@@ -22,10 +22,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// R4-001 was refuted by exploration #2243: Herdr's raw-mode terminal sends
-// Ctrl+C as byte 0x03, while an explicit OS SIGINT remains independently
-// observable. The first nested topology deadlocked on Darwin (#2251/#2260);
-// this suite keeps one self-reexec and one ctty owner.
+// Herdr's raw-mode terminal sends Ctrl+C as byte 0x03, while an explicit OS
+// SIGINT remains independently observable. A deeper nested pty topology
+// deadlocks on Darwin, so this suite keeps one self-reexec and one ctty
+// owner.
 const (
 	ptyRoleEnv = "SHEP_PTY_ROLE"
 	ptyIPCEnv  = "SHEP_PTY_IPC"

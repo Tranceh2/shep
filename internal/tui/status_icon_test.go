@@ -5,21 +5,17 @@ import (
 	"testing"
 )
 
-// Corrective round 2 — strict TDD. This file exercises the fix to the
-// pane agent-status icon/color mapping against herdr's own verified
-// convention (ground truth: herdr's src/ui/status.rs, function agent_icon):
-// working keeps the animated spinner colored warn/yellow (was wrongly
-// accent/blue); blocked is "◉" in err/red (was wrongly "⚠" in warn/yellow);
-// done is "●" in a new teal token (was wrongly accent/blue); idle is "✓" in
-// a new success/green token (was wrongly muted); the literal "unknown"
-// status is "○" in muted (was previously swallowed by the empty-icon
-// default case, conflating it with "no status at all"); and an entirely
-// empty/absent agent_status still renders no icon (unchanged, must not
-// regress).
+// This file covers the pane agent-status icon/color mapping, which follows
+// herdr's own verified convention (ground truth: herdr's src/ui/status.rs,
+// function agent_icon): working renders the animated spinner colored
+// warn/yellow; blocked is "◉" in err/red; done is "●" in the teal token;
+// idle is "✓" in the success/green token; the literal "unknown" status is
+// "○" in muted, distinct from having no status at all; and an entirely
+// empty/absent agent_status renders no icon.
 
 // === agentStatusIcon glyph + color mapping ===
 
-// TestAgentStatusIcon_GlyphsAndColors proves the corrected glyph+style pairs
+// TestAgentStatusIcon_GlyphsAndColors proves the glyph+style pairs
 // for every non-working status, and that an empty or unrecognized status
 // (anything other than the 5 known values) still renders no icon at all.
 func TestAgentStatusIcon_GlyphsAndColors(t *testing.T) {
@@ -46,10 +42,9 @@ func TestAgentStatusIcon_GlyphsAndColors(t *testing.T) {
 	}
 }
 
-// TestAgentStatusIcon_WorkingUsesSpinner proves "working" still renders the
-// model's shared animated spinner (glyph unchanged) — only its color role
-// changed (see TestAgentStatusIcon_WorkingUsesStatusWorkingStyle), not the
-// glyph source itself.
+// TestAgentStatusIcon_WorkingUsesSpinner proves "working" renders the
+// model's shared animated spinner as its glyph; its color role is covered by
+// TestAgentStatusIcon_WorkingUsesStatusWorkingStyle.
 func TestAgentStatusIcon_WorkingUsesSpinner(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
@@ -101,10 +96,10 @@ func TestAgentStatusIcon_PlainRendersGlyphsNoColor(t *testing.T) {
 	}
 }
 
-// TestAgentStatusIcon_NoStatusStillMeansNoIcon is a targeted regression
-// guard (independent of corrective_test.go's broader coverage) proving the
-// literal "unknown" fix did not accidentally make the empty-string /
-// absent-status case start rendering an icon too.
+// TestAgentStatusIcon_NoStatusStillMeansNoIcon is a targeted guard
+// (independent of row_contract_test.go's broader coverage) proving the
+// empty-string / absent-status case renders no icon, unlike the literal
+// "unknown" status, which renders one.
 func TestAgentStatusIcon_NoStatusStillMeansNoIcon(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)

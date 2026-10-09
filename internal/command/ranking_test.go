@@ -102,7 +102,7 @@ func (s *blockingRankingStore) Close() error                { return nil }
 
 func TestRunOpenRecordsSuccessfulLaunchWithoutBlockingOnRecordFailure(t *testing.T) {
 	cfg, _ := seedCfg(t, "foo")
-	// R3-2: only a genuinely completed launch records, so drive a real
+	// Only a genuinely completed launch records, so drive a real
 	// FocusOrCreate success rather than the nil path-print fallback.
 	driver := &openDriver{detect: true, workspaceID: "wA", lastAction: source.HerdrActionFocused}
 	store := &failingRankingStore{}
@@ -123,9 +123,9 @@ func TestRunOpenRecordsSuccessfulLaunchWithoutBlockingOnRecordFailure(t *testing
 
 func TestRunOpenRecordFailureIsBounded(t *testing.T) {
 	cfg, _ := seedCfg(t, "foo")
-	// R3-2: recording only happens on a genuinely completed launch, so this
+	// Recording only happens on a genuinely completed launch, so this
 	// test must use a real driver that completes FocusOrCreate (not the nil
-	// path-print fallback, which correctly records nothing now).
+	// path-print fallback, which records nothing).
 	driver := &openDriver{detect: true, workspaceID: "wA", lastAction: source.HerdrActionFocused}
 	store := &blockingRankingStore{recordStarted: make(chan struct{})}
 	app := New(WithHerdrDriver(driver))

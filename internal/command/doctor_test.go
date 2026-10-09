@@ -196,9 +196,9 @@ func TestDoctor_GroupWorkspacePathChecked(t *testing.T) {
 }
 
 // TestDoctor_ExpandsTildeInWorkspacePath confirms a "~/..." workspace path is
-// tilde-expanded before the existence check (regression for the old local
-// expandTildeDoctor, which used home+p[1:] instead of filepath.Join and could
-// emit a malformed path). Cannot run t.Parallel because it mutates HOME.
+// tilde-expanded before the existence check through filepath.Join, so it
+// never emits a malformed path. Cannot run t.Parallel because it mutates
+// HOME.
 func TestDoctor_ExpandsTildeInWorkspacePath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

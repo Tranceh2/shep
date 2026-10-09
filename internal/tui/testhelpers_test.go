@@ -279,16 +279,16 @@ func workspaceEntryCandidate(label, path string) source.Candidate {
 	return source.Candidate{Label: label, Path: path, NormalizedPath: path, Source: config.SourceWorkspaces}
 }
 
-// --- Phase 4 golden scenario renderers ---
+// --- Preview composition golden scenario renderers ---
 
-// phase4WorkspaceRenderer emits a deterministic Herdr workspace preview with
+// goldenWorkspaceRenderer emits a deterministic Herdr workspace preview with
 // every known section: identity, workspace, agent_status, active_pane. Used
-// by the workspace_active_pane golden scenario to exercise the Phase 4
-// recomposition (compact identity → inline agent status → workspace summary
+// by the workspace_active_pane golden scenario to exercise the preview
+// composition (compact identity → inline agent status → workspace summary
 // → Active pane + capture LAST).
-type phase4WorkspaceRenderer struct{}
+type goldenWorkspaceRenderer struct{}
 
-func (phase4WorkspaceRenderer) Render(context.Context, source.Candidate) (preview.Result, error) {
+func (goldenWorkspaceRenderer) Render(context.Context, source.Candidate) (preview.Result, error) {
 	sections := []preview.Section{
 		{Kind: config.PreviewIdentity, Text: "backend\npath: /srv/backend\nsource: herdr"},
 		{Kind: config.PreviewWorkspace, Text: "workspace\n  tab 1: api * (2 panes)\n  pane p1 * /srv/api"},
@@ -304,12 +304,12 @@ func (phase4WorkspaceRenderer) Render(context.Context, source.Candidate) (previe
 	return preview.Result{Text: text, Sections: sections}, nil
 }
 
-// phase4ProjectRenderer emits a deterministic project preview: identity,
+// goldenProjectRenderer emits a deterministic project preview: identity,
 // git, and a dir listing. Used by the project_preview golden scenario to
-// exercise the Phase 4 recomposition (identity → git → Directory last).
-type phase4ProjectRenderer struct{}
+// exercise the preview composition (identity → git → Directory last).
+type goldenProjectRenderer struct{}
 
-func (phase4ProjectRenderer) Render(context.Context, source.Candidate) (preview.Result, error) {
+func (goldenProjectRenderer) Render(context.Context, source.Candidate) (preview.Result, error) {
 	sections := []preview.Section{
 		{Kind: config.PreviewIdentity, Text: "shep\npath: /home/dev/shep\nsource: projects"},
 		{Kind: config.PreviewGit, Text: "git: main (2 changes)"},
@@ -324,12 +324,12 @@ func (phase4ProjectRenderer) Render(context.Context, source.Candidate) (preview.
 	return preview.Result{Text: text, Sections: sections}, nil
 }
 
-// phase4ZoxideRenderer emits a deterministic zoxide preview: identity and a
+// goldenZoxideRenderer emits a deterministic zoxide preview: identity and a
 // dir listing (no git). Used by the zoxide_preview golden scenario to
-// exercise the Phase 4 recomposition (identity → Directory last, full path).
-type phase4ZoxideRenderer struct{}
+// exercise the preview composition (identity → Directory last, full path).
+type goldenZoxideRenderer struct{}
 
-func (phase4ZoxideRenderer) Render(context.Context, source.Candidate) (preview.Result, error) {
+func (goldenZoxideRenderer) Render(context.Context, source.Candidate) (preview.Result, error) {
 	sections := []preview.Section{
 		{Kind: config.PreviewIdentity, Text: "tmp\npath: /tmp\nsource: zoxide"},
 		{Kind: config.PreviewDir, Text: "drwxr-xr-x 2 user staff 64 Jul 10 .\ndrwxr-xr-x 5 user staff 160 Jul 10 .."},

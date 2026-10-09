@@ -143,19 +143,17 @@ func bruteForceBestScore(needle, haystack []rune) int {
 	return best
 }
 
-// TestScore_MatchesBruteForceOptimum is a Bug 3 investigation reproduction.
-// The reported symptom ("typing omp colors isolated o's, isolated m's,
-// isolated p's scattered across a row's text") could in principle mean the
-// DP/traceback picks an incorrect, non-optimal subsequence. It does not: for
-// every case here — including haystacks shaped like a picker's real
-// "label path" search text, where the query can be satisfied either by a
-// contiguous run or by scattered word-boundary letters — Score's returned
-// score exactly matches an independently brute-forced optimum, AND the
-// returned indexes are themselves a valid increasing subsequence that
-// achieves that optimum under the same independent formula. This isolates
-// Bug 3 to internal/tui's label/path haystack handling (see
-// TestHighlight_LabelMatchNotShadowedByDuplicatePathOccurrence), not this
-// package's scoring/traceback, which is proven correct here.
+// TestScore_MatchesBruteForceOptimum proves the DP/traceback never picks an
+// incorrect, non-optimal subsequence (which would color isolated letters
+// scattered across a row's text): for every case here — including haystacks
+// shaped like a picker's real "label path" search text, where the query can
+// be satisfied either by a contiguous run or by scattered word-boundary
+// letters — Score's returned score exactly matches an independently
+// brute-forced optimum, AND the returned indexes are themselves a valid
+// increasing subsequence that achieves that optimum under the same
+// independent formula. Choosing between a label match and a duplicate path
+// occurrence belongs to internal/tui's label/path haystack handling, not to
+// this package's scoring/traceback.
 func TestScore_MatchesBruteForceOptimum(t *testing.T) {
 	for _, tt := range []struct {
 		name            string

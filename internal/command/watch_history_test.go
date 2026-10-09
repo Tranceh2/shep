@@ -191,14 +191,13 @@ func TestRunWatchHistory_SecondOwnerRefusesWithoutDisturbingIncumbent(t *testing
 	}
 }
 
-// TestWatchHistoryCmd_ReportsStartupFailureToStderr guards a real defect found
-// by the runtime harness: the root command sets SilenceErrors, so a collector
-// that cannot start (no HERDR_SOCKET_PATH) exited 1 printing nothing at all.
-// A plugin startup hook that fails silently is undiagnosable, so the command
-// must print its own sanitized reason.
+// TestWatchHistoryCmd_ReportsStartupFailureToStderr proves a collector that
+// cannot start (no HERDR_SOCKET_PATH) prints why: the root command sets
+// SilenceErrors, and a plugin startup hook that fails silently is
+// undiagnosable, so the command must print its own sanitized reason.
 //
-// It is also the regression guard for the reportedExitError plain-error bug
-// on this second reachable path: resolveSessionPaths returns a plain
+// It also guards the reportedExitError plain-error path on this second
+// reachable path: resolveSessionPaths returns a plain
 // errors.New (not an ExitCoder), so markReported(err) in the "fail" closure
 // exercises the same wrapper the open.go template-failure path does.
 // ExitCode must report the package's ordinary failure code (1), never 0, and
@@ -234,8 +233,8 @@ func TestWatchHistoryCmd_ReportsStartupFailureToStderr(t *testing.T) {
 		t.Fatalf("direct err.(ExitCoder).ExitCode() = %d, want 1", got)
 	}
 
-	// The follow-up fix (markReported on the "fail" closure's return) must
-	// hold at the command boundary too: Execute's fallback must not add a
+	// markReported on the "fail" closure's return must hold at the
+	// command boundary too: Execute's fallback must not add a
 	// second, generic "error:" line on top of this already-sanitized one.
 	app.reportUnhandledError(err)
 	lines := strings.Split(strings.TrimRight(errOut.String(), "\n"), "\n")
@@ -313,9 +312,9 @@ func TestWatchHistoryCmd_AlreadyRunningRealCollectorPathSingleLineExitZero(t *te
 	}
 }
 
-// TestReportCollectorExit_DuplicateStartLogsRejectionAndExitsZero guards the
-// second defect the runtime harness found: a duplicate start exited 1 printing
-// nothing. R2.S1 requires the second collector to exit WITHOUT disturbing the
+// TestReportCollectorExit_DuplicateStartLogsRejectionAndExitsZero proves a
+// duplicate start logs its rejection and exits 0 instead of exiting 1 with no
+// output. R2.S1 requires the second collector to exit WITHOUT disturbing the
 // incumbent and to log the rejection, and R6 requires repeated starts against
 // a live owner to be no-ops.
 func TestReportCollectorExit_ClassifiesBootstrapFailureWithoutLeakingCause(t *testing.T) {

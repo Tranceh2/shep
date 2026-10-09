@@ -34,19 +34,19 @@ func TestHandleAppError(t *testing.T) {
 			wantCode: 4,
 		},
 		{
-			// Regression guard for the reportedExitError plain-error bug:
+			// Guard for the reportedExitError plain-error path:
 			// markReported wraps errors returned from the two reachable
 			// call sites (open.go's launchWorkspace, watch_history.go's
 			// startup "fail" closure) that carry a plain, non-ExitCoder
-			// error. Before the fix, reportedExitError.ExitCode() returned
-			// 0 for these — the exact wrapper handleAppError feeds to
-			// os.Exit — turning an ordinary command failure into a
+			// error. reportedExitError.ExitCode() must not return 0 for
+			// these — handleAppError feeds that exact wrapper to os.Exit,
+			// so a 0 would turn an ordinary command failure into a
 			// process-level success. The internal/command package cannot
 			// export markReported, so this exercises the same shape via
 			// ExitCodeError's own Unwrap chain wrapped a second time,
 			// mirroring markReported's "wrap a plain error" case: the
 			// package's ExitCode() helper is what markReported's
-			// ExitCode() now delegates to.
+			// ExitCode() delegates to.
 			name:     "generic error wrapped twice (markReported-shaped) -> exit 1, never 0",
 			err:      fmt.Errorf("outer: %w", fmt.Errorf("inner: %w", errors.New("plain, no ExitCoder"))),
 			wantCode: 1,
@@ -64,13 +64,13 @@ func TestHandleAppError(t *testing.T) {
 }
 
 // TestWatchHistorySubcommand_StartupFailureExitsNonZero is a real,
-// process-level regression guard for the reportedExitError plain-error bug
-// on its `watch-history` reachable path: it builds the actual shep binary
-// and runs it as a subprocess with no Herdr socket configured, exactly the
-// scenario watch_history.go's "fail" closure wraps with markReported(err)
-// on a plain, non-ExitCoder error. Before the fix, main's os.Exit(ExitCode
-// (err)) would have received code 0 from that wrapper and the process would
-// have exited successfully despite the startup failure it printed.
+// process-level guard for the reportedExitError plain-error path on its
+// `watch-history` reachable path: it builds the actual shep binary and runs
+// it as a subprocess with no Herdr socket configured, exactly the scenario
+// watch_history.go's "fail" closure wraps with markReported(err) on a plain,
+// non-ExitCoder error. main's os.Exit(ExitCode(err)) must receive a non-zero
+// code from that wrapper, so the process never exits successfully despite
+// the startup failure it printed.
 func TestWatchHistorySubcommand_StartupFailureExitsNonZero(t *testing.T) {
 	binaryPath := filepath.Join(t.TempDir(), "shep")
 	build := exec.Command("go", "build", "-o", binaryPath, ".")

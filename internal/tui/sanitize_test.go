@@ -5,14 +5,11 @@ import (
 	"testing"
 )
 
-// Phase 5 — OSC/DCS containment for live pane capture. STRICT TDD: these
-// tests are written before sanitizePaneCapture exists/behaves correctly and
-// must fail RED against the pre-fix code.
-//
-// Fix round 1 (R1-001, R1-002): the regex-based approach was replaced with a
-// single-pass, stateful scanner. The tests below were added RED-first against
-// the still-regex-based implementation to prove both CRITICAL findings, then
-// stayed as permanent regression coverage once the scanner replaced it.
+// These tests cover OSC/DCS containment for live pane capture.
+// sanitizePaneCapture is a single-pass, stateful scanner: it strips OSC, DCS,
+// APC/PM/SOS and non-SGR CSI sequences and bare control characters, keeps SGR
+// color byte-for-byte, and never lets a nested, overlapping or unterminated
+// sequence leave an OSC or DCS opener behind.
 
 // TestSanitizePaneCapture_OSCBELRemoved proves an OSC sequence terminated by
 // BEL (\x07) is stripped, with surrounding text left intact.
@@ -72,8 +69,8 @@ func TestSanitizePaneCapture_MixedOSCAndSGR(t *testing.T) {
 
 // TestSanitizePaneCapture_PrintableTextUnchanged proves box-drawing
 // characters, wide/multi-byte runes, and blank lines pass through completely
-// unaltered — the sanitizer must never touch ordinary printable content
-// (Phase 4's blank-line-safe Sections handling must not regress).
+// unaltered — the sanitizer must never touch ordinary printable content,
+// blank lines included.
 func TestSanitizePaneCapture_PrintableTextUnchanged(t *testing.T) {
 	t.Parallel()
 	in := "┌────────┐\n│ pane 1 │\n└────────┘\n\n日本語 emoji 🎉\n\nline after blank"
@@ -92,18 +89,18 @@ func TestSanitizePaneCapture_NoEscapeSequences(t *testing.T) {
 	}
 }
 
-// --- Fix round 1: R1-001 (closure-safety / nested-OSC reconstruction) ---
+// --- Closure safety: a nested OSC must not reconstruct an OSC ---
 
-// TestSanitizePaneCapture_NestedOSCExploit_R1001 is the exact adversarially
-// verified exploit from R1-001: an outer OSC 52 (clipboard write) opener,
-// followed by an inner, fully-formed OSC (BEL-terminated) before the outer's
-// own ST terminator. The old regex-based negated-character-class approach
-// stopped short at the embedded ESC, matched only the well-formed inner OSC,
-// removed it, and left a syntactically valid, reconstructed OSC 52 sequence
-// behind (`\x1b]52;c;cGF5bG9hZA==\x1b\\`). The fix must never let ANY OSC
+// TestSanitizePaneCapture_NestedOSCExploit proves an adversarially verified
+// exploit is contained: an outer OSC 52 (clipboard write) opener, followed
+// by an inner, fully-formed OSC (BEL-terminated) before the outer's own ST
+// terminator. A regex-based negated-character-class matcher would stop
+// short at the embedded ESC, match only the well-formed inner OSC, remove
+// it, and leave a syntactically valid, reconstructed OSC 52 sequence behind
+// (`\x1b]52;c;cGF5bG9hZA==\x1b\\`). The sanitizer must never let ANY OSC
 // opener survive — assert there is no `\x1b]` anywhere in the output, not
-// just that the original inner match is gone.
-func TestSanitizePaneCapture_NestedOSCExploit_R1001(t *testing.T) {
+// just that the inner match is gone.
+func TestSanitizePaneCapture_NestedOSCExploit(t *testing.T) {
 	t.Parallel()
 	in := "\x1b]52;c;cGF5bG9hZA==\x1b]0;x\x07\x1b\\"
 	got := sanitizePaneCapture(in)
@@ -131,13 +128,13 @@ func TestSanitizePaneCapture_UnterminatedOSCFailsClosed(t *testing.T) {
 	}
 }
 
-// --- Fix round 1: R1-002 (scope too narrow — non-SGR CSI, APC/PM/SOS) ---
+// --- Scope: non-SGR CSI and APC/PM/SOS are stripped too ---
 
 // TestSanitizePaneCapture_NonSGRCSIStripped proves cursor/erase-family CSI
-// sequences (clear screen, cursor home, scrollback erase) are stripped —
-// previously only OSC/DCS were sanitized, letting these reach the real
-// terminal via viewport.View() -> lipgloss.Render() -> Model.View() and
-// potentially clear/reposition the surrounding shep UI.
+// sequences (clear screen, cursor home, scrollback erase) are stripped, so
+// none of them reaches the real terminal via viewport.View() ->
+// lipgloss.Render() -> Model.View() to clear or reposition the surrounding
+// shep UI.
 func TestSanitizePaneCapture_NonSGRCSIStripped(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -170,8 +167,7 @@ func TestSanitizePaneCapture_SGRMultiParamPreserved(t *testing.T) {
 
 // TestSanitizePaneCapture_APCPMSOSStripped proves APC, PM, and SOS
 // string-type sequences (same shape as DCS/OSC: ESC introducer ... ST) are
-// all stripped — R1-002 found these entirely unmatched by the old
-// OSC/DCS-only regex pair.
+// all stripped, not only OSC and DCS.
 func TestSanitizePaneCapture_APCPMSOSStripped(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -212,7 +208,8 @@ func TestSanitizePaneCapture_MixedRealisticBuffer(t *testing.T) {
 // TestSanitizePaneCapture_AdversarialOverlappingOpeners proves an OSC opener
 // immediately followed by a DCS opener, before either finds its own
 // terminator, does not produce any surviving dangerous sequence — a second
-// adversarial nested/overlapping case beyond the R1-001 exploit itself.
+// adversarial nested/overlapping case beyond
+// TestSanitizePaneCapture_NestedOSCExploit.
 func TestSanitizePaneCapture_AdversarialOverlappingOpeners(t *testing.T) {
 	t.Parallel()
 	in := "\x1b]52;c;\x1bPdcs-inside-osc\x1b\\\x07"
@@ -225,14 +222,15 @@ func TestSanitizePaneCapture_AdversarialOverlappingOpeners(t *testing.T) {
 	}
 }
 
-// --- Bare control characters (live bug: CRLF captures blanked list rows) ---
+// --- Bare control characters (CRLF captures must not blank list rows) ---
 
 // TestSanitizePaneCapture_ControlCharacters proves every bare C0 control,
 // DEL and C1 control is contained like the cursor-moving CSI sequences
 // above: "\r\n" becomes "\n", a bare "\r" and every other control is
 // dropped, and an invalid UTF-8 byte becomes U+FFFD. `herdr pane read`
-// returns CRLF lines; a line's trailing "\r" sent the terminal's cursor back
-// to column 0, where the preview's padding blanked the list column.
+// returns CRLF lines; a line's trailing "\r" would send the terminal's
+// cursor back to column 0, where the preview's padding would blank the list
+// column.
 func TestSanitizePaneCapture_ControlCharacters(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

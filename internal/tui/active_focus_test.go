@@ -58,8 +58,8 @@ func TestCurrentAccessory_NoCurrentPaneNeverMarks(t *testing.T) {
 }
 
 // TestCurrentAccessory_RendersMutedAtTheRowEnd proves the accessory renders
-// right-aligned (ASCII tier included) and that the tree prefix no longer
-// reserves a marker slot: tree glyphs start right after the indent.
+// right-aligned (ASCII tier included) and that the tree prefix reserves no
+// marker slot: tree glyphs start right after the indent.
 func TestCurrentAccessory_RendersMutedAtTheRowEnd(t *testing.T) {
 	t.Parallel()
 	for _, icons := range []string{IconsUnicode, IconsASCII} {

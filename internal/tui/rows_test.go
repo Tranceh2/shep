@@ -132,8 +132,8 @@ func TestBuildRows_StableGroupAndParentOrder(t *testing.T) {
 
 // TestBuildRows_FuzzyScoreRanksCandidates verifies non-empty queries rank
 // visible candidates by fuzzy score, while equal scores retain their original
-// provider position. The first case is the regression for "omp": a direct
-// ~/.config/omp match must surface above a weaker scattered match.
+// provider position. The first case covers "omp": a direct ~/.config/omp
+// match must surface above a weaker scattered match.
 func TestBuildRows_FuzzyScoreRanksCandidates(t *testing.T) {
 	t.Parallel()
 	t.Run("surfaces direct omp path above scattered match", func(t *testing.T) {
@@ -296,7 +296,7 @@ func TestBuildRows_FuzzyScoreRanksAcrossProviders(t *testing.T) {
 // explicitly-configured source order (rowBuildInput.sourceOrder — sourced
 // from cfg.General.SourceOrder at the Model layer) is honored verbatim instead
 // of the hardcoded default, and that a source with zero visible members
-// simply contributes no rows (there is no header to omit anymore).
+// simply contributes no rows.
 func TestBuildRows_CustomSourceOrderOverridesDefault(t *testing.T) {
 	t.Parallel()
 	cands := []source.Candidate{

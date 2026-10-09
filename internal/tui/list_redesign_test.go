@@ -11,23 +11,21 @@ import (
 	"github.com/tranceh2/shep/internal/tmpl"
 )
 
-// This file exercises four related visual/behavioral changes requested
-// after manual visual testing of the redesigned picker:
+// This file covers four related parts of how the list pane draws its rows:
 //
 //  1. A RowPane's fixed-width ancestor-continuation column (the "│ "
 //     vertical bar) aligns with its parent tab's branch, while its own tree
 //     glyph is one level deeper.
 //  2. Built-in provider rows are label-first, with a path fallback for
-//     unlabeled candidates. Synthesized Herdr tab/pane rows still use
-//     "<label> · <path>" for their nested context.
-//  3. Fuzzy match visibility already works on both Label and Path for every
-//     row kind via candidateHaystack — locked in here as a regression test.
-//  4. The list pane's leading structural gutter/marker reservation shrinks
-//     by two cells (cursorPrefixWidth 2->1, and rowLineParts' marker+
-//     separator slot 2->1 char), while the preview pane and theme.go's
-//     shared border Padding(0, 1) are entirely untouched.
+//     unlabeled candidates. Synthesized Herdr tab/pane rows name the tab or
+//     pane and never repeat the workspace path.
+//  3. Fuzzy match visibility works on both Label and Path for every row
+//     kind via candidateHaystack.
+//  4. The list pane reserves exactly two leading marker cells
+//     (cursorPrefixWidth) before each row's content; the pane border
+//     padding is a separate layer.
 
-// --- Change 1: RowPane ancestor-continuation column ---
+// --- RowPane ancestor-continuation column ---
 
 // TestKindPrefix_RowPane_AncestorContinuationAlignsWithTabBranch proves a
 // RowPane whose parent tab is NOT the last tab puts its ancestor connector
@@ -80,7 +78,7 @@ func TestKindPrefix_RowPane_AncestorColumnWidthStable(t *testing.T) {
 }
 
 // TestKindPrefix_RowTab_NeverGetsAncestorColumn proves a RowTab's own
-// kindPrefix width is completely unaffected by this change (a RowTab has no
+// kindPrefix width never includes an ancestor column (a RowTab has no
 // ancestor level that participates in the vertical-line convention — its
 // only ancestor is the top-level workspace).
 func TestKindPrefix_RowTab_NeverGetsAncestorColumn(t *testing.T) {
@@ -136,7 +134,7 @@ func TestKindPrefix_HerdrTreeGeometry(t *testing.T) {
 	}
 }
 
-// --- Change 2: label composition per row kind ---
+// --- Label composition per row kind ---
 
 // TestRowView_RowCandidate_PathFallbackIsFilenameFirst proves a candidate
 // whose label falls back to its path leads with the last directory, shows
@@ -205,7 +203,7 @@ func TestRowPrimaryText_RowCandidate_HerdrLabelComposition(t *testing.T) {
 // m.kindPrefix(row) + iconPart + body, so these tests assert the LABEL/PATH
 // composition logic in isolation without hardcoding kindPrefix's own
 // indent/active-marker/tree-glyph arithmetic (covered separately by the
-// Change 1 kindPrefix tests above).
+// kindPrefix tests above).
 func wantRowPrimary(m Model, row Row, iconPart, body string) string {
 	return m.kindPrefix(row) + iconPart + body
 }
@@ -266,7 +264,7 @@ func TestRowView_TabAndPaneSecondary(t *testing.T) {
 	}
 }
 
-// --- Change 3: fuzzy match already works on Label AND Path per row kind ---
+// --- Fuzzy match works on Label AND Path per row kind ---
 
 // TestBuildRows_RowCandidate_MatchesOnLabelOrPathAlone locks in that a
 // RowCandidate is visible when the query matches ONLY its label, and
@@ -340,7 +338,7 @@ func TestBuildRows_RowPane_MatchesOnLabelOrPathAlone(t *testing.T) {
 	}
 }
 
-// --- TRL-1: list pane reserves exactly two marker cells ---
+// --- List pane reserves exactly two marker cells ---
 
 // TestCursorPrefixWidth_ReservesTwoCells proves the reserved cursor gutter
 // is two cells wide.

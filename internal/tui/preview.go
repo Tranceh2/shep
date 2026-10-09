@@ -155,7 +155,7 @@ const panePreviewMaxLines = 200
 // edge of "something needs it" — the preview render is loading, producers
 // are still streaming candidates (the prompt count's loading frame), or at
 // least one currently VISIBLE row is a pane with agent_status=="working"
-// (the corrective-round icon animation). spinnerRunning guards against ever
+// (its animated status icon). spinnerRunning guards against ever
 // having two live tick loops in flight regardless of which condition armed
 // it — see spinnerRunning's doc comment on Model.
 func (m *Model) maybeStartSpinner() tea.Cmd {

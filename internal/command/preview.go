@@ -12,7 +12,7 @@ import (
 	"github.com/tranceh2/shep/internal/preview"
 )
 
-// previewCmd builds `shep preview <path>` (WP-4): a stable, non-interactive
+// previewCmd builds `shep preview <path>`: a stable, non-interactive
 // way to render the same preview shown in the `shep open` picker's preview
 // pane, so Television and other external tools can reuse it as a preview
 // command. Output defaults to plain text (no ANSI escape codes) so it is
@@ -85,9 +85,9 @@ func (a *App) runPreview(cmd *cobra.Command, path string, color bool) error {
 }
 
 // validatePreviewPath ensures path is non-empty and resolves to an existing
-// directory before candidateFromPath builds a candidate for it (WP-4: a
-// missing or invalid path must fail cleanly instead of rendering an empty or
-// misleading preview).
+// directory before candidateFromPath builds a candidate for it: a missing or
+// invalid path fails cleanly instead of rendering an empty or misleading
+// preview.
 func validatePreviewPath(p string) error {
 	if strings.TrimSpace(p) == "" {
 		return fmt.Errorf("empty path")

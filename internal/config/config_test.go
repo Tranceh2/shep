@@ -1576,7 +1576,7 @@ root = "main"
 	}
 	for _, node := range tab.Nodes {
 		if node.Label != nil {
-			t.Errorf("legacy node %q label = %q, want nil", node.ID, *node.Label)
+			t.Errorf("node %q label = %q, want nil for a node without a label", node.ID, *node.Label)
 		}
 	}
 }
@@ -1700,8 +1700,8 @@ func TestLoad_RejectsInvalidTUIWidth(t *testing.T) {
 }
 
 // TestExampleTOML_MatchesCanonicalModel exercises the generated config
-// through Load and confirms no legacy/removed constructs and no leaked user
-// paths.
+// through Load and confirms it carries no `default = [` list and no blank
+// `icon = " "`, and leaks no user paths.
 func TestExampleTOML_MatchesCanonicalModel(t *testing.T) {
 	t.Parallel()
 	got := ExampleTOML()
@@ -2503,11 +2503,11 @@ root = "main"
 	}
 }
 
-// TestLoad_TemplateFocusNodeSetTabEmpty_Rejected confirms the existing
+// TestLoad_TemplateFocusNodeSetTabEmpty_Rejected confirms the
 // validateTemplateFocus branch that rejects focus.node set while focus.tab
 // is empty (ambiguous: node ids are scoped per-tab, so there is no tab to
 // resolve the node against). This exercises the "focus.node %q set but
-// focus.tab is empty" error path, which previously had no test coverage.
+// focus.tab is empty" error path.
 func TestLoad_TemplateFocusNodeSetTabEmpty_Rejected(t *testing.T) {
 	t.Parallel()
 	const doc = `

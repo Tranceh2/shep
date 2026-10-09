@@ -157,8 +157,8 @@ func sizeMsg(w, h int) tea.WindowSizeMsg {
 
 // goldenPresentation is the scenarios' row presentation: the defaults, with
 // every icon drawn from the candidate's own Icon (the worktree glyph kept).
-// The scenarios were written when the picker drew the icon stamped on each
-// candidate, so their candidates carry exactly the icons the fixtures pin;
+// The scenarios draw the icon stamped on each candidate, so their candidates
+// carry exactly the icons the fixtures pin;
 // the default presentations' own icons are pinned by
 // TestDefaultPresentations_ReproduceTheRowTexts.
 func goldenPresentation() *config.Presentations {
@@ -321,9 +321,7 @@ func goldenScenarios() []goldenScenario {
 				m := NewModelWithLayout(cands, nil, Layout{Theme: testTheme(ThemeMocha), Presentation: goldenPresentation()})
 				m, _ = update(t, m, sizeMsg(120, 36))
 				// "alpha" matches the zoxide candidate but not the herdr
-				// workspace, which drops out of the filtered list entirely
-				// (no group headers to auto-expand — that mechanism was
-				// removed in the corrective round).
+				// workspace, which drops out of the filtered list entirely.
 				for _, r := range "alpha" {
 					m, _ = update(t, m, key(string(r)))
 				}
@@ -411,10 +409,9 @@ func goldenScenarios() []goldenScenario {
 				m, _ = update(t, m, panePreviewMsg{seq: m.previewSeq, text: paneCaptureBuffer()})
 				return m
 			},
-			// Phase 5: the preview path now sanitizes OSC at the point the
-			// raw capture is composed into the preview body, so the raw
-			// View() output must never carry the OSC sequence through to the
-			// terminal.
+			// The preview path sanitizes OSC at the point the raw capture is
+			// composed into the preview body, so the raw View() output must
+			// never carry the OSC sequence through to the terminal.
 			evidence: func(t *testing.T, raw string) {
 				if strings.Contains(raw, "\x1b]0;evil") {
 					t.Errorf("OSC containment: raw View() output must not pass the OSC sequence through, but it was present: %q", raw)
@@ -462,15 +459,15 @@ func goldenScenarios() []goldenScenario {
 				return m
 			},
 		},
-		// --- Phase 4 scenarios ---
+		// --- Preview composition scenarios ---
 		{
 			// workspace_active_pane: Herdr workspace with a renderer that
-			// emits identity + workspace + agent_status + active_pane. Phase 4
-			// recomposes: compact identity (no source) → inline agent status →
-			// workspace summary → Active pane + capture LAST.
+			// emits identity + workspace + agent_status + active_pane. The
+			// preview composes: compact identity (no source) → inline agent
+			// status → workspace summary → Active pane + capture LAST.
 			name: "workspace_active_pane", width: 120, height: 36, theme: ThemeMocha,
 			setup: func(t *testing.T) Model {
-				renderer := phase4WorkspaceRenderer{}
+				renderer := goldenWorkspaceRenderer{}
 				cands := []source.Candidate{
 					herdrCandidate("backend", "/srv/backend", "w1"),
 				}
@@ -531,11 +528,11 @@ func goldenScenarios() []goldenScenario {
 		},
 		{
 			// project_preview: a SourceProjects candidate with a renderer
-			// that emits identity + git + dir listing. Phase 4 recomposes:
+			// that emits identity + git + dir listing. The preview composes:
 			// location → git meta line → Files section.
 			name: "project_preview", width: 120, height: 36, theme: ThemeMocha,
 			setup: func(t *testing.T) Model {
-				renderer := phase4ProjectRenderer{}
+				renderer := goldenProjectRenderer{}
 				cands := []source.Candidate{
 					projectCandidate("shep", "/home/dev/shep"),
 				}
@@ -550,11 +547,11 @@ func goldenScenarios() []goldenScenario {
 		},
 		{
 			// zoxide_preview: a SourceZoxide candidate with a renderer that
-			// emits identity + dir listing. Phase 4 recomposes: identity →
+			// emits identity + dir listing. The preview composes: identity →
 			// Files section; full path visible.
 			name: "zoxide_preview", width: 120, height: 36, theme: ThemeMocha,
 			setup: func(t *testing.T) Model {
-				renderer := phase4ZoxideRenderer{}
+				renderer := goldenZoxideRenderer{}
 				cands := []source.Candidate{
 					zoxideCandidate("tmp", "/tmp"),
 				}
@@ -567,7 +564,7 @@ func goldenScenarios() []goldenScenario {
 				return m
 			},
 		},
-		// --- Phase 6 scenarios: the help overlay ---
+		// --- Help overlay scenarios ---
 		{
 			// help_from_list: "?" opened from the list. Proves the help
 			// overlay itself renders correctly; opening and closing it is

@@ -9,8 +9,7 @@ import (
 )
 
 // gitCheckTimeout is the maximum budget for a git lookup before the renderer
-// bypasses the git summary. WP-1 requires a fast, safe check that never janks
-// the TUI.
+// bypasses the git summary, so the check never janks the TUI.
 const gitCheckTimeout = 50 * time.Millisecond
 
 // GitProvider renders a fast git summary for a workspace path. The default

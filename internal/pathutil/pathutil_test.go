@@ -7,9 +7,7 @@ import (
 )
 
 // TestExpandTilde is the canonical spec for tilde expansion shared across
-// config, source, resolver and command. It pins the contract extracted from
-// the four previously-duplicated helpers (one of which, command/doctor.go's
-// copy, used home+p[1:] and was subtly wrong).
+// config, source, resolver and command.
 //
 // Cannot run t.Parallel for the cases that mutate HOME.
 func TestExpandTilde(t *testing.T) {
@@ -23,8 +21,8 @@ func TestExpandTilde(t *testing.T) {
 		{name: "bare tilde is home", in: "~", want: home},
 		{name: "tilde slash one level", in: "~/code", want: filepath.Join(home, "code")},
 		{name: "tilde slash nested", in: "~/a/b/c", want: filepath.Join(home, "a", "b", "c")},
-		// Regression for the doctor.go bug: "~/" alone must collapse to home
-		// via filepath.Join (no trailing separator), not home+"/".
+		// "~/" alone must collapse to home via filepath.Join (no trailing
+		// separator), not home+"/".
 		{name: "tilde slash only is home no trailing sep", in: "~/", want: home},
 		{name: "relative path passes through", in: "relative", want: "relative"},
 		{name: "absolute path passes through", in: "/abs/path", want: "/abs/path"},

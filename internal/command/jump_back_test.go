@@ -393,12 +393,11 @@ func TestResolveSessionPaths_PerSocketIsolation(t *testing.T) {
 
 // TestJumpBackCmd_MissingSocketExitsSingleLineCodeThree exercises the real
 // jumpBackCmd() command path (via App.executeArgs, not the runJumpBack
-// helper) with no HERDR_SOCKET_PATH set, matching the runtime harness's
-// original defect scenario. It pins the full command-level contract in one
-// assertion: exactly one sanitized stderr line, exit code 3 (exitNotReady),
-// and no generic "error:" fallback wrapper — i.e. the whole markReported
-// chain from jumpBackCmd's inline refusal through Execute's fallback holds
-// end to end, not just at the runJumpBack helper layer.
+// helper) with no HERDR_SOCKET_PATH set. It pins the full command-level
+// contract in one assertion: exactly one sanitized stderr line, exit code 3
+// (exitNotReady), and no generic "error:" fallback wrapper — i.e. the whole
+// markReported chain from jumpBackCmd's inline refusal through Execute's
+// fallback holds end to end, not just at the runJumpBack helper layer.
 func TestJumpBackCmd_MissingSocketExitsSingleLineCodeThree(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HERDR_SOCKET_PATH", "")

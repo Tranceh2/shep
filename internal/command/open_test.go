@@ -990,11 +990,11 @@ func runOpenTemplate(t *testing.T, cfg *config.Config) *openDriver {
 	return driver
 }
 
-// TestOpen_TemplateAppliesOnCreatedWorkspace (top-priority bug fix,
-// end-to-end): a freshly created workspace applies [defaults].template in one
-// atomic layout.apply that reuses the workspace's root tab, rather than
-// leaving that tab unused alongside a new one. The rename is now carried by
-// the dispatched tab_label instead of a separate `tab rename` subprocess.
+// TestOpen_TemplateAppliesOnCreatedWorkspace (end-to-end) proves a freshly
+// created workspace applies [defaults].template in one atomic layout.apply
+// that reuses the workspace's root tab, rather than leaving that tab unused
+// alongside a new one. The rename is carried by the dispatched tab_label
+// instead of a separate `tab rename` subprocess.
 func TestOpen_TemplateAppliesOnCreatedWorkspace(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Templates["default"] = config.TemplateConfig{
@@ -1091,11 +1091,11 @@ func TestOpen_TemplateSkippedOnFocusedWorkspace(t *testing.T) {
 // application preserves its warning and non-transactional side effects while
 // returning a failure so the selection is not recorded as successful.
 //
-// This is also the regression guard for the reportedExitError plain-error
-// bug: templates.Apply's failure here is a plain, non-ExitCoder error (from
-// applyLayoutErr, wrapped only by fmt.Errorf in templates.Apply), so
-// markReported(applyErr) in launchWorkspace exercises exactly the path that
-// used to silently coerce to exit code 0. ExitCode must report the package's
+// It also guards the reportedExitError plain-error path: templates.Apply's
+// failure here is a plain, non-ExitCoder error (from applyLayoutErr, wrapped
+// only by fmt.Errorf in templates.Apply), so markReported(applyErr) in
+// launchWorkspace exercises exactly the path that must never coerce to exit
+// code 0. ExitCode must report the package's
 // ordinary failure code (1), and cmd.Execute()'s own return value —
 // asserted directly via ExitCoder, matching how cmd/shep/main.go derives the
 // process exit status — must agree.
@@ -2016,9 +2016,9 @@ func TestOpen_TargetPane_ApplyFailureRollsBackAndErrors(t *testing.T) {
 	}
 }
 
-// TestOpen_TargetTab_CreateTabFails_Errors (R3-003 regression): a
-// driver.CreateTab failure must surface a non-nil errExitOne so the process
-// exits 1, instead of silently swallowing the error and exiting 0. No
+// TestOpen_TargetTab_CreateTabFails_Errors proves a driver.CreateTab failure
+// surfaces a non-nil errExitOne so the process exits 1, instead of silently
+// swallowing the error and exiting 0. No
 // RunPane/Apply call must follow a CreateTab failure since there is no
 // container tab/pane to apply the template into.
 func TestOpen_TargetTab_CreateTabFails_Errors(t *testing.T) {
@@ -2043,7 +2043,7 @@ func TestOpen_TargetTab_CreateTabFails_Errors(t *testing.T) {
 
 // TestOpen_TargetPane_SplitPaneFails_Errors mirrors the tab test for
 // --target=pane, confirming a driver.SplitPane failure also surfaces
-// errExitOne instead of a silent nil (R3-003 regression).
+// errExitOne instead of a silent nil.
 func TestOpen_TargetPane_SplitPaneFails_Errors(t *testing.T) {
 	cfg, _ := commandWorkspaceCfg(t, "ops", "k9s", false)
 	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
@@ -2064,7 +2064,7 @@ func TestOpen_TargetPane_SplitPaneFails_Errors(t *testing.T) {
 	}
 }
 
-// TestOpen_TargetTab_HerdrCandidate_Errors (R4): an already-open herdr
+// TestOpen_TargetTab_HerdrCandidate_Errors proves an already-open herdr
 // workspace candidate is rejected for --target=tab with an "already open"
 // message and never reaches CreateTab/SplitPane — it must be resumed via
 // --target=workspace, not opened-new inside the current workspace.
@@ -2084,7 +2084,7 @@ func TestOpen_TargetTab_HerdrCandidate_Errors(t *testing.T) {
 	}
 }
 
-// TestOpen_TargetTab_ZoxideCandidate_Opens (R4): a zoxide candidate (no
+// TestOpen_TargetTab_ZoxideCandidate_Opens proves a zoxide candidate (no
 // command) opened with --target=tab creates a new tab in the current
 // workspace as a plain shell — disallowTarget allows it, and the empty
 // command means no RunPane fires.
@@ -2104,7 +2104,7 @@ func TestOpen_TargetTab_ZoxideCandidate_Opens(t *testing.T) {
 	}
 }
 
-// TestOpen_TargetPane_ProjectsCandidate_Opens (R4): a projects candidate (no
+// TestOpen_TargetPane_ProjectsCandidate_Opens proves a projects candidate (no
 // command) opened with --target=pane splits a new pane in the current
 // workspace as a plain shell.
 func TestOpen_TargetPane_ProjectsCandidate_Opens(t *testing.T) {
@@ -2370,11 +2370,11 @@ func TestOpen_RunOpenCLISelectionSourceAgentsFocusesTabAndNeverCreates(t *testin
 	}
 }
 
-// TestOpen_LaunchHerdrWorkspaceStillFocusOrCreate (regression): a normal
-// SourceHerdr (parent workspace) candidate selected with RowActionOpen still
-// goes through the unchanged FocusOrCreate path — this proves the
-// RowActionFocusTab branch in App.launch does not shadow the existing herdr
-// workspace contract (shep-resolver-resume-vs-new).
+// TestOpen_LaunchHerdrWorkspaceStillFocusOrCreate proves a normal
+// SourceHerdr (parent workspace) candidate selected with RowActionOpen goes
+// through the FocusOrCreate path — the RowActionFocusTab branch in
+// App.launch does not shadow the herdr workspace contract
+// (shep-resolver-resume-vs-new).
 func TestOpen_LaunchHerdrWorkspaceStillFocusOrCreate(t *testing.T) {
 	cand := source.Candidate{Source: config.SourceHerdr, Path: "/hw", Label: "open-ws", Meta: map[string]string{"workspace_id": "wA"}}
 	driver := insidePaneDriver(source.Pane{ID: "cur-p", WorkspaceID: "wA", CWD: "/cur"})
@@ -2440,10 +2440,10 @@ func TestOpen_LaunchFocusTabAction_FocusTabErrorSurfacesExitOne(t *testing.T) {
 	}
 }
 
-// --- R3-1: nested group effective source order ---
+// --- Nested group effective source order ---
 
 // TestEffectiveGroupSourceOrder is the pure-function table test for the single
-// helper that resolves a nested group picker's iteration order (R3-1).
+// helper that resolves a nested group picker's iteration order.
 // Precedence: explicit ws.SourceOrder when hasWorkspace && non-empty; else the
 // parsed group_sources list; else cfg.General.SourceOrder.
 func TestEffectiveGroupSourceOrder(t *testing.T) {
@@ -2511,12 +2511,12 @@ func TestEffectiveGroupSourceOrder(t *testing.T) {
 	}
 }
 
-// TestNestedPicker_OmittedOrderUsesGlobalEffectiveOrder (R3-1) proves the
+// TestNestedPicker_RankingAndLayoutShareEffectiveOrder proves the
 // nested group picker computes one effective order before registry construction:
 // when a group omits SourceOrder, the scoped registry still runs the global
 // sources and the nested cascade receives candidates in that same global order.
 // A captureSelector records the ranked candidate order so the end-to-end path
-// catches the former empty-registry bug.
+// catches an empty scoped registry.
 func TestNestedPicker_RankingAndLayoutShareEffectiveOrder(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -2583,7 +2583,7 @@ func TestNestedPicker_RankingAndLayoutShareEffectiveOrder(t *testing.T) {
 		t.Fatalf("nested cascade received %d candidates, want at least 2 (sessions + projects); captureSelector may not have run", len(capturedSources))
 	}
 	// Group effective order is [sessions, projects]; sessions MUST rank first.
-	// Under the OLD global-order bug, projects would rank first.
+	// Ranking by the global order instead would put projects first.
 	wantFirst := config.SourceSessions
 	if capturedSources[0] != wantFirst {
 		t.Errorf("nested picker first source = %q, want %q (group effective order [sessions, projects], not global [projects, sessions])", capturedSources[0], wantFirst)
@@ -2607,7 +2607,7 @@ func (s captureSelector) Select(_ context.Context, candidates []source.Candidate
 	return s.pick, s.ok, s.err
 }
 
-// --- R3-2: truthful launch outcome recording ---
+// --- Truthful launch outcome recording ---
 
 // runOpenWithRecordingStore wires a fresh App with a recordingRankingStore and
 // the given driver/cfg, runs `shep open <args>`, and returns the store (whose
@@ -2636,7 +2636,7 @@ func runOpenWithRecordingStore(t *testing.T, cfg *config.Config, driver *openDri
 	return store, out.String(), errOut.String(), err
 }
 
-// TestLaunchOutcome_CompletedRecordsExactlyOnce (R3-2) proves each genuinely
+// TestLaunchOutcome_CompletedRecordsExactlyOnce proves each genuinely
 // completed launch path — workspace focus, workspace create, current-workspace
 // tab, session attach, and child-tab focus — records exactly one history entry.
 // The degraded path-print fallbacks are covered separately (must record zero).
@@ -2747,7 +2747,7 @@ func TestLaunchOutcome_CompletedRecordsExactlyOnce(t *testing.T) {
 	})
 }
 
-// TestLaunchOutcome_PathOnlyRecordsZero (R3-2) proves the two degraded
+// TestLaunchOutcome_PathOnlyRecordsZero proves the two degraded
 // path-print fallbacks — Herdr unavailable (driver nil / Detect false) and
 // FocusOrCreate failure — both print the resolved path to stdout AND record
 // zero history entries. These branches must return non-fatally without being
@@ -2790,7 +2790,7 @@ func TestLaunchOutcome_PathOnlyRecordsZero(t *testing.T) {
 	})
 }
 
-// TestLaunchOutcome_CancellationAndFailureRecordZero (R3-2) proves cancellation
+// TestLaunchOutcome_CancellationAndFailureRecordZero proves cancellation
 // and generic launch failures record zero history entries — they never
 // represent a completed navigation.
 func TestLaunchOutcome_CancellationAndFailureRecordZero(t *testing.T) {
@@ -2976,11 +2976,6 @@ func TestOpen_ViewValidation(t *testing.T) {
 	cmd.SetArgs([]string{"--view", ""})
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "non-empty") {
 		t.Fatalf("empty view error = %v", err)
-	}
-	cmd = app.openCmd()
-	cmd.SetArgs([]string{"--agents"})
-	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "unknown flag") {
-		t.Fatalf("removed flag = %v", err)
 	}
 }
 

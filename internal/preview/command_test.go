@@ -126,8 +126,8 @@ func TestCommandRunner_Run_NonZeroExit(t *testing.T) {
 	}
 }
 
-// TestCommandRunner_Run_StderrFails fails the command when stderr is non-empty
-// (WP-3).
+// TestCommandRunner_Run_StderrFails fails the command when stderr is
+// non-empty.
 func TestCommandRunner_Run_StderrFails(t *testing.T) {
 	t.Parallel()
 
@@ -173,7 +173,7 @@ func TestCommandRunner_Run_HugeStderrIsBounded(t *testing.T) {
 	}
 }
 
-// TestCommandRunner_Run_Timeout respects a short context deadline (WP-3).
+// TestCommandRunner_Run_Timeout respects a short context deadline.
 func TestCommandRunner_Run_Timeout(t *testing.T) {
 	t.Parallel()
 
@@ -185,7 +185,7 @@ func TestCommandRunner_Run_Timeout(t *testing.T) {
 	}
 }
 
-// TestCommandRunner_Run_MaxLinesTruncation caps captured stdout (WP-3).
+// TestCommandRunner_Run_MaxLinesTruncation caps captured stdout.
 func TestCommandRunner_Run_MaxLinesTruncation(t *testing.T) {
 	t.Parallel()
 

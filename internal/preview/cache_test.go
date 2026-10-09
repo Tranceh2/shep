@@ -75,11 +75,10 @@ func TestCache_Key_DistinguishesPathAndConfig(t *testing.T) {
 	}
 }
 
-// TestCache_Key_DistinguishesCandidatesSharingPath is the regression test for
-// the cache-collision bug: distinct candidates that resolve to the SAME
-// filesystem path (e.g. multiple [[workspaces]] entries pointing at the same
-// dir, a real repro found in production config) must not alias each other's
-// cached preview.
+// TestCache_Key_DistinguishesCandidatesSharingPath proves distinct candidates
+// that resolve to the SAME filesystem path (e.g. multiple [[workspaces]]
+// entries pointing at the same dir, as real configs do) never alias each
+// other's cached preview.
 func TestCache_Key_DistinguishesCandidatesSharingPath(t *testing.T) {
 	t.Parallel()
 
@@ -177,11 +176,10 @@ func TestCache_Key_MetaOrderIndependent(t *testing.T) {
 	}
 }
 
-// TestCache_Key_NoDelimiterBoundaryAliasing is the regression test for the
-// unescaped-delimiter fingerprint bug: candidateFingerprint joined
-// Path|Label|Source|Meta with a raw "|" separator, so two candidates whose
-// field content itself contains "|" could shift the field boundary and
-// serialise to the identical string, e.g. Path="/a|b", Label="c" and
+// TestCache_Key_NoDelimiterBoundaryAliasing proves candidateFingerprint never
+// lets field content shift a field boundary: joining Path|Label|Source|Meta
+// with a raw "|" separator would serialise two candidates whose fields
+// contain "|" to the identical string, e.g. Path="/a|b", Label="c" and
 // Path="/a", Label="b|c" both naively join to "/a|b|c|...". User-controlled
 // fields (Label from [[workspaces]].name, Meta values) can legitimately
 // contain "|", "," and "=".

@@ -28,7 +28,7 @@ func TestRowDisplayText_TabRow_OmitsParentWorkspaceContext(t *testing.T) {
 // TestRowDisplayText_TabRow_NoWorkspaceLabelKeepsEmptySecondary triangulates:
 // a RowTab candidate with no workspace_label (should not happen in practice
 // for a synthesized row, but rowDisplayText must degrade gracefully) keeps
-// the pre-existing empty secondary rather than showing "in ".
+// an empty secondary rather than showing "in ".
 func TestRowDisplayText_TabRow_NoWorkspaceLabelKeepsEmptySecondary(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
@@ -39,15 +39,11 @@ func TestRowDisplayText_TabRow_NoWorkspaceLabelKeepsEmptySecondary(t *testing.T)
 	}
 }
 
-// TestRowDisplayText_PaneRow_ShowsParentWorkspaceContext previously proved a
-// RowPane's SECONDARY carried both its pane id and the parent workspace
-// context. Change 2 (unified "<label> · <path>" primary text) removes a
-// RowPane's secondary entirely and folds its pane id into the primary
-// instead — the parent workspace context is intentionally dropped for panes
-// (see rowSecondaryText's doc comment), not moved elsewhere. This test now
-// proves that removal directly: the pane id still appears, but in the
-// PRIMARY text, and the secondary is always empty.
-func TestRowDisplayText_PaneRow_ShowsParentWorkspaceContext(t *testing.T) {
+// TestRowDisplayText_PaneRow_OmitsParentWorkspaceContext proves a RowPane
+// names itself by its pane id in the PRIMARY text and never shows the parent
+// workspace context anywhere: a RowPane has no secondary text, even when its
+// candidate carries a workspace_label.
+func TestRowDisplayText_PaneRow_OmitsParentWorkspaceContext(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)
 	row := Row{
@@ -62,13 +58,13 @@ func TestRowDisplayText_PaneRow_ShowsParentWorkspaceContext(t *testing.T) {
 		t.Errorf("pane row primary = %q, want it to contain the pane id \"p1\"", primary)
 	}
 	if secondary != "" {
-		t.Errorf("pane row secondary = %q, want empty (RowPane secondary removed entirely by Change 2)", secondary)
+		t.Errorf("pane row secondary = %q, want empty (a RowPane has no secondary text)", secondary)
 	}
 }
 
 // TestRowDisplayText_PaneRow_NoWorkspaceLabelKeepsBarePaneID triangulates the
-// pane case: no workspace_label still shows the bare pane id, now in the
-// PRIMARY text (RowPane's secondary is always empty since Change 2).
+// pane case: with no workspace_label the bare pane id appears in the
+// PRIMARY text, and RowPane's secondary stays empty.
 func TestRowDisplayText_PaneRow_NoWorkspaceLabelKeepsBarePaneID(t *testing.T) {
 	t.Parallel()
 	m := newRenderTestModel(ThemeMocha, FocusList)

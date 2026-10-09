@@ -19,10 +19,10 @@ import (
 	"github.com/tranceh2/shep/internal/source"
 )
 
-// Render-path benchmarks for the picker. They model the session the redesign
-// was measured against (30 open Herdr workspaces, 10 agents, ~650 candidates
-// at 140x38) with synthetic, deterministic data so before/after numbers are
-// comparable across commits. Run with:
+// Render-path benchmarks for the picker. They model a heavy session (30 open
+// Herdr workspaces, 10 agents, ~650 candidates at 140x38) with synthetic,
+// deterministic data so before/after numbers are comparable across commits.
+// Run with:
 //
 //	go test -run '^$' -bench . -benchmem ./internal/tui/
 
