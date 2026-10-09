@@ -8,13 +8,11 @@ import (
 	"github.com/tranceh2/shep/internal/source"
 )
 
-// PinKey returns the opaque stable storage key for a candidate. Filesystem
-// candidates use the cross-provider resource key; pathless candidates use
-// their stable action identity.
+// PinKey returns the opaque stable storage key of a candidate's pin: its
+// exact identity, so a pin applies to the row that was pinned and to no other
+// row that happens to share its directory (an open workspace there, a group
+// or a command entry rooted at it).
 func PinKey(candidate source.Candidate) string {
-	if resource := Resource(candidate); resource != "" {
-		return resource
-	}
 	return exactStorageKey(Identity(candidate))
 }
 
@@ -23,7 +21,7 @@ func pinStorageKey(key string) string {
 	if key == "" {
 		return ""
 	}
-	if isOpaqueStorageKey("resource", key) || isOpaqueStorageKey("exact", key) {
+	if isOpaqueStorageKey("exact", key) {
 		return key
 	}
 	return exactStorageKey(key)

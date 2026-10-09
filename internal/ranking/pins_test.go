@@ -72,7 +72,11 @@ func TestTogglePinAndUnpinAreIdempotentAndNilSafe(t *testing.T) {
 	}
 }
 
-func TestSameResourceSharesPinAcrossSources(t *testing.T) {
+// TestPinAppliesToThePinnedRowOnly proves rows sharing a directory keep
+// separate pins: pinning a project leaves the zoxide entry, the open Herdr
+// workspace, the group and the command entry rooted at the same directory
+// unpinned.
+func TestPinAppliesToThePinnedRowOnly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ranking.sqlite3")
 	store, err := OpenPath(path)
 	if err != nil {
@@ -80,17 +84,22 @@ func TestSameResourceSharesPinAcrossSources(t *testing.T) {
 	}
 	defer store.Close()
 	projects := source.Candidate{Source: config.SourceProjects, Path: "/repo", NormalizedPath: "/repo", Label: "repo"}
-	zoxide := source.Candidate{Source: config.SourceZoxide, Path: "/repo", NormalizedPath: "/repo", Label: "repo"}
-	herdr := source.Candidate{Source: config.SourceHerdr, Path: "/repo", NormalizedPath: "/repo", Label: "repo", Meta: map[string]string{"workspace_id": "w1"}}
-	if PinKey(projects) != PinKey(zoxide) || PinKey(projects) != PinKey(herdr) {
-		t.Fatalf("same path produced different pin keys: %q %q %q", PinKey(projects), PinKey(zoxide), PinKey(herdr))
+	others := []source.Candidate{
+		{Source: config.SourceZoxide, Path: "/repo", NormalizedPath: "/repo", Label: "repo"},
+		{Source: config.SourceHerdr, Path: "/repo", NormalizedPath: "/repo", Label: "repo", Meta: map[string]string{"workspace_id": "w1"}},
+		{Source: config.SourceWorkspaces, Path: "/repo", NormalizedPath: "/repo", Label: "Fsociety", Meta: map[string]string{"entry_id": "fsociety", "group": "true"}},
+		{Source: config.SourceWorkspaces, Path: "/repo", NormalizedPath: "/repo", Label: "Logs", Meta: map[string]string{"entry_id": "logs", "command": "tail -f log"}},
 	}
 	if _, err := store.TogglePin(context.Background(), PinKey(projects)); err != nil {
 		t.Fatal(err)
 	}
-	for _, candidate := range []source.Candidate{projects, zoxide, herdr} {
-		if !store.Snapshot(context.Background(), "").IsPinned(candidate) {
-			t.Fatalf("%s candidate did not share the resource pin", candidate.Source)
+	snapshot := store.Snapshot(context.Background(), "")
+	if !snapshot.IsPinned(projects) {
+		t.Fatal("the pinned row is not pinned")
+	}
+	for _, other := range others {
+		if snapshot.IsPinned(other) {
+			t.Errorf("%s row %q shares the directory and got the pin", other.Source, other.Label)
 		}
 	}
 }

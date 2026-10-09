@@ -228,8 +228,8 @@ func TestDedup_PathBackedCustomSourceUsesExactIdentityButSharesResource(t *testi
 	if ranking.Resource(got[0]) != ranking.Resource(got[1]) {
 		t.Fatal("path-backed customSource routes must share resource affinity")
 	}
-	if ranking.PinKey(got[0]) != ranking.PinKey(got[1]) {
-		t.Fatal("path-backed customSource pins must share the resource key")
+	if ranking.PinKey(got[0]) == ranking.PinKey(got[1]) {
+		t.Fatal("distinct path-backed customSource routes share a pin")
 	}
 }
 
