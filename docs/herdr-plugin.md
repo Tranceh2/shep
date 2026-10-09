@@ -34,7 +34,7 @@ herdr plugin install Tranceh2/shep/contrib/herdr-plugin
 To install a tag or a branch, pass it separately with `--ref`:
 
 ```sh
-herdr plugin install --ref v1.0.1 Tranceh2/shep/contrib/herdr-plugin
+herdr plugin install --ref v1.1.0 Tranceh2/shep/contrib/herdr-plugin
 ```
 
 Herdr will:

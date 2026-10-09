@@ -146,7 +146,7 @@ herdr plugin uninstall tranceh2.shep
 herdr plugin install Tranceh2/shep/contrib/herdr-plugin
 ```
 
-Add `--ref v1.0.1` (a tag or a branch) to `install` to pick a version. Your
+Add `--ref v1.1.0` (a tag or a branch) to `install` to pick a version. Your
 shep config, pins and history stay where they are.
 
 ### Without Herdr
