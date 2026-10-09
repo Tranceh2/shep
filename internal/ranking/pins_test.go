@@ -10,7 +10,9 @@ import (
 	"github.com/tranceh2/shep/internal/source"
 )
 
-func TestPinsMigratePreserveRankingDataAndPersistAfterReopen(t *testing.T) {
+// TestPinsAndUsagePersistAfterReopen proves a pin and the learned usage
+// survive closing and reopening the database.
+func TestPinsAndUsagePersistAfterReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ranking.sqlite3")
 	store, err := OpenPath(path)
 	if err != nil {
@@ -38,14 +40,7 @@ func TestPinsMigratePreserveRankingDataAndPersistAfterReopen(t *testing.T) {
 		t.Fatal("pin did not survive reopening the database")
 	}
 	if snapshot.UsageFor(candidate) == 0 {
-		t.Fatal("migration did not preserve existing ranking data")
-	}
-	var table int
-	if err := reopened.db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='candidate_pins'").Scan(&table); err != nil {
-		t.Fatal(err)
-	}
-	if table != 1 {
-		t.Fatal("candidate_pins table was not migrated")
+		t.Fatal("usage did not survive reopening the database")
 	}
 }
 

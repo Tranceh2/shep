@@ -18,7 +18,7 @@ import (
 	"github.com/tranceh2/shep/internal/source"
 )
 
-func TestOpenPathMigratesVersionedPrivateSchema(t *testing.T) {
+func TestOpenPathCreatesVersionedPrivateSchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", "ranking.sqlite3")
 	store, err := OpenPath(path)
 	if err != nil {
@@ -39,7 +39,7 @@ func TestOpenPathMigratesVersionedPrivateSchema(t *testing.T) {
 			t.Fatal(err)
 		}
 		if count != 1 {
-			t.Fatalf("table %s was not migrated", table)
+			t.Fatalf("table %s was not created", table)
 		}
 	}
 	if mode := fileMode(filepath.Dir(path)); mode != 0o700 {
@@ -50,7 +50,7 @@ func TestOpenPathMigratesVersionedPrivateSchema(t *testing.T) {
 	}
 }
 
-func TestMigrateIsAtomicOnFailure(t *testing.T) {
+func TestEnsureSchemaIsAtomicOnFailure(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -59,22 +59,22 @@ func TestMigrateIsAtomicOnFailure(t *testing.T) {
 	if _, err := db.Exec("CREATE TABLE exact_usage (wrong TEXT)"); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrate(db); err == nil {
-		t.Fatal("migrate should reject an incompatible existing object")
+	if err := ensureSchema(db); err == nil {
+		t.Fatal("ensureSchema should reject an incompatible existing object")
 	}
 	var version int
 	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
 	if version != 0 {
-		t.Fatalf("failed migration changed schema version to %d", version)
+		t.Fatalf("failed schema creation changed schema version to %d", version)
 	}
 	var tables int
 	if err := db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('resource_usage', 'recent_exact')").Scan(&tables); err != nil {
 		t.Fatal(err)
 	}
 	if tables != 0 {
-		t.Fatalf("failed migration left partial tables: %d", tables)
+		t.Fatalf("failed schema creation left partial tables: %d", tables)
 	}
 }
 
@@ -100,7 +100,7 @@ func TestOpenPathRejectsFutureSchemaWithoutRecovery(t *testing.T) {
 	}
 }
 
-func TestOpenPathDoesNotQuarantineMigrationFailure(t *testing.T) {
+func TestOpenPathDoesNotQuarantineASchemaConflict(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ranking.sqlite3")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -114,17 +114,17 @@ func TestOpenPathDoesNotQuarantineMigrationFailure(t *testing.T) {
 	}
 
 	if _, err := OpenPath(path); err == nil {
-		t.Fatal("incompatible migration unexpectedly succeeded")
+		t.Fatal("opening a database with a conflicting table unexpectedly succeeded")
 	}
 	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("migration failure removed healthy state: %v", err)
+		t.Fatalf("schema conflict removed healthy state: %v", err)
 	}
 	matches, err := filepath.Glob(path + ".corrupt-*")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(matches) != 0 {
-		t.Fatalf("migration failure quarantined state: %v", matches)
+		t.Fatalf("schema conflict quarantined state: %v", matches)
 	}
 }
 

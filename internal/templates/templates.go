@@ -9,9 +9,7 @@
 // daemon in a single `layout.apply` socket round trip. Each tab application is
 // atomic, but Herdr exposes no whole-template transaction: a transport/runtime
 // failure after earlier tabs succeed can leave a partial layout. Apply stops at
-// that point and reports the applied progress. The previous implementation
-// walked the node graph issuing one `herdr pane split` subprocess per branch and
-// one `herdr pane run` per leaf; that legacy pane loop is intentionally gone.
+// that point and reports the applied progress.
 //
 // Two live facts the pure compiler cannot know are filled in here, and only
 // here: the workspace id the layout targets, and the id of the root tab that

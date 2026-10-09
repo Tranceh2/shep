@@ -237,20 +237,17 @@ func herdrCanonicalName(name string) (string, bool) {
 
 // CanonicalName maps a built-in theme name or alias to its canonical name:
 // Herdr's names and aliases (normalized like Herdr: case-insensitive, spaces
-// and underscores read as hyphens), plus shep's catppuccin-frappe (alias
-// frappe), catppuccin-macchiato (alias macchiato), the alias mocha for
-// catppuccin, and plain. "inherit" and custom theme names are not built-in
-// names.
+// and underscores read as hyphens), plus shep's catppuccin-frappe,
+// catppuccin-macchiato and plain. "inherit" and custom theme names are not
+// built-in names.
 func CanonicalName(name string) (string, bool) {
 	if c, ok := herdrCanonicalName(name); ok {
 		return c, true
 	}
 	switch normalizeName(name) {
-	case "mocha":
-		return "catppuccin", true
-	case "catppuccin-frappe", "frappe":
+	case "catppuccin-frappe":
 		return "catppuccin-frappe", true
-	case "catppuccin-macchiato", "macchiato":
+	case "catppuccin-macchiato":
 		return "catppuccin-macchiato", true
 	case NamePlain:
 		return NamePlain, true

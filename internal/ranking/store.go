@@ -18,9 +18,9 @@ import (
 )
 
 const (
-	schemaVersion    = 3
+	schemaVersion    = 1
 	ackRetention     = 7 * 24 * time.Hour
-	migrationTimeout = 5 * time.Second
+	schemaTimeout    = 5 * time.Second
 	busyTimeout      = 1 * time.Second
 	operationTimeout = 5 * time.Second
 	writeTimeout     = 1 * time.Second
@@ -30,7 +30,7 @@ const (
 var (
 	ErrFutureVersion = errors.New("ranking database schema is newer than supported")
 	recoveryMu       = make(chan struct{}, 1)
-	migrationMu      sync.Mutex
+	schemaMu         sync.Mutex
 )
 
 func init() {
@@ -87,13 +87,13 @@ func openPathWithContext(ctx context.Context, path string, now func() time.Time,
 	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("protect ranking state directory: %w", err)
 	}
-	db, err := sql.Open("sqlite", fmt.Sprintf("%s?_txlock=immediate&_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)", path, migrationTimeout/time.Millisecond))
+	db, err := sql.Open("sqlite", fmt.Sprintf("%s?_txlock=immediate&_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)", path, schemaTimeout/time.Millisecond))
 	if err != nil {
 		return nil, fmt.Errorf("open ranking database: %w", err)
 	}
 	db.SetMaxOpenConns(1)
 	store := &Store{db: db, now: now, path: path}
-	if err := migrate(db); err != nil {
+	if err := ensureSchema(db); err != nil {
 		_ = db.Close()
 		if errors.Is(err, ErrFutureVersion) || !isCorruption(err) {
 			return nil, err
@@ -133,13 +133,45 @@ func isCorruption(err error) bool {
 	return sqliteErr.Code() == 11 || sqliteErr.Code() == 26
 }
 
-func migrate(db *sql.DB) error {
-	migrationMu.Lock()
-	defer migrationMu.Unlock()
+// schema is the ranking database: learned usage, recent launches, pins and
+// acknowledged agent states. Its tables are created without IF NOT EXISTS,
+// so a database holding a conflicting object fails instead of being adopted.
+const schema = `
+CREATE TABLE exact_usage (
+	exact_id TEXT PRIMARY KEY NOT NULL,
+	count INTEGER NOT NULL CHECK (count > 0),
+	last_used INTEGER NOT NULL
+);
+CREATE INDEX exact_usage_last_used ON exact_usage(last_used);
+CREATE TABLE resource_usage (
+	resource_id TEXT PRIMARY KEY NOT NULL,
+	count INTEGER NOT NULL CHECK (count > 0),
+	last_used INTEGER NOT NULL
+);
+CREATE INDEX resource_usage_last_used ON resource_usage(last_used);
+CREATE TABLE recent_exact (
+	position INTEGER PRIMARY KEY NOT NULL,
+	exact_id TEXT NOT NULL,
+	selected_at INTEGER NOT NULL
+);
+CREATE TABLE candidate_pins (
+	pin_key TEXT PRIMARY KEY NOT NULL
+);
+CREATE TABLE pane_acknowledgements (
+	pane_id TEXT PRIMARY KEY NOT NULL,
+	status TEXT NOT NULL,
+	acked_at INTEGER NOT NULL
+);`
+
+// ensureSchema creates the schema in a new database, in one transaction, and
+// refuses a database of a newer schema version.
+func ensureSchema(db *sql.DB) error {
+	schemaMu.Lock()
+	defer schemaMu.Unlock()
 
 	tx, err := db.Begin()
 	if err != nil {
-		return fmt.Errorf("begin ranking migration: %w", err)
+		return fmt.Errorf("begin ranking schema: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	var version int
@@ -149,52 +181,17 @@ func migrate(db *sql.DB) error {
 	if version > schemaVersion {
 		return fmt.Errorf("%w: %d", ErrFutureVersion, version)
 	}
-	if version == 0 {
-		if _, err := tx.Exec(`
-  CREATE TABLE exact_usage (
-  exact_id TEXT PRIMARY KEY NOT NULL,
- count INTEGER NOT NULL CHECK (count > 0),
- last_used INTEGER NOT NULL
- );
- CREATE INDEX IF NOT EXISTS exact_usage_last_used ON exact_usage(last_used);
-  CREATE TABLE resource_usage (
-  resource_id TEXT PRIMARY KEY NOT NULL,
- count INTEGER NOT NULL CHECK (count > 0),
- last_used INTEGER NOT NULL
- );
- CREATE INDEX IF NOT EXISTS resource_usage_last_used ON resource_usage(last_used);
-  CREATE TABLE recent_exact (
-  position INTEGER PRIMARY KEY NOT NULL,
- exact_id TEXT NOT NULL,
- selected_at INTEGER NOT NULL
- );`); err != nil {
-			return fmt.Errorf("migrate ranking schema: %w", err)
-		}
-		version = 1
+	if version == schemaVersion {
+		return nil
 	}
-	if version == 1 {
-		if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS candidate_pins (
- pin_key TEXT PRIMARY KEY NOT NULL
- );`); err != nil {
-			return fmt.Errorf("migrate ranking pins: %w", err)
-		}
-		version = 2
+	if _, err := tx.Exec(schema); err != nil {
+		return fmt.Errorf("create ranking schema: %w", err)
 	}
-	if version == 2 {
-		if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS pane_acknowledgements (
- pane_id TEXT PRIMARY KEY NOT NULL,
- status TEXT NOT NULL,
- acked_at INTEGER NOT NULL
- );`); err != nil {
-			return fmt.Errorf("migrate ranking pane acknowledgements: %w", err)
-		}
-		version = 3
-	}
-	if _, err := tx.Exec("PRAGMA user_version = " + fmt.Sprint(version)); err != nil {
+	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
 		return fmt.Errorf("set ranking schema version: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit ranking migration: %w", err)
+		return fmt.Errorf("commit ranking schema: %w", err)
 	}
 	return nil
 }

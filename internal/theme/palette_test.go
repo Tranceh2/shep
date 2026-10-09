@@ -165,11 +165,8 @@ func TestCanonicalName_HerdrAliases(t *testing.T) {
 
 func TestCanonicalName_ShepAdditionsAreNotHerdrNames(t *testing.T) {
 	tests := map[string]string{
-		"mocha":                "catppuccin",
-		"frappe":               "catppuccin-frappe",
 		"catppuccin-frappe":    "catppuccin-frappe",
 		"Catppuccin_Frappe":    "catppuccin-frappe",
-		"macchiato":            "catppuccin-macchiato",
 		"catppuccin-macchiato": "catppuccin-macchiato",
 		"plain":                "plain",
 		"Plain":                "plain",

@@ -185,10 +185,10 @@ func (m Model) withPresentation(edit func(*config.Presentations)) Model {
 }
 
 // Theme names the tests build themes from (see testTheme): Herdr's default
-// Catppuccin Mocha under shep's alias, and the no-color theme. They also
-// name the golden fixtures.
+// Catppuccin Mocha, and the no-color theme. They also name the golden
+// fixtures.
 const (
-	ThemeMocha = "mocha"
+	ThemeMocha = "catppuccin"
 	ThemePlain = "plain"
 )
 

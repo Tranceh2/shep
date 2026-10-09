@@ -17,9 +17,9 @@ const popupTimeout = 5 * time.Second
 
 // popupCmd opens a plugin pane as a Herdr popup: the plugin's open action
 // (scripts/open-picker.sh) runs it instead of `herdr plugin pane open`.
-// shep asks the server over HERDR_SOCKET_PATH, so the shortcut no longer
-// waits for the herdr CLI to start, which takes about 200 ms once the system
-// has evicted it. It skips the config preload: nothing here reads the config.
+// shep asks the server over HERDR_SOCKET_PATH, so the shortcut does not wait
+// for the herdr CLI to start, which takes about 200 ms once the system has
+// evicted it. It skips the config preload: nothing here reads the config.
 func (a *App) popupCmd() *cobra.Command {
 	var pluginID, entrypoint string
 	cmd := &cobra.Command{

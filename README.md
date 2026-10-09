@@ -868,10 +868,10 @@ A theme is a palette of Herdr's 19 tokens plus shep's roles, each of which takes
 
 | Theme | Aliases |
 |---|---|
-| `catppuccin` | `catppuccin-mocha`, `mocha` |
+| `catppuccin` | `catppuccin-mocha` |
 | `catppuccin-latte` | `latte`, `light` |
-| `catppuccin-frappe` | `frappe` |
-| `catppuccin-macchiato` | `macchiato` |
+| `catppuccin-frappe` | — |
+| `catppuccin-macchiato` | — |
 | `terminal` | — (the terminal's 16 colors) |
 | `tokyo-night` | `tokyonight` |
 | `tokyo-night-day` | `tokyo-day`, `tokyonight-day` |

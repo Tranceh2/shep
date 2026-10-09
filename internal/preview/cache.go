@@ -102,7 +102,7 @@ func titleFingerprint(title *string) string {
 // user-controlled and may legitimately contain the "|", ",", "=" characters
 // used as delimiters here. Quoting escapes any embedded delimiter or quote
 // character, so a field boundary can never shift — two structurally
-// different candidates can no longer serialise to the same fingerprint.
+// different candidates never serialise to the same fingerprint.
 func candidateFingerprint(cand source.Candidate) string {
 	keys := make([]string, 0, len(cand.Meta))
 	for k := range cand.Meta {

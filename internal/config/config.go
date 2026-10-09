@@ -866,8 +866,7 @@ func normalizePreview(p *PreviewConfig) {
 // userSetDefault suppresses these built-in lists entirely. Since a per-source
 // list outranks preview.default in the resolver, filling them would make an
 // explicitly written preview.default invisible for the four sources the picker
-// actually shows — the same silent surprise this package removed for
-// sources.sessions.preview. So a document that writes preview.default keeps one
+// actually shows. So a document that writes preview.default keeps one
 // obvious control, while a document that writes neither gets per-source lists
 // that suit each kind of row. An explicit [sources.<name>].preview still wins
 // over both.

@@ -2,26 +2,21 @@ package ranking
 
 import (
 	"context"
-	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
-func TestAcknowledgementsMigrateFromV0V1V2AndPersistAfterReopen(t *testing.T) {
+// TestOpenPathKeepsTheSchemaAcrossReopens proves a new database gets the
+// current schema version and reopening it leaves it as it is.
+func TestOpenPathKeepsTheSchemaAcrossReopens(t *testing.T) {
 	t.Parallel()
-
-	// 1. Migrate from v0 (raw sqlite database with nothing)
-	t.Run("from_v0", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "v0.sqlite3")
+	path := filepath.Join(t.TempDir(), "ranking.sqlite3")
+	for range 2 {
 		store, err := OpenPath(path)
 		if err != nil {
 			t.Fatalf("OpenPath failed: %v", err)
 		}
-		defer store.Close()
-
 		var version int
 		if err := store.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 			t.Fatal(err)
@@ -29,80 +24,10 @@ func TestAcknowledgementsMigrateFromV0V1V2AndPersistAfterReopen(t *testing.T) {
 		if version != schemaVersion {
 			t.Fatalf("schema version = %d, want %d", version, schemaVersion)
 		}
-	})
-
-	// 2. Migrate from v1
-	t.Run("from_v1", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "v1.sqlite3")
-		db, err := sql.Open("sqlite", path)
-		if err != nil {
+		if err := store.Close(); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`
-CREATE TABLE exact_usage (exact_id TEXT PRIMARY KEY NOT NULL, count INTEGER NOT NULL CHECK (count > 0), last_used INTEGER NOT NULL);
-CREATE TABLE resource_usage (resource_id TEXT PRIMARY KEY NOT NULL, count INTEGER NOT NULL CHECK (count > 0), last_used INTEGER NOT NULL);
-CREATE TABLE recent_exact (position INTEGER PRIMARY KEY NOT NULL, exact_id TEXT NOT NULL, selected_at INTEGER NOT NULL);
-PRAGMA user_version = 1;
-`); err != nil {
-			t.Fatal(err)
-		}
-		db.Close()
-
-		store, err := OpenPath(path)
-		if err != nil {
-			t.Fatalf("OpenPath on v1 database failed: %v", err)
-		}
-		defer store.Close()
-
-		var version int
-		if err := store.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
-			t.Fatal(err)
-		}
-		if version != schemaVersion {
-			t.Fatalf("schema version = %d, want %d", version, schemaVersion)
-		}
-	})
-
-	// 3. Migrate from v2
-	t.Run("from_v2", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "v2.sqlite3")
-		db, err := sql.Open("sqlite", path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := db.Exec(`
-CREATE TABLE exact_usage (exact_id TEXT PRIMARY KEY NOT NULL, count INTEGER NOT NULL CHECK (count > 0), last_used INTEGER NOT NULL);
-CREATE TABLE resource_usage (resource_id TEXT PRIMARY KEY NOT NULL, count INTEGER NOT NULL CHECK (count > 0), last_used INTEGER NOT NULL);
-CREATE TABLE recent_exact (position INTEGER PRIMARY KEY NOT NULL, exact_id TEXT NOT NULL, selected_at INTEGER NOT NULL);
-CREATE TABLE candidate_pins (pin_key TEXT PRIMARY KEY NOT NULL);
-PRAGMA user_version = 2;
-`); err != nil {
-			t.Fatal(err)
-		}
-		db.Close()
-
-		store, err := OpenPath(path)
-		if err != nil {
-			t.Fatalf("OpenPath on v2 database failed: %v", err)
-		}
-		defer store.Close()
-
-		var version int
-		if err := store.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
-			t.Fatal(err)
-		}
-		if version != schemaVersion {
-			t.Fatalf("schema version = %d, want %d", version, schemaVersion)
-		}
-
-		// Reopening v3 must be idempotent
-		store.Close()
-		reopened, err := OpenPath(path)
-		if err != nil {
-			t.Fatalf("reopening v3 database failed: %v", err)
-		}
-		defer reopened.Close()
-	})
+	}
 }
 
 func TestAcknowledgementRoundTripAndFiltering(t *testing.T) {

@@ -853,7 +853,7 @@ func TestLoad_RejectsInvalidPreviewCommandTemplates(t *testing.T) {
 	}{
 		{name: "malformed action", command: "echo {{.Path", detail: "unclosed action"},
 		{name: "unknown context field", command: "echo {{.Unknown}}", detail: "can't evaluate field Unknown"},
-		{name: "removed os alias", command: "echo {{.Path|osDir}}", detail: `function "osDir" not defined`},
+		{name: "excluded Sprig alias", command: "echo {{.Path|osDir}}", detail: `function "osDir" not defined`},
 		{name: "unterminated quote", command: "echo \"{{.Path}}", detail: "unterminated quote"},
 	}
 	for _, tc := range cases {
@@ -2144,7 +2144,7 @@ func TestLoad_TUITheme_DefaultsEmptyAndAccepted(t *testing.T) {
 // aliases (Herdr's and shep's) and plain load without error.
 func TestLoad_AcceptsValidTUIThemeValues(t *testing.T) {
 	t.Parallel()
-	for _, val := range []string{"inherit", "catppuccin", "mocha", "catppuccin-latte", "tokyo-night", "solarized", "catppuccin-frappe", "macchiato", "plain"} {
+	for _, val := range []string{"inherit", "catppuccin", "catppuccin-mocha", "catppuccin-latte", "tokyo-night", "solarized", "catppuccin-frappe", "catppuccin-macchiato", "plain"} {
 		t.Run(val, func(t *testing.T) {
 			t.Parallel()
 			tmp := t.TempDir()
@@ -2503,61 +2503,6 @@ root = "main"
 	}
 }
 
-// TestLoad_TemplateOldNodeFocus_Rejected confirms the removed per-node
-// `focus = true` field is now rejected as an unknown field (the schema moved
-// focus to the top-level [templates.<name>].focus table).
-func TestLoad_TemplateOldNodeFocus_Rejected(t *testing.T) {
-	t.Parallel()
-	const doc = `
-[templates.dev]
-
-[[templates.dev.tabs]]
-name = "code"
-root = "main"
-
-  [[templates.dev.tabs.nodes]]
-  id = "main"
-  command = "nvim"
-  focus = true
-`
-	tmp := t.TempDir()
-	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, err := Load(path)
-	if err == nil {
-		t.Fatal("expected error: per-node focus = true is no longer a valid field")
-	}
-}
-
-// TestLoad_TemplateOldTabFocus_Rejected confirms the removed per-tab
-// `focus = true` field is now rejected as an unknown field.
-func TestLoad_TemplateOldTabFocus_Rejected(t *testing.T) {
-	t.Parallel()
-	const doc = `
-[templates.dev]
-
-[[templates.dev.tabs]]
-name = "code"
-root = "main"
-focus = true
-
-  [[templates.dev.tabs.nodes]]
-  id = "main"
-  command = "nvim"
-`
-	tmp := t.TempDir()
-	path := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(path, []byte(versioned(doc)), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, err := Load(path)
-	if err == nil {
-		t.Fatal("expected error: per-tab focus = true is no longer a valid field")
-	}
-}
-
 // TestLoad_TemplateFocusNodeSetTabEmpty_Rejected confirms the existing
 // validateTemplateFocus branch that rejects focus.node set while focus.tab
 // is empty (ambiguous: node ids are scoped per-tab, so there is no tab to
@@ -2912,7 +2857,7 @@ func TestLoad_RejectsInvalidWorkspaceNameFieldsWithScope(t *testing.T) {
 		{name: "general parse", doc: "[general]\nworkspace_name = \"{{ .Unknown }}\"\n", want: "general.workspace_name"},
 		{name: "wildcard execute", doc: "[[wildcards]]\npattern = \"**\"\nworkspace_name = " + strconv.Quote(`{{ mustRegexMatch "[" .Path }}`) + "\n", want: "wildcards[0].workspace_name"},
 		{name: "wildcard blank", doc: "[[wildcards]]\npattern = \"**\"\nworkspace_name = " + strconv.Quote(`{{ "   " }}`) + "\n", want: "wildcards[0].workspace_name: output is blank"},
-		{name: "removed os alias", doc: "[general]\nworkspace_name = " + strconv.Quote(`{{ .Path | osBase }}`) + "\n", want: `general.workspace_name: template: shep:1: function "osBase" not defined`},
+		{name: "excluded Sprig alias", doc: "[general]\nworkspace_name = " + strconv.Quote(`{{ .Path | osBase }}`) + "\n", want: `general.workspace_name: template: shep:1: function "osBase" not defined`},
 		{name: "control character", doc: "[general]\nworkspace_name = " + strconv.Quote("a\tb") + "\n", want: "general.workspace_name: output contains control character U+0009"},
 	}
 	for _, tc := range cases {

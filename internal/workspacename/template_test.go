@@ -118,7 +118,7 @@ func TestValidate(t *testing.T) {
 		{name: "blank for some kinds only", format: `{{ .Branch }}`},
 		{name: "every function name is canonical", format: `{{ .Path | dir | base }}-{{ .Path | clean | ext }}{{ isAbs .Path }}`},
 		{name: "unknown field", format: `{{ .Unknown }}`, wantErr: "general.workspace_name: template: shep:1:3: executing"},
-		{name: "removed os alias", format: `{{ .Path | osBase }}`, wantErr: `general.workspace_name: template: shep:1: function "osBase" not defined`},
+		{name: "excluded Sprig alias", format: `{{ .Path | osBase }}`, wantErr: `general.workspace_name: template: shep:1: function "osBase" not defined`},
 		{name: "blank for every kind", format: `{{ "   " }}`, wantErr: "general.workspace_name: output is blank"},
 		{name: "control character", format: "line\nname", wantErr: "general.workspace_name: output contains control character U+000A"},
 		{name: "invalid regex", format: `{{ mustRegexMatch "[" .Path }}`, wantErr: "general.workspace_name: template: shep:1:3: executing"},

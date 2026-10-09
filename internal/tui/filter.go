@@ -286,9 +286,8 @@ func (m *Model) currentRowID() string {
 // retainSelection restores the cursor to the row identified by prevID when
 // it is still present in the freshly rebuilt m.rows (selection retention
 // across a rebuild); otherwise it clamps onto the nearest valid row —
-// every row is selectable now that group headers are gone, so the only
-// remaining concern is staying within [0, len(m.rows)) (e.g. the "no
-// matches" state, where m.rows is empty).
+// every row is selectable, so the only concern is staying within
+// [0, len(m.rows)) (e.g. the "no matches" state, where m.rows is empty).
 func (m *Model) retainSelection(prevID string) {
 	if prevID != "" {
 		for i, r := range m.rows {

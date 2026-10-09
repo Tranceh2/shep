@@ -173,17 +173,6 @@ marker_format = "{{ .Meta.author }}"
 	}
 }
 
-// TestLoad_RemovedLabelFormatKeysFail proves the herdr tab and pane formats
-// moved to their sub-tables: the old keys are unknown fields.
-func TestLoad_RemovedLabelFormatKeysFail(t *testing.T) {
-	t.Parallel()
-	for _, key := range []string{"tab_label_format", "pane_label_format"} {
-		if _, err := loadDoc(t, "[sources.herdr]\n"+key+" = \"{{ .Label }}\"\n"); err == nil {
-			t.Errorf("Load accepted the removed key sources.herdr.%s", key)
-		}
-	}
-}
-
 // TestLoad_RejectsInvalidPresentation proves every presentation field is
 // validated with its field path: each template against the kinds of rows it
 // draws, the icon color as a color reference.
