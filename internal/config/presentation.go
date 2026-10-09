@@ -204,7 +204,7 @@ func presentationDefaults(kind rowKind, icons string) RowPresentation {
 		return RowPresentation{
 			Icon: workspaces, IconColor: "source.workspaces",
 			Label: defaultNameFormat, Detail: defaultParentFormat,
-			Marker: "{{ missing }} {{ pin }} {{ group }}",
+			Marker: "{{ missing }} {{ group }} {{ pin }}",
 		}
 	case rowZoxide:
 		return RowPresentation{

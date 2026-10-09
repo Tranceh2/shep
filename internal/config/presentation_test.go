@@ -45,7 +45,7 @@ func TestPresentationDefaults_Table(t *testing.T) {
 		"sessions": {IconColor: "source.sessions", Label: name, Detail: parent,
 			Marker: `{{ if eq .Meta.running "true" }}running{{ else }}stopped{{ end }}{{ if eq .Meta.default "true" }} · default{{ end }} {{ missing }} {{ pin }}`},
 		"workspaces": {Icon: "\ue615 ", IconColor: "source.workspaces", Label: name, Detail: parent,
-			Marker: "{{ missing }} {{ pin }} {{ group }}"},
+			Marker: "{{ missing }} {{ group }} {{ pin }}"},
 		"zoxide": {Icon: "\uf114 ", IconColor: "source.zoxide", Label: name, Detail: parent,
 			Marker: "{{ missing }} {{ pin }}"},
 		"projects": {Icon: "{{ if .IsWorktree }}\ue725 {{ else }}\ue702 {{ end }}", IconColor: "source.projects", Label: name, Detail: parent,

@@ -363,6 +363,9 @@ type Model struct {
 	// rankFeatures memoizes the ranking features of the candidate set the
 	// active view last ranked (see featuresFor).
 	rankFeatures featureMemo
+	// pinColumn is set by applyFilter while the active view has a pinned
+	// candidate: its unpinned rows then keep the pin's cells blank.
+	pinColumn bool
 
 	// focus is the list or the help overlay.
 	focus Focus

@@ -1,11 +1,11 @@
   all   agents
  ❯  Search workspaces, projects, folders           20 │ repo-01                              folder
  ─────────────────────────────────────────────────────┼────────────────────────────────────────────
-   󰳆  billing                                       ◉ │ ~/src/repo-01
-     main                          running · default ┃
-     team                                        ★ › ┃
-     api-fix                              fix/parser ┃
-     archive  ~/old                          missing ┃
+   󰳆  billing                                     ◉   │ ~/src/repo-01
+     main                        running · default   ┃
+     team                                        › ★ ┃
+     api-fix                            fix/parser   ┃
+     archive  ~/old                        missing   ┃
      shep  ~/Proyectos                               ┃
      whiterose-db  ~/allsafe/ECORP/platforms         ┃
      repo-00  ~/src                                  ┃

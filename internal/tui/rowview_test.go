@@ -45,7 +45,7 @@ func TestRowMarkers_PerKind(t *testing.T) {
 		{"open workspace: working beats done and idle", treeWith("w1", "done", "working", "idle"), Row{Kind: RowCandidate, Candidate: herdrCandidate("api", "/srv/api", "w1")}, working},
 		{"open workspace without agents", treeWith("w1", "", "unknown"), Row{Kind: RowCandidate, Candidate: herdrCandidate("api", "/srv/api", "w1")}, ""},
 		{"pinned candidate", nil, Row{Kind: RowCandidate, Candidate: pinnedZoxide}, "★"},
-		{"pinned group workspace", nil, Row{Kind: RowCandidate, Candidate: group}, "★ ›"},
+		{"pinned group workspace", nil, Row{Kind: RowCandidate, Candidate: group}, "› ★"},
 		{"worktree branch", nil, Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "api", Source: config.SourceProjects, Meta: map[string]string{"is_worktree": "true", "branch": "main"}}}, "main"},
 		{"session state", nil, Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "s", Source: config.SourceSessions, Meta: map[string]string{"running": "true", "default": "true"}}}, "running · default"},
 		{"stopped session", nil, Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "s", Source: config.SourceSessions}}, "stopped"},
@@ -63,6 +63,43 @@ func TestRowMarkers_PerKind(t *testing.T) {
 			m.rankingSnapshot = m.rankingSnapshot.WithPinned(ranking.PinKey(pinnedZoxide), true).WithPinned(ranking.PinKey(group), true)
 			if got := m.rowAccessoryText(tc.row); got != tc.want {
 				t.Errorf("marker = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRowMarkers_PinColumnLinesUpThePins proves that while the view holds a
+// pinned row every unpinned row keeps the star's cells blank, so the stars
+// share the last column and the group chevrons the one before it; a view
+// without pins reserves nothing.
+func TestRowMarkers_PinColumnLinesUpThePins(t *testing.T) {
+	t.Parallel()
+	pinnedGroup := source.Candidate{Label: "team", Path: "/srv/team", Source: config.SourceWorkspaces, Meta: map[string]string{"group": "true"}}
+	group := source.Candidate{Label: "ops", Path: "/srv/ops", Source: config.SourceWorkspaces, Meta: map[string]string{"group": "true"}}
+	folder := zoxideCandidate("cache", "/srv/cache")
+	for _, tc := range []struct {
+		name     string
+		snapshot ranking.Snapshot
+		want     map[string]string
+	}{
+		{"a pinned row in view", ranking.Snapshot{}.WithPinned(ranking.PinKey(pinnedGroup), true), map[string]string{"team": "› ★", "ops": "›  ", "cache": " "}},
+		{"no pinned row", ranking.Snapshot{}, map[string]string{"team": "›", "ops": "›", "cache": ""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewModelWithLayout([]source.Candidate{pinnedGroup, group, folder}, nil, Layout{RankingSnapshot: tc.snapshot})
+			m, _ = update(t, m, sizeMsg(120, 30))
+			chevrons := map[int]bool{}
+			for _, row := range m.rows {
+				label := row.Candidate.Label
+				if got := m.rowAccessoryText(row); got != tc.want[label] {
+					t.Errorf("%s marker = %q, want %q", label, got, tc.want[label])
+				}
+				if line := ansi.Strip(m.renderRowLine(row, false, 60)); strings.Contains(line, "›") {
+					chevrons[strings.LastIndex(line, "›")] = true
+				}
+			}
+			if len(chevrons) != 1 {
+				t.Errorf("group chevrons in columns %v, want one column", chevrons)
 			}
 		})
 	}

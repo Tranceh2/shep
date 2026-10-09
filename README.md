@@ -277,7 +277,7 @@ The picker is one grid with a single frame (Herdr's popup border when it runs as
 | `Enter` | List | Open the highlighted row |
 | `Ctrl+T` | Inside Herdr | Open the selected zoxide, project or command-only `[[workspaces]]` entry as a new tab in the current workspace |
 | `Ctrl+P` | Inside Herdr | Open the same kinds of entry as a split pane beside the current pane |
-| `Ctrl+F` | List | Pin or unpin the selected top-level candidate; pinned rows stay first |
+| `Ctrl+F` | List | Pin or unpin the selected top-level candidate; pinned rows stay first. A pin belongs to that row only, not to other rows at the same directory |
 | `Ctrl+X` | List | Close the highlighted open Herdr pane, tab, or workspace (for kinds in `[tui].confirm_close`, `y` confirms and any other key cancels) |
 | `Ctrl+E` | List | Rename the highlighted open Herdr workspace, tab, or pane in place of the search prompt (`Enter` applies, `Esc` cancels; an empty pane name clears it) |
 | `Ctrl+N` | List | On an open workspace, project, zoxide or configured workspace row inside a Git repository: name a new branch, and Herdr creates the worktree (where its own settings put worktrees) and a focused workspace on it, which shep names (`workspace_name`, `repo@branch` by default) and lays out with the row's template |
@@ -756,7 +756,7 @@ Besides Go's built-in template functions and actions (`if`, `with`, `range`, `an
 | Function | Draws |
 |---|---|
 | `status` | The agent state glyph: an open workspace shows its most urgent pane (blocked > working > done > idle), a pane or agent row its own. `✓` idle, `●` done, `◉` blocked, `○` unknown, an animated spinner while working (ASCII tier: `v`, `*`, `!`, `?`, `o`) |
-| `pin` | `★` (`*`) on a pinned row |
+| `pin` | `★` (`*`) on a pinned row. While the view holds a pinned row, the others keep its cells blank, so the stars and the markers before them line up |
 | `current` | `current` on the open workspace, tab and pane that hold the pane shep runs in |
 | `group` | `›` (`>`) on a group entry, which opens its own picker |
 | `missing` | `missing` on a row whose path no longer exists |
@@ -820,7 +820,7 @@ icon = " "
 icon_color = "source.workspaces"
 label_format = '{{ or .Label .Path | tilde | name }}'
 detail_format = '{{ or .Label .Path | tilde | parent }}'
-marker_format = '{{ missing }} {{ pin }} {{ group }}'
+marker_format = '{{ missing }} {{ group }} {{ pin }}'
 
 [sources.zoxide]
 icon = " "

@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Fixed
+
+- Pinning a row pins that row only. It used to pin every row at the same
+  directory: the open workspaces there, the group entries and the commands
+  rooted at it. A pin made before this fix may no longer show: pin the row
+  again.
+- The pin star lines up across the list: it is the last marker of every row,
+  a group's `›` included, and while the view holds a pinned row the other
+  rows keep its cells blank.
+
 ## v1.0.1
 
 ### Changed

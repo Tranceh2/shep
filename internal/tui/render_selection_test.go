@@ -581,7 +581,7 @@ func TestRenderRowLine_ASCIIEmitsNoUnicodeOnlyGlyphs(t *testing.T) {
 	if reNonASCII.MatchString(got) {
 		t.Errorf("ASCII row = %q, contains a non-ASCII glyph", got)
 	}
-	if !strings.HasSuffix(strings.TrimRight(got, " "), "* >") {
+	if !strings.HasSuffix(strings.TrimRight(got, " "), "> *") {
 		t.Errorf("ASCII row = %q, want the * pin and > group accessories", got)
 	}
 }

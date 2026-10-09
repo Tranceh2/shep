@@ -194,6 +194,9 @@ type liveValues struct {
 	status    string
 	aggregate bool
 	pinned    bool
+	// pinColumn keeps an unpinned row's pin cells as blanks, so the pins of
+	// the view, and the markers before them, line up (see Model.pinColumn).
+	pinColumn bool
 	current   bool
 	group     bool
 	missing   bool
@@ -216,6 +219,7 @@ func (m Model) liveValues(row Row) liveValues {
 	}
 	if row.Kind == RowCandidate {
 		v.pinned = m.rankingSnapshot.IsPinned(c)
+		v.pinColumn = m.pinColumn
 	}
 	return v
 }
@@ -269,6 +273,9 @@ type piece struct {
 	bold   bool
 	live   bool
 	absent bool // a live marker with nothing to show for this row
+	// reserved is a blank standing in for a marker the row does not show,
+	// kept by the blank trimming and collapsing so the column stays.
+	reserved bool
 }
 
 // workingPlaceholder stands in for the spinner frame a working status glyph
@@ -365,6 +372,9 @@ func (v *liveValues) piece(seg tmpl.Segment, set *IconSet) piece {
 		}
 		return text(glyph != "", glyph, role, false)
 	case tmpl.LivePin:
+		if !v.pinned && v.pinColumn && set.Pinned != "" {
+			return piece{text: strings.Repeat(" ", ansi.StringWidth(set.Pinned)), role: rolePin, live: true, reserved: true}
+		}
 		return text(v.pinned, set.Pinned, rolePin, false)
 	case tmpl.LiveCurrent:
 		return text(v.current, currentMarker, styleRole(seg.Style), bold)
@@ -452,12 +462,17 @@ func collapseBlanks(s string) string {
 	return b.String()
 }
 
-// collapsePieces collapses every blank run across pieces to one blank.
+// collapsePieces collapses every blank run across pieces to one blank,
+// leaving reserved blanks as they are.
 func collapsePieces(pieces []piece) {
 	blank := false
 	for i := range pieces {
 		t := pieces[i].text
 		if t == "" {
+			continue
+		}
+		if pieces[i].reserved {
+			blank = false
 			continue
 		}
 		if blank && t[0] == ' ' {
@@ -477,6 +492,9 @@ func trimPieces(pieces []piece) []piece {
 		if pieces[i].text == "" {
 			continue
 		}
+		if pieces[i].reserved {
+			break
+		}
 		pieces[i].text = strings.TrimLeft(pieces[i].text, " ")
 		if pieces[i].text != "" {
 			break
@@ -485,6 +503,9 @@ func trimPieces(pieces []piece) []piece {
 	for i := len(pieces) - 1; i >= 0; i-- {
 		if pieces[i].text == "" {
 			continue
+		}
+		if pieces[i].reserved {
+			break
 		}
 		pieces[i].text = strings.TrimRight(pieces[i].text, " ")
 		if pieces[i].text != "" {

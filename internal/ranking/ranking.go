@@ -146,7 +146,7 @@ func (s Snapshot) WithClearedAcknowledgement(paneID string) Snapshot {
 	return out
 }
 
-// IsPinned reports whether candidate's stable resource or identity key is pinned.
+// IsPinned reports whether candidate's exact identity is pinned (see PinKey).
 func (s Snapshot) IsPinned(candidate source.Candidate) bool {
 	if len(s.pins) == 0 {
 		return false // nothing pinned: skip hashing the candidate's key

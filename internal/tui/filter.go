@@ -18,6 +18,7 @@ func (m *Model) applyFilter() tea.Cmd {
 	queryChanged := m.query != m.lastAppliedQuery
 	prevID := m.currentRowID()
 	tab := m.activeDefinition()
+	m.pinColumn = false
 	if tab.Kind == TabAgents {
 		m.rows = m.buildAgentRows()
 	} else {
@@ -47,6 +48,12 @@ func (m *Model) applyFilter() tea.Cmd {
 		features := m.featuresFor(candidates)
 		if onlySource != "" {
 			candidates, features = keepSource(candidates, features, onlySource)
+		}
+		for _, f := range features {
+			if f.Pinned() {
+				m.pinColumn = true
+				break
+			}
 		}
 
 		in := m.rankedInput(candidates, features, order)

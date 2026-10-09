@@ -91,7 +91,7 @@ func TestDefaultPresentations_ReproduceTheRowTexts(t *testing.T) {
 		{"configured workspace", Row{Kind: RowCandidate, Candidate: workspaceEntryCandidate("notes", "/home/dev/notes")}, nil, nil,
 			drawnParts{workspaceIcon, "notes", "", ""}},
 		{"pinned group", Row{Kind: RowCandidate, Candidate: group}, nil, nil,
-			drawnParts{workspaceIcon, "team", "", "★ ›"}},
+			drawnParts{workspaceIcon, "team", "", "› ★"}},
 		{"running default session", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "main", Source: config.SourceSessions, Meta: map[string]string{"running": "true", "default": "true"}}}, nil, nil,
 			drawnParts{"", "main", "", "running · default"}},
 		{"stopped session", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "old", Source: config.SourceSessions, Meta: map[string]string{"running": "false"}}}, nil, nil,
@@ -153,7 +153,7 @@ func TestDefaultPresentations_ASCIITier(t *testing.T) {
 		{"tab", Row{Kind: RowTab, Depth: 1, Candidate: source.Candidate{Label: "api", Meta: map[string]string{"tab_label": "api", "tab_number": "1"}}}, drawnParts{"t", "1 api", "", ""}},
 		{"session", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "main", Source: config.SourceSessions, Meta: map[string]string{"running": "true", "default": "true"}}}, drawnParts{"", "main", "", "running - default"}},
 		{"blocked workspace", Row{Kind: RowCandidate, Candidate: herdrCandidate("api", "/srv/api", "w1")}, drawnParts{"", "api", "", "!"}},
-		{"pinned group", Row{Kind: RowCandidate, Candidate: group}, drawnParts{"", "team", "", "* >"}},
+		{"pinned group", Row{Kind: RowCandidate, Candidate: group}, drawnParts{"", "team", "", "> *"}},
 		{"worktree", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "x", Source: config.SourceProjects, Meta: map[string]string{"is_worktree": "true", "branch": "main"}}}, drawnParts{"", "x", "", "main"}},
 		{"working agent", Row{Kind: RowPane, Candidate: source.Candidate{Label: "fix", Source: config.SourceAgents, Meta: map[string]string{"agent_status": "working"}}}, drawnParts{"", "o fix", "", ""}},
 	} {
