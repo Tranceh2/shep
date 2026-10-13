@@ -93,7 +93,8 @@ func TestWorkspaceNameRemainsOutsideTUISearchAndPresentation(t *testing.T) {
 }
 
 // TestBuildRows_StableGroupAndParentOrder proves the DEFAULT source order
-// (Herdr, Workspaces, Zoxide, Projects — mirroring config.defaultSourceOrder)
+// (Herdr, Workspaces, Commands, Zoxide, Projects — mirroring
+// config.defaultSourceOrder)
 // applies when rowBuildInput.sourceOrder is empty. Without an active history
 // snapshot, an empty query preserves each provider's original emitted order.
 func TestBuildRows_StableGroupAndParentOrder(t *testing.T) {

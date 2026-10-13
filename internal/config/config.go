@@ -5,8 +5,8 @@
 // ~/.config/shep/config.toml when XDG_CONFIG_HOME is unset), so shep uses the
 // same location across Linux and macOS. A missing config is not an error:
 // callers fall back to Defaults(), which enables every built-in source
-// (herdr, workspaces, zoxide, projects) without any hardcoded user-specific
-// paths.
+// (herdr, workspaces, commands, zoxide, projects) without any hardcoded
+// user-specific paths.
 package config
 
 import (
@@ -35,20 +35,21 @@ const (
 	SourceHerdr      = "herdr"
 	SourceSessions   = "sessions"
 	SourceWorkspaces = "workspaces"
+	SourceCommands   = "commands"
 	SourceZoxide     = "zoxide"
 	SourceProjects   = "projects"
 	SourceAgents     = "agents"
 )
 
 // defaultSourceOrder is used when general.source_order is empty/absent.
-var defaultSourceOrder = []string{SourceHerdr, SourceWorkspaces, SourceZoxide, SourceProjects}
+var defaultSourceOrder = []string{SourceHerdr, SourceWorkspaces, SourceCommands, SourceZoxide, SourceProjects}
 
 // CurrentSchemaVersion is the only configuration schema version Load
 // accepts: a document must set version = 1 (see versionError).
 const CurrentSchemaVersion = 1
 
 var validSourceNames = map[string]bool{
-	SourceHerdr: true, SourceSessions: true, SourceWorkspaces: true, SourceZoxide: true, SourceProjects: true, SourceAgents: true,
+	SourceHerdr: true, SourceSessions: true, SourceWorkspaces: true, SourceCommands: true, SourceZoxide: true, SourceProjects: true, SourceAgents: true,
 }
 
 const defaultCustomSourceTimeout = 3 * time.Second
@@ -112,10 +113,13 @@ var defaultPreviewSections = []string{PreviewAgentStatus, PreviewIdentity, Previ
 // actually describe its candidates, because the generic list wastes the pane on
 // sections that render nothing for that kind of row: a Herdr workspace has tabs,
 // panes and an agent to show and no git status worth repeating, while a zoxide
-// directory is usually not a repository at all but always has contents.
+// directory is usually not a repository at all but always has contents. A
+// command row is a program, not a directory: identity shows the command and
+// where it runs.
 var (
 	defaultHerdrPreview      = []string{PreviewWorkspace, PreviewActivePane, PreviewAgentStatus}
 	defaultWorkspacesPreview = []string{PreviewIdentity, PreviewDir}
+	defaultCommandsPreview   = []string{PreviewIdentity}
 	defaultZoxidePreview     = []string{PreviewIdentity, PreviewDir}
 	defaultProjectsPreview   = []string{PreviewIdentity, PreviewGit, PreviewDir}
 )
@@ -138,6 +142,9 @@ type Config struct {
 	// Workspaces lists predefined project (or group) entries the workspaces
 	// source provider surfaces as candidates.
 	Workspaces []WorkspaceConfig `toml:"workspaces,omitempty"`
+	// Commands lists programs the commands source provider surfaces as
+	// candidates that open inside the current Herdr workspace.
+	Commands []CommandConfig `toml:"commands,omitempty"`
 	// Templates describes what opens after Enter for a freshly created
 	// workspace: tabs, panes, splits, sizes and commands. Keyed by name and
 	// referenced from [defaults], [[workspaces]] and [[wildcards]].
@@ -233,6 +240,7 @@ type SourcesConfig struct {
 	Herdr      HerdrSourceConfig      `toml:"herdr,omitempty"`
 	Sessions   SessionsSourceConfig   `toml:"sessions,omitempty"`
 	Workspaces WorkspacesSourceConfig `toml:"workspaces,omitempty"`
+	Commands   CommandsSourceConfig   `toml:"commands,omitempty"`
 	Zoxide     ZoxideSourceConfig     `toml:"zoxide,omitempty"`
 	Projects   ProjectsSourceConfig   `toml:"projects,omitempty"`
 	Agents     AgentsSourceConfig     `toml:"agents,omitempty"`
@@ -265,6 +273,12 @@ type SessionsSourceConfig struct {
 // WorkspacesSourceConfig configures the predefined-[[workspaces]] source's
 // presentation.
 type WorkspacesSourceConfig struct {
+	Presentation
+	Preview []string `toml:"preview,omitempty"`
+}
+
+// CommandsSourceConfig configures the [[commands]] source's presentation.
+type CommandsSourceConfig struct {
 	Presentation
 	Preview []string `toml:"preview,omitempty"`
 }
@@ -366,6 +380,35 @@ type WorkspaceConfig struct {
 	// the precedence). Of an entry's settings only Preview also applies to
 	// the other candidates in its directory.
 	Presentation
+}
+
+// CommandConfig is one entry in the [[commands]] list: a program (lazygit,
+// yazi, k9s...) that opens inside the Herdr workspace the user is in, as a
+// tab or a pane, without creating a workspace of its own.
+type CommandConfig struct {
+	// Name is the row's label: required, and unique ignoring case.
+	Name string `toml:"name"`
+	// Command is the command line the new tab or pane runs.
+	Command string `toml:"command"`
+	// Path is the directory the command runs in. A leading "~/" is expanded
+	// to the user's home directory. Empty means the directory of the pane
+	// the user is in.
+	Path string `toml:"path,omitempty"`
+	// CloseOnExit closes the command's pane once its shell returns control
+	// (regardless of exit status). Nil means the default, true (see
+	// CloseOnExitOrDefault).
+	CloseOnExit *bool    `toml:"close_on_exit,omitempty"`
+	Aliases     []string `toml:"aliases,omitempty"`
+	Preview     []string `toml:"preview,omitempty"`
+	// Presentation draws this entry's own row (see internal/effective for
+	// the precedence).
+	Presentation
+}
+
+// CloseOnExitOrDefault reports whether the command's pane closes once the
+// command returns: the configured close_on_exit, true when it is unset.
+func (c CommandConfig) CloseOnExitOrDefault() bool {
+	return c.CloseOnExit == nil || *c.CloseOnExit
 }
 
 // WildcardConfig is one entry in the [[wildcards]] list: a glob pattern with
@@ -606,6 +649,7 @@ func Defaults() *Config {
 		Defaults:   DefaultsConfig{Template: "default"},
 		Sources:    SourcesConfig{Custom: []CustomSourceConfig{}},
 		Workspaces: []WorkspaceConfig{},
+		Commands:   []CommandConfig{},
 		Templates:  map[string]TemplateConfig{"default": {Command: ""}},
 		Wildcards:  []WildcardConfig{},
 	}
@@ -699,6 +743,9 @@ func Load(path string) (*Config, error) {
 	if cfg.Workspaces == nil {
 		cfg.Workspaces = []WorkspaceConfig{}
 	}
+	if cfg.Commands == nil {
+		cfg.Commands = []CommandConfig{}
+	}
 	if cfg.Templates == nil {
 		cfg.Templates = map[string]TemplateConfig{}
 	}
@@ -786,6 +833,9 @@ func normalizeAliases(cfg *Config) {
 	for i := range cfg.Workspaces {
 		cfg.Workspaces[i].Aliases = normalize(cfg.Workspaces[i].Aliases)
 	}
+	for i := range cfg.Commands {
+		cfg.Commands[i].Aliases = normalize(cfg.Commands[i].Aliases)
+	}
 	for i := range cfg.Sources.Custom {
 		cfg.Sources.Custom[i].Aliases = normalize(cfg.Sources.Custom[i].Aliases)
 	}
@@ -865,7 +915,7 @@ func normalizePreview(p *PreviewConfig) {
 //
 // userSetDefault suppresses these built-in lists entirely. Since a per-source
 // list outranks preview.default in the resolver, filling them would make an
-// explicitly written preview.default invisible for the four sources the picker
+// explicitly written preview.default invisible for the sources the picker
 // actually shows. So a document that writes preview.default keeps one
 // obvious control, while a document that writes neither gets per-source lists
 // that suit each kind of row. An explicit [sources.<name>].preview still wins
@@ -879,6 +929,9 @@ func normalizeSourcePreviews(s *SourcesConfig, userSetDefault bool) {
 	}
 	if s.Workspaces.Preview == nil {
 		s.Workspaces.Preview = append([]string(nil), defaultWorkspacesPreview...)
+	}
+	if s.Commands.Preview == nil {
+		s.Commands.Preview = append([]string(nil), defaultCommandsPreview...)
 	}
 	if s.Zoxide.Preview == nil {
 		s.Zoxide.Preview = append([]string(nil), defaultZoxidePreview...)
@@ -913,6 +966,9 @@ func validate(cfg *Config) error {
 		return err
 	}
 	if err := validateWorkspaces(cfg.Workspaces, cfg.Templates, cfg.Sources.Custom); err != nil {
+		return err
+	}
+	if err := validateCommands(cfg.Commands); err != nil {
 		return err
 	}
 	if err := validateWildcards(cfg.Wildcards, cfg.Templates); err != nil {
@@ -1052,6 +1108,7 @@ func validateAllPreviewLists(cfg *Config) error {
 		{"sources.herdr.preview", cfg.Sources.Herdr.Preview},
 		{"sources.sessions.preview", cfg.Sources.Sessions.Preview},
 		{"sources.workspaces.preview", cfg.Sources.Workspaces.Preview},
+		{"sources.commands.preview", cfg.Sources.Commands.Preview},
 		{"sources.zoxide.preview", cfg.Sources.Zoxide.Preview},
 		{"sources.projects.preview", cfg.Sources.Projects.Preview},
 		{"sources.agents.preview", cfg.Sources.Agents.Preview},
@@ -1064,6 +1121,11 @@ func validateAllPreviewLists(cfg *Config) error {
 	for i, ws := range cfg.Workspaces {
 		if err := ValidatePreviewNames(ws.Preview, cfg.Preview.Commands); err != nil {
 			return fmt.Errorf("workspaces[%d] (%q).preview: %w", i, ws.Name, err)
+		}
+	}
+	for i, c := range cfg.Commands {
+		if err := ValidatePreviewNames(c.Preview, cfg.Preview.Commands); err != nil {
+			return fmt.Errorf("commands[%d] (%q).preview: %w", i, c.Name, err)
 		}
 	}
 	for i, w := range cfg.Wildcards {
@@ -1143,8 +1205,8 @@ func validateSources(names []string, customSources []CustomSourceConfig) error {
 	}
 	for _, n := range names {
 		if !allowed[n] {
-			return fmt.Errorf("invalid source_order entry %q (valid: %s, %s, %s, %s, %s, %s, or a declared custom source)",
-				n, SourceHerdr, SourceSessions, SourceWorkspaces, SourceZoxide, SourceProjects, SourceAgents)
+			return fmt.Errorf("invalid source_order entry %q (valid: %s, %s, %s, %s, %s, %s, %s, or a declared custom source)",
+				n, SourceHerdr, SourceSessions, SourceWorkspaces, SourceCommands, SourceZoxide, SourceProjects, SourceAgents)
 		}
 	}
 	return nil
@@ -1414,6 +1476,31 @@ func validateWorkspaces(workspaces []WorkspaceConfig, templates map[string]Templ
 	return nil
 }
 
+// validateCommands enforces per-entry invariants of [[commands]]: a name is
+// required and unique ignoring case, and a command is required and fits on
+// one line.
+func validateCommands(commands []CommandConfig) error {
+	seen := make(map[string]int, len(commands))
+	for i, c := range commands {
+		name := strings.TrimSpace(c.Name)
+		if name == "" {
+			return fmt.Errorf("commands[%d]: name is required", i)
+		}
+		key := strings.ToLower(name)
+		if prev, ok := seen[key]; ok {
+			return fmt.Errorf("commands[%d] (%q): duplicate name; commands[%d] already uses it (names ignore case)", i, c.Name, prev)
+		}
+		seen[key] = i
+		if strings.TrimSpace(c.Command) == "" {
+			return fmt.Errorf("commands[%d] (%q): command is required", i, c.Name)
+		}
+		if strings.IndexFunc(c.Command, unicode.IsControl) >= 0 {
+			return fmt.Errorf("commands[%d] (%q): command contains control characters", i, c.Name)
+		}
+	}
+	return nil
+}
+
 // validateWildcards enforces that Pattern is set and any Template reference
 // exists.
 func validateWildcards(wildcards []WildcardConfig, templates map[string]TemplateConfig) error {
@@ -1517,7 +1604,7 @@ func validateTUI(t TUIConfig) error {
 // Duplicate declarations remain visible so the resolver can reject ambiguity.
 func ViewKinds(cfg *Config) map[string][]string {
 	known := map[string][]string{"all": {"scope"}, "agents": {"scope"}}
-	for _, name := range []string{SourceHerdr, SourceWorkspaces, SourceZoxide, SourceProjects, SourceSessions} {
+	for _, name := range []string{SourceHerdr, SourceWorkspaces, SourceCommands, SourceZoxide, SourceProjects, SourceSessions} {
 		known[name] = append(known[name], "source")
 	}
 	for _, customSource := range cfg.Sources.Custom {
@@ -1566,7 +1653,7 @@ func ResolveView(cfg *Config, id string) (string, error) {
 func validateTabs(cfg *Config) error {
 	known := ViewKinds(cfg)
 	seenIDs := map[string]string{"all": "scope", "agents": "scope"}
-	for _, name := range []string{SourceHerdr, SourceWorkspaces, SourceZoxide, SourceProjects, SourceSessions} {
+	for _, name := range []string{SourceHerdr, SourceWorkspaces, SourceCommands, SourceZoxide, SourceProjects, SourceSessions} {
 		seenIDs[name] = "source"
 	}
 	for _, customSource := range cfg.Sources.Custom {

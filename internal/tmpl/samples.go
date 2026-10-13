@@ -45,6 +45,12 @@ func sample(kind string) (Data, bool) {
 			Source: "workspaces", Kind: kind,
 			Meta: map[string]string{"entry_id": "platform", "workspace_name": "Platform", "group": "true", "group_sources": "projects,zoxide"},
 		}, true
+	case KindCommand:
+		return Data{
+			Path: SampleHome + "/Downloads", NormalizedPath: SampleHome + "/Downloads", Label: "yazi",
+			Source: "commands", Kind: kind,
+			Meta: map[string]string{"command": "yazi", "close_on_exit": "true"},
+		}, true
 	case KindFolder:
 		return Data{
 			Path: SampleHome + "/Documents/notes", NormalizedPath: SampleHome + "/Documents/notes",

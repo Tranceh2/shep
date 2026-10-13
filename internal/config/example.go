@@ -15,6 +15,7 @@ func ExampleTOML() string {
 		"%%sessions%%", commentedPresentation(rowSessions),
 		"%%agents%%", commentedPresentation(rowAgents),
 		"%%workspaces%%", commentedPresentation(rowWorkspaces),
+		"%%commands%%", commentedPresentation(rowCommands),
 		"%%zoxide%%", commentedPresentation(rowZoxide),
 		"%%projects%%", commentedPresentation(rowProjects),
 	).Replace(exampleTOML)
@@ -59,10 +60,10 @@ version = 1
 
 [general]
 # source_order lists the enabled sources and their merge/display order.
-# Valid names: herdr, sessions (opt-in), agents (opt-in), workspaces, zoxide,
-# projects, plus any name declared in [[sources.custom]] below. Unknown names
-# fail fast.
-source_order = ["herdr", "workspaces", "zoxide", "projects"]
+# Valid names: herdr, sessions (opt-in), agents (opt-in), workspaces,
+# commands, zoxide, projects, plus any name declared in [[sources.custom]]
+# below. Unknown names fail fast.
+source_order = ["herdr", "workspaces", "commands", "zoxide", "projects"]
 # selector picks the interactive picker for "shep open" after the direct
 # (exact / single-match) short-circuit. Valid values: builtin, fzf, auto.
 selector = "builtin"
@@ -150,10 +151,10 @@ icons = "unicode"
 # below — the shipped defaults, spelled out here so they stay visible and
 # editable instead of being an invisible fallback: herdr shows
 # workspace/active_pane/agent_status, workspaces and zoxide show
-# identity/dir, projects adds git. Set [preview]'s own "default" list only
-# if you want ONE list to replace every source's list at once; it is a
-# single global override, not a per-source tweak, so most configs leave it
-# unset, as this example does.
+# identity/dir, projects adds git, commands show identity. Set [preview]'s
+# own "default" list only if you want ONE list to replace every source's list
+# at once; it is a single global override, not a per-source tweak, so most
+# configs leave it unset, as this example does.
 [preview]
 timeout = "150ms"
 cache_ttl = "5s"
@@ -170,7 +171,8 @@ command = "git -C {{.Path}} log -n 3"
 # title = "Recent commits"
 
 # [sources.<name>] configures a built-in source: herdr, sessions, agents,
-# workspaces, zoxide and projects. Each one draws its rows from five parts,
+# workspaces, commands, zoxide and projects. Each one draws its rows from
+# five parts,
 #
 #   [icon] label  detail                                   marker
 #
@@ -208,6 +210,13 @@ preview = ["workspace", "active_pane", "agent_status"]
 [sources.workspaces]
 %%workspaces%%
 preview = ["identity", "dir"]
+
+# The rows of the [[commands]] entries below. The detail shows where a command
+# runs: its path, or nothing when it runs in the directory of the pane you are
+# in.
+[sources.commands]
+%%commands%%
+preview = ["identity"]
 
 [sources.zoxide]
 %%zoxide%%
@@ -324,6 +333,22 @@ preview = ["identity", "git", "dir"]
 # template = "dev"
 # [workspaces.sources.projects]
 # max_depth = 5
+
+# [[commands]] lists programs (lazygit, yazi, k9s...) that open inside the
+# Herdr workspace you are in, as a new tab or pane, without creating a
+# workspace. name (unique, ignoring case) and command are required. path is
+# where the command runs and may use "~/..."; without it, the command runs in
+# the directory of the pane you are in. close_on_exit (default true) closes
+# the command's pane once it returns; set it to false to keep the shell.
+# aliases, preview and the presentation keys apply to the command's own row.
+# [[commands]]
+# name = "lazygit"
+# command = "lazygit" # no path: runs in the directory of the pane you are in
+#
+# [[commands]]
+# name = "downloads"
+# path = "~/Downloads"
+# command = "yazi"
 
 # [templates.<name>] describes what opens after Enter for a freshly created
 # workspace: a plain command in the root pane, or a structured multi-tab

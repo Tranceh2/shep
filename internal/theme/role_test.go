@@ -31,6 +31,7 @@ var roleDefaultTable = map[string]string{
 	"status.unknown":    "overlay0",
 	"source.herdr":      "green",
 	"source.workspaces": "mauve",
+	"source.commands":   "red",
 	"source.zoxide":     "blue",
 	"source.projects":   "peach",
 	"source.sessions":   "yellow",

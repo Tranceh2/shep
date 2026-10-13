@@ -15,7 +15,7 @@ import (
 // same fallback config.Load()/source.Registry.Enabled() already apply when
 // general.sources is empty/absent. Kept as the exported config.Source*
 // constants rather than reaching into the unexported config var.
-var defaultSourceOrder = []string{config.SourceHerdr, config.SourceWorkspaces, config.SourceZoxide, config.SourceProjects}
+var defaultSourceOrder = []string{config.SourceHerdr, config.SourceWorkspaces, config.SourceCommands, config.SourceZoxide, config.SourceProjects}
 
 // tabChildren is one synthesized tab row plus its own synthesized pane rows,
 // both built as source.Candidate by synthesizeWorkspaceChildren (internal/

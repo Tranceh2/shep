@@ -24,6 +24,9 @@ const (
 	// KindGroup is a [[workspaces]] group entry that drills into a nested
 	// picker.
 	KindGroup = "group"
+	// KindCommand is a [[commands]] entry: a program that opens inside the
+	// current Herdr workspace.
+	KindCommand = "command"
 	// KindFolder is a plain directory: a zoxide entry or a direct --path.
 	KindFolder = "folder"
 	// KindProject is a discovered project root that is not a linked worktree.
@@ -46,7 +49,7 @@ const (
 // every call so callers may modify it.
 func Kinds() []string {
 	return []string{
-		KindWorkspace, KindConfigured, KindGroup, KindFolder, KindProject,
+		KindWorkspace, KindConfigured, KindGroup, KindCommand, KindFolder, KindProject,
 		KindWorktree, KindSession, KindAgent, KindTab, KindPane, KindCustom,
 	}
 }
@@ -64,9 +67,9 @@ type Data struct {
 	// Label is the source's own label for the row (a Herdr workspace name,
 	// a "~/..." directory label, a session name, a custom row label...).
 	Label string
-	// Source names the provider: herdr, workspaces, zoxide, projects,
-	// sessions, agents, path, or a custom source name. Rows shep synthesizes
-	// itself (Herdr tabs and panes) have no source.
+	// Source names the provider: herdr, workspaces, commands, zoxide,
+	// projects, sessions, agents, path, or a custom source name. Rows shep
+	// synthesizes itself (Herdr tabs and panes) have no source.
 	Source string
 	// Kind is one of the Kind* constants.
 	Kind string

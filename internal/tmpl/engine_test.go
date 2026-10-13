@@ -243,7 +243,7 @@ func TestSamples(t *testing.T) {
 }
 
 func TestKinds_IsFreshAndComplete(t *testing.T) {
-	want := []string{"workspace", "configured", "group", "folder", "project", "worktree", "session", "agent", "tab", "pane", "custom"}
+	want := []string{"workspace", "configured", "group", "command", "folder", "project", "worktree", "session", "agent", "tab", "pane", "custom"}
 	got := Kinds()
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Kinds() = %v, want %v", got, want)

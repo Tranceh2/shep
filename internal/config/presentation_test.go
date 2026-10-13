@@ -46,6 +46,8 @@ func TestPresentationDefaults_Table(t *testing.T) {
 			Marker: `{{ if eq .Meta.running "true" }}running{{ else }}stopped{{ end }}{{ if eq .Meta.default "true" }} · default{{ end }} {{ missing }} {{ pin }}`},
 		"workspaces": {Icon: "\ue615 ", IconColor: "source.workspaces", Label: name, Detail: parent,
 			Marker: "{{ missing }} {{ group }} {{ pin }}"},
+		"commands": {Icon: "\uf489 ", IconColor: "source.commands", Label: name, Detail: "{{ .Path | tilde }}",
+			Marker: "{{ missing }} {{ pin }}"},
 		"zoxide": {Icon: "\uf114 ", IconColor: "source.zoxide", Label: name, Detail: parent,
 			Marker: "{{ missing }} {{ pin }}"},
 		"projects": {Icon: "{{ if .IsWorktree }}\ue725 {{ else }}\ue702 {{ end }}", IconColor: "source.projects", Label: name, Detail: parent,
@@ -57,7 +59,7 @@ func TestPresentationDefaults_Table(t *testing.T) {
 	}
 	for key, have := range map[string]RowPresentation{
 		"herdr": got.Herdr, "herdr.tab": got.HerdrTab, "herdr.pane": got.HerdrPane, "sessions": got.Sessions,
-		"workspaces": got.Workspaces, "zoxide": got.Zoxide, "projects": got.Projects, "agents": got.Agents, "other": got.Other,
+		"workspaces": got.Workspaces, "commands": got.Commands, "zoxide": got.Zoxide, "projects": got.Projects, "agents": got.Agents, "other": got.Other,
 	} {
 		if have != want[key] {
 			t.Errorf("%s defaults =\n %+v\nwant\n %+v", key, have, want[key])
@@ -80,7 +82,7 @@ func TestPresentationDefaults_ASCIITier(t *testing.T) {
 	if !strings.Contains(ascii.Sessions.Marker, " - default") || strings.Contains(ascii.Sessions.Marker, "·") {
 		t.Errorf("ascii sessions marker = %q, want the ASCII separator", ascii.Sessions.Marker)
 	}
-	for name, icon := range map[string]string{"herdr": ascii.Herdr.Icon, "workspaces": ascii.Workspaces.Icon, "zoxide": ascii.Zoxide.Icon, "projects": ascii.Projects.Icon} {
+	for name, icon := range map[string]string{"herdr": ascii.Herdr.Icon, "workspaces": ascii.Workspaces.Icon, "commands": ascii.Commands.Icon, "zoxide": ascii.Zoxide.Icon, "projects": ascii.Projects.Icon} {
 		if icon != "" {
 			t.Errorf("ascii %s icon = %q, want none", name, icon)
 		}
@@ -189,6 +191,8 @@ func TestLoad_RejectsInvalidPresentation(t *testing.T) {
 		{"agents label kind", "[sources.agents]\nlabel_format = \"{{ slice .Branch 0 3 }}\"\n", "sources.agents.label_format: "},
 		{"sessions detail", "[sources.sessions]\ndetail_format = \"{{ .Nope }}\"\n", "sources.sessions.detail_format: "},
 		{"workspaces marker", "[sources.workspaces]\nmarker_format = \"{{ .Nope }}\"\n", "sources.workspaces.marker_format: "},
+		{"commands detail", "[sources.commands]\ndetail_format = \"{{ .Nope }}\"\n", "sources.commands.detail_format: "},
+		{"commands icon color", "[sources.commands]\nicon_color = \"nope\"\n", "sources.commands.icon_color: "},
 		{"icon color", "[sources.zoxide]\nicon_color = \"not-a-color\"\n", `sources.zoxide.icon_color: unknown token or role "not-a-color"`},
 		{"tab icon color", "[sources.herdr.tab]\nicon_color = \"#12\"\n", "sources.herdr.tab.icon_color: invalid color"},
 		{"custom marker", "[[sources.custom]]\nname = \"prs\"\ncommand = [\"gh\"]\nmarker_format = \"{{ .Nope }}\"\n", "sources.custom[0].marker_format: "},
@@ -199,6 +203,8 @@ func TestLoad_RejectsInvalidPresentation(t *testing.T) {
 		{"wildcard icon for every kind", "[[wildcards]]\npattern = \"**\"\nicon = \"{{ slice .Branch 0 3 }}\"\n", "wildcards[0].icon: "},
 		{"workspace marker", "[[workspaces]]\nname = \"api\"\npath = \"/api\"\nmarker_format = \"{{ if }}\"\n", "workspaces[0].marker_format: "},
 		{"workspace icon color", "[[workspaces]]\nname = \"api\"\npath = \"/api\"\nicon_color = \"nope\"\n", "workspaces[0].icon_color: "},
+		{"command label", "[[commands]]\nname = \"lazygit\"\ncommand = \"lazygit\"\nlabel_format = \"{{ if }}\"\n", "commands[0].label_format: "},
+		{"command icon color", "[[commands]]\nname = \"lazygit\"\ncommand = \"lazygit\"\nicon_color = \"nope\"\n", "commands[0].icon_color: "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

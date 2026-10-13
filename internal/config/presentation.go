@@ -78,6 +78,7 @@ type Presentations struct {
 	HerdrPane  RowPresentation
 	Sessions   RowPresentation
 	Workspaces RowPresentation
+	Commands   RowPresentation
 	Zoxide     RowPresentation
 	Projects   RowPresentation
 	Agents     RowPresentation
@@ -100,6 +101,7 @@ func (c *Config) Presentations() Presentations {
 		HerdrPane:  s.Herdr.Pane.Resolve(presentationDefaults(rowHerdrPane, icons)),
 		Sessions:   s.Sessions.Resolve(presentationDefaults(rowSessions, icons)),
 		Workspaces: s.Workspaces.Resolve(presentationDefaults(rowWorkspaces, icons)),
+		Commands:   s.Commands.Resolve(presentationDefaults(rowCommands, icons)),
 		Zoxide:     s.Zoxide.Resolve(presentationDefaults(rowZoxide, icons)),
 		Projects:   s.Projects.Resolve(presentationDefaults(rowProjects, icons)),
 		Agents:     s.Agents.Resolve(presentationDefaults(rowAgents, icons)),
@@ -135,6 +137,7 @@ const (
 	rowHerdrPane
 	rowSessions
 	rowWorkspaces
+	rowCommands
 	rowZoxide
 	rowProjects
 	rowAgents
@@ -149,6 +152,7 @@ const (
 const (
 	iconHerdr      = "\U000f0cc6 "
 	iconWorkspaces = "\ue615 "
+	iconCommands   = "\uf489 "
 	iconZoxide     = "\uf114 "
 	iconProject    = "\ue702 "
 	iconWorktree   = "\ue725 "
@@ -169,10 +173,10 @@ const (
 // per tier.
 func presentationDefaults(kind rowKind, icons string) RowPresentation {
 	tabIcon, separator := "◫", "·"
-	herdr, workspaces, zoxide, project, worktree := iconHerdr, iconWorkspaces, iconZoxide, iconProject, iconWorktree
+	herdr, workspaces, commands, zoxide, project, worktree := iconHerdr, iconWorkspaces, iconCommands, iconZoxide, iconProject, iconWorktree
 	if icons == TUIIconsASCII {
 		tabIcon, separator = "t", "-"
-		herdr, workspaces, zoxide, project, worktree = "", "", "", "", ""
+		herdr, workspaces, commands, zoxide, project, worktree = "", "", "", "", "", ""
 	}
 	switch kind {
 	case rowHerdr:
@@ -205,6 +209,15 @@ func presentationDefaults(kind rowKind, icons string) RowPresentation {
 			Icon: workspaces, IconColor: "source.workspaces",
 			Label: defaultNameFormat, Detail: defaultParentFormat,
 			Marker: "{{ missing }} {{ group }} {{ pin }}",
+		}
+	case rowCommands:
+		// A command is a program, not a directory: its name is the label
+		// alone, and the detail is where it runs (empty when it runs in the
+		// directory of the pane the user is in).
+		return RowPresentation{
+			Icon: commands, IconColor: "source.commands",
+			Label: defaultNameFormat, Detail: "{{ .Path | tilde }}",
+			Marker: "{{ missing }} {{ pin }}",
 		}
 	case rowZoxide:
 		return RowPresentation{
@@ -252,6 +265,7 @@ func normalizePresentations(s *SourcesConfig, icons string) {
 	s.Herdr.Pane.normalize(presentationDefaults(rowHerdrPane, icons))
 	s.Sessions.normalize(presentationDefaults(rowSessions, icons))
 	s.Workspaces.normalize(presentationDefaults(rowWorkspaces, icons))
+	s.Commands.normalize(presentationDefaults(rowCommands, icons))
 	s.Zoxide.normalize(presentationDefaults(rowZoxide, icons))
 	s.Projects.normalize(presentationDefaults(rowProjects, icons))
 	s.Agents.normalize(presentationDefaults(rowAgents, icons))
@@ -290,12 +304,19 @@ func validatePresentation(engine *tmpl.Engine, field string, p Presentation, kin
 }
 
 // validateOverridePresentations validates the presentation keys of every
-// [[workspaces]] and [[wildcards]] entry. Either may apply to any candidate
-// in a directory (an open Herdr workspace, a project, an agent pane...), so
-// each template is checked against every directory-like kind.
+// [[workspaces]], [[commands]] and [[wildcards]] entry. A workspace entry or
+// a wildcard may apply to any candidate in a directory (an open Herdr
+// workspace, a project, an agent pane...), so each of their templates is
+// checked against every directory-like kind; a command entry draws only its
+// own row.
 func validateOverridePresentations(cfg *Config, engine *tmpl.Engine) error {
 	for i, ws := range cfg.Workspaces {
 		if err := validatePresentation(engine, fmt.Sprintf("workspaces[%d]", i), ws.Presentation, directoryKinds...); err != nil {
+			return err
+		}
+	}
+	for i, c := range cfg.Commands {
+		if err := validatePresentation(engine, fmt.Sprintf("commands[%d]", i), c.Presentation, tmpl.KindCommand); err != nil {
 			return err
 		}
 	}
@@ -321,6 +342,7 @@ func validatePresentations(s SourcesConfig, engine *tmpl.Engine) error {
 		{"sources.herdr.pane", s.Herdr.Pane, []string{tmpl.KindPane}},
 		{"sources.sessions", s.Sessions.Presentation, []string{tmpl.KindSession}},
 		{"sources.workspaces", s.Workspaces.Presentation, []string{tmpl.KindConfigured, tmpl.KindGroup}},
+		{"sources.commands", s.Commands.Presentation, []string{tmpl.KindCommand}},
 		{"sources.zoxide", s.Zoxide.Presentation, []string{tmpl.KindFolder}},
 		{"sources.projects", s.Projects.Presentation, []string{tmpl.KindProject, tmpl.KindWorktree}},
 		{"sources.agents", s.Agents.Presentation, []string{tmpl.KindAgent}},

@@ -88,6 +88,7 @@ func TestREADME_RowDefaultsAreTheBuiltInDefaults(t *testing.T) {
 		{"sources.herdr.pane", []string{"herdr", "pane"}, rowHerdrPane},
 		{"sources.sessions", []string{"sessions"}, rowSessions},
 		{"sources.workspaces", []string{"workspaces"}, rowWorkspaces},
+		{"sources.commands", []string{"commands"}, rowCommands},
 		{"sources.zoxide", []string{"zoxide"}, rowZoxide},
 		{"sources.projects", []string{"projects"}, rowProjects},
 		{"sources.agents", []string{"agents"}, rowAgents},

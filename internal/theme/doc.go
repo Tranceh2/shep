@@ -40,6 +40,7 @@
 //	status.unknown     overlay0       agent state unknown
 //	source.herdr       green          open Herdr workspace icons
 //	source.workspaces  mauve          configured workspace icons
+//	source.commands    red            configured command icons
 //	source.zoxide      blue           zoxide folder icons
 //	source.projects    peach          project and worktree icons
 //	source.sessions    yellow         session icons

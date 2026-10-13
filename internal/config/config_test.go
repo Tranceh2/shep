@@ -121,11 +121,14 @@ func TestDefaults_PathAgnostic(t *testing.T) {
 	if cfg == nil {
 		t.Fatal("Defaults returned nil")
 	}
-	if len(cfg.General.SourceOrder) != 4 {
-		t.Fatalf("expected 4 default sources, got %d: %v", len(cfg.General.SourceOrder), cfg.General.SourceOrder)
+	if len(cfg.General.SourceOrder) != 5 {
+		t.Fatalf("expected 5 default sources, got %d: %v", len(cfg.General.SourceOrder), cfg.General.SourceOrder)
 	}
 	if cfg.Workspaces == nil {
 		t.Fatal("Defaults Workspaces slice must be non-nil")
+	}
+	if cfg.Commands == nil {
+		t.Fatal("Defaults Commands slice must be non-nil")
 	}
 	if cfg.Sources.Custom == nil {
 		t.Fatal("Defaults custom sources slice must be non-nil")
@@ -151,7 +154,7 @@ func TestDefaults_PathAgnostic(t *testing.T) {
 // TestDefaults_SourcesOrder confirms the canonical default source order.
 func TestDefaults_SourcesOrder(t *testing.T) {
 	t.Parallel()
-	want := []string{SourceHerdr, SourceWorkspaces, SourceZoxide, SourceProjects}
+	want := []string{SourceHerdr, SourceWorkspaces, SourceCommands, SourceZoxide, SourceProjects}
 	got := Defaults().General.SourceOrder
 	if len(got) != len(want) {
 		t.Fatalf("got %v want %v", got, want)
@@ -1709,7 +1712,10 @@ func TestExampleTOML_MatchesCanonicalModel(t *testing.T) {
 		"\nversion = 1\n", "[general]", "source_order = [", "[defaults]",
 		"template = ", "[tui]", `# tabs = ["all", "agents"]`, `# list_width = "35%"`, `# preview_width = "65%"`, `# layout = "landscape"`, "[preview]",
 		"[preview.commands.", "# title = ", "[sources.herdr]", "[sources.herdr.tab]", "[sources.herdr.pane]",
-		"[sources.sessions]", "[sources.agents]", "[sources.projects]",
+		"[sources.sessions]", "[sources.agents]", "[sources.projects]", "[sources.commands]",
+		`source_order = ["herdr", "workspaces", "commands", "zoxide", "projects"]`,
+		"# [[commands]]\n# name = \"lazygit\"\n# command = \"lazygit\" # no path:",
+		"# [[commands]]\n# name = \"downloads\"\n# path = \"~/Downloads\"\n# command = \"yazi\"",
 		"markers = ", "[templates.default]", "[templates.k8s]", "[[sources.custom]]",
 		"# [themes.example]", "# [themes.example.roles]", `theme = "inherit"`,
 		`theme is "inherit" (the default: Herdr's`,
@@ -1742,6 +1748,12 @@ func TestExampleTOML_MatchesCanonicalModel(t *testing.T) {
 	if !cfg.Ranking.Enabled {
 		t.Error("example config must load with ranking.enabled = true")
 	}
+	if !reflect.DeepEqual(cfg.General.SourceOrder, defaultSourceOrder) {
+		t.Errorf("example source_order = %v, want the default %v", cfg.General.SourceOrder, defaultSourceOrder)
+	}
+	if len(cfg.Commands) != 0 {
+		t.Errorf("example [[commands]] must stay commented, got %+v", cfg.Commands)
+	}
 	// shep init must produce the look shep has with no config at all, so the
 	// split and orientation stay at their defaults (only commented examples).
 	if cfg.TUI.ListWidth != defaultTUIListWidth || cfg.TUI.PreviewWidth != defaultTUIPreviewWidth || cfg.TUI.Layout != "" {
@@ -1768,6 +1780,7 @@ func TestExampleTOML_MatchesCanonicalModel(t *testing.T) {
 	}{
 		{name: "herdr", got: cfg.Sources.Herdr.Preview, want: []string{PreviewWorkspace, PreviewActivePane, PreviewAgentStatus}},
 		{name: "workspaces", got: cfg.Sources.Workspaces.Preview, want: []string{PreviewIdentity, PreviewDir}},
+		{name: "commands", got: cfg.Sources.Commands.Preview, want: []string{PreviewIdentity}},
 		{name: "zoxide", got: cfg.Sources.Zoxide.Preview, want: []string{PreviewIdentity, PreviewDir}},
 		{name: "projects", got: cfg.Sources.Projects.Preview, want: []string{PreviewIdentity, PreviewGit, PreviewDir}},
 	} {
@@ -1794,6 +1807,7 @@ func TestExampleTOML_CommentedPresentationsAreTheDefaults(t *testing.T) {
 		{"[sources.sessions]", rowSessions},
 		{"[sources.agents]", rowAgents},
 		{"[sources.workspaces]", rowWorkspaces},
+		{"[sources.commands]", rowCommands},
 		{"[sources.zoxide]", rowZoxide},
 		{"[sources.projects]", rowProjects},
 	} {
@@ -2606,6 +2620,145 @@ close_on_exit = true
 	}
 	if !cfg.Workspaces[0].CloseOnExit {
 		t.Errorf("CloseOnExit = false, want true")
+	}
+}
+
+// TestLoad_ParsesCommands proves a [[commands]] entry decodes every key:
+// path optional, close_on_exit true unless set to false, aliases normalized
+// like any entry's, and the presentation keys kept as written. A document
+// without [[commands]] loads an empty, non-nil list.
+func TestLoad_ParsesCommands(t *testing.T) {
+	t.Parallel()
+	cfg, err := loadDoc(t, `
+[[commands]]
+name = "lazygit"
+command = "lazygit"
+aliases = [" git ", "GIT", "lg", " "]
+
+[[commands]]
+name = "downloads"
+path = "~/Downloads"
+command = "yazi"
+close_on_exit = false
+preview = ["identity", "dir"]
+icon = "Y "
+icon_color = "blue"
+label_format = "{{ .Meta.command | upper }}"
+detail_format = ""
+
+[[commands]]
+name = "k9s"
+command = "k9s --context prod"
+close_on_exit = true
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Commands) != 3 {
+		t.Fatalf("commands = %+v, want 3 entries", cfg.Commands)
+	}
+	lazygit, downloads, k9s := cfg.Commands[0], cfg.Commands[1], cfg.Commands[2]
+	if lazygit.Path != "" || lazygit.CloseOnExit != nil || !lazygit.CloseOnExitOrDefault() {
+		t.Errorf("lazygit = %+v, want no path and the default close_on_exit (true)", lazygit)
+	}
+	if got, want := lazygit.Aliases, []string{"git", "lg"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("lazygit aliases = %v, want %v", got, want)
+	}
+	if downloads.Path != "~/Downloads" || downloads.Command != "yazi" || downloads.CloseOnExitOrDefault() {
+		t.Errorf("downloads = %+v, want path ~/Downloads, command yazi, close_on_exit false", downloads)
+	}
+	if got, want := downloads.Preview, []string{PreviewIdentity, PreviewDir}; !reflect.DeepEqual(got, want) {
+		t.Errorf("downloads preview = %v, want %v", got, want)
+	}
+	p := downloads.Presentation
+	if got := []string{deref(p.Icon), deref(p.IconColor), deref(p.LabelFormat), deref(p.DetailFormat), deref(p.MarkerFormat)}; !reflect.DeepEqual(got, []string{"Y ", "blue", "{{ .Meta.command | upper }}", "", "<nil>"}) {
+		t.Errorf("downloads presentation = %q", got)
+	}
+	if k9s.CloseOnExit == nil || !k9s.CloseOnExitOrDefault() || k9s.Command != "k9s --context prod" {
+		t.Errorf("k9s = %+v, want an explicit close_on_exit = true", k9s)
+	}
+
+	empty, err := loadDoc(t, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty.Commands == nil || len(empty.Commands) != 0 {
+		t.Errorf("commands without [[commands]] = %#v, want an empty list", empty.Commands)
+	}
+}
+
+// TestLoad_RejectsInvalidCommands proves every [[commands]] invariant fails
+// Load with the entry's field path: a name (unique, ignoring case) and a
+// one-line command are required, and its preview list and presentation keys
+// are validated like any entry's.
+func TestLoad_RejectsInvalidCommands(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, doc, want string }{
+		{"missing name", "[[commands]]\ncommand = \"lazygit\"\n", "commands[0]: name is required"},
+		{"blank name", "[[commands]]\nname = \"  \"\ncommand = \"lazygit\"\n", "commands[0]: name is required"},
+		{"duplicate name ignoring case", "[[commands]]\nname = \"lazygit\"\ncommand = \"lazygit\"\n[[commands]]\nname = \" LazyGit \"\ncommand = \"lazygit\"\n",
+			`commands[1] (" LazyGit "): duplicate name; commands[0] already uses it`},
+		{"missing command", "[[commands]]\nname = \"lazygit\"\n", `commands[0] ("lazygit"): command is required`},
+		{"blank command", "[[commands]]\nname = \"lazygit\"\ncommand = \" \"\n", `commands[0] ("lazygit"): command is required`},
+		{"control character", "[[commands]]\nname = \"lazygit\"\ncommand = \"lazygit\\necho\"\n", `commands[0] ("lazygit"): command contains control characters`},
+		{"unknown preview", "[[commands]]\nname = \"lazygit\"\ncommand = \"lazygit\"\npreview = [\"nope\"]\n", `commands[0] ("lazygit").preview: "nope"`},
+		{"unknown key", "[[commands]]\nname = \"lazygit\"\ncommand = \"lazygit\"\ntemplate = \"dev\"\n", "strict mode"},
+		{"sources.commands preview", "[sources.commands]\npreview = [\"nope\"]\n", `sources.commands.preview: "nope"`},
+		{"custom source named commands", "[[sources.custom]]\nname = \"commands\"\ncommand = [\"echo\"]\n", "collides with built-in source"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := loadDoc(t, tc.doc); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Load error = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoad_CommandsSource proves the commands source is a built-in source
+// like the others: its default preview list (left unset when the document
+// writes preview.default), and its name in source_order, a group's
+// source_order, [tui].tabs and --view.
+func TestLoad_CommandsSource(t *testing.T) {
+	t.Parallel()
+	cfg, err := loadDoc(t, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := cfg.Sources.Commands.Preview, []string{PreviewIdentity}; !reflect.DeepEqual(got, want) {
+		t.Errorf("sources.commands.preview = %v, want %v", got, want)
+	}
+	if got := Defaults().Sources.Commands.Preview; !reflect.DeepEqual(got, []string{PreviewIdentity}) {
+		t.Errorf("Defaults sources.commands.preview = %v, want [identity]", got)
+	}
+
+	withDefault, err := loadDoc(t, "[preview]\ndefault = [\"git\"]\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := withDefault.Sources.Commands.Preview; got != nil {
+		t.Errorf("sources.commands.preview with preview.default = %v, want unset", got)
+	}
+
+	views, err := loadDoc(t, `
+[general]
+source_order = ["commands", "herdr"]
+
+[tui]
+tabs = ["all", "commands"]
+
+[[workspaces]]
+id = "ops"
+name = "ops"
+type = "group"
+path = "~/ops"
+source_order = ["commands", "projects"]
+`)
+	if err != nil {
+		t.Fatalf("commands as a source, tab and group source: %v", err)
+	}
+	if kind, err := ResolveView(views, SourceCommands); err != nil || kind != "source" {
+		t.Errorf("ResolveView(commands) = %q, %v; want source", kind, err)
 	}
 }
 

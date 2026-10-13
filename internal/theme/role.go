@@ -57,6 +57,8 @@ const (
 	RoleSourceHerdr
 	// RoleSourceWorkspaces is the icon color of configured workspaces.
 	RoleSourceWorkspaces
+	// RoleSourceCommands is the icon color of configured commands.
+	RoleSourceCommands
 	// RoleSourceZoxide is the icon color of zoxide folders.
 	RoleSourceZoxide
 	// RoleSourceProjects is the icon color of projects and worktrees.
@@ -112,6 +114,7 @@ var roleNames = [numRoles]string{
 	RoleStatusUnknown:    "status.unknown",
 	RoleSourceHerdr:      "source.herdr",
 	RoleSourceWorkspaces: "source.workspaces",
+	RoleSourceCommands:   "source.commands",
 	RoleSourceZoxide:     "source.zoxide",
 	RoleSourceProjects:   "source.projects",
 	RoleSourceSessions:   "source.sessions",
@@ -152,6 +155,7 @@ var defaultRoleTokens = [numRoles]Token{
 	RoleStatusUnknown:    TokenOverlay0,
 	RoleSourceHerdr:      TokenGreen,
 	RoleSourceWorkspaces: TokenMauve,
+	RoleSourceCommands:   TokenRed,
 	RoleSourceZoxide:     TokenBlue,
 	RoleSourceProjects:   TokenPeach,
 	RoleSourceSessions:   TokenYellow,

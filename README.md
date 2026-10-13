@@ -862,6 +862,13 @@ label_format = '{{ or .Label .Path | tilde | name }}'
 detail_format = '{{ or .Label .Path | tilde | parent }}'
 marker_format = '{{ missing }} {{ group }} {{ pin }}'
 
+[sources.commands]
+icon = " "
+icon_color = "source.commands"
+label_format = '{{ or .Label .Path | tilde | name }}'
+detail_format = '{{ .Path | tilde }}'
+marker_format = '{{ missing }} {{ pin }}'
+
 [sources.zoxide]
 icon = " "
 icon_color = "source.zoxide"
@@ -985,6 +992,7 @@ All but `catppuccin-frappe`, `catppuccin-macchiato` and `plain` are Herdr's own 
 | `status.unknown` | `overlay0` | Agent state unknown |
 | `source.herdr` | `green` | Open Herdr workspace icons |
 | `source.workspaces` | `mauve` | Configured workspace icons |
+| `source.commands` | `red` | Configured command icons |
 | `source.zoxide` | `blue` | Zoxide folder icons |
 | `source.projects` | `peach` | Project and worktree icons |
 | `source.sessions` | `yellow` | Session icons |
