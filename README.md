@@ -292,7 +292,7 @@ the full recovery and refusal taxonomy.
 The picker is one grid with a single frame (Herdr's popup border when it runs as a plugin): views on top, the search prompt and the list on the left, the preview on the right, and the shortcuts that apply to the selected row at the bottom.
 
 <p align="center">
-  <img src="docs/media/shep-picker.png" alt="The shep picker over a Herdr workspace: open workspaces with their agent state, a configured workspace, zoxide entries and projects on the left; the selected workspace's path, state, tabs and active pane on the right" width="100%">
+  <img src="docs/media/shep-picker.png" alt="The shep picker over a Herdr workspace, with the all, agents and commands tabs: open workspaces with their agent state, a configured workspace, commands (one pinned), zoxide entries and projects on the left; the selected workspace's path, blocked agent, tabs and the question in its active pane on the right" width="100%">
 </p>
 
 - **Views** (`tab` / `shift+tab`) stay visible at every width; the active one is highlighted.
