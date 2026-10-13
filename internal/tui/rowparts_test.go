@@ -299,6 +299,7 @@ func TestRowView_KindLabels(t *testing.T) {
 		{Row{Kind: RowCandidate, Candidate: herdrCandidate("a", "/a", "w1")}, "workspace"},
 		{Row{Kind: RowCandidate, Candidate: workspaceEntryCandidate("a", "/a")}, "configured"},
 		{Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "a", Source: config.SourceWorkspaces, Meta: map[string]string{"group": "true"}}}, "group"},
+		{Row{Kind: RowCandidate, Candidate: commandCandidate("a", "", "a")}, "command"},
 		{Row{Kind: RowCandidate, Candidate: zoxideCandidate("a", "/a")}, "folder"},
 		{Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "a", Path: "/a", Source: "path"}}, "folder"},
 		{Row{Kind: RowCandidate, Candidate: projectCandidate("a", "/a")}, "project"},

@@ -338,6 +338,7 @@ func Identity(candidate source.Candidate) string {
 			{"herdr:workspace:", "workspace_id"},
 			{"sessions:", "session_name"},
 			{"workspaces:entry:", "entry_id"},
+			{"commands:entry:", "command_id"},
 		} {
 			if value := candidate.Meta[field.key]; value != "" {
 				return field.prefix + value
@@ -364,7 +365,7 @@ func Identity(candidate source.Candidate) string {
 // hashing anything.
 func hasIdentity(candidate source.Candidate) bool {
 	if candidate.Meta != nil {
-		for _, key := range []string{"pane_id", "tab_id", "workspace_id", "session_name", "entry_id"} {
+		for _, key := range []string{"pane_id", "tab_id", "workspace_id", "session_name", "entry_id", "command_id"} {
 			if candidate.Meta[key] != "" {
 				return true
 			}

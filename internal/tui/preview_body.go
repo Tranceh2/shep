@@ -225,9 +225,9 @@ func (m Model) previewErrorLine() string {
 // --- meta line ---
 
 // previewMeta renders the row's one-line summary, parts joined by " · ":
-// agent state, tab/pane counts and placement for Herdr rows; branch and
-// working-tree state for directories. spins reports a working status glyph
-// (the animated spinner frame).
+// agent state, tab/pane counts and placement for Herdr rows; the program and
+// where it runs for commands; branch and working-tree state for directories.
+// spins reports a working status glyph (the animated spinner frame).
 func (m Model) previewMeta(row Row, width int) (meta string, spins bool) {
 	c := row.Candidate
 	set := m.icons()
@@ -259,6 +259,8 @@ func (m Model) previewMeta(row Row, width int) (meta string, spins bool) {
 			parts = append(parts, m.styles.mutedStyle.Render(plural(len(tree.Tabs), "tab")),
 				m.styles.mutedStyle.Render(plural(len(tree.Panes), "pane")))
 		}
+	case c.Source == config.SourceCommands:
+		parts = m.commandMeta(c)
 	default:
 		parts = m.directoryMeta(c)
 	}
@@ -302,6 +304,22 @@ func (m Model) tabPanes(workspaceID, tabID string) int {
 		}
 	}
 	return n
+}
+
+// commandMeta summarizes a [[commands]] candidate: the program it runs
+// ("runs lazygit") and, when it has no path of its own (the location line
+// shows one that is set), that it runs in the directory of the pane the user
+// is in.
+func (m Model) commandMeta(c source.Candidate) []string {
+	var parts []string
+	muted := m.styles.mutedStyle
+	if command := plainText(c.Meta["command"]); command != "" {
+		parts = append(parts, muted.Render("runs "+command))
+	}
+	if c.Path == "" {
+		parts = append(parts, muted.Render("in the directory of the pane you are in"))
+	}
+	return parts
 }
 
 // directoryMeta summarizes a directory candidate: its git branch and working

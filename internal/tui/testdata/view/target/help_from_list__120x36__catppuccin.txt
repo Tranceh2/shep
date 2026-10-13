@@ -15,9 +15,9 @@
    ctrl+p                 open as a pane here                   status:working  agent status: idle working blocked done
    ctrl+f                 pin/unpin                                             unknown
    ctrl+x                 close the open Herdr item (y/n        agent:claude    agent name contains
-                          when configured)                      source:zoxide   source: herdr workspaces zoxide
-   ctrl+e                 rename the open Herdr item                            projects sessions agents, or a custom
-   ctrl+n                 new worktree of this repo                             name
+                          when configured)                      source:zoxide   source: herdr workspaces commands
+   ctrl+e                 rename the open Herdr item                            zoxide projects sessions agents, or a
+   ctrl+n                 new worktree of this repo                             custom name
                                                                 path:allsafe    path contains
  Search                                                         s:blocked       short forms s: a: src: p:
    type                   filter the list

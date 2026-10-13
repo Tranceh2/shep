@@ -164,7 +164,7 @@ func (r *defaultRenderer) Render(ctx context.Context, cand source.Candidate) (Re
 	// that case: fall back to the built-in identity section so there is
 	// always clean, useful output instead of a silent empty success.
 	if len(blocks) == 0 {
-		identity := renderIdentity(cand)
+		identity := r.renderIdentity(cand)
 		blocks = append(blocks, identity)
 		sections = append(sections, Section{Kind: config.PreviewIdentity, Text: identity})
 	}
@@ -179,7 +179,7 @@ func (r *defaultRenderer) Render(ctx context.Context, cand source.Candidate) (Re
 func (r *defaultRenderer) renderSection(ctx context.Context, cand source.Candidate, name string) (string, bool) {
 	switch name {
 	case config.PreviewIdentity:
-		return renderIdentity(cand), true
+		return r.renderIdentity(cand), true
 	case config.PreviewGit:
 		if line, ok := r.gitLine(ctx, cand); ok {
 			return "git: " + line, true
@@ -231,12 +231,26 @@ func customSourcePreviewCommand(cfg *config.Config, sourceName, name string) (co
 }
 
 // renderIdentity shows label, path, source, and a matched template (when
-// present in Meta) — the built-in "identity" section.
-func renderIdentity(cand source.Candidate) string {
+// present in Meta) — the built-in "identity" section. A command row shows its
+// command too, and where it runs: its path, home-abbreviated, or the
+// directory of the pane the user is in when it has none.
+func (r *defaultRenderer) renderIdentity(cand source.Candidate) string {
+	path := renderPath(cand)
+	if cand.Source == config.SourceCommands {
+		switch {
+		case path == "":
+			path = "the directory of the pane you are in"
+		case r.templates != nil:
+			path = r.templates.Tilde(path)
+		}
+	}
 	lines := []string{
 		cand.Label,
-		"path: " + renderPath(cand),
+		"path: " + path,
 		"source: " + cand.Source,
+	}
+	if cand.Source == config.SourceCommands {
+		lines = append(lines, "command: "+cand.Meta["command"])
 	}
 	if t := cand.Meta["template"]; t != "" {
 		lines = append(lines, "template: "+t)
@@ -458,10 +472,12 @@ func snapshotWorkspace(snapshot source.Snapshot, workspaceID string) ([]source.T
 // produced no output; command failures are hidden from normal preview
 // output (they are simply omitted), never shown as an error to the user.
 func (r *defaultRenderer) renderDirSection(ctx context.Context, cand source.Candidate) (string, bool) {
-	if r.runner == nil {
+	path := renderPath(cand)
+	if r.runner == nil || path == "" {
+		// Without a path the listing would describe shep's own directory.
 		return "", false
 	}
-	argv := dirArgv(renderPath(cand))
+	argv := dirArgv(path)
 	runCtx, cancel := boundedContext(ctx, r.cfg.Preview.Timeout)
 	defer cancel()
 	out, err := r.runner.Run(runCtx, argv, "", r.cfg.Preview.MaxLines)
@@ -506,6 +522,12 @@ func (r *defaultRenderer) renderCustomSourceCommand(ctx context.Context, cmd con
 
 func (r *defaultRenderer) runCommand(ctx context.Context, argv []string, timeout config.Duration, maxLines int, cand source.Candidate) (string, bool) {
 	if r.runner == nil || len(argv) == 0 || argv[0] == "" {
+		return "", false
+	}
+	if cand.Source == config.SourceCommands && cand.Path == "" {
+		// A command without a path runs in the directory of the pane the
+		// user is in, which a preview cannot know: running there would
+		// describe shep's own directory instead.
 		return "", false
 	}
 	runCtx, cancel := boundedContext(ctx, timeout)
@@ -610,9 +632,10 @@ func capLines(buf string, max int) string {
 }
 
 // gitLine returns the rendered git summary for the candidate path, or false when
-// git is unavailable (probe off, provider nil), slow, or missing.
+// git is unavailable (probe off, provider nil), slow, or missing, or the
+// candidate has no path (git would describe shep's own directory).
 func (r *defaultRenderer) gitLine(ctx context.Context, cand source.Candidate) (string, bool) {
-	if r.git == nil || !r.probes.Git {
+	if r.git == nil || !r.probes.Git || cand.Path == "" {
 		return "", false
 	}
 	sum, err := r.git.Summary(ctx, cand.Path)

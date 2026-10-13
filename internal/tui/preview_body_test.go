@@ -194,6 +194,8 @@ func TestPreviewMeta_PerKind(t *testing.T) {
 			[]preview.Section{{Kind: config.PreviewGit, Text: "git: [worktree: fix/parser] 1a2b3c4 fix/parser (2 changes)"}}, "worktree on fix/parser · 1a2b3c4 · 2 changes"},
 		{"configured template group", nil, Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "team", Source: config.SourceWorkspaces, Meta: map[string]string{"template": "go", "group": "true"}}}, nil, "template go · group"},
 		{"no git section", nil, Row{Kind: RowCandidate, Candidate: zoxideCandidate("shep", "/p")}, nil, ""},
+		{"command with a path", nil, Row{Kind: RowCandidate, Candidate: commandCandidate("downloads", "/home/dev/Downloads", "yazi")}, nil, "runs yazi"},
+		{"command without a path", nil, Row{Kind: RowCandidate, Candidate: commandCandidate("lazygit", "", "lazygit")}, nil, "runs lazygit · in the directory of the pane you are in"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := m

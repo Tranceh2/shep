@@ -32,6 +32,7 @@ func TestRowIcons_AreTheOnlySourceIdentity(t *testing.T) {
 	}{
 		{Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceHerdr, Path: "/herdr"}}, p.Herdr.Icon},
 		{Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceWorkspaces, Path: "/config"}}, p.Workspaces.Icon},
+		{Row{Kind: RowCandidate, Candidate: commandCandidate("lazygit", "", "lazygit")}, p.Commands.Icon},
 		{Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceZoxide, Path: "/zoxide"}}, p.Zoxide.Icon},
 		{Row{Kind: RowCandidate, Candidate: source.Candidate{Source: config.SourceProjects, Path: "/projects"}}, "\ue702 "},
 	} {

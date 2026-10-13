@@ -274,6 +274,15 @@ func projectCandidate(label, path string) source.Candidate {
 	return source.Candidate{Label: label, Path: path, NormalizedPath: path, Source: config.SourceProjects}
 }
 
+// commandCandidate builds a minimal SourceCommands candidate: a [[commands]]
+// row, with no path when path is "".
+func commandCandidate(name, path, command string) source.Candidate {
+	return source.Candidate{
+		Label: name, Path: path, NormalizedPath: path, Source: config.SourceCommands,
+		Meta: map[string]string{"command": command, "close_on_exit": "true", "command_id": "v1:" + name},
+	}
+}
+
 // workspaceEntryCandidate builds a minimal SourceWorkspaces candidate.
 func workspaceEntryCandidate(label, path string) source.Candidate {
 	return source.Candidate{Label: label, Path: path, NormalizedPath: path, Source: config.SourceWorkspaces}

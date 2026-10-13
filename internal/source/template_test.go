@@ -19,6 +19,7 @@ func TestTemplateData_KindPerSource(t *testing.T) {
 		{"configured workspace", Candidate{Source: config.SourceWorkspaces, Meta: map[string]string{"command": "nvim"}}, tmpl.KindConfigured},
 		{"configured workspace without meta", Candidate{Source: config.SourceWorkspaces}, tmpl.KindConfigured},
 		{"workspace group", Candidate{Source: config.SourceWorkspaces, Meta: map[string]string{"group": "true"}}, tmpl.KindGroup},
+		{"command", Candidate{Source: config.SourceCommands, Meta: map[string]string{"command": "lazygit"}}, tmpl.KindCommand},
 		{"zoxide folder", Candidate{Source: config.SourceZoxide}, tmpl.KindFolder},
 		{"direct path", Candidate{Source: "path"}, tmpl.KindFolder},
 		{"project", Candidate{Source: config.SourceProjects}, tmpl.KindProject},

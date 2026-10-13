@@ -654,6 +654,18 @@ func TestRowIdentity_StableAcrossRebuilds(t *testing.T) {
 	if got, want := rowIdentity(zx), config.SourceZoxide+":/d"; got != want {
 		t.Errorf("rowIdentity(zoxide) = %q, want %q", got, want)
 	}
+	// Commands without a path are told apart by their identity, and one with
+	// a path never shares a folder row's.
+	lazygit, k9s := commandCandidate("lazygit", "", "lazygit"), commandCandidate("k9s", "", "k9s")
+	if got, want := rowIdentity(lazygit), "command:v1:lazygit"; got != want {
+		t.Errorf("rowIdentity(command) = %q, want %q", got, want)
+	}
+	if rowIdentity(lazygit) == rowIdentity(k9s) {
+		t.Error("two commands without a path share a row identity")
+	}
+	if rowIdentity(commandCandidate("dir", "/d", "yazi")) == rowIdentity(zx) {
+		t.Error("a command shares the row identity of the folder it runs in")
+	}
 }
 
 // TestSessionRows_AreFlatAndUseSessionNameIdentity ensures directory-less

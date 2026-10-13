@@ -49,8 +49,8 @@ type rowFormat struct {
 // a row can name. Built once per Model from Layout.Presentation and
 // Layout.IconColors, it is immutable once built and shared.
 type rowFormats struct {
-	herdr, tab, pane, sessions, workspaces, zoxide, projects, agents, other rowFormat
-	custom                                                                  map[string]*rowFormat
+	herdr, tab, pane, sessions, workspaces, commands, zoxide, projects, agents, other rowFormat
+	custom                                                                            map[string]*rowFormat
 	// iconRefs are the distinct icon color references, in first-use order;
 	// iconIndex maps each to its position.
 	iconRefs  []string
@@ -67,6 +67,7 @@ func newRowFormats(p config.Presentations, iconColors []string) *rowFormats {
 	f.pane = prepare(p.HerdrPane)
 	f.sessions = prepare(p.Sessions)
 	f.workspaces = prepare(p.Workspaces)
+	f.commands = prepare(p.Commands)
 	f.zoxide = prepare(p.Zoxide)
 	f.projects = prepare(p.Projects)
 	f.agents = prepare(p.Agents)
@@ -146,6 +147,8 @@ func (f *rowFormats) sourceFormat(name string, agent bool) *rowFormat {
 		return &f.sessions
 	case config.SourceWorkspaces:
 		return &f.workspaces
+	case config.SourceCommands:
+		return &f.commands
 	case config.SourceZoxide:
 		return &f.zoxide
 	case config.SourceProjects:

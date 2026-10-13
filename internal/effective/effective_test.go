@@ -523,18 +523,100 @@ func TestFor_SourcesAndCustomSources(t *testing.T) {
 	}
 }
 
+// commandRow returns the row the commands source makes from cfg's entry
+// name.
+func commandRow(cfg *config.Config, name string) source.Candidate {
+	for _, c := range cfg.Commands {
+		if c.Name == name {
+			return source.Candidate{
+				Path: c.Path, Label: c.Name, Source: config.SourceCommands,
+				Meta: map[string]string{
+					"command": c.Command, "close_on_exit": fmt.Sprint(c.CloseOnExitOrDefault()),
+					"command_id": source.CommandEntryIdentity(c),
+				},
+			}
+		}
+	}
+	panic("no command " + name)
+}
+
+// TestFor_Commands proves a command row resolves from its own entry (tier 0),
+// the [sources.commands] table (tier 3) and the defaults (tier 4) only: a
+// [[workspaces]] entry or a [[wildcards]] rule for its directory never
+// restyles it, lends it a preview, a template or a workspace name, and it
+// always runs its own command.
+func TestFor_Commands(t *testing.T) {
+	t.Parallel()
+	dir := realDir(t)
+	keep := false
+	cfg := config.Defaults()
+	cfg.General.WorkspaceName = "{{ .Label }}"
+	cfg.Templates = map[string]config.TemplateConfig{"dev": {}}
+	cfg.Defaults.Template = "dev"
+	cfg.Sources.Commands.MarkerFormat = strPtr("source marker")
+	cfg.Commands = []config.CommandConfig{
+		{Name: "yazi", Command: "yazi", Path: dir, CloseOnExit: &keep, Preview: []string{config.PreviewDir},
+			Presentation: config.Presentation{Icon: strPtr("Y "), IconColor: strPtr("lavender")}},
+		{Name: "lazygit", Command: "lazygit"},
+	}
+	cfg.Workspaces = []config.WorkspaceConfig{{Name: "entry", Path: dir, Preview: []string{config.PreviewGit},
+		Presentation: config.Presentation{DetailFormat: strPtr("entry detail")}}}
+	cfg.Wildcards = []config.WildcardConfig{{Pattern: "**", Template: "dev", WorkspaceName: "wild", Preview: []string{config.PreviewGit},
+		Presentation: config.Presentation{LabelFormat: strPtr("wild label"), DetailFormat: strPtr("wild detail")}}}
+	r := New(cfg)
+	base := cfg.Presentations().Commands
+
+	yazi := r.For(commandRow(cfg, "yazi"))
+	wantYazi := source.Presentation{Icon: "Y ", IconColor: "lavender", Label: base.Label, Detail: base.Detail, Marker: "source marker"}
+	if yazi.Presentation != wantYazi {
+		t.Errorf("yazi presentation = %+v, want %+v", yazi.Presentation, wantYazi)
+	}
+	if !reflect.DeepEqual(yazi.Preview, []string{config.PreviewDir}) {
+		t.Errorf("yazi preview = %v, want its own [dir]", yazi.Preview)
+	}
+	if yazi.Template != "" || yazi.Command != "yazi" || yazi.CloseOnExit {
+		t.Errorf("yazi launch = %q %q %v, want its own command, kept open", yazi.Template, yazi.Command, yazi.CloseOnExit)
+	}
+	if yazi.WorkspaceName != "{{ .Label }}" || yazi.NormalizedPath != dir {
+		t.Errorf("yazi workspace name %q, path %q; want [general].workspace_name and %q", yazi.WorkspaceName, yazi.NormalizedPath, dir)
+	}
+
+	lazygit := r.For(commandRow(cfg, "lazygit"))
+	wantLazygit := source.Presentation{Icon: base.Icon, IconColor: "source.commands", Label: base.Label, Detail: "{{ .Path | tilde }}", Marker: "source marker"}
+	if lazygit.Presentation != wantLazygit {
+		t.Errorf("lazygit presentation = %+v, want %+v", lazygit.Presentation, wantLazygit)
+	}
+	if !reflect.DeepEqual(lazygit.Preview, []string{config.PreviewIdentity}) {
+		t.Errorf("lazygit preview = %v, want the source's [identity]", lazygit.Preview)
+	}
+	if lazygit.Command != "lazygit" || !lazygit.CloseOnExit || lazygit.NormalizedPath != "" {
+		t.Errorf("lazygit = %+v, want its command closing on exit, and no path", lazygit)
+	}
+	if got := r.Presentation(commandRow(cfg, "lazygit")); got != wantLazygit {
+		t.Errorf("Presentation(lazygit) = %+v, want %+v", got, wantLazygit)
+	}
+	// A row whose identity names no entry draws as its source.
+	stray := commandRow(cfg, "lazygit")
+	stray.Meta["command_id"] = "v1:unknown"
+	stray.Path = dir
+	if got := r.For(stray).Presentation; got.Label != base.Label || got.Detail != base.Detail {
+		t.Errorf("stray command presentation = %+v, want the source's", got)
+	}
+}
+
 // TestIconColors lists every icon color a resolution can name, once.
 func TestIconColors(t *testing.T) {
 	t.Parallel()
 	cfg := config.Defaults()
 	cfg.Workspaces = []config.WorkspaceConfig{{Name: "e", Path: "/e", Presentation: config.Presentation{IconColor: strPtr("peach")}}}
+	cfg.Commands = []config.CommandConfig{{Name: "c", Command: "c", Presentation: config.Presentation{IconColor: strPtr("lavender")}}}
 	cfg.Wildcards = []config.WildcardConfig{{Pattern: "**", Presentation: config.Presentation{IconColor: strPtr("#ff0000")}}, {Pattern: "x", Presentation: config.Presentation{IconColor: strPtr("peach")}}}
 	got := New(cfg).IconColors()
 	seen := map[string]int{}
 	for _, ref := range got {
 		seen[ref]++
 	}
-	for _, want := range []string{"source.herdr", "source.zoxide", "text.muted", "peach", "#ff0000"} {
+	for _, want := range []string{"source.herdr", "source.zoxide", "source.commands", "text.muted", "peach", "lavender", "#ff0000"} {
 		if seen[want] != 1 {
 			t.Errorf("icon colors %v: %q appears %d times, want once", got, want, seen[want])
 		}

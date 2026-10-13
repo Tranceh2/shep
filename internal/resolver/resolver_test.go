@@ -230,6 +230,50 @@ func TestDedup_PathBackedCustomSourceUsesExactIdentityButSharesResource(t *testi
 	}
 }
 
+// commandCandidate is a [[commands]] row as the commands source reports it.
+func commandCandidate(name, path, command string) source.Candidate {
+	return source.Candidate{
+		Path:   path,
+		Label:  name,
+		Source: config.SourceCommands,
+		Meta: map[string]string{
+			"command":       command,
+			"close_on_exit": "true",
+			"command_id":    source.CommandEntryIdentity(config.CommandConfig{Name: name}),
+		},
+	}
+}
+
+// TestDedup_CommandsKeepTheirOwnRows proves a [[commands]] row is
+// deduplicated by its identity alone: it never merges with a folder row of
+// the same label and path (before or after it), and commands without a path
+// never collapse into one another or gain a path.
+func TestDedup_CommandsKeepTheirOwnRows(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	got := Dedup([]source.Candidate{
+		commandCandidate("downloads", dir, "yazi"),
+		{Label: "downloads", Path: dir, Source: config.SourceZoxide},
+		{Label: "downloads", Path: dir, Source: config.SourceWorkspaces, Meta: map[string]string{"entry_id": "v1:downloads", "command": "yazi"}},
+		commandCandidate("lazygit", "", "lazygit"),
+		commandCandidate("k9s", "", "k9s"),
+		commandCandidate("lazygit", "", "lazygit"),
+	})
+	var sources, labels []string
+	for _, c := range got {
+		sources = append(sources, c.Source)
+		labels = append(labels, c.Label)
+	}
+	wantSources := []string{config.SourceCommands, config.SourceZoxide, config.SourceCommands, config.SourceCommands}
+	wantLabels := []string{"downloads", "downloads", "lazygit", "k9s"}
+	if strings.Join(sources, ",") != strings.Join(wantSources, ",") || strings.Join(labels, ",") != strings.Join(wantLabels, ",") {
+		t.Fatalf("Dedup = %v %v, want %v %v", sources, labels, wantSources, wantLabels)
+	}
+	if got[2].NormalizedPath != "" || got[3].NormalizedPath != "" {
+		t.Errorf("pathless commands normalized to %q and %q, want no path", got[2].NormalizedPath, got[3].NormalizedPath)
+	}
+}
+
 // TestDedup_OrderPreserved keeps the first-seen candidate so provider order
 // from the registry is the visible tiebreaker. A true duplicate (same path
 // AND same label) is collapsed; the first-seen survivor wins.

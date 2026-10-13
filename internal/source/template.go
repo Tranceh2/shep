@@ -60,6 +60,8 @@ func candidateKind(c Candidate, isWorktree bool) string {
 			return tmpl.KindGroup
 		}
 		return tmpl.KindConfigured
+	case config.SourceCommands:
+		return tmpl.KindCommand
 	case config.SourceZoxide, sourcePath:
 		return tmpl.KindFolder
 	case config.SourceProjects:

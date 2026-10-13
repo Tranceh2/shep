@@ -27,6 +27,7 @@ var reservedCustomSourceMetaKeys = map[string]struct{}{
 	"branch":           {},
 	"close_on_exit":    {},
 	"command":          {},
+	"command_id":       {},
 	"default":          {},
 	"entry_id":         {},
 	"group":            {},

@@ -180,6 +180,14 @@ func TestWorktree_RefusesOutsideARepositoryAndReportsFailures(t *testing.T) {
 	}
 
 	root, _ := gitRepo(t)
+	// A command that runs in a repository is a program, not the repository.
+	program := NewModelWithLayout([]source.Candidate{commandCandidate("lazygit", root, "lazygit")}, nil, Layout{WorktreeCreator: creator})
+	program, _ = update(t, program, sizeMsg(120, 30))
+	program, _ = update(t, program, key("ctrl+n"))
+	if program.edit.open() || !strings.Contains(footerText(program), "not a Git repository") {
+		t.Errorf("command row: edit open %v footer %q, want it refused", program.edit.open(), footerText(program))
+	}
+
 	m := NewModelWithLayout([]source.Candidate{projectCandidate("app", root)}, nil, Layout{WorktreeCreator: creator})
 	m, _ = update(t, m, sizeMsg(120, 30))
 	m, _ = update(t, m, key("ctrl+n"))

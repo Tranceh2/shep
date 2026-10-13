@@ -3,11 +3,11 @@
 // workspace gets and the workspace_name format — with one precedence rule.
 // Per setting, the first tier that defines it wins:
 //
-//  0. the candidate's own data: a [[workspaces]] entry's own keys for the
-//     row the workspaces source made from it; the template or command a
-//     configured workspace or a custom source row carries (Meta template,
-//     command, close_on_exit); the template of the group it was picked
-//     through (Meta parent_template);
+//  0. the candidate's own data: a [[workspaces]] or [[commands]] entry's own
+//     keys for the row its source made from it; the template or command a
+//     configured workspace, a command or a custom source row carries (Meta
+//     template, command, close_on_exit); the template of the group it was
+//     picked through (Meta parent_template);
 //  1. for the preview sections only: the [[workspaces]] entries in the
 //     candidate's directory, in declaration order (a workspaces row only
 //     takes its own entry);
@@ -22,7 +22,9 @@
 // Each setting is resolved on its own: an entry or wildcard that does not
 // define a setting never stops the scan for it, and an explicitly empty
 // value (icon = "", preview = []) does define it. Sessions are Herdr daemon
-// identities, not directories, so tiers 1 and 2 never apply to them.
+// identities and commands are programs, not directories, so tiers 1 and 2
+// never apply to them: a command row resolves from tiers 0, 3 and 4 only,
+// and always runs its own command.
 //
 // An entry's presentation, template, command and close_on_exit are its own
 // row's alone: several entries often share one directory (a group, a
@@ -93,6 +95,7 @@ type Resolver struct {
 	// base is every source's presentation with its defaults (tiers 3 and 4).
 	base       config.Presentations
 	entries    []entry
+	commands   []command
 	wildcards  []wildcard
 	iconColors []string
 
@@ -113,6 +116,21 @@ type entry struct {
 	// that directory's identity, nil when it cannot be read.
 	path string
 	info os.FileInfo
+}
+
+// command is one [[commands]] entry with its identity, as the commands source
+// reports it in Meta command_id.
+type command struct {
+	cmd *config.CommandConfig
+	id  string
+}
+
+// ownKeys are what the configuration entry a row was made from sets for that
+// row alone (tier 0): a [[workspaces]] or [[commands]] entry's presentation
+// and preview sections. Both are nil for a row made from no entry.
+type ownKeys struct {
+	presentation *config.Presentation
+	preview      []string
 }
 
 // wildcard is one [[wildcards]] entry with its pattern split into segments.
@@ -156,6 +174,10 @@ func newResolver(cfg *config.Config, normalize func(string) (string, error), sta
 		}
 		r.entries = append(r.entries, e)
 	}
+	for i := range cfg.Commands {
+		c := &cfg.Commands[i]
+		r.commands = append(r.commands, command{cmd: c, id: source.CommandEntryIdentity(*c)})
+	}
 	for i := range cfg.Wildcards {
 		w := &cfg.Wildcards[i]
 		r.wildcards = append(r.wildcards, wildcard{w: w, segs: patternSegments(w.Pattern)})
@@ -170,7 +192,7 @@ func (r *Resolver) Config() *config.Config { return r.cfg }
 // For resolves every setting of c.
 func (r *Resolver) For(c source.Candidate) Settings {
 	pm := r.match(c)
-	own := r.ownEntry(c, pm)
+	own := r.own(c, pm)
 	s := Settings{
 		Presentation:   r.presentation(c, pm, own),
 		Preview:        r.preview(c, pm, own),
@@ -186,10 +208,10 @@ func (r *Resolver) For(c source.Candidate) Settings {
 // workspaces row that carries no entry identity.
 func (r *Resolver) Presentation(c source.Candidate) source.Presentation {
 	var pm *pathMatch
-	if len(r.wildcards) > 0 {
+	if len(r.wildcards) > 0 && pathTiers(c) {
 		pm = r.match(c)
 	}
-	return r.presentation(c, pm, r.ownEntry(c, pm))
+	return r.presentation(c, pm, r.own(c, pm))
 }
 
 // Attach resolves the presentation of every candidate and attaches it
@@ -232,7 +254,7 @@ func (r *Resolver) collectIconColors() []string {
 		}
 	}
 	b := r.base
-	for _, p := range []config.RowPresentation{b.Herdr, b.HerdrTab, b.HerdrPane, b.Sessions, b.Workspaces, b.Zoxide, b.Projects, b.Agents, b.Other} {
+	for _, p := range []config.RowPresentation{b.Herdr, b.HerdrTab, b.HerdrPane, b.Sessions, b.Workspaces, b.Commands, b.Zoxide, b.Projects, b.Agents, b.Other} {
 		add(p.IconColor)
 	}
 	for _, custom := range r.cfg.Sources.Custom {
@@ -241,6 +263,11 @@ func (r *Resolver) collectIconColors() []string {
 	for _, e := range r.entries {
 		if e.ws.IconColor != nil {
 			add(*e.ws.IconColor)
+		}
+	}
+	for _, c := range r.commands {
+		if c.cmd.IconColor != nil {
+			add(*c.cmd.IconColor)
 		}
 	}
 	for _, w := range r.wildcards {
@@ -252,13 +279,17 @@ func (r *Resolver) collectIconColors() []string {
 }
 
 // pathTiers reports whether the directory tiers (same-directory entries'
-// previews and wildcards) apply to c.
-func pathTiers(c source.Candidate) bool { return c.Source != config.SourceSessions }
+// previews and wildcards) apply to c: never to a session (a Herdr daemon
+// identity) or a command (a program, even one that runs in a directory), so
+// a rule written for folders never restyles them.
+func pathTiers(c source.Candidate) bool {
+	return c.Source != config.SourceSessions && c.Source != config.SourceCommands
+}
 
 // presentation layers c's own entry and the matching wildcards over its
 // source's presentation, field by field. pm may be nil when no wildcard
 // exists.
-func (r *Resolver) presentation(c source.Candidate, pm *pathMatch, own int) source.Presentation {
+func (r *Resolver) presentation(c source.Candidate, pm *pathMatch, own ownKeys) source.Presentation {
 	base := r.basePresentation(c.Source)
 	out := [5]string{base.Icon, base.IconColor, base.Label, base.Detail, base.Marker}
 	var set [5]bool
@@ -269,8 +300,8 @@ func (r *Resolver) presentation(c source.Candidate, pm *pathMatch, own int) sour
 			}
 		}
 	}
-	if own >= 0 {
-		apply(&r.entries[own].ws.Presentation)
+	if own.presentation != nil {
+		apply(own.presentation)
 	}
 	if pm != nil && pathTiers(c) {
 		for _, i := range pm.wildcards {
@@ -292,6 +323,8 @@ func (r *Resolver) basePresentation(name string) config.RowPresentation {
 		return b.Sessions
 	case config.SourceWorkspaces:
 		return b.Workspaces
+	case config.SourceCommands:
+		return b.Commands
 	case config.SourceZoxide:
 		return b.Zoxide
 	case config.SourceProjects:
@@ -309,9 +342,9 @@ func (r *Resolver) basePresentation(name string) config.RowPresentation {
 // (an explicit empty one included) wins; sessions then fall back to
 // session_info, because a session has no path, repository or pane for the
 // general sections to describe; then [preview].default, then identity.
-func (r *Resolver) preview(c source.Candidate, pm *pathMatch, own int) []string {
-	if own >= 0 && r.entries[own].ws.Preview != nil {
-		return r.entries[own].ws.Preview
+func (r *Resolver) preview(c source.Candidate, pm *pathMatch, own ownKeys) []string {
+	if own.preview != nil {
+		return own.preview
 	}
 	if pathTiers(c) {
 		if c.Source != config.SourceWorkspaces {
@@ -349,6 +382,8 @@ func (r *Resolver) sourcePreview(name string) []string {
 		return s.Sessions.Preview
 	case config.SourceWorkspaces:
 		return s.Workspaces.Preview
+	case config.SourceCommands:
+		return s.Commands.Preview
 	case config.SourceZoxide:
 		return s.Zoxide.Preview
 	case config.SourceProjects:
@@ -367,8 +402,13 @@ func (r *Resolver) sourcePreview(name string) []string {
 // template resolves what a freshly created workspace runs: a template name,
 // or a command with its close_on_exit. A [[workspaces]] entry's own launch
 // reaches only its own row (through Meta), and a group entry's template only
-// the rows picked through the group (Meta parent_template).
+// the rows picked through the group (Meta parent_template). A command row
+// always runs its own command, whatever applies to its directory.
 func (r *Resolver) template(c source.Candidate, pm *pathMatch) (name, command string, closeOnExit bool) {
+	if c.Source == config.SourceCommands {
+		// The provider writes "true" or "false"; any other value is false.
+		return "", c.Meta["command"], c.Meta["close_on_exit"] == "true"
+	}
 	if r.hasTemplate(c.Meta["template"]) {
 		return c.Meta["template"], "", false
 	}
@@ -411,6 +451,38 @@ func (r *Resolver) workspaceName(c source.Candidate, pm *pathMatch) string {
 		}
 	}
 	return r.cfg.General.WorkspaceName
+}
+
+// own returns what c's own configuration entry sets for its row (tier 0):
+// the [[commands]] entry of a command row, the [[workspaces]] entry of a
+// workspaces row. pm may be nil.
+func (r *Resolver) own(c source.Candidate, pm *pathMatch) ownKeys {
+	if i := r.ownCommand(c); i >= 0 {
+		cmd := r.commands[i].cmd
+		return ownKeys{presentation: &cmd.Presentation, preview: cmd.Preview}
+	}
+	if i := r.ownEntry(c, pm); i >= 0 {
+		ws := r.entries[i].ws
+		return ownKeys{presentation: &ws.Presentation, preview: ws.Preview}
+	}
+	return ownKeys{}
+}
+
+// ownCommand returns the index of the [[commands]] entry the commands source
+// made c from, matched by its identity (Meta command_id), -1 when c is not
+// such a row.
+func (r *Resolver) ownCommand(c source.Candidate) int {
+	if c.Source != config.SourceCommands {
+		return -1
+	}
+	if id := c.Meta["command_id"]; id != "" {
+		for i, cmd := range r.commands {
+			if cmd.id == id {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // ownEntry returns the index of the [[workspaces]] entry the workspaces

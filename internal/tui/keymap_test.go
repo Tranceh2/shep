@@ -286,6 +286,18 @@ func TestFooterHints_TargetHintsOnlyWhenEligibleAndPane(t *testing.T) {
 		t.Errorf("eligible+pane footerHints() = %+v, want ctrl+t and ctrl+p hints", hints)
 	}
 
+	// A command row, with or without a path: enter runs it, and it can open
+	// as a tab or a pane here.
+	for _, cand := range []source.Candidate{commandCandidate("lazygit", "", "lazygit"), commandCandidate("downloads", "/d", "yazi")} {
+		command := NewModel([]source.Candidate{cand}, nil)
+		command, _ = update(t, command, sizeMsg(120, 36))
+		command = command.WithCurrentPane(&pane)
+		hints := command.footerHints()
+		if !hasHintKey(hints, keyChordCtrlT) || !hasHintKey(hints, keyChordCtrlP) || hints[0].label != "run" {
+			t.Errorf("command %q footerHints() = %+v, want enter run and the ctrl+t and ctrl+p hints", cand.Label, hints)
+		}
+	}
+
 	// Ineligible session candidate + pane: hints suppressed.
 	sess := source.Candidate{Label: "alpha", Source: config.SourceSessions, Meta: map[string]string{"session_name": "alpha"}}
 	ineligible := NewModel([]source.Candidate{sess}, nil)

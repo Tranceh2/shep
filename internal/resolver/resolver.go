@@ -58,9 +58,11 @@ func NormalizedPaths(candidates []source.Candidate) map[string]string {
 }
 
 // Dedup normalises each candidate and removes duplicate candidates. Custom-source
-// candidates are actionable routes, so their stable ranking.Identity is the
-// deduplication key and filesystem path/label collisions are irrelevant. Other
-// non-Herdr candidates retain the established path+case-insensitive-label rule.
+// and [[commands]] candidates are actionable routes, so their stable
+// ranking.Identity is the deduplication key and filesystem path/label
+// collisions are irrelevant: a command is never merged with a folder row, and
+// two commands without a path never collapse. Other non-Herdr candidates
+// retain the established path+case-insensitive-label rule.
 // Herdr- and sessions-sourced candidates are exempt from non-custom source
 // collapse: each is an independently actionable daemon target and may
 // legitimately share a label+path. The returned slice preserves input order;
@@ -81,7 +83,7 @@ func DedupWith(candidates []source.Candidate, normalize func(string) (string, er
 	}
 	out := make([]source.Candidate, 0, len(candidates))
 	nonCustomSourceLabelBuckets := make(map[string][]int, len(candidates))
-	customSourceIdentities := make(map[string]struct{}, len(candidates))
+	routeIdentities := make(map[string]struct{}, len(candidates))
 	for _, c := range candidates {
 		norm, err := normalize(c.Path)
 		if err != nil {
@@ -92,13 +94,13 @@ func DedupWith(candidates []source.Candidate, normalize func(string) (string, er
 		clone := c.Clone()
 		clone.NormalizedPath = norm
 
-		if c.Meta["custom_source"] == "true" {
+		if c.Meta["custom_source"] == "true" || c.Source == config.SourceCommands {
 			identity := ranking.Identity(clone)
 			if identity != "" {
-				if _, duplicate := customSourceIdentities[identity]; duplicate {
+				if _, duplicate := routeIdentities[identity]; duplicate {
 					continue
 				}
-				customSourceIdentities[identity] = struct{}{}
+				routeIdentities[identity] = struct{}{}
 			}
 			out = append(out, clone)
 			continue

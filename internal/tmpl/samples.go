@@ -49,7 +49,7 @@ func sample(kind string) (Data, bool) {
 		return Data{
 			Path: SampleHome + "/Downloads", NormalizedPath: SampleHome + "/Downloads", Label: "yazi",
 			Source: "commands", Kind: kind,
-			Meta: map[string]string{"command": "yazi", "close_on_exit": "true"},
+			Meta: map[string]string{"command_id": "v1:yazi", "command": "yazi", "close_on_exit": "true"},
 		}, true
 	case KindFolder:
 		return Data{

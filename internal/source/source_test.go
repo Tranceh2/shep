@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -114,7 +115,7 @@ func TestCandidate_Clone(t *testing.T) {
 // TestSupportsCurrentWorkspaceTarget is the shared predicate backing the
 // ctrl+t/ctrl+p TUI bindings and the command-layer disallowTarget gate: it
 // reports whether a candidate can be opened as a new tab/pane inside the
-// Herdr workspace shep is running in. zoxide/projects always can; a
+// Herdr workspace shep is running in. zoxide/projects/commands always can; a
 // [[workspaces]] entry can only when it carries a command and is neither a
 // group nor a template; herdr (already-open), plain paths, and unknown
 // sources never can.
@@ -128,6 +129,7 @@ func TestSupportsCurrentWorkspaceTarget(t *testing.T) {
 		{name: "command-only workspace", cand: Candidate{Source: config.SourceWorkspaces, Meta: map[string]string{"command": "nvim"}}, want: true},
 		{name: "zoxide", cand: Candidate{Source: config.SourceZoxide}, want: true},
 		{name: "projects", cand: Candidate{Source: config.SourceProjects}, want: true},
+		{name: "command", cand: Candidate{Source: config.SourceCommands, Meta: map[string]string{"command": "lazygit", "close_on_exit": "true"}}, want: true},
 		{name: "group workspace excluded", cand: Candidate{Source: config.SourceWorkspaces, Meta: map[string]string{"group": "true"}}, want: false},
 		{name: "template workspace excluded", cand: Candidate{Source: config.SourceWorkspaces, Meta: map[string]string{"template": "k8s"}}, want: false},
 		{name: "plain workspace no command excluded", cand: Candidate{Source: config.SourceWorkspaces}, want: false},
@@ -992,6 +994,91 @@ func TestWorkspacesProvider_CloseOnExitForwardsMeta(t *testing.T) {
 	}
 	if _, ok := cands[1].Meta["close_on_exit"]; ok {
 		t.Errorf("shell (CloseOnExit=false) must not set Meta[close_on_exit], got %q", cands[1].Meta["close_on_exit"])
+	}
+}
+
+// TestCommandsProvider_List proves each [[commands]] entry yields one row:
+// its name, aliases, command, close_on_exit and name-based identity in Meta,
+// and its tilde-expanded path. Only a set path that does not exist marks the
+// row Missing; a command without a path is never Missing and has no path.
+func TestCommandsProvider_List(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	downloads := filepath.Join(home, "Downloads")
+	if err := os.Mkdir(downloads, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	keep := false
+	cfg := config.Defaults()
+	cfg.Commands = []config.CommandConfig{
+		{Name: "lazygit", Command: "lazygit", Aliases: []string{"git"}},
+		{Name: "downloads", Command: "yazi", Path: "~/Downloads", CloseOnExit: &keep},
+		{Name: "gone", Command: "yazi", Path: filepath.Join(home, "gone")},
+	}
+	cands, err := (&commandsProvider{cfg: cfg}).List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cands) != 3 {
+		t.Fatalf("candidates = %+v, want 3", cands)
+	}
+	lazygit, dl, gone := cands[0], cands[1], cands[2]
+	if lazygit.Source != config.SourceCommands || lazygit.Label != "lazygit" || lazygit.Path != "" || lazygit.Missing {
+		t.Errorf("lazygit = %+v, want a commands row without a path, not missing", lazygit)
+	}
+	if !reflect.DeepEqual(lazygit.Aliases, []string{"git"}) {
+		t.Errorf("lazygit aliases = %v, want [git]", lazygit.Aliases)
+	}
+	want := map[string]string{"command": "lazygit", "close_on_exit": "true", "command_id": CommandEntryIdentity(cfg.Commands[0])}
+	if !reflect.DeepEqual(lazygit.Meta, want) {
+		t.Errorf("lazygit meta = %v, want %v", lazygit.Meta, want)
+	}
+	if dl.Path != downloads || dl.Missing || dl.Meta["command"] != "yazi" || dl.Meta["close_on_exit"] != "false" {
+		t.Errorf("downloads = %+v, want path %q, present, command yazi, close_on_exit false", dl, downloads)
+	}
+	if !gone.Missing {
+		t.Errorf("gone = %+v, want Missing for a path that does not exist", gone)
+	}
+}
+
+// TestCommandEntryIdentity proves a command's identity is opaque, versioned
+// and name-based: the name ignoring case and surrounding space, never the
+// command or the path.
+func TestCommandEntryIdentity(t *testing.T) {
+	t.Parallel()
+	id := CommandEntryIdentity(config.CommandConfig{Name: "LazyGit", Command: "lazygit", Path: "/repo"})
+	if !strings.HasPrefix(id, "v1:") || strings.Contains(id, "lazygit") || strings.Contains(id, "/repo") {
+		t.Fatalf("identity = %q, want an opaque versioned digest", id)
+	}
+	if same := CommandEntryIdentity(config.CommandConfig{Name: " lazygit ", Command: "lazygit --debug"}); same != id {
+		t.Errorf("identity changed with case, space, command or path: %q != %q", same, id)
+	}
+	if other := CommandEntryIdentity(config.CommandConfig{Name: "k9s", Command: "lazygit"}); other == id {
+		t.Error("different names share an identity")
+	}
+}
+
+// TestCommandsProvider_EnabledAndRegistered proves the commands source runs
+// only with [[commands]] entries, from both the top-level registry and a
+// group's scoped one, where every command is listed whatever the group root:
+// commands are programs, not folders under it.
+func TestCommandsProvider_EnabledAndRegistered(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	if names := providerNames(NewRegistry(cfg, config.Probes{}, nil).Enabled()); slices.Contains(names, config.SourceCommands) {
+		t.Fatalf("enabled = %v, want no commands source without [[commands]]", names)
+	}
+	cfg.Commands = []config.CommandConfig{{Name: "lazygit", Command: "lazygit"}, {Name: "logs", Command: "tail -f log", Path: "/var/log"}}
+	if names := providerNames(NewRegistry(cfg, config.Probes{}, nil).Enabled()); !slices.Contains(names, config.SourceCommands) {
+		t.Fatalf("enabled = %v, want the commands source in the default order", names)
+	}
+	group := config.WorkspaceConfig{Type: config.WorkspaceTypeGroup, SourceOrder: []string{config.SourceCommands}}
+	got, err := NewScopedRegistryForWorkspace(cfg, config.Probes{}, nil, group, t.TempDir()).Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Label != "lazygit" || got[1].Label != "logs" {
+		t.Fatalf("group candidates = %+v, want both commands", got)
 	}
 }
 

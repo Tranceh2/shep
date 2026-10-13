@@ -59,6 +59,11 @@ const (
 	helpLabelFocusContainingTab = "focus the tab containing this pane"
 	// helpLabelOpenSession describes the session-row Enter action.
 	helpLabelOpenSession = "open the highlighted session"
+	// footerLabelRun is the command-row Enter verb: a [[commands]] row runs
+	// its program rather than opening a directory.
+	footerLabelRun = "run"
+	// helpLabelRunCommand describes the command-row Enter action.
+	helpLabelRunCommand = "run the highlighted program in a new tab"
 )
 
 // rowActionDescriptorResult is the single resolved description of what Enter
@@ -89,6 +94,9 @@ func rowActionDescriptor(r Row) rowActionDescriptorResult {
 		}
 		if r.Candidate.Source == config.SourceAgents {
 			return rowActionDescriptorResult{Action: RowActionFocusTab, FooterLabel: footerLabelFocus, HelpText: helpLabelFocusContainingTab}
+		}
+		if r.Candidate.Source == config.SourceCommands {
+			return rowActionDescriptorResult{Action: RowActionOpen, FooterLabel: footerLabelRun, HelpText: helpLabelRunCommand}
 		}
 		return rowActionDescriptorResult{Action: RowActionOpen, FooterLabel: footerLabelOpen, HelpText: helpLabelOpen}
 	}

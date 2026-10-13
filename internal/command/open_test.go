@@ -14,12 +14,15 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/tranceh2/shep/internal/config"
 	"github.com/tranceh2/shep/internal/effective"
 	"github.com/tranceh2/shep/internal/herdr"
 	"github.com/tranceh2/shep/internal/preview"
 	"github.com/tranceh2/shep/internal/selector"
 	"github.com/tranceh2/shep/internal/source"
+	"github.com/tranceh2/shep/internal/theme"
 	"github.com/tranceh2/shep/internal/tui"
 )
 
@@ -3033,6 +3036,87 @@ func TestOpen_AgentPresentationResolvedInViewAndGroup(t *testing.T) {
 	group, err := layout.Tabs[2].Load(context.Background(), &snapshot)
 	if err != nil || len(group) != 1 || group[0].Source != config.SourceAgents || group[0].Presentation == nil || group[0].Presentation.Icon != "X " {
 		t.Fatalf("group agent rows = %+v, error = %v; want the resolved configured icon", group, err)
+	}
+}
+
+// TestOpen_CommandsRowsInAllAndCommandsView proves [[commands]] entries reach
+// the picker end to end: one without a path and one with a path stream as two
+// rows of the commands source, with their resolved presentation, and the
+// picker draws both — with the default command icon in the source.commands
+// color — in the all view and in the commands view.
+func TestOpen_CommandsRowsInAllAndCommandsView(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Ranking.Enabled = false
+	cfg.TUI.Theme = "catppuccin"
+	cfg.TUI.Tabs = []string{"all", "commands"}
+	cfg.Commands = []config.CommandConfig{
+		{Name: "lazygit", Command: "lazygit"},
+		{Name: "downloads", Command: "yazi", Path: t.TempDir()},
+	}
+	icon := config.DefaultPresentations("").Commands.Icon
+	for _, view := range []string{"all", "commands"} {
+		t.Run(view, func(t *testing.T) {
+			app := New()
+			app.cfg = cfg
+			app.themeGetenv = func(string) string { return "" }
+			app.asyncTUIRun = func(ctx context.Context, producers []tui.SourceProducer, query string, layout tui.Layout) (source.Candidate, tui.RowAction, string, *source.Pane, bool, error) {
+				var m tea.Model = tui.NewModelWithProducers(producers, query, nil, ctx, layout)
+				m, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+				var rows []source.Candidate
+				for _, producer := range producers {
+					msg := producer(ctx)
+					if msg.Source == config.SourceCommands {
+						rows = append(rows, msg.Candidates...)
+					}
+					m, _ = m.Update(msg)
+				}
+				if len(rows) != 2 || rows[0].Label != "lazygit" || rows[0].Path != "" || rows[1].Label != "downloads" || rows[1].Path == "" {
+					t.Fatalf("command rows = %+v, want lazygit without a path and downloads with one", rows)
+				}
+				for _, row := range rows {
+					if row.Missing || row.Presentation == nil || row.Presentation.Icon != icon || row.Presentation.IconColor != "source.commands" {
+						t.Errorf("%s: missing %v, presentation %+v; want the default command icon and color", row.Label, row.Missing, row.Presentation)
+					}
+				}
+				if got := m.(tui.Model).ActiveTab(); got != view {
+					t.Errorf("active view = %q, want %q", got, view)
+				}
+				content := m.View().Content
+				for _, label := range []string{"lazygit", "downloads"} {
+					if !strings.Contains(ansi.Strip(content), icon+" "+label) {
+						t.Errorf("%s view does not draw %q with its icon:\n%s", view, label, ansi.Strip(content))
+					}
+				}
+				// The foreground of the source.commands role, as the icon of
+				// every row draws it (the cursor row adds its background).
+				colored := lipgloss.NewStyle().Foreground(layout.Theme.Role(theme.RoleSourceCommands).Lipgloss()).Render(icon)
+				fg := colored[strings.Index(colored, "38;2;"):strings.Index(colored, "m")]
+				for _, line := range strings.Split(content, "\n") {
+					if label := ansi.Strip(line); strings.Contains(label, icon) && !strings.Contains(line, fg) {
+						t.Errorf("%s view row %q does not draw its icon in the source.commands color", view, strings.TrimSpace(label))
+					}
+				}
+				return source.Candidate{}, tui.RowActionOpen, "", nil, false, tui.ErrCancelled
+			}
+			cmd := app.openCmd()
+			cmd.SetArgs([]string{"--view", view})
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+
+	// The synchronous picker (an ambiguous query) loads the commands view on
+	// its own when the all view does not list the commands source.
+	app := New()
+	app.cfg = cfg
+	layout := app.pickerLayout([]string{config.SourceZoxide}, []source.Candidate{})
+	if len(layout.Tabs) != 2 || layout.Tabs[1].ID != config.SourceCommands || layout.Tabs[1].Load == nil {
+		t.Fatalf("picker tabs = %+v, want a lazily loaded commands view", layout.Tabs)
+	}
+	rows, err := layout.Tabs[1].Load(context.Background(), nil)
+	if err != nil || len(rows) != 2 || rows[0].Presentation == nil || rows[0].Presentation.IconColor != "source.commands" {
+		t.Fatalf("commands view rows = %+v, error = %v; want both commands, resolved", rows, err)
 	}
 }
 

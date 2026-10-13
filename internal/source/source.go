@@ -41,12 +41,13 @@ const (
 // Label is a short human-friendly name (usually the base directory). Icon is
 // the icon the provider itself supplied (a custom source row's "icon"; empty
 // for the built-in providers), which row templates read as .Icon. Source
-// names the provider that produced the candidate (herdr, workspaces, zoxide,
-// projects, or "path" for a direct --path/--path . invocation). Meta carries
-// optional, provider-specific metadata (copied defensively on read by
-// callers). Missing marks a configured workspace whose path does not exist
-// on disk; the picker may still show it (clearly marked), but selecting it
-// fails cleanly instead of falling back to "/", $HOME, or cwd.
+// names the provider that produced the candidate (herdr, workspaces,
+// commands, zoxide, projects, or "path" for a direct --path/--path .
+// invocation). Meta carries optional, provider-specific metadata (copied
+// defensively on read by callers). Missing marks a configured workspace or
+// command whose path does not exist on disk; the picker may still show it
+// (clearly marked), but selecting it fails cleanly instead of falling back
+// to "/", $HOME, or cwd.
 //
 // Presentation is the row presentation resolved for this candidate (see
 // internal/effective), attached by the command layer before the candidate
@@ -93,7 +94,8 @@ func (c Candidate) Clone() Candidate {
 // SupportsCurrentWorkspaceTarget reports whether cand can be opened as a new
 // tab or pane inside the Herdr workspace shep is currently running in (the
 // ctrl+t / ctrl+p targets). zoxide and projects candidates always can (they
-// are plain paths launched as a shell); a [[workspaces]] candidate can only
+// are plain paths launched as a shell), and so can a [[commands]] candidate
+// (a program made to open there); a [[workspaces]] candidate can only
 // when it carries a command and is neither a group nor a template — a
 // multi-tab/multi-pane template has no business materialising inside someone
 // else's workspace, and a group drills into a nested picker instead. herdr
@@ -103,7 +105,7 @@ func (c Candidate) Clone() Candidate {
 // footer hints/bindings and the command-layer disallowTarget gate.
 func SupportsCurrentWorkspaceTarget(c Candidate) bool {
 	switch c.Source {
-	case config.SourceZoxide, config.SourceProjects:
+	case config.SourceZoxide, config.SourceProjects, config.SourceCommands:
 		return true
 	case config.SourceWorkspaces:
 		return c.Meta["command"] != "" && c.Meta["group"] != "true" && c.Meta["template"] == ""
@@ -447,6 +449,7 @@ func NewRegistry(cfg *config.Config, probes config.Probes, herdrDriver HerdrDriv
 		config.SourceHerdr:      &herdrProvider{driver: herdrDriver, probes: probes, cfg: cfg},
 		config.SourceSessions:   &sessionsProvider{driver: herdrDriver, probes: probes},
 		config.SourceWorkspaces: &workspacesProvider{cfg: cfg},
+		config.SourceCommands:   &commandsProvider{cfg: cfg},
 		config.SourceZoxide:     &zoxideProvider{probes: probes, cfg: cfg},
 		config.SourceProjects:   &projectsProvider{cfg: cfg, roots: append([]string(nil), cfg.Sources.Projects.Roots...)},
 		config.SourceAgents:     &agentsProvider{driver: herdrDriver, probes: probes, cfg: cfg},
@@ -504,6 +507,7 @@ func newScopedRegistry(cfg *config.Config, probes config.Probes, herdrDriver Her
 		General:  config.General{SourceOrder: append([]string(nil), order...), Selector: cfg.General.Selector},
 		Sources:  cfg.Sources,
 		Defaults: cfg.Defaults,
+		Commands: cfg.Commands,
 	}
 	scoped.Sources.Projects = projects
 	providers := map[string]Provider{
@@ -511,6 +515,9 @@ func newScopedRegistry(cfg *config.Config, probes config.Probes, herdrDriver Her
 		config.SourceSessions:   &sessionsProvider{driver: herdrDriver, probes: probes},
 		config.SourceWorkspaces: &workspacesProvider{cfg: scoped},
 		config.SourceZoxide:     &zoxideProvider{probes: probes, cfg: scoped, root: root},
+		// Commands are programs, not directories: a group lists every one,
+		// never only those under its root.
+		config.SourceCommands: &commandsProvider{cfg: scoped},
 		// The project provider reads the scoped effective config so local
 		// overrides apply only within this group; the root remains the sole
 		// scan root and global roots are deliberately discarded.
@@ -687,6 +694,66 @@ func WorkspaceEntryIdentity(path string, ws config.WorkspaceConfig) string {
 	sort.Strings(sources)
 	payload := strings.Join([]string{normalized, ws.Type, ws.Template, ws.Command, strconv.FormatBool(ws.CloseOnExit), strings.Join(sources, ",")}, "\x00")
 	digest := sha256.Sum256([]byte(payload))
+	return "v1:" + hex.EncodeToString(digest[:])
+}
+
+// --- commands provider ---
+
+// commandsProvider surfaces the [[commands]] entries: programs that open
+// inside the current Herdr workspace. Each entry yields one candidate
+// labelled by Name, carrying its command (Meta command, close_on_exit) and
+// its stable identity (Meta command_id). Path is the tilde-expanded path,
+// empty for a command that runs in the directory of the pane the user is in;
+// only a set path that does not exist marks the candidate Missing.
+type commandsProvider struct {
+	cfg *config.Config
+}
+
+func (commandsProvider) Name() string { return config.SourceCommands }
+
+func (commandsProvider) enabled(cfg *config.Config, _ config.Probes) bool {
+	return cfg != nil && len(cfg.Commands) > 0
+}
+
+func (p *commandsProvider) List(ctx context.Context) ([]Candidate, error) {
+	out := make([]Candidate, 0, len(p.cfg.Commands))
+	for _, entry := range p.cfg.Commands {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		cand := Candidate{
+			Label:   entry.Name,
+			Source:  config.SourceCommands,
+			Aliases: append([]string(nil), entry.Aliases...),
+			Meta: map[string]string{
+				"command":       entry.Command,
+				"close_on_exit": strconv.FormatBool(entry.CloseOnExitOrDefault()),
+				"command_id":    CommandEntryIdentity(entry),
+			},
+		}
+		if entry.Path != "" {
+			// Fall back to the raw path on an unresolvable HOME so os.Stat
+			// reports the bad path instead of crashing on expansion.
+			cand.Path = entry.Path
+			if expanded, err := pathutil.ExpandTilde(entry.Path); err == nil {
+				cand.Path = expanded
+			}
+			if _, err := os.Stat(cand.Path); err != nil {
+				cand.Missing = true
+			}
+		}
+		out = append(out, cand)
+	}
+	return out, nil
+}
+
+// CommandEntryIdentity is the stable, opaque identity of a [[commands]]
+// entry (Meta command_id): its name, which is unique ignoring case, so
+// editing the command or its path keeps the row's pins and ranking.
+func CommandEntryIdentity(entry config.CommandConfig) string {
+	digest := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(entry.Name))))
 	return "v1:" + hex.EncodeToString(digest[:])
 }
 

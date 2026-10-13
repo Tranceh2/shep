@@ -105,8 +105,9 @@ func effectiveSourceOrder(in rowBuildInput) []string {
 // position in any slice, used for selection retention across a rebuild and
 // for expand/collapse state lookups. It derives the key from the candidate's
 // Meta ids (pane_id, then tab_id, then workspace_id) for synthesized tree
-// children (a child candidate's identity is its own most-specific id),
-// falling back to a source+path key for a normal provider candidate.
+// children (a child candidate's identity is its own most-specific id), from
+// its command_id for a [[commands]] row (which may have no path), and falls
+// back to a source+path key for a normal provider candidate.
 func rowIdentity(c source.Candidate) string {
 	if id := c.Meta["pane_id"]; id != "" {
 		return "pane:" + id
@@ -119,6 +120,9 @@ func rowIdentity(c source.Candidate) string {
 	}
 	if name := c.Meta["session_name"]; name != "" {
 		return "session:" + name
+	}
+	if id := c.Meta["command_id"]; id != "" && c.Source == config.SourceCommands {
+		return "command:" + id
 	}
 	key := c.NormalizedPath
 	if key == "" {

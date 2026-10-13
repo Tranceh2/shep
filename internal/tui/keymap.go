@@ -166,7 +166,7 @@ var searchSyntax = helpSection{"Search syntax", []keyBinding{
 	{chord: "!^tmp", help: "negation works with every form"},
 	{chord: "status:working", help: "agent status: idle working blocked done unknown"},
 	{chord: "agent:claude", help: "agent name contains"},
-	{chord: "source:zoxide", help: "source: herdr workspaces zoxide projects sessions agents, or a custom name"},
+	{chord: "source:zoxide", help: "source: herdr workspaces commands zoxide projects sessions agents, or a custom name"},
 	{chord: "path:allsafe", help: "path contains"},
 	{chord: "s:blocked", help: "short forms s: a: src: p:"},
 }}

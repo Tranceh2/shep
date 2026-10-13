@@ -141,7 +141,7 @@ func TestRowView_IconColorsPerPresentation(t *testing.T) {
 	t.Parallel()
 	th := testTheme(ThemeMocha)
 	letters := func(p *config.Presentations) {
-		p.Herdr.Icon, p.Workspaces.Icon, p.Zoxide.Icon, p.Sessions.Icon, p.Agents.Icon = "H", "W", "Z", "S", "A"
+		p.Herdr.Icon, p.Workspaces.Icon, p.Commands.Icon, p.Zoxide.Icon, p.Sessions.Icon, p.Agents.Icon = "H", "W", "K", "Z", "S", "A"
 	}
 	for _, tc := range []struct {
 		name string
@@ -151,6 +151,7 @@ func TestRowView_IconColorsPerPresentation(t *testing.T) {
 	}{
 		{"herdr", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "a", Source: config.SourceHerdr}}, "H", theme.RoleSourceHerdr},
 		{"workspaces", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "a", Source: config.SourceWorkspaces}}, "W", theme.RoleSourceWorkspaces},
+		{"commands", Row{Kind: RowCandidate, Candidate: commandCandidate("a", "", "a")}, "K", theme.RoleSourceCommands},
 		{"zoxide", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "a", Source: config.SourceZoxide}}, "Z", theme.RoleSourceZoxide},
 		{"projects", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "a", Source: config.SourceProjects}}, "\ue702 ", theme.RoleSourceProjects},
 		{"worktree", Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "a", Source: config.SourceProjects, Meta: map[string]string{"is_worktree": "true"}}}, "\ue725 ", theme.RoleSourceProjects},

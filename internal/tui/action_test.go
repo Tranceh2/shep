@@ -180,6 +180,13 @@ func TestRowActionDescriptor_TruthfulPerRowKind(t *testing.T) {
 			mustNotContain: []string{"focus pane"},
 		},
 		{
+			name:            "command row runs its program",
+			row:             Row{Kind: RowCandidate, Candidate: commandCandidate("lazygit", "", "lazygit")},
+			wantAction:      RowActionOpen,
+			wantFooterExact: "run",
+			mustNotContain:  []string{"create", "focus"},
+		},
+		{
 			name:            "agents candidate row focuses containing tab",
 			row:             Row{Kind: RowCandidate, Candidate: source.Candidate{Label: "pi", Source: config.SourceAgents, Meta: map[string]string{"pane_id": "p1", "tab_id": "t1"}}},
 			wantAction:      RowActionFocusTab,

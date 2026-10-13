@@ -99,6 +99,45 @@ func TestPinAppliesToThePinnedRowOnly(t *testing.T) {
 	}
 }
 
+// TestPinKey_CommandsKeepTheirOwnPins proves a [[commands]] row is pinned by
+// its own identity: a [[workspaces]] entry with the same path and command,
+// and another command without a path, keep pins of their own.
+func TestPinKey_CommandsKeepTheirOwnPins(t *testing.T) {
+	t.Parallel()
+	command := func(name, path string) source.Candidate {
+		return source.Candidate{
+			Source: config.SourceCommands, Label: name, Path: path, NormalizedPath: path,
+			Meta: map[string]string{"command": "yazi", "close_on_exit": "true", "command_id": source.CommandEntryIdentity(config.CommandConfig{Name: name})},
+		}
+	}
+	downloads := command("downloads", "/home/user/Downloads")
+	entry := source.Candidate{
+		Source: config.SourceWorkspaces, Label: "downloads", Path: downloads.Path, NormalizedPath: downloads.Path,
+		Meta: map[string]string{"command": "yazi", "entry_id": "v1:downloads"},
+	}
+	lazygit, k9s := command("lazygit", ""), command("k9s", "")
+	if got := Identity(downloads); !strings.HasPrefix(got, "commands:entry:") {
+		t.Fatalf("command identity = %q, want the commands:entry: namespace", got)
+	}
+	if !hasIdentity(lazygit) || Identity(lazygit) == "" {
+		t.Fatal("a command without a path has no identity")
+	}
+	snapshot := Snapshot{pins: map[string]struct{}{PinKey(downloads): {}, PinKey(lazygit): {}}}
+	if !snapshot.IsPinned(downloads) || !snapshot.IsPinned(lazygit) {
+		t.Fatal("the pinned commands are not pinned")
+	}
+	for _, other := range []source.Candidate{entry, k9s} {
+		if snapshot.IsPinned(other) {
+			t.Errorf("%s row %q got another row's pin", other.Source, other.Label)
+		}
+	}
+	// Commands keep their configured order, pins first, with no query.
+	got := SortBySourceOrder([]source.Candidate{k9s, downloads, lazygit}, "", []string{config.SourceCommands}, snapshot)
+	if got[0].Label != "downloads" || got[1].Label != "lazygit" || got[2].Label != "k9s" {
+		t.Errorf("command order = %q, %q, %q; want the pinned ones first, then config order", got[0].Label, got[1].Label, got[2].Label)
+	}
+}
+
 func TestPinnedOrderingPreservesBlocksAndComparatorContract(t *testing.T) {
 	open := source.Candidate{Source: config.SourceHerdr, Label: "deploy", Meta: map[string]string{"workspace_id": "open"}}
 	closed := source.Candidate{Source: config.SourceProjects, Label: "deploy", Path: "/deploy"}

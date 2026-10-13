@@ -14,7 +14,7 @@ func TestCustomSourceRejectsReservedMetadata(t *testing.T) {
 	keys := []string{
 		"command", "template", "close_on_exit", "group", "group_sources", "group_template",
 		"parent_template", "workspace_id", "tab_id", "pane_id", "custom_source", "custom_source_id",
-		"active_tab_id", "agent_status", "branch", "default", "entry_id", "head", "is_worktree",
+		"active_tab_id", "agent_status", "branch", "command_id", "default", "entry_id", "head", "is_worktree",
 		"main_worktree", "repo", "running", "session_dir", "session_name", "socket_path",
 		"tab_label", "tab_number", "tab_panes", "workspace_label", "workspace_tabs",
 	}

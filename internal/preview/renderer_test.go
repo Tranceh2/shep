@@ -96,6 +96,7 @@ func cfgWithDefault(names ...string) *config.Config {
 	cfg.Sources.Herdr.Preview = nil
 	cfg.Sources.Sessions.Preview = nil
 	cfg.Sources.Workspaces.Preview = nil
+	cfg.Sources.Commands.Preview = nil
 	cfg.Sources.Zoxide.Preview = nil
 	cfg.Sources.Projects.Preview = nil
 	return cfg
@@ -121,6 +122,57 @@ func TestRender_IdentityWithTemplate(t *testing.T) {
 	want := "foo\npath: /p/foo\nsource: workspaces\ntemplate: dev"
 	if got != want {
 		t.Errorf("identity+template:\n got %q\nwant %q", got, want)
+	}
+}
+
+// commandCandidate is a [[commands]] row as the commands source reports it.
+func commandCandidate(name, path, command string) source.Candidate {
+	return source.Candidate{
+		Path: path, NormalizedPath: path, Label: name, Source: config.SourceCommands,
+		Meta: map[string]string{"command": command, "close_on_exit": "true", "command_id": "v1:" + name},
+	}
+}
+
+// TestRender_CommandIdentity proves a command row's identity shows its
+// command and where it runs: its path home-abbreviated, or the directory of
+// the pane the user is in when it has none.
+func TestRender_CommandIdentity(t *testing.T) {
+	t.Parallel()
+	r := NewRenderer(effective.New(config.Defaults()), testTemplates, config.Probes{}, nil, nil)
+	for _, tc := range []struct {
+		cand source.Candidate
+		want string
+	}{
+		{commandCandidate("downloads", "/home/user/Downloads", "yazi"), "downloads\npath: ~/Downloads\nsource: commands\ncommand: yazi"},
+		{commandCandidate("lazygit", "", "lazygit"), "lazygit\npath: the directory of the pane you are in\nsource: commands\ncommand: lazygit"},
+	} {
+		if got := mustRender(t, r, tc.cand); got != tc.want {
+			t.Errorf("identity:\n got %q\nwant %q", got, tc.want)
+		}
+	}
+}
+
+// TestRender_PathlessSectionsNeverRunInShepsDirectory proves the sections
+// that inspect or run in a row's directory (git, dir, a [preview.commands]
+// entry) are omitted for a command without a path, instead of describing
+// the directory shep itself runs in; a row with a path still gets them.
+func TestRender_PathlessSectionsNeverRunInShepsDirectory(t *testing.T) {
+	t.Parallel()
+	cfg := cfgWithDefault(config.PreviewGit, config.PreviewDir, "files")
+	cfg.Preview.Commands = map[string]config.PreviewCommand{"files": {Command: "tree {{.Path}}"}}
+	git := &fakeGit{summary: GitSummary{Branch: "main"}}
+	runner := &fakeRunner{out: map[string]string{"ls": "a/", "lsd": "a/", "eza": "a/", "tree": "a"}}
+	r := NewRenderer(effective.New(cfg), testTemplates, config.Probes{Git: true}, git, runner)
+	got := mustRender(t, r, commandCandidate("lazygit", "", "lazygit"))
+	if git.calls != 0 || runner.calls != 0 {
+		t.Errorf("pathless command ran git %d times and commands %d times, want none", git.calls, runner.calls)
+	}
+	if !strings.HasPrefix(got, "lazygit\npath: the directory of the pane you are in") {
+		t.Errorf("pathless command preview = %q, want the identity fallback", got)
+	}
+	mustRender(t, r, commandCandidate("downloads", "/home/user/Downloads", "yazi"))
+	if git.calls != 1 || runner.calls != 2 {
+		t.Errorf("command with a path ran git %d times and commands %d times, want 1 and 2", git.calls, runner.calls)
 	}
 }
 
@@ -525,6 +577,7 @@ func TestResolvePreviewNames_PerSourceDefaultsAndUserControl(t *testing.T) {
 		for sourceName, want := range map[string][]string{
 			config.SourceHerdr:      {config.PreviewWorkspace, config.PreviewActivePane, config.PreviewAgentStatus},
 			config.SourceWorkspaces: {config.PreviewIdentity, config.PreviewDir},
+			config.SourceCommands:   {config.PreviewIdentity},
 			config.SourceZoxide:     {config.PreviewIdentity, config.PreviewDir},
 			config.SourceProjects:   {config.PreviewIdentity, config.PreviewGit, config.PreviewDir},
 		} {
@@ -537,7 +590,7 @@ func TestResolvePreviewNames_PerSourceDefaultsAndUserControl(t *testing.T) {
 	t.Run("an explicit preview.default reaches every built-in source", func(t *testing.T) {
 		t.Parallel()
 		cfg := load(t, "[preview]\ndefault = [\""+config.PreviewIdentity+"\"]\n")
-		for _, sourceName := range []string{config.SourceHerdr, config.SourceWorkspaces, config.SourceZoxide, config.SourceProjects} {
+		for _, sourceName := range []string{config.SourceHerdr, config.SourceWorkspaces, config.SourceCommands, config.SourceZoxide, config.SourceProjects} {
 			got := sections(cfg, sourceName)
 			if len(got) != 1 || got[0] != config.PreviewIdentity {
 				t.Errorf("%s sections = %v, want the user's [%s]", sourceName, got, config.PreviewIdentity)
