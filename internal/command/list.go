@@ -58,12 +58,13 @@ func (a *App) listCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List discovered project candidates from all enabled sources",
 		Long: `shep list enumerates candidates from Herdr workspaces, predefined
-[[workspaces]], zoxide, and marker-based project discovery beneath a
-type=group workspace's path, deduplicates by normalised path, and prints
-them as a table (human), tab-separated path	label	icon lines (tsv) for
+[[workspaces]] and [[commands]], zoxide, and marker-based project discovery
+beneath a type=group workspace's path, deduplicates by normalised path, and
+prints them as a table (human), tab-separated path	label	icon lines (tsv) for
 Television — the icon is column 3 so {split:\t:2} reads it — or structured
-JSON. A configured workspace whose path does not exist on disk is included
-but clearly marked missing.`,
+JSON. A configured workspace or command whose path does not exist on disk is
+included but clearly marked missing; a command without a path has an empty
+path.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			f, err := parseFormat(outFormat)

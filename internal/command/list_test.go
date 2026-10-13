@@ -415,6 +415,63 @@ func TestList_IncludesConfigWorkspaces(t *testing.T) {
 	}
 }
 
+// TestList_PathlessCommand proves a [[commands]] row without a path lists in
+// every format with an empty path and its columns in place: the human table
+// keeps LABEL and SOURCE aligned, TSV keeps three fields, JSON carries
+// "path": "" and the command in meta.
+func TestList_PathlessCommand(t *testing.T) {
+	t.Parallel()
+	cfg, _ := workspacesCfg(t, "proj")
+	cfg.General.SourceOrder = []string{config.SourceWorkspaces, config.SourceCommands}
+	cfg.Commands = []config.CommandConfig{{Name: "lazygit", Command: "lazygit"}}
+
+	human, _, err := runListFor(t, cfg, "human")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimRight(human, "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("human = %q, want a header and two rows", human)
+	}
+	header, command := lines[0], lines[1]
+	if !strings.HasPrefix(command, " ") || strings.Index(command, "lazygit") != strings.Index(header, "LABEL") || strings.Index(command, "commands") != strings.Index(header, "SOURCE") {
+		t.Errorf("human pathless row is misaligned:\n%s", human)
+	}
+
+	tsv, _, err := runListFor(t, cfg, "tsv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains("\n"+tsv, "\n\tlazygit\t") {
+		t.Errorf("tsv = %q, want the command row with an empty path field", tsv)
+	}
+	for _, line := range strings.Split(strings.TrimRight(tsv, "\n"), "\n") {
+		if strings.Count(line, "\t") != 2 {
+			t.Errorf("tsv line %q does not have three fields", line)
+		}
+	}
+
+	raw, _, err := runListFor(t, cfg, "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(raw), &rows); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row["label"] != "lazygit" {
+			continue
+		}
+		meta, _ := row["meta"].(map[string]any)
+		if path, ok := row["path"]; !ok || path != "" || row["source"] != config.SourceCommands || meta["command"] != "lazygit" {
+			t.Errorf("json command row = %v, want path \"\", source commands and its command in meta", row)
+		}
+		return
+	}
+	t.Errorf("json = %s, want the lazygit row", raw)
+}
+
 func TestParseFormat(t *testing.T) {
 	t.Parallel()
 	for _, in := range []string{"", "human"} {

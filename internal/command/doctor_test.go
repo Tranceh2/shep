@@ -176,6 +176,40 @@ func TestDoctor_NoWorkspacesConfigured(t *testing.T) {
 	}
 }
 
+// TestDoctor_ReportsCommands proves doctor checks [[commands]] like
+// workspaces: a path that exists is OK, a missing one is reported MISSING
+// (a warning: doctor still exits 0), and a command without a path is OK,
+// running in the directory of the pane you are in.
+func TestDoctor_ReportsCommands(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "gone")
+	cfg := config.Defaults()
+	cfg.Commands = []config.CommandConfig{
+		{Name: "lazygit", Command: "lazygit"},
+		{Name: "downloads", Command: "yazi", Path: dir},
+		{Name: "ghost", Command: "yazi", Path: missing},
+	}
+	out, _, err := runDoctor(t, cfg)
+	if err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+	for _, want := range []string{
+		"OK      lazygit: runs in the directory of the pane you are in\n",
+		"OK      downloads: " + dir + "\n",
+		"MISSING ghost: " + missing + " (configured path does not exist)\n",
+		"1 of 2 configured command path(s) missing",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("doctor output lacks %q:\n%s", want, out)
+		}
+	}
+	empty, _, err := runDoctor(t, config.Defaults())
+	if err != nil || !strings.Contains(empty, "no [[commands]] entries configured") {
+		t.Errorf("doctor without [[commands]] = %q (%v), want it to say so", empty, err)
+	}
+}
+
 // TestDoctor_GroupWorkspacePathChecked confirms a type=group workspace's own
 // path is also checked for existence.
 func TestDoctor_GroupWorkspacePathChecked(t *testing.T) {

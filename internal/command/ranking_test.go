@@ -21,6 +21,7 @@ type ackRecord struct {
 
 type recordingRankingStore struct {
 	records []source.Candidate
+	keys    []ranking.Keys
 	acks    []ackRecord
 }
 
@@ -28,8 +29,9 @@ func (s *recordingRankingStore) Snapshot(context.Context, string) ranking.Snapsh
 	return ranking.Snapshot{}
 }
 
-func (s *recordingRankingStore) RecordSuccess(_ context.Context, _ ranking.Keys) error {
+func (s *recordingRankingStore) RecordSuccess(_ context.Context, keys ranking.Keys) error {
 	s.records = append(s.records, source.Candidate{})
+	s.keys = append(s.keys, keys)
 	return nil
 }
 

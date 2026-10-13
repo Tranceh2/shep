@@ -57,6 +57,11 @@ workspace otherwise. When Herdr is not installed or its daemon is unreachable,
 shep prints the resolved absolute path and exits 0 so the caller can still
 reach the project through any shell cd / file manager.
 
+A [[commands]] entry is a program, not a project: it opens as a new tab of the
+Herdr workspace you are in, or as a workspace of its own when shep runs
+outside a Herdr pane, and without Herdr it fails (exit 1) instead of printing
+a path.
+
 A query that matches a single entry (a case-insensitive substring of its label
 or path, or one of its aliases) opens it directly; several matches open the
 picker with the query filled in, or fzf with [general].selector = "fzf" or
@@ -64,11 +69,14 @@ picker with the query filled in, or fzf with [general].selector = "fzf" or
 and exits 1.
 
 The --target flag selects WHERE a candidate opens:
-workspace (default) creates/focuses a standalone Herdr workspace; tab opens it
-as a new tab in the Herdr workspace shep is running inside; pane splits it into
-a new pane beside the current one. tab and pane require shep to be running
-inside a Herdr pane and support command-type workspace entries, zoxide, and
-projects (already-open herdr workspaces, templates, and groups are rejected).
+workspace (the default, except for a command) creates/focuses a standalone
+Herdr workspace; tab opens it as a new tab in the Herdr workspace shep is
+running inside; pane splits it into a new pane beside the current one. tab and
+pane require shep to be running inside a Herdr pane, open in the row's own
+folder (in the current pane's directory for a row without one), and support
+[[commands]] entries, command-type workspace entries and custom rows, zoxide,
+and projects (already-open herdr workspaces, templates, and groups are
+rejected).
 
 --view selects all, agents, a built-in or custom source, or a group id. It
 always opens the built-in picker, even for a single match, ignoring fzf and
@@ -98,7 +106,7 @@ temporary active tab alongside the configured tabs; they do not join all.`,
 	cmd.Flags().StringVar(&pathFlag, "path", "",
 		"open the given absolute path directly, bypassing query resolution (used by the Television cable)")
 	cmd.Flags().StringVar(&targetFlag, "target", "workspace",
-		"where to open an entry: workspace (default), tab, or pane")
+		"where to open an entry: workspace (default; a command opens as a tab inside a Herdr pane), tab, or pane")
 	cmd.Flags().StringVar(&viewFlag, "view", "",
 		"open a view in the built-in picker (all, agents, source name, or group id)")
 	return cmd
@@ -973,11 +981,9 @@ func (a *App) runOpenWithView(cmd *cobra.Command, query, pathFlag, targetFlag, v
 			return errExitOne
 		}
 
-		target := targetFlag
-		if a.chosenTarget != "" {
-			target = a.chosenTarget
-		}
-
+		explicit := cmd.Flags().Changed("target") || a.chosenTarget != ""
+		a.currentPane = a.commandPane(cmd.Context(), cand, explicit, a.currentPane)
+		target := openTarget(cand, targetFlag, cmd.Flags().Changed("target"), a.chosenTarget, a.currentPane)
 		outcome, err := a.launch(cmd.Context(), cand, a.chosenAction, target, a.currentPane, out, errOut)
 		if err != nil {
 			return err
@@ -1068,11 +1074,9 @@ func (a *App) runOpenWithView(cmd *cobra.Command, query, pathFlag, targetFlag, v
 		cand = nestedCand
 	}
 
-	target := targetFlag
-	if a.chosenTarget != "" {
-		target = a.chosenTarget
-	}
-
+	explicit := cmd.Flags().Changed("target") || a.chosenTarget != ""
+	a.currentPane = a.commandPane(cmd.Context(), cand, explicit, a.currentPane)
+	target := openTarget(cand, targetFlag, cmd.Flags().Changed("target"), a.chosenTarget, a.currentPane)
 	outcome, err := a.launch(cmd.Context(), cand, a.chosenAction, target, a.currentPane, out, errOut)
 	if err != nil {
 		return err
@@ -1085,6 +1089,54 @@ func (a *App) runOpenWithView(cmd *cobra.Command, query, pathFlag, targetFlag, v
 			a.recordRankingSuccess(cand)
 		}
 		a.recordAcknowledgement(cand, a.chosenAction)
+	}
+	return nil
+}
+
+// openTarget is where cand opens, for every launch route (the pickers, fzf, a
+// direct match, --path): an explicit choice — the --target flag (flagChanged)
+// or ctrl+t / ctrl+p in the picker (chosen) — always wins, and every row but a
+// command takes the --target default. A [[commands]] row is a program that
+// belongs inside Herdr: it opens as a new tab of the current workspace when
+// shep runs in a Herdr pane (currentPane), else as a workspace of its own.
+func openTarget(cand source.Candidate, flagTarget string, flagChanged bool, chosen string, currentPane *source.Pane) string {
+	switch {
+	case chosen != "":
+		return chosen
+	case flagChanged || cand.Source != config.SourceCommands:
+		return flagTarget
+	case currentPane != nil:
+		return "tab"
+	default:
+		return "workspace"
+	}
+}
+
+// commandPane is the pane a [[commands]] row launched with no explicit target
+// opens beside: currentPane when the launch already knows it, else the focused
+// pane of one fresh Herdr snapshot, bounded like the startup one. The picker
+// reads no snapshot when no source in view needs Herdr, so without this a
+// command would open as a workspace even inside a Herdr pane. It is nil when
+// Herdr is unavailable or reports no focused pane, and every other row, or an
+// explicit target, keeps currentPane without a snapshot.
+func (a *App) commandPane(ctx context.Context, cand source.Candidate, explicit bool, currentPane *source.Pane) *source.Pane {
+	// A startup snapshot of this launch already answered: no focused pane.
+	if currentPane != nil || explicit || cand.Source != config.SourceCommands || a.startupSnapshot != nil {
+		return currentPane
+	}
+	driver := a.Driver()
+	if driver == nil || !driver.Detect(ctx) {
+		return nil
+	}
+	snapshotCtx, cancel := context.WithTimeout(ctx, source.SnapshotTimeout)
+	defer cancel()
+	snapshot, err := driver.Snapshot(snapshotCtx)
+	if err != nil {
+		return nil
+	}
+	if pane, ok := source.ResolveFocusedPane(snapshot); ok {
+		copy := *pane
+		return &copy
 	}
 	return nil
 }
@@ -1362,11 +1414,14 @@ const (
 //     Same requirements as "tab".
 //
 // tab and pane only support entries that can target the current workspace
-// (source.SupportsCurrentWorkspaceTarget: command workspaces, zoxide,
-// projects): they open a single new tab/pane and have no way to materialise a
-// multi-tab/multi-pane template inside someone else's workspace. Already-open
-// herdr workspaces, group/template entries, and plain paths surface a clear
-// error instead.
+// (source.SupportsCurrentWorkspaceTarget: [[commands]] entries, command
+// workspaces and custom rows, zoxide, projects): they open a single new
+// tab/pane and have no way to materialise a multi-tab/multi-pane template
+// inside someone else's workspace. Already-open herdr workspaces,
+// group/template entries, and plain paths surface a clear error instead.
+//
+// A [[commands]] row has no path to print, so without Herdr it fails with a
+// clear error instead of the path fallback.
 func (a *App) launch(ctx context.Context, cand source.Candidate, action tui.RowAction, target string, currentPane *source.Pane, out, errOut io.Writer) (launchOutcome, error) {
 	if cand.Source == config.SourceSessions {
 		if target == "tab" || target == "pane" {
@@ -1392,6 +1447,10 @@ func (a *App) launch(ctx context.Context, cand source.Candidate, action tui.RowA
 
 	driver := a.Driver()
 	if driver == nil || !driver.Detect(ctx) {
+		if cand.Source == config.SourceCommands {
+			fmt.Fprintf(errOut, "%s is a command: it opens inside Herdr, which is not available\n", cand.Label)
+			return launchOutcomeNone, errExitOne
+		}
 		fmt.Fprintln(out, displayPath(cand))
 		return launchOutcomePathOnly, nil
 	}
@@ -1487,14 +1546,14 @@ func (a *App) launchChildTab(ctx context.Context, driver source.HerdrDriver, can
 }
 
 // workspaceLaunchRequest names the workspace a candidate creates: an open
-// Herdr workspace is focused, not created; a configured workspace or a custom
-// row is named by its own label; anything else by its resolved
+// Herdr workspace is focused, not created; a configured workspace, a command
+// or a custom row is named by its own label; anything else by its resolved
 // workspace_name format (see internal/effective), rendered against its data.
 func (a *App) workspaceLaunchRequest(cand source.Candidate) (source.WorkspaceLaunchRequest, error) {
 	if cand.Source == config.SourceHerdr {
 		return source.WorkspaceLaunchRequest{Candidate: cand}, nil
 	}
-	if cand.Source == config.SourceWorkspaces || cand.Meta["custom_source"] == "true" {
+	if cand.Source == config.SourceWorkspaces || cand.Source == config.SourceCommands || cand.Meta["custom_source"] == "true" {
 		return source.WorkspaceLaunchRequest{Candidate: cand, WorkspaceName: workspacename.Name(cand.Label)}, nil
 	}
 	settings := a.settings().For(cand)
@@ -1516,7 +1575,19 @@ func (a *App) workspaceLaunchRequest(cand source.Candidate) (source.WorkspaceLau
 // the same level. Returns launchOutcomeCompleted on a successful
 // focus/create; the FocusOrCreate-error path-print fallback returns
 // (PathOnly, nil) so runOpenWithView does not record it as a completed navigation.
+//
+// A [[commands]] row opened as a workspace runs its command there, in its own
+// path, else in the directory shep itself runs in; it has no path to fall
+// back on, so a FocusOrCreate error fails it.
 func (a *App) launchWorkspace(ctx context.Context, driver source.HerdrDriver, cand source.Candidate, out, errOut io.Writer) (launchOutcome, error) {
+	if cand.Source == config.SourceCommands && cand.Path == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintf(errOut, "%s: cannot resolve the working directory: %v\n", cand.Label, err)
+			return launchOutcomeNone, errExitOne
+		}
+		cand.Path = cwd
+	}
 	request, err := a.workspaceLaunchRequest(cand)
 	if err != nil {
 		fmt.Fprintln(errOut, err)
@@ -1525,6 +1596,9 @@ func (a *App) launchWorkspace(ctx context.Context, driver source.HerdrDriver, ca
 	res, err := driver.FocusOrCreate(ctx, request)
 	if err != nil {
 		fmt.Fprintf(errOut, "warning: herdr unavailable: %v\n", err)
+		if cand.Source == config.SourceCommands {
+			return launchOutcomeNone, errExitOne
+		}
 		fmt.Fprintln(out, displayPath(cand))
 		return launchOutcomePathOnly, nil
 	}
@@ -1551,9 +1625,12 @@ func (a *App) launchWorkspace(ctx context.Context, driver source.HerdrDriver, ca
 // candidate inside a new tab or a new pane of the Herdr workspace shep is
 // currently running in (currentPane), instead of creating a brand-new
 // standalone workspace. Only entries that support a current-workspace target
-// (source.SupportsCurrentWorkspaceTarget — command workspaces, zoxide,
-// projects) reach here; already-open herdr workspaces, group/template
-// entries, and plain paths surface a clear error via disallowTarget.
+// (source.SupportsCurrentWorkspaceTarget — [[commands]] entries, command
+// workspaces and custom rows, zoxide, projects) reach here; already-open
+// herdr workspaces, group/template entries, and plain paths surface a clear
+// error via disallowTarget. The new tab or pane opens in the row's own path,
+// and in the current pane's directory only for a row without one (a command
+// that runs where the user is).
 //
 // The command (if any) is typed into the freshly created container pane via
 // templates.RunCommand, which owns the close_on_exit shell-chaining wrap.
@@ -1577,7 +1654,10 @@ func (a *App) launchInCurrentWorkspace(ctx context.Context, driver source.HerdrD
 	closeOnExit := cand.Meta["close_on_exit"] == "true"
 	tpl := config.TemplateConfig{Command: cmd, CloseOnExit: closeOnExit}
 	binary := config.HerdrBinaryWithEnv(a.Config(), os.LookupEnv)
-	cwd := currentPane.CWD
+	cwd := cand.Path
+	if cwd == "" {
+		cwd = currentPane.CWD
+	}
 
 	var containerPaneID string
 	switch target {
@@ -1615,11 +1695,11 @@ func (a *App) launchInCurrentWorkspace(ctx context.Context, driver source.HerdrD
 // disallowTarget returns a non-empty user-facing error string when the
 // candidate cannot be opened via the tab/pane targets, or "" when it is
 // allowed. The allowed set is exactly source.SupportsCurrentWorkspaceTarget
-// (command workspaces, zoxide, projects); each disallowed shape gets a
-// distinct, specific message so the user knows exactly what to fix: an
-// already-open herdr workspace (resume it via --target=workspace instead), a
-// template entry, a group workspace, or an entry with no command (and no
-// zoxide/projects path to fall back on).
+// ([[commands]] entries, command workspaces and custom rows, zoxide,
+// projects); each disallowed shape gets a distinct, specific message so the
+// user knows exactly what to fix: an already-open herdr workspace (resume it
+// via --target=workspace instead), a template entry, a group workspace, or an
+// entry with no command (and no zoxide/projects path to fall back on).
 func disallowTarget(cand source.Candidate, target string) string {
 	if source.SupportsCurrentWorkspaceTarget(cand) {
 		return ""
@@ -1636,7 +1716,7 @@ func disallowTarget(cand source.Candidate, target string) string {
 	case cand.Meta["group"] == "true":
 		return fmt.Sprintf("--target=%s requires an entry with a command, got group workspace %q", target, name)
 	default:
-		return fmt.Sprintf("--target=%s requires an entry with a command (or a zoxide/projects path), entry %q has no command", target, name)
+		return fmt.Sprintf("--target=%s requires an entry with a command, a [[commands]] entry or a zoxide/projects path; entry %q has no command", target, name)
 	}
 }
 

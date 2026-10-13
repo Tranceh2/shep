@@ -12,21 +12,22 @@ import (
 )
 
 // doctorCmd builds `shep doctor`, a read-only diagnostic that reports
-// configured [[workspaces]] paths that do not exist on disk, plus the state of
-// the published PATH name. It never creates directories, never links or
+// configured [[workspaces]] and [[commands]] paths that do not exist on disk,
+// plus the state of the published PATH name. It never creates directories, never links or
 // unlinks, and never fails the config load; a problem is a warning, not a hard
 // error, so doctor always exits 0.
 func (a *App) doctorCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor",
-		Short: "Check workspace paths, the picker theme and the published PATH name",
+		Short: "Check workspace and command paths, the picker theme and the published PATH name",
 		Long: `shep doctor checks every [[workspaces]] entry (including group workspaces)
-and reports any whose path does not exist on disk. It never creates
-directories and never fails the config; missing paths are reported as
-warnings so you can fix your config.toml before they surface as a confusing
-"path does not exist" error from shep open. Templates and colors are checked
-when the configuration loads, so a doctor run that reaches this report has a
-valid configuration.
+and every [[commands]] entry, and reports any whose path does not exist on
+disk; a command without a path runs in the directory of the pane you are in.
+It never creates directories and never fails the config; missing paths are
+reported as warnings so you can fix your config.toml before they surface as a
+confusing "path does not exist" error from shep open. Templates and colors
+are checked when the configuration loads, so a doctor run that reaches this
+report has a valid configuration.
 
 It reports the color theme the picker uses and where it came from
 (NO_COLOR, SHEP_THEME, [tui].theme, or inherited from Herdr), with Herdr's
@@ -52,6 +53,7 @@ func (a *App) runDoctor(cmd *cobra.Command) error {
 	// how many workspaces are configured, and a fresh install with no config
 	// is exactly when an operator asks where a bare `shep` points.
 	a.reportWorkspaces(out, cfg)
+	a.reportCommands(out, cfg)
 	a.reportTheme(out, cfg)
 	a.reportPublishedName(out)
 	return nil
@@ -80,6 +82,40 @@ func (a *App) reportWorkspaces(out io.Writer, cfg *config.Config) {
 	}
 	if missing > 0 {
 		fmt.Fprintf(out, "\n%d of %d configured workspace path(s) missing\n", missing, len(cfg.Workspaces))
+	}
+}
+
+// reportCommands checks that every [[commands]] path exists, in the same line
+// style as reportWorkspaces; a command without a path is fine: it runs in the
+// directory of the pane the user is in.
+func (a *App) reportCommands(out io.Writer, cfg *config.Config) {
+	fmt.Fprintln(out)
+	if len(cfg.Commands) == 0 {
+		fmt.Fprintln(out, "no [[commands]] entries configured")
+		return
+	}
+	missing, withPath := 0, 0
+	for _, c := range cfg.Commands {
+		if c.Path == "" {
+			fmt.Fprintf(out, "OK      %s: runs in the directory of the pane you are in\n", c.Name)
+			continue
+		}
+		withPath++
+		// Fall back to the raw path on an unresolvable HOME so os.Stat reports
+		// the bad path instead of crashing on expansion.
+		path := c.Path
+		if expanded, err := pathutil.ExpandTilde(c.Path); err == nil {
+			path = expanded
+		}
+		if _, err := os.Stat(path); err != nil {
+			fmt.Fprintf(out, "MISSING %s: %s (configured path does not exist)\n", c.Name, path)
+			missing++
+			continue
+		}
+		fmt.Fprintf(out, "OK      %s: %s\n", c.Name, path)
+	}
+	if missing > 0 {
+		fmt.Fprintf(out, "\n%d of %d configured command path(s) missing\n", missing, withPath)
 	}
 }
 

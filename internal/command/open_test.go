@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -20,6 +21,7 @@ import (
 	"github.com/tranceh2/shep/internal/effective"
 	"github.com/tranceh2/shep/internal/herdr"
 	"github.com/tranceh2/shep/internal/preview"
+	"github.com/tranceh2/shep/internal/ranking"
 	"github.com/tranceh2/shep/internal/selector"
 	"github.com/tranceh2/shep/internal/source"
 	"github.com/tranceh2/shep/internal/theme"
@@ -1698,18 +1700,19 @@ func insidePaneDriver(pane source.Pane) *openDriver {
 
 // TestOpen_TargetTab_OpensInCurrentWorkspace (end-to-end): a Command-only
 // workspace entry opened with --target=tab creates a new tab in the workspace
-// shep is running inside (focus=true so the new tab gets keyboard focus) and
-// runs the command in that tab's root pane, wrapped with close_on_exit.
+// shep is running inside (focus=true so the new tab gets keyboard focus), in
+// the entry's own folder, and runs the command in that tab's root pane,
+// wrapped with close_on_exit.
 func TestOpen_TargetTab_OpensInCurrentWorkspace(t *testing.T) {
 	t.Setenv("HERDR_BIN_PATH", "")
-	cfg, _ := commandWorkspaceCfg(t, "ops", "k9s", true)
+	cfg, dir := commandWorkspaceCfg(t, "ops", "k9s", true)
 	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
 	driver := insidePaneDriver(pane)
 	_, _, err := runOpen(t, cfg, driver, nil, "--target", "tab", "ops")
 	if err != nil {
 		t.Fatalf("open --target=tab: %v", err)
 	}
-	if len(driver.created) != 1 || driver.created[0] != "tab:wA:/cur:ops:focus" {
+	if len(driver.created) != 1 || driver.created[0] != "tab:wA:"+dir+":ops:focus" {
 		t.Errorf("expected one focused CreateTab in the current workspace, got %v", driver.created)
 	}
 	want := "run:new-p:k9s; 'herdr' pane close 'new-p'"
@@ -1723,7 +1726,7 @@ func TestOpen_TargetTab_OpensInCurrentWorkspace(t *testing.T) {
 }
 
 func TestOpen_UsesOneStartupSnapshotForTargeting(t *testing.T) {
-	cfg, _ := commandWorkspaceCfg(t, "ops", "k9s", false)
+	cfg, dir := commandWorkspaceCfg(t, "ops", "k9s", false)
 	driver := &openDriver{
 		detect: true,
 		snapshot: source.Snapshot{
@@ -1743,7 +1746,7 @@ func TestOpen_UsesOneStartupSnapshotForTargeting(t *testing.T) {
 	if driver.snapshotCalls != 1 {
 		t.Fatalf("Snapshot calls = %d, want exactly one startup snapshot", driver.snapshotCalls)
 	}
-	if len(driver.created) != 1 || driver.created[0] != "tab:w-snapshot:/snapshot-cwd:ops:focus" {
+	if len(driver.created) != 1 || driver.created[0] != "tab:w-snapshot:"+dir+":ops:focus" {
 		t.Errorf("CreateTab target = %v, want snapshot workspace/tab/pane context", driver.created)
 	}
 }
@@ -1798,18 +1801,18 @@ func TestApp_HydrateStartupSnapshot_TimesOut(t *testing.T) {
 }
 
 // TestOpen_TargetPane_OpensInCurrentWorkspace (end-to-end): --target=pane
-// splits a new pane off the current one (right, 0.5, focus=true) and runs the
-// wrapped command there.
+// splits a new pane off the current one (right, 0.5, focus=true), in the
+// entry's own folder, and runs the wrapped command there.
 func TestOpen_TargetPane_OpensInCurrentWorkspace(t *testing.T) {
 	t.Setenv("HERDR_BIN_PATH", "")
-	cfg, _ := commandWorkspaceCfg(t, "ops", "k9s", true)
+	cfg, dir := commandWorkspaceCfg(t, "ops", "k9s", true)
 	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
 	driver := insidePaneDriver(pane)
 	_, _, err := runOpen(t, cfg, driver, nil, "--target", "pane", "ops")
 	if err != nil {
 		t.Fatalf("open --target=pane: %v", err)
 	}
-	if len(driver.created) != 1 || driver.created[0] != "split:cur-p:right:0.5:/cur:focus" {
+	if len(driver.created) != 1 || driver.created[0] != "split:cur-p:right:0.5:"+dir+":focus" {
 		t.Errorf("expected one focused right split of the current pane, got %v", driver.created)
 	}
 	want := "run:split-p:k9s; 'herdr' pane close 'split-p'"
@@ -2089,8 +2092,9 @@ func TestOpen_TargetTab_HerdrCandidate_Errors(t *testing.T) {
 
 // TestOpen_TargetTab_ZoxideCandidate_Opens proves a zoxide candidate (no
 // command) opened with --target=tab creates a new tab in the current
-// workspace as a plain shell — disallowTarget allows it, and the empty
-// command means no RunPane fires.
+// workspace as a plain shell in the folder itself, not in the current pane's
+// directory — disallowTarget allows it, and the empty command means no
+// RunPane fires.
 func TestOpen_TargetTab_ZoxideCandidate_Opens(t *testing.T) {
 	cand := source.Candidate{Source: config.SourceZoxide, Path: "/zx", Label: "zx-proj"}
 	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
@@ -2099,7 +2103,7 @@ func TestOpen_TargetTab_ZoxideCandidate_Opens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("launch --target=tab zoxide: %v (stderr=%q)", err, errOut)
 	}
-	if len(driver.created) != 1 || driver.created[0] != "tab:wA:/cur:zx-proj:focus" {
+	if len(driver.created) != 1 || driver.created[0] != "tab:wA:/zx:zx-proj:focus" {
 		t.Errorf("expected one focused CreateTab for the zoxide candidate, got %v", driver.created)
 	}
 	if len(driver.ran) != 0 {
@@ -2109,7 +2113,7 @@ func TestOpen_TargetTab_ZoxideCandidate_Opens(t *testing.T) {
 
 // TestOpen_TargetPane_ProjectsCandidate_Opens proves a projects candidate (no
 // command) opened with --target=pane splits a new pane in the current
-// workspace as a plain shell.
+// workspace as a plain shell in the project's folder.
 func TestOpen_TargetPane_ProjectsCandidate_Opens(t *testing.T) {
 	cand := source.Candidate{Source: config.SourceProjects, Path: "/proj", Label: "proj"}
 	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
@@ -2118,7 +2122,7 @@ func TestOpen_TargetPane_ProjectsCandidate_Opens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("launch --target=pane projects: %v (stderr=%q)", err, errOut)
 	}
-	if len(driver.created) != 1 || driver.created[0] != "split:cur-p:right:0.5:/cur:focus" {
+	if len(driver.created) != 1 || driver.created[0] != "split:cur-p:right:0.5:/proj:focus" {
 		t.Errorf("expected one focused right split for the projects candidate, got %v", driver.created)
 	}
 	if len(driver.ran) != 0 {
@@ -2138,12 +2142,271 @@ func TestOpen_TargetTab_CustomSourceCandidate_Opens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("launch --target=tab custom source: %v (stderr=%q)", err, errOut)
 	}
-	if len(driver.created) != 1 || driver.created[0] != "tab:wA:/cur:PR 42:focus" {
+	if len(driver.created) != 1 || driver.created[0] != "tab:wA:/repo:PR 42:focus" {
 		t.Errorf("expected one focused CreateTab for the custom source candidate, got %v", driver.created)
 	}
 	want := "run:new-p:gh pr view 42"
 	if len(driver.ran) != 1 || driver.ran[0] != want {
 		t.Errorf("expected command run in the new pane, got %v", driver.ran)
+	}
+}
+
+// TestOpen_TargetTab_PathlessRowsOpenInTheCurrentPanesDirectory proves only a
+// row without a path of its own opens its tab or pane in the current pane's
+// directory: a [[commands]] entry without a path and a custom row without one.
+func TestOpen_TargetTab_PathlessRowsOpenInTheCurrentPanesDirectory(t *testing.T) {
+	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
+	for _, tc := range []struct {
+		name   string
+		cand   source.Candidate
+		target string
+		want   string
+	}{
+		{"command without a path", source.Candidate{Source: config.SourceCommands, Label: "lazygit", Meta: map[string]string{"command": "lazygit"}}, "tab", "tab:wA:/cur:lazygit:focus"},
+		{"command with a path", source.Candidate{Source: config.SourceCommands, Label: "downloads", Path: "/dl", Meta: map[string]string{"command": "yazi"}}, "pane", "split:cur-p:right:0.5:/dl:focus"},
+		{"custom row without a path", source.Candidate{Source: "prs", Label: "PR 42", Meta: map[string]string{"command": "gh pr view 42", "custom_source": "true"}}, "pane", "split:cur-p:right:0.5:/cur:focus"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			driver := insidePaneDriver(pane)
+			errOut, err := runLaunchDirect(t, tc.cand, tui.RowActionOpen, tc.target, &pane, driver)
+			if err != nil {
+				t.Fatalf("launch --target=%s: %v (stderr=%q)", tc.target, err, errOut)
+			}
+			if len(driver.created) != 1 || driver.created[0] != tc.want {
+				t.Errorf("created = %v, want [%s]", driver.created, tc.want)
+			}
+		})
+	}
+}
+
+// TestOpenTarget proves the one rule every launch route applies: an explicit
+// choice (ctrl+t / ctrl+p, then the --target flag) wins; a command opens as a
+// tab inside a Herdr pane and as a workspace outside one; every other row
+// keeps the --target default.
+func TestOpenTarget(t *testing.T) {
+	t.Parallel()
+	command := source.Candidate{Source: config.SourceCommands, Label: "lazygit"}
+	folder := source.Candidate{Source: config.SourceZoxide, Path: "/zx"}
+	pane := &source.Pane{ID: "p1"}
+	for _, tc := range []struct {
+		name    string
+		cand    source.Candidate
+		flag    string
+		changed bool
+		chosen  string
+		pane    *source.Pane
+		want    string
+	}{
+		{"command inside a pane", command, "workspace", false, "", pane, "tab"},
+		{"command outside a pane", command, "workspace", false, "", nil, "workspace"},
+		{"command with an explicit --target", command, "workspace", true, "", pane, "workspace"},
+		{"command with ctrl+p", command, "workspace", false, "pane", pane, "pane"},
+		{"folder keeps the default", folder, "workspace", false, "", pane, "workspace"},
+		{"folder with ctrl+t", folder, "workspace", false, "tab", pane, "tab"},
+	} {
+		if got := openTarget(tc.cand, tc.flag, tc.changed, tc.chosen, tc.pane); got != tc.want {
+			t.Errorf("%s: openTarget = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// commandsCfg is a configuration whose only source is [[commands]]: lazygit
+// without a path (closing on exit, the default) and downloads running yazi in
+// a real directory, kept open on exit.
+func commandsCfg(t *testing.T) (*config.Config, string) {
+	t.Helper()
+	dir := t.TempDir()
+	keep := false
+	cfg := config.Defaults()
+	cfg.General.SourceOrder = []string{config.SourceCommands}
+	cfg.Commands = []config.CommandConfig{
+		{Name: "lazygit", Command: "lazygit"},
+		{Name: "downloads", Command: "yazi", Path: dir, CloseOnExit: &keep},
+	}
+	return cfg, dir
+}
+
+// commandRow returns the row the commands source makes from cfg's entry name.
+func commandRow(t *testing.T, cfg *config.Config, name string) source.Candidate {
+	t.Helper()
+	rows, err := source.NewRegistry(cfg, config.Probes{}, nil).Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.Label == name {
+			return row
+		}
+	}
+	t.Fatalf("no command row %q in %+v", name, rows)
+	return source.Candidate{}
+}
+
+// TestOpen_CommandEnterOpensATabHere (end-to-end through the picker): Enter on
+// a [[commands]] row, with no target chosen, opens it as a new tab of the
+// workspace shep runs in — in its own path, else in the current pane's
+// directory — runs its command there honouring close_on_exit, never creates
+// a workspace, and records the open for ranking under the command's identity.
+func TestOpen_CommandEnterOpensATabHere(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "")
+	cfg, dir := commandsCfg(t)
+	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
+	for _, tc := range []struct {
+		name, created, ran string
+	}{
+		{"lazygit", "tab:wA:/cur:lazygit:focus", "run:new-p:lazygit; 'herdr' pane close 'new-p'"},
+		{"downloads", "tab:wA:" + dir + ":downloads:focus", "run:new-p:yazi"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row := commandRow(t, cfg, tc.name)
+			driver := insidePaneDriver(pane)
+			store := &recordingRankingStore{}
+			var out, errOut bytes.Buffer
+			app := New(WithStreams(&out, &errOut), WithHerdrDriver(driver))
+			app.layoutApplier = driver
+			app.cfg = cfg
+			app.probes = config.Probes{Herdr: true}
+			app.rankingOpen = func() (rankingStore, error) { return store, nil }
+			app.asyncTUIRun = func(context.Context, []tui.SourceProducer, string, tui.Layout) (source.Candidate, tui.RowAction, string, *source.Pane, bool, error) {
+				current := pane
+				return row, tui.RowActionOpen, "", &current, true, nil
+			}
+			cmd := app.rootCmd()
+			cmd.SetArgs([]string{"open"})
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("open: %v (stderr=%q)", err, errOut.String())
+			}
+			if len(driver.created) != 1 || driver.created[0] != tc.created {
+				t.Errorf("created = %v, want [%s]", driver.created, tc.created)
+			}
+			if len(driver.ran) != 1 || driver.ran[0] != tc.ran {
+				t.Errorf("ran = %v, want [%s]", driver.ran, tc.ran)
+			}
+			if driver.lastCand.Label != "" {
+				t.Errorf("FocusOrCreate ran for %+v, want a tab only", driver.lastCand)
+			}
+			if len(store.keys) != 1 || store.keys[0].Exact != ranking.Identity(row) || !strings.HasPrefix(store.keys[0].Exact, "commands:entry:") {
+				t.Errorf("ranking records = %+v, want one under %q", store.keys, ranking.Identity(row))
+			}
+		})
+	}
+}
+
+// TestOpen_CommandEnterFindsThePaneWithoutAHerdrSource proves Enter on a
+// command opens a tab even when no source in view reads Herdr (so the picker
+// took no snapshot and knows no pane): the launch reads one snapshot for the
+// command to find the focused pane. A folder row picked the same way takes no
+// extra snapshot and keeps its workspace route.
+func TestOpen_CommandEnterFindsThePaneWithoutAHerdrSource(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "")
+	cfg, dir := commandsCfg(t)
+	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
+	for _, tc := range []struct {
+		name      string
+		row       source.Candidate
+		snapshots int
+		created   []string
+		workspace bool
+	}{
+		{"command", commandRow(t, cfg, "lazygit"), 1, []string{"tab:wA:/cur:lazygit:focus"}, false},
+		{"folder", source.Candidate{Source: config.SourceZoxide, Label: "dl", Path: dir}, 0, nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			driver := insidePaneDriver(pane)
+			driver.workspaceID, driver.lastAction = "wB", source.HerdrActionFocused
+			var out, errOut bytes.Buffer
+			app := New(WithStreams(&out, &errOut), WithHerdrDriver(driver))
+			app.layoutApplier = driver
+			app.cfg = cfg
+			app.probes = config.Probes{Herdr: true}
+			app.asyncTUIRun = func(context.Context, []tui.SourceProducer, string, tui.Layout) (source.Candidate, tui.RowAction, string, *source.Pane, bool, error) {
+				return tc.row, tui.RowActionOpen, "", nil, true, nil
+			}
+			cmd := app.rootCmd()
+			cmd.SetArgs([]string{"open"})
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("open: %v (stderr=%q)", err, errOut.String())
+			}
+			if driver.snapshotCalls != tc.snapshots {
+				t.Errorf("snapshots = %d, want %d", driver.snapshotCalls, tc.snapshots)
+			}
+			if !reflect.DeepEqual(driver.created, tc.created) {
+				t.Errorf("created = %v, want %v", driver.created, tc.created)
+			}
+			if got := driver.lastCand.Label != ""; got != tc.workspace {
+				t.Errorf("FocusOrCreate called = %v, want %v", got, tc.workspace)
+			}
+		})
+	}
+}
+
+// TestOpen_CommandTargets proves the routes of a [[commands]] row opened by
+// name: --target pane splits the current pane; an explicit --target
+// workspace opens a workspace of its own even inside a pane; with Herdr
+// reachable but no focused pane it opens as a workspace named by its label,
+// running its command in its path, else in shep's own directory.
+func TestOpen_CommandTargets(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "")
+	cfg, dir := commandsCfg(t)
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pane := source.Pane{ID: "cur-p", WorkspaceID: "wA", TabID: "wA:t1", CWD: "/cur"}
+
+	t.Run("target pane", func(t *testing.T) {
+		driver := insidePaneDriver(pane)
+		if _, errOut, err := runOpen(t, cfg, driver, nil, "--target", "pane", "lazygit"); err != nil {
+			t.Fatalf("open: %v (stderr=%q)", err, errOut)
+		}
+		if len(driver.created) != 1 || driver.created[0] != "split:cur-p:right:0.5:/cur:focus" {
+			t.Errorf("created = %v, want a split of the current pane", driver.created)
+		}
+		if want := "run:split-p:lazygit; 'herdr' pane close 'split-p'"; len(driver.ran) != 1 || driver.ran[0] != want {
+			t.Errorf("ran = %v, want [%s]", driver.ran, want)
+		}
+	})
+	for _, tc := range []struct {
+		name, query, cwd string
+		driver           *openDriver
+		args             []string
+	}{
+		{"no focused pane", "lazygit", cwd, &openDriver{detect: true}, nil},
+		{"no focused pane, with a path", "downloads", dir, &openDriver{detect: true}, nil},
+		{"explicit workspace inside a pane", "lazygit", cwd, insidePaneDriver(pane), []string{"--target", "workspace"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			driver := tc.driver
+			driver.workspaceID, driver.rootTabID, driver.rootPaneID, driver.lastAction = "wB", "wB:t1", "wB:p1", source.HerdrActionCreated
+			if _, errOut, err := runOpen(t, cfg, driver, nil, append(tc.args, tc.query)...); err != nil {
+				t.Fatalf("open: %v (stderr=%q)", err, errOut)
+			}
+			if driver.lastCand.Path != tc.cwd || driver.lastWorkspaceName != tc.query {
+				t.Errorf("workspace created at %q named %q, want %q named %q", driver.lastCand.Path, driver.lastWorkspaceName, tc.cwd, tc.query)
+			}
+			if len(driver.created) != 0 {
+				t.Errorf("created = %v, want no tab or pane in the current workspace", driver.created)
+			}
+			command := map[string]string{"lazygit": "lazygit", "downloads": "yazi"}[tc.query]
+			if !slices.ContainsFunc(driver.ran, func(run string) bool { return strings.Contains(run, command) }) {
+				t.Errorf("ran = %v, want %q run in the new workspace", driver.ran, command)
+			}
+		})
+	}
+}
+
+// TestOpen_CommandWithoutHerdrFails proves a [[commands]] row without Herdr
+// fails clearly (exit 1) instead of printing an empty path, while a folder
+// row keeps its printed-path fallback.
+func TestOpen_CommandWithoutHerdrFails(t *testing.T) {
+	cfg, _ := commandsCfg(t)
+	out, errOut, err := runOpen(t, cfg, nil, nil, "lazygit")
+	var exit *ExitCodeError
+	if !errors.As(err, &exit) || exit.Code != 1 {
+		t.Fatalf("open without Herdr: err = %v, want exit 1", err)
+	}
+	if out != "" || !strings.Contains(errOut, "lazygit is a command: it opens inside Herdr") {
+		t.Errorf("stdout = %q, stderr = %q; want no path and the command error", out, errOut)
 	}
 }
 

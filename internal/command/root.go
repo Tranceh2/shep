@@ -427,7 +427,7 @@ func (a *App) rootCmd() *cobra.Command {
 		Use:   "shep",
 		Short: "Herdr-first project launcher",
 		Long: "shep enumerates project workspaces from Herdr, predefined workspaces,\n" +
-			"zoxide and discovered projects, then opens the selected one with Herdr.",
+			"commands, zoxide and discovered projects, then opens the selected one with Herdr.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
