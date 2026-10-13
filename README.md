@@ -169,14 +169,47 @@ builds when the download fails.
 
 ## Features
 
-- ⚡ **Instant Picker, Even After Idle:** The first frame renders immediately and keys typed right after the shortcut are kept. Inside Herdr every request goes straight to Herdr's socket instead of launching the `herdr` CLI, so the popup and its workspace rows appear in about 100 ms even after the system has evicted the binaries from memory. Slow sources (the projects scan, custom commands) show their last result at once and refresh in the background. Zero disk I/O while typing.
-- ✍️ **Act Without Leaving the Picker:** Rename a workspace, tab or pane in place (`Ctrl+E`), close it (`Ctrl+X`), open a new Git worktree of a repository on a branch you name (`Ctrl+N`), jump to the next blocked agent (`Ctrl+B`), bring back an earlier search (`Ctrl+Y`), and walk a workspace's tabs and panes with the arrows or `Ctrl+H` / `Ctrl+L`.
-- 🤖 **AI Agents Attention Queue:** The `agents` tab (in the default `all` ↔ `agents` cycle) puts newly unacknowledged blocked (`◉`) or finished (`●`) agents first, then the previous agent even if idle. Other working and idle agents follow available history; the current pane is last unless it needs new attention. Herdr records prior workspace focus, not prior pane focus: if the immediately preceding workspace has no agents or multiple agents, Shep does not promote a guessed prior pane, even if an older Shep selection exists. Selecting an agent focuses its Herdr tab, not an individual pane.
-- 🔍 **Extended Fuzzy Filtering (fzf + Snacks style):** Space-separated AND terms, pipe `|` OR matching, exact `'terms`, prefix `^`, suffix `$`, negation `!term`, and field filters (`status:blocked`, `agent:claude`, `source:herdr`, `path:api`).
-- 🔁 **True MRU A↔B Jump-Back:** Ships with a native Herdr plugin action (`tranceh2.shep.jump-back`) to toggle back and forth between your two most recently visited workspaces like `prefix + L` in tmux.
-- 📐 **Adaptive Ranking & Persistent Pins:** Learns from successful selections using local SQLite WAL storage (private `0600` permissions with auto-quarantine on corruption). Press `Ctrl+F` to pin high-priority entries to the top.
-- 🧩 **Hierarchical Groups & Multi-Pane Templates:** Define nested pickers (`type = "group"`), multi-tab/multi-split layouts with custom focus nodes, and `close_on_exit` flags.
-- 🎨 **Customizable Rows and Herdr Themes:** Built on Charm's Bubble Tea and Lip Gloss. Every row part, workspace name and preview command is a template over the same data, and colors follow your Herdr theme by default (Herdr's 18 palettes, `[theme.custom]` included) or a theme of your own. `NO_COLOR` gives a structural no-color mode and `[tui].icons = "ascii"` a 7-bit glyph tier. See [Customization](#customization).
+### 🔎 One picker for everything
+
+- **Every place you work:** open Herdr workspaces (expand one into its tabs and panes), your `[[workspaces]]` entries, [zoxide](https://github.com/ajeetdsouza/zoxide) folders, a scan of your project roots that also lists every Git worktree, your other Herdr sessions (`Enter` attaches) and every agent pane. A folder that two sources find is shown once. See [Source Providers](#sourcesname--source-providers).
+- **Your own sources:** `[[sources.custom]]` runs a program of yours, without a shell, and turns the JSON rows it prints into picker rows with their own icon, preview and command: open pull requests, Kubernetes contexts, tickets. See [Custom Command Providers](#sourcescustom--custom-command-providers).
+- **Views:** `all` and `agents` by default, plus any source, custom source or group as its own tab (`[tui].tabs`). `Tab` cycles them and `shep open --view <id>` opens one directly.
+- **Extended fuzzy search (fzf + Snacks style):** space-separated AND terms, `|` OR, `'exact`, `"phrases"`, `^prefix`, `suffix$`, `/regex/`, `!negation` and field filters (`status:blocked`, `agent:claude`, `source:herdr`, `path:api`). Typing a tab or pane name finds its workspace. See [Search Syntax](#search-syntax--filter-cheatsheet).
+- **Learns what you open:** a frecency ranking of what you actually open, kept in a private local SQLite file; `Ctrl+F` pins a row to the top, and with an empty query your open workspaces come in the order you last visited them.
+
+### 🤖 AI agents
+
+- **Attention queue:** the `agents` tab puts newly blocked (`◉`) or finished (`●`) agents first, then the agent you were with before; the others follow by history, and the current pane comes last unless it needs you. `Ctrl+B` jumps to the next blocked agent from any tab. Selecting an agent focuses its Herdr tab: Herdr records workspace focus, not pane focus, so shep never guesses a previous pane.
+- **Live status:** inside Herdr every row's agent glyph updates while the agents work, without reopening the picker.
+
+### 👀 Preview before you open
+
+- **Built-in sections:** a workspace's tabs, its agent state and the newest lines of its active pane; a project's Git state and its files (`lsd`, `eza` or `ls`); a session's state. Each source has its own default list. See [Preview sections](#preview-sections).
+- **Your own sections:** a `[preview.commands.<name>]` runs a command for the highlighted row (every argument a template over the row, such as `{{ .Path }}` or `{{ .Meta.number }}`, and no shell) and shows its output under a title of your choice.
+
+### 🚀 Open and act
+
+- **Ready-made workspaces:** a `[templates.<name>]` builds the workspace shep creates: tabs, split panes with their sizes, a command and a label per pane, the pane that gets focus, and panes that close when their command exits. A template can also be a single command, like `k9s`. See [Workspace Layout Templates](#templatesname--workspace-layout-templates).
+- **Rules by path:** one `[[wildcards]]` glob gives every folder under it a template, a workspace name, an icon, colors and previews, without configuring each project. See [Dynamic Path Rules](#wildcards--dynamic-path-rules).
+- **Groups:** a `[[workspaces]]` entry with `type = "group"` opens its own picker over a folder, with its own sources, project scan settings and the template its picks get.
+- **Act without leaving the picker:** rename a workspace, tab or pane in place (`Ctrl+E`), close it (`Ctrl+X`, with an optional confirmation), open a new Git worktree of a repository on a branch you name (`Ctrl+N`), bring back an earlier search (`Ctrl+Y`), and walk a workspace's tabs and panes with the arrows or `Ctrl+H` / `Ctrl+L`.
+- **Open into the workspace you are in:** command entries and custom rows with a command open as a new tab (`Ctrl+T`) or a split pane (`Ctrl+P`) of the current workspace.
+- **Workspace names:** `workspace_name` sets the name Herdr's sidebar shows for each workspace shep creates (`repo@branch` for a worktree by default).
+- **True MRU A↔B jump-back:** a Herdr plugin action (`tranceh2.shep.jump-back`) toggles between your two most recently visited workspaces, like `prefix + L` in tmux.
+
+### ⚡ Fast
+
+- **Instant picker, even after idle:** the first frame renders immediately and keys typed right after the shortcut are kept. Inside Herdr, shep talks to Herdr's socket instead of launching the `herdr` CLI (only listing and attaching to other sessions use the CLI), so the popup and its workspace rows appear in about 100 ms even after the system has evicted the binaries from memory. Slow sources (the projects scan, custom commands) show their last result at once and refresh in the background. Zero disk I/O while typing.
+
+### 🎨 Make it yours
+
+- **Rows and themes:** built on Charm's Bubble Tea and Lip Gloss. Every row part (icon, its color, label, detail and markers), workspace name and preview command is a template over the same data, per source, entry or path rule. Colors follow your Herdr theme by default (Herdr's 18 palettes, `[theme.custom]` and automatic light/dark included) or a theme of your own. `NO_COLOR` gives a structural no-color mode and `[tui].icons = "ascii"` a 7-bit glyph tier. See [Customization](#customization).
+
+### 🧰 Scripts, other pickers and diagnostics
+
+- **Scriptable CLI:** `shep list --format json|tsv`, `shep preview <path>`, and `shep open <query>`, which opens a single match directly; `--path <dir>` and `shep open .` skip the search. Outside Herdr, `shep open` prints the chosen path, so it works in shell scripts. See [Command Reference](#command-reference).
+- **Other pickers:** `selector = "fzf"` picks through [fzf](https://github.com/junegunn/fzf), and `cables/shep.toml` adds shep to [Television](https://github.com/alexpasmantier/television).
+- **A config that fails loudly:** `shep init` writes a starter file with the defaults; every template and color is checked when the config loads, with errors that name the field; `shep doctor` checks your paths, the theme and the `shep` on your `PATH`.
 
 ---
 
@@ -362,7 +395,8 @@ source_order = ["herdr", "workspaces", "zoxide", "projects"]
 # Interactive selector backend:
 # - "builtin": Charm Bubble Tea TUI (recommended, default)
 # - "fzf": Pipes candidates through external fzf CLI
-# - "auto": Uses fzf if available on PATH, otherwise falls back to builtin
+# - "auto": The builtin picker for a bare `shep open`; fzf (when it is on PATH)
+#   to choose between the matches of a `shep open <query>`
 selector = "builtin"
 
 # Name of the Herdr workspaces shep creates (from zoxide, projects, a path...).
@@ -704,7 +738,7 @@ command = ["gh", "pr", "checks", "{{ .Meta.number }}"]
 title = "Checks"
 ```
 
-The helper must print rows such as `[{"id":"42","label":"#42 fix bug","command":"gh pr checkout 42","aliases":["bug"],"meta":{"number":"42"}}]`. A row needs a label; it may also supply an ID, path, command, icon, aliases, template, close_on_exit, or inert string metadata (read as `.Meta.<key>`). Reserved metadata keys cannot override identity or launch behavior. Use a group's `source_order` instead of `[general].source_order` to run the provider only when that group opens. Private `[sources.custom.preview_commands.<name>]` entries accept argv lists, take a `title` like `[preview.commands]`, and inherit the global preview time and line limits unless overridden. The generated config example documents the full row and preview contract.
+The helper must print rows such as `[{"id":"42","label":"#42 fix bug","path":"/srv/fsociety","command":"gh pr checkout 42","aliases":["bug"],"meta":{"number":"42"}}]`. A row needs a label; it may also supply an ID, path, command, icon, aliases, template, close_on_exit, or inert string metadata (read as `.Meta.<key>`). `Enter` on a row opens a workspace at its `path` and runs its `command` there; a row without a `path` opens only as a new tab or pane of the current workspace (`Ctrl+T` / `Ctrl+P`). Reserved metadata keys cannot override identity or launch behavior. Use a group's `source_order` instead of `[general].source_order` to run the provider only when that group opens. Private `[sources.custom.preview_commands.<name>]` entries accept argv lists, take a `title` like `[preview.commands]`, and inherit the global preview time and line limits unless overridden. The generated config example documents the full row and preview contract.
 
 ---
 
@@ -1067,7 +1101,7 @@ Every command takes `--config <path>` to read another config file. `shep
 
 | Command | What it does |
 |---|---|
-| `shep open [query]` | Pick and open a workspace: the built-in picker, or straight to an exact match. `--view <id>` opens a view (`all`, `agents`, a source, a custom source or a group id) in the picker; `--target workspace\|tab\|pane` chooses where an entry opens (tab and pane need shep inside a Herdr pane); `--path <dir>` opens a directory without resolving a query; `shep open .` opens the current directory. |
+| `shep open [query]` | Pick and open a workspace: the built-in picker, or, when the query (plain text, matched against labels, paths and aliases) finds a single entry, straight to it. `--view <id>` opens a view (`all`, `agents`, a source, a custom source or a group id) in the picker; `--target workspace\|tab\|pane` chooses where an entry opens (tab and pane need shep inside a Herdr pane); `--path <dir>` opens a directory without resolving a query; `shep open .` opens the current directory. |
 | `shep list [--format human\|tsv\|json]` | Print every candidate the enabled sources find. |
 | `shep preview <path> [--color]` | Print the preview of a path, as the picker draws it. |
 | `shep doctor` | Check configured workspace paths, report the picker's theme and where it came from, and what the published `shep` name resolves to. |

@@ -57,9 +57,11 @@ workspace otherwise. When Herdr is not installed or its daemon is unreachable,
 shep prints the resolved absolute path and exits 0 so the caller can still
 reach the project through any shell cd / file manager.
 
-A selector cascade short-circuits an exact match, accelerates with fzf when
-installed, and falls back to an interactive TUI. With multiple candidates and
-no selection, shep prints the candidates and exits 1.
+A query that matches a single entry (a case-insensitive substring of its label
+or path, or one of its aliases) opens it directly; several matches open the
+picker with the query filled in, or fzf with [general].selector = "fzf" or
+"auto". With multiple candidates and no selection, shep prints the candidates
+and exits 1.
 
 The --target flag selects WHERE a candidate opens:
 workspace (default) creates/focuses a standalone Herdr workspace; tab opens it
