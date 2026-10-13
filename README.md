@@ -707,13 +707,13 @@ Where commands show up:
 - Directly: `shep open --view commands`.
 - In a group: add `"commands"` to its `source_order`. A group lists every command, not only those under its path.
 
-A Herdr shortcut can open one without the picker. Herdr runs a `type = "shell"` command detached, in the background. It needs `shep` on your `PATH` (see [Use `shep` from a shell](#use-shep-from-a-shell-shep-link)), and the query must match that entry alone:
+A Herdr shortcut can open one without the picker. Herdr runs a `type = "shell"` command detached, in the background, with `/bin/sh` and a `PATH` of its own that may not include `~/.local/bin`, so write the path of the symlink `shep link` creates (see [Use `shep` from a shell](#use-shep-from-a-shell-shep-link)). The query must match that entry alone:
 
 ```toml
 [[keys.command]]
 key = "prefix+g"            # any key your config does not already bind
 type = "shell"
-command = "shep open lazygit --target pane"
+command = "~/.local/bin/shep open lazygit --target pane"
 description = "lazygit beside this pane"
 ```
 
