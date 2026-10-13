@@ -14,34 +14,11 @@ It brings the instant session-hopping experience of tools like `tmux` + `sesh` i
 
 <p align="center"><sub>The same demo as a <a href="docs/media/shep-demo.mp4">video</a> (3456×2234, 24 s).</sub></p>
 
----
+**Why shep**
 
-## Story & Honest Disclaimer
-
-I used `tmux` for years and became completely addicted to the fast session-switching workflow powered by [sesh](https://github.com/joshmedeski/sesh) (by Josh Medeski). When I moved my primary terminal setup to [Herdr](https://herdr.dev), I missed that exact feeling: a single hotkey to search across active workspaces, zoxide history, and project directories without thinking about window IDs or paths.
-
-**An honest note on the code:** I am not a professional Go developer (I probably know about 5% of Go syntax). This entire project was created, designed, and iterated using AI assistance to solve real friction in my day-to-day work. 
-
-Because it grew organically for personal use, there are definitely areas that can be improved:
-- Code structure and idioms could be cleaner and more idiomatic Go.
-- Edge-case stability and performance under extreme workloads (e.g. scanning tens of thousands of nested repositories).
-- Visual design and layout polish across different terminal sizes and fonts.
-- Multi-platform testing (it is primarily built and tested on macOS/Linux).
-
-I'm sharing it in case someone else in the Herdr or terminal community finds it useful. If you know Go, spot an architectural flaw, or want to make it faster or more robust, **pull requests and feedback are genuinely appreciated!**
-
----
-
-## Features
-
-- ⚡ **Instant Picker, Even After Idle:** The first frame renders immediately and keys typed right after the shortcut are kept. Inside Herdr every request goes straight to Herdr's socket instead of launching the `herdr` CLI, so the popup and its workspace rows appear in about 100 ms even after the system has evicted the binaries from memory. Slow sources (the projects scan, custom commands) show their last result at once and refresh in the background. Zero disk I/O while typing.
-- ✍️ **Act Without Leaving the Picker:** Rename a workspace, tab or pane in place (`Ctrl+E`), close it (`Ctrl+X`), open a new Git worktree of a repository on a branch you name (`Ctrl+N`), jump to the next blocked agent (`Ctrl+B`), bring back an earlier search (`Ctrl+Y`), and walk a workspace's tabs and panes with the arrows or `Ctrl+H` / `Ctrl+L`.
-- 🤖 **AI Agents Attention Queue:** The `agents` tab (in the default `all` ↔ `agents` cycle) puts newly unacknowledged blocked (`◉`) or finished (`●`) agents first, then the previous agent even if idle. Other working and idle agents follow available history; the current pane is last unless it needs new attention. Herdr records prior workspace focus, not prior pane focus: if the immediately preceding workspace has no agents or multiple agents, Shep does not promote a guessed prior pane, even if an older Shep selection exists. Selecting an agent focuses its Herdr tab, not an individual pane.
-- 🔍 **Extended Fuzzy Filtering (fzf + Snacks style):** Space-separated AND terms, pipe `|` OR matching, exact `'terms`, prefix `^`, suffix `$`, negation `!term`, and field filters (`status:blocked`, `agent:claude`, `source:herdr`, `path:api`).
-- 🔁 **True MRU A↔B Jump-Back:** Ships with a native Herdr plugin action (`tranceh2.shep.jump-back`) to toggle back and forth between your two most recently visited workspaces like `prefix + L` in tmux.
-- 📐 **Adaptive Ranking & Persistent Pins:** Learns from successful selections using local SQLite WAL storage (private `0600` permissions with auto-quarantine on corruption). Press `Ctrl+F` to pin high-priority entries to the top.
-- 🧩 **Hierarchical Groups & Multi-Pane Templates:** Define nested pickers (`type = "group"`), multi-tab/multi-split layouts with custom focus nodes, and `close_on_exit` flags.
-- 🎨 **Customizable Rows and Herdr Themes:** Built on Charm's Bubble Tea and Lip Gloss. Every row part, workspace name and preview command is a template over the same data, and colors follow your Herdr theme by default (Herdr's 18 palettes, `[theme.custom]` included) or a theme of your own. `NO_COLOR` gives a structural no-color mode and `[tui].icons = "ascii"` a 7-bit glyph tier. See [Customization](#customization).
+- **The agents that need you come first.** The `agents` view puts newly blocked and finished agents at the top, and `Ctrl+B` jumps to the next blocked one.
+- **See a workspace before you open it.** The preview shows its tabs and the newest lines of its active pane, or a project's Git state and files.
+- **Act without leaving the picker.** Rename or close a workspace, tab or pane, or open a new Git worktree on a branch you name, from the same popup.
 
 ---
 
@@ -187,6 +164,35 @@ builds when the download fails.
 - **[fzf](https://github.com/junegunn/fzf)** — optional external selector fallback.
 - **Nerd Font** — required for the built-in source icons to render correctly; without it, those glyphs appear as replacement boxes. Herdr itself already assumes Nerd Fonts. On terminals that cannot render Unicode, `[tui].icons = "ascii"` draws 7-bit ASCII only: no default source icons and ASCII markers. Icons you configure are your own templates and are drawn as written.
 - **[lsd](https://github.com/lsd-rs/lsd)** or **[eza](https://github.com/eza-community/eza)** — optional; used for colored, compact directory previews (names only, directories first; falls back to `ls -1Ap`).
+
+---
+
+## Features
+
+- ⚡ **Instant Picker, Even After Idle:** The first frame renders immediately and keys typed right after the shortcut are kept. Inside Herdr every request goes straight to Herdr's socket instead of launching the `herdr` CLI, so the popup and its workspace rows appear in about 100 ms even after the system has evicted the binaries from memory. Slow sources (the projects scan, custom commands) show their last result at once and refresh in the background. Zero disk I/O while typing.
+- ✍️ **Act Without Leaving the Picker:** Rename a workspace, tab or pane in place (`Ctrl+E`), close it (`Ctrl+X`), open a new Git worktree of a repository on a branch you name (`Ctrl+N`), jump to the next blocked agent (`Ctrl+B`), bring back an earlier search (`Ctrl+Y`), and walk a workspace's tabs and panes with the arrows or `Ctrl+H` / `Ctrl+L`.
+- 🤖 **AI Agents Attention Queue:** The `agents` tab (in the default `all` ↔ `agents` cycle) puts newly unacknowledged blocked (`◉`) or finished (`●`) agents first, then the previous agent even if idle. Other working and idle agents follow available history; the current pane is last unless it needs new attention. Herdr records prior workspace focus, not prior pane focus: if the immediately preceding workspace has no agents or multiple agents, Shep does not promote a guessed prior pane, even if an older Shep selection exists. Selecting an agent focuses its Herdr tab, not an individual pane.
+- 🔍 **Extended Fuzzy Filtering (fzf + Snacks style):** Space-separated AND terms, pipe `|` OR matching, exact `'terms`, prefix `^`, suffix `$`, negation `!term`, and field filters (`status:blocked`, `agent:claude`, `source:herdr`, `path:api`).
+- 🔁 **True MRU A↔B Jump-Back:** Ships with a native Herdr plugin action (`tranceh2.shep.jump-back`) to toggle back and forth between your two most recently visited workspaces like `prefix + L` in tmux.
+- 📐 **Adaptive Ranking & Persistent Pins:** Learns from successful selections using local SQLite WAL storage (private `0600` permissions with auto-quarantine on corruption). Press `Ctrl+F` to pin high-priority entries to the top.
+- 🧩 **Hierarchical Groups & Multi-Pane Templates:** Define nested pickers (`type = "group"`), multi-tab/multi-split layouts with custom focus nodes, and `close_on_exit` flags.
+- 🎨 **Customizable Rows and Herdr Themes:** Built on Charm's Bubble Tea and Lip Gloss. Every row part, workspace name and preview command is a template over the same data, and colors follow your Herdr theme by default (Herdr's 18 palettes, `[theme.custom]` included) or a theme of your own. `NO_COLOR` gives a structural no-color mode and `[tui].icons = "ascii"` a 7-bit glyph tier. See [Customization](#customization).
+
+---
+
+## Story & Honest Disclaimer
+
+I used `tmux` for years and became completely addicted to the fast session-switching workflow powered by [sesh](https://github.com/joshmedeski/sesh) (by Josh Medeski). When I moved my primary terminal setup to [Herdr](https://herdr.dev), I missed that exact feeling: a single hotkey to search across active workspaces, zoxide history, and project directories without thinking about window IDs or paths.
+
+**An honest note on the code:** I am not a professional Go developer (I probably know about 5% of Go syntax). This entire project was created, designed, and iterated using AI assistance to solve real friction in my day-to-day work. 
+
+Because it grew organically for personal use, there are definitely areas that can be improved:
+- Code structure and idioms could be cleaner and more idiomatic Go.
+- Edge-case stability and performance under extreme workloads (e.g. scanning tens of thousands of nested repositories).
+- Visual design and layout polish across different terminal sizes and fonts.
+- Multi-platform testing (it is primarily built and tested on macOS/Linux).
+
+I'm sharing it in case someone else in the Herdr or terminal community finds it useful. If you know Go, spot an architectural flaw, or want to make it faster or more robust, **pull requests and feedback are genuinely appreciated!**
 
 ---
 
