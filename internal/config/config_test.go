@@ -1893,6 +1893,7 @@ func TestTrackedExamplesConfigTOML_LoadsWithIntendedContract(t *testing.T) {
 	}{
 		{name: "herdr", got: cfg.Sources.Herdr.Preview, want: []string{PreviewWorkspace, PreviewActivePane, PreviewAgentStatus}},
 		{name: "workspaces", got: cfg.Sources.Workspaces.Preview, want: []string{PreviewIdentity, PreviewDir}},
+		{name: "commands", got: cfg.Sources.Commands.Preview, want: []string{PreviewIdentity}},
 		{name: "zoxide", got: cfg.Sources.Zoxide.Preview, want: []string{PreviewIdentity, PreviewDir}},
 		{name: "projects", got: cfg.Sources.Projects.Preview, want: []string{PreviewIdentity, PreviewGit, PreviewDir}},
 	} {
@@ -1916,6 +1917,9 @@ func TestTrackedExamplesConfigTOML_LoadsWithIntendedContract(t *testing.T) {
 	}
 	if len(cfg.Wildcards) != 1 || cfg.Wildcards[0].Icon == nil || cfg.Wildcards[0].IconColor == nil {
 		t.Errorf("examples/config.toml wildcard must set icon and icon_color")
+	}
+	if !slices.Contains(cfg.General.SourceOrder, SourceCommands) || len(cfg.Commands) != 2 || cfg.Commands[0].Path != "" || cfg.Commands[1].Path == "" {
+		t.Errorf("examples/config.toml must list commands and show one command without a path and one with, got %v %+v", cfg.General.SourceOrder, cfg.Commands)
 	}
 	for _, bad := range []string{`icon = " "`, "limit ="} {
 		if strings.Contains(string(raw), bad) {

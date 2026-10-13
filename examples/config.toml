@@ -16,8 +16,8 @@ version = 1
 [general]
 # Built-ins, in merge/display order. "sessions" is opt-in: add it here only
 # if you also want Herdr session rows (not just workspaces) in the picker.
-source_order = ["herdr", "workspaces", "zoxide", "projects"]
-# source_order = ["herdr", "sessions", "workspaces", "zoxide", "projects"]
+source_order = ["herdr", "workspaces", "commands", "zoxide", "projects"]
+# source_order = ["herdr", "sessions", "workspaces", "commands", "zoxide", "projects"]
 selector = "builtin"
 
 [ranking]
@@ -92,6 +92,10 @@ marker_format = '{{ .Agent }} {{ .Workspace | trimIcon | name }}'
 [sources.workspaces]
 preview = ["identity", "dir"]
 
+# Command rows show identity: the command and where it runs.
+[sources.commands]
+preview = ["identity"]
+
 [sources.zoxide]
 preview = ["identity", "dir"]
 
@@ -127,6 +131,18 @@ source_order = ["projects", "zoxide"]
 
   [workspaces.sources.projects]
   max_depth = 5
+
+# --- Commands: programs that open as a tab of the workspace you are in ---
+
+# No path: lazygit runs in the directory of the pane you are in.
+[[commands]]
+name = "lazygit"
+command = "lazygit"
+
+[[commands]]
+name = "downloads"
+path = "~/Downloads"
+command = "yazi"
 
 # --- Templates: a plain command and a two-tab development layout ---
 

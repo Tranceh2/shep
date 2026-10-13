@@ -2,6 +2,30 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Added
+
+- `[[commands]]` lists programs (lazygit, yazi, k9s...) that open inside the
+  Herdr workspace you are in: `Enter` opens one as a new tab, `ctrl+t` as a
+  tab and `ctrl+p` as a split pane, in its `path` or else in the directory of
+  the pane you are in. When Herdr reports no focused pane it opens as a
+  workspace of its own, and without Herdr `shep open` fails instead of
+  printing a path.
+- Command rows have a default icon and the `source.commands` color. Each entry
+  takes `aliases`, `preview` and the presentation keys, and
+  `[sources.commands]` sets the presentation and preview of every command.
+  `commands` is in the default `source_order`, and is valid in `[tui].tabs`,
+  `--view` and a group's `source_order`. `shep doctor` reports each command's
+  path.
+
+### Changed
+
+- `ctrl+t` / `ctrl+p` and `--target tab|pane` open in the row's own folder.
+  They used to open in the directory of the current pane.
+- The `git` and `dir` preview sections are skipped for a row without a folder,
+  instead of running in the directory shep runs in.
+
 ## v1.1.0
 
 ### Changed

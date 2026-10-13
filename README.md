@@ -91,9 +91,9 @@ command = "tranceh2.shep.jump-back"
 description = "jump to previous workspace"
 ```
 
-**Check the setup.** The doctor action checks your configured workspaces,
-the picker's theme and the `shep` command; its report is in the plugin's
-log:
+**Check the setup.** The doctor action checks your configured workspaces
+and commands, the picker's theme and the `shep` command; its report is in
+the plugin's log:
 
 ```sh
 herdr plugin action invoke doctor --plugin tranceh2.shep
@@ -171,7 +171,7 @@ builds when the download fails.
 
 ### 🔎 One picker for everything
 
-- **Every place you work:** open Herdr workspaces (expand one into its tabs and panes), your `[[workspaces]]` entries, [zoxide](https://github.com/ajeetdsouza/zoxide) folders, a scan of your project roots that also lists every Git worktree, your other Herdr sessions (`Enter` attaches) and every agent pane. A folder that two sources find is shown once. See [Source Providers](#sourcesname--source-providers).
+- **Every place you work:** open Herdr workspaces (expand one into its tabs and panes), your `[[workspaces]]` entries, your `[[commands]]` programs, [zoxide](https://github.com/ajeetdsouza/zoxide) folders, a scan of your project roots that also lists every Git worktree, your other Herdr sessions (`Enter` attaches) and every agent pane. A folder that two sources find is shown once. See [Source Providers](#sourcesname--source-providers).
 - **Your own sources:** `[[sources.custom]]` runs a program of yours, without a shell, and turns the JSON rows it prints into picker rows with their own icon, preview and command: open pull requests, Kubernetes contexts, tickets. See [Custom Command Providers](#sourcescustom--custom-command-providers).
 - **Views:** `all` and `agents` by default, plus any source, custom source or group as its own tab (`[tui].tabs`). `Tab` cycles them and `shep open --view <id>` opens one directly.
 - **Extended fuzzy search (fzf + Snacks style):** space-separated AND terms, `|` OR, `'exact`, `"phrases"`, `^prefix`, `suffix$`, `/regex/`, `!negation` and field filters (`status:blocked`, `agent:claude`, `source:herdr`, `path:api`). Typing a tab or pane name finds its workspace. See [Search Syntax](#search-syntax--filter-cheatsheet).
@@ -193,7 +193,7 @@ builds when the download fails.
 - **Rules by path:** one `[[wildcards]]` glob gives every folder under it a template, a workspace name, an icon, colors and previews, without configuring each project. See [Dynamic Path Rules](#wildcards--dynamic-path-rules).
 - **Groups:** a `[[workspaces]]` entry with `type = "group"` opens its own picker over a folder, with its own sources, project scan settings and the template its picks get.
 - **Act without leaving the picker:** rename a workspace, tab or pane in place (`Ctrl+E`), close it (`Ctrl+X`, with an optional confirmation), open a new Git worktree of a repository on a branch you name (`Ctrl+N`), bring back an earlier search (`Ctrl+Y`), and walk a workspace's tabs and panes with the arrows or `Ctrl+H` / `Ctrl+L`.
-- **Open into the workspace you are in:** command entries and custom rows with a command open as a new tab (`Ctrl+T`) or a split pane (`Ctrl+P`) of the current workspace.
+- **Programs where you are:** a `[[commands]]` entry (lazygit, yazi, k9s...) opens as a new tab of the workspace you are in, not as a workspace of its own. `Ctrl+T` opens a folder or an entry with a command as a new tab of the current workspace and `Ctrl+P` as a split pane, both in that row's own folder. See [Programs Where You Are](#commands--programs-where-you-are).
 - **Workspace names:** `workspace_name` sets the name Herdr's sidebar shows for each workspace shep creates (`repo@branch` for a worktree by default).
 - **True MRU A↔B jump-back:** a Herdr plugin action (`tranceh2.shep.jump-back`) toggles between your two most recently visited workspaces, like `prefix + L` in tmux.
 
@@ -247,9 +247,11 @@ popup over `HERDR_SOCKET_PATH` (`shep popup`, an internal command), so the
 shortcut never waits for the `herdr` CLI to start; without a socket the
 action falls back to `herdr plugin pane open`.
 
-When running inside a Herdr popup, `shep` detects the active pane and unlocks in-place actions for zoxide, projects and command-only `[[workspaces]]` rows:
+When running inside a Herdr popup, `shep` detects the active pane and unlocks in-place actions for zoxide, projects, `[[commands]]`, command-only `[[workspaces]]` rows and custom rows with a command:
 - `Ctrl+T`: open the selected candidate as a new **tab** in the current workspace.
 - `Ctrl+P`: open the selected candidate as a **split pane** beside your current pane.
+
+Both open in the row's own folder; a command without a path opens in the directory of the pane you are in.
 
 See [`docs/herdr-plugin.md`](docs/herdr-plugin.md) for the full plugin reference and [`docs/jump-back.md`](docs/jump-back.md) for jump-back error codes and lifecycle rules.
 
@@ -296,7 +298,7 @@ The picker is one grid with a single frame (Herdr's popup border when it runs as
 - **Views** (`tab` / `shift+tab`) stay visible at every width; the active one is highlighted.
 - **Prompt**: what you typed, the cursor, and `matches/total` (just the total when nothing is typed). `?` opens the shortcut and search-syntax cheat sheet.
 - **Rows** show the name first and the parent folder dimmed, so the part you scan for survives narrow widths; the parent shrinks before the name does. Paths under your home directory are shown with `~`.
-- **Icons are colored by source** with the theme's `source.*` roles: by default open Herdr workspaces green, configured workspaces mauve, zoxide blue, projects and worktrees peach, sessions yellow, agents in the accent color, custom sources teal. Every part of a row can be changed (see [Customization](#customization)).
+- **Icons are colored by source** with the theme's `source.*` roles: by default open Herdr workspaces green, configured workspaces mauve, commands red, zoxide blue, projects and worktrees peach, sessions yellow, agents in the accent color, custom sources teal. Every part of a row can be changed (see [Customization](#customization)).
 - **Right-hand markers**: the most urgent agent state of an open workspace (`⠋` working, `◉` blocked, `●` done, a dim `✓` when idle), `★` pinned, `›` a group that opens its own picker, `current` for where you are now, and the branch of a worktree.
 - **Preview**: the title row names the selection and its kind; below come its `~` path, a one-line summary (agent state with tab and pane counts, or the git branch with its changes), then sections such as Tabs, Files, your custom commands and, last, the newest lines of the active pane.
 - The divider between list and preview doubles as the list's scroll bar.
@@ -313,9 +315,9 @@ The picker is one grid with a single frame (Herdr's popup border when it runs as
 | `Left` / `Right`, `Ctrl+H` / `Ctrl+L` | List | Collapse / expand a workspace's tabs and panes; `Right` on an expanded workspace enters its first tab, `Left` on a tab or pane returns to its workspace |
 | `Tab` / `Shift+Tab` | Global (except help) | Cycle configured top tabs in order (defaults to `all` ↔ `agents`) |
 | `Ctrl+B` | List | Jump to the next blocked agent, in the agents view (cycles; shown in the footer while an agent is blocked) |
-| `Enter` | List | Open the highlighted row |
-| `Ctrl+T` | Inside Herdr | Open the selected zoxide, project or command-only `[[workspaces]]` entry as a new tab in the current workspace |
-| `Ctrl+P` | Inside Herdr | Open the same kinds of entry as a split pane beside the current pane |
+| `Enter` | List | Open the highlighted row; a `[[commands]]` entry opens as a new tab of the current workspace |
+| `Ctrl+T` | Inside Herdr | Open the selected zoxide, project, `[[commands]]` or command-only `[[workspaces]]` entry, or a custom row with a command, as a new tab in the current workspace, in the row's own folder (a command without a path: the directory of the current pane) |
+| `Ctrl+P` | Inside Herdr | Open the same kinds of entry as a split pane beside the current pane, in the same folder |
 | `Ctrl+F` | List | Pin or unpin the selected top-level candidate; pinned rows stay first. A pin belongs to that row only, not to other rows at the same directory |
 | `Ctrl+X` | List | Close the highlighted open Herdr pane, tab, or workspace (for kinds in `[tui].confirm_close`, `y` confirms and any other key cancels) |
 | `Ctrl+E` | List | Rename the highlighted open Herdr workspace, tab, or pane in place of the search prompt (`Enter` applies, `Esc` cancels; an empty pane name clears it) |
@@ -348,7 +350,7 @@ Shep includes an extended fuzzy search engine inspired by `fzf` and modern edito
 | Exclamation `!` | `!test`, `!^tmp` | **Negation**: excludes items matching the term; works with every form above |
 | `status:` | `status:blocked` | Filter agents by status: `idle`, `working`, `blocked`, `done`, `unknown` |
 | `agent:` | `agent:claude` | Filter agents whose name contains the term: `claude`, `opencode`, `hermes`, etc. |
-| `source:` | `source:herdr` | Filter by source: `herdr`, `workspaces`, `zoxide`, `projects`, `sessions`, `agents`, or a custom source name |
+| `source:` | `source:herdr` | Filter by source: `herdr`, `workspaces`, `commands`, `zoxide`, `projects`, `sessions`, `agents`, or a custom source name |
 | `path:` | `path:backend` | Filter candidates whose filesystem path contains "backend" |
 | Short forms | `s:blocked` | `s:`, `a:`, `src:` and `p:` stand for `status:`, `agent:`, `source:` and `path:` |
 
@@ -389,8 +391,9 @@ version = 1
 
 [general]
 # Order in which sources appear in the picker.
-# Available built-ins: "herdr", "workspaces", "zoxide", "projects", "sessions", "agents"
-source_order = ["herdr", "workspaces", "zoxide", "projects"]
+# Available built-ins: "herdr", "workspaces", "commands", "zoxide", "projects",
+# "sessions", "agents"
+source_order = ["herdr", "workspaces", "commands", "zoxide", "projects"]
 
 # Interactive selector backend:
 # - "builtin": Charm Bubble Tea TUI (recommended, default)
@@ -459,7 +462,7 @@ template = "default"
 ```toml
 [tui]
 # Ordered top tabs; omitted or [] defaults to ["all", "agents"].
-# Built-in source tabs: herdr, workspaces, zoxide, projects, sessions.
+# Built-in source tabs: herdr, workspaces, commands, zoxide, projects, sessions.
 # Custom source tabs use their declared name; group tabs use [[workspaces]].id.
 tabs = ["all", "agents"]
 # Layout orientation:
@@ -534,14 +537,15 @@ source_order = ["projects", "zoxide"]
 ### `[sources.<name>]` — Source Providers
 
 Each built-in source has a table: `[sources.herdr]`, `[sources.sessions]`,
-`[sources.agents]`, `[sources.workspaces]`, `[sources.zoxide]` and
-`[sources.projects]`. The tab and pane rows nested under an open Herdr
-workspace have `[sources.herdr.tab]` and `[sources.herdr.pane]`. Every one of
-them takes the row presentation keys (`icon`, `icon_color`, `label_format`,
-`detail_format`, `marker_format`; see [Row parts](#row-parts)), and every
-source table takes a `preview` list. `sessions` and `agents` rows join the
-`all` view only when listed in `[general].source_order`; the default `agents`
-tab shows the agents either way.
+`[sources.agents]`, `[sources.workspaces]`, `[sources.commands]`,
+`[sources.zoxide]` and `[sources.projects]`. The tab and pane rows nested
+under an open Herdr workspace have `[sources.herdr.tab]` and
+`[sources.herdr.pane]`. Every one of them takes the row presentation keys
+(`icon`, `icon_color`, `label_format`, `detail_format`, `marker_format`; see
+[Row parts](#row-parts)), and every source table takes a `preview` list.
+`sessions` and `agents` rows join the `all` view only when listed in
+`[general].source_order`; the default `agents` tab shows the agents either
+way.
 
 ```toml
 [sources.zoxide]
@@ -599,7 +603,8 @@ max_lines = 50
 # Out of the box each source previews what describes its own rows, so you do not
 # have to configure anything: herdr workspaces show tabs, the active pane and
 # agent status; `workspaces` and zoxide directories show identity and a directory
-# listing; projects adds git. Sessions always show session info.
+# listing; projects adds git; commands show identity (the command and where it
+# runs). Sessions always show session info.
 #
 # Setting `default` here replaces those built-in per-source lists for every
 # source, so it stays a single obvious control rather than being silently
@@ -657,6 +662,68 @@ source_order = ["projects", "zoxide"]
 
 ---
 
+### `[[commands]]` — Programs Where You Are
+
+A command is a program (lazygit, yazi, k9s...) that opens inside the Herdr
+workspace you are in, instead of in a workspace of its own.
+
+```toml
+[[commands]]
+name = "lazygit"
+command = "lazygit"         # no path: runs in the directory of the pane you are in
+aliases = ["git"]
+
+[[commands]]
+name = "downloads"
+command = "yazi"
+path = "~/Downloads"
+close_on_exit = false       # keep the shell when yazi quits
+icon = "󰉍 "                 # this entry's own row only
+icon_color = "yellow"
+```
+
+| Key | Meaning |
+|---|---|
+| `name` | The row's label. Required, and unique ignoring case. |
+| `command` | The command line the new tab or pane runs. Required, on one line. |
+| `path` | Where the command runs; a leading `~/` is your home directory. Unset: the directory of the pane you are in. A path that does not exist marks the row `missing`, and opening it fails. |
+| `close_on_exit` | Close the command's pane when the command returns, whatever its exit status. Default `true`. |
+| `aliases` | More search terms; they are not displayed. |
+| `preview` | The row's preview sections. Unset: the `[sources.commands]` list, `["identity"]` by default. |
+| `icon`, `icon_color`, `label_format`, `detail_format`, `marker_format` | The entry's own row (see [Row parts](#row-parts)); `[sources.commands]` sets them for every command. |
+
+Where a command opens:
+
+- `Enter` opens it as a new tab of the current workspace; `Ctrl+T` does the same, and `Ctrl+P` opens it as a split pane beside the current pane.
+- It runs in its `path`, else in the directory of the pane you are in.
+- When Herdr reports no focused pane, it opens as a workspace of its own, named after the entry, in its `path` or in the directory shep was started in. From a shell outside Herdr, it opens in the workspace of the pane Herdr has focused.
+- Without Herdr, `shep open` exits with an error instead of printing a path.
+- `shep open <name> --target workspace|tab|pane` chooses where it opens.
+
+Where commands show up:
+
+- In `all`: `commands` is in the default `[general].source_order`. If your config sets `source_order`, add `"commands"` to it.
+- As a tab of their own: `[tui].tabs = ["all", "agents", "commands"]`.
+- Directly: `shep open --view commands`.
+- In a group: add `"commands"` to its `source_order`. A group lists every command, not only those under its path.
+
+A Herdr shortcut can open one without the picker. Herdr runs a `type = "shell"` command detached, in the background. It needs `shep` on your `PATH` (see [Use `shep` from a shell](#use-shep-from-a-shell-shep-link)), and the query must match that entry alone:
+
+```toml
+[[keys.command]]
+key = "prefix+g"            # any key your config does not already bind
+type = "shell"
+command = "shep open lazygit --target pane"
+description = "lazygit beside this pane"
+```
+
+- `[[wildcards]]` rules and the `[[workspaces]]` entries of the same directory never restyle or reconfigure a command row: a rule written for folders does not apply to a program.
+- The default preview is `identity`: the command and where it runs.
+- For a command without a path, `.Path` is empty, and the preview sections that need a folder (`git`, `dir` and `[preview.commands]` entries) are skipped.
+- `shep doctor` reports each command's path, or that it runs in the directory of the pane you are in.
+
+---
+
 ### `[templates.<name>]` — Workspace Layout Templates
 
 Templates define how newly created workspaces are structured into tabs, panes, and commands.
@@ -700,7 +767,7 @@ root = "agent_pane"
 
 ### `[[wildcards]]` — Dynamic Path Rules
 
-Apply templates, workspace names, previews and row presentation keys to every row whose path matches a glob: open Herdr workspaces, configured workspaces, zoxide folders, projects, agents and custom rows alike (session rows have no directory and never match). In a pattern, a leading `~` is your home directory, `**` matches any number of directories and every other segment is a shell glob (`*`, `?`, `[...]`, case-sensitive). A pattern of one segment matches the base name (`"*-api"`). Both the path as reported and its symlink-resolved form are tried. Each setting comes from the first matching rule that sets it; a rule that does not set it never stops the scan (see [Precedence](#precedence)).
+Apply templates, workspace names, previews and row presentation keys to every row whose path matches a glob: open Herdr workspaces, configured workspaces, zoxide folders, projects, agents and custom rows alike (session rows have no directory and never match, and neither do `[[commands]]` rows, which are programs). In a pattern, a leading `~` is your home directory, `**` matches any number of directories and every other segment is a shell glob (`*`, `?`, `[...]`, case-sensitive). A pattern of one segment matches the base name (`"*-api"`). Both the path as reported and its symlink-resolved form are tried. Each setting comes from the first matching rule that sets it; a rule that does not set it never stops the scan (see [Precedence](#precedence)).
 
 ```toml
 [[wildcards]]
@@ -753,7 +820,7 @@ Three kinds of text in shep are templates: everything it draws for a row (its ic
 | `.Path` | The path as the source reports it (absolute) | every row that has one |
 | `.NormalizedPath` | The absolute, symlink-resolved path, when known | deduplicated rows |
 | `.Label` | The source's own label: a Herdr workspace name, a `~/…` folder, an entry name, a session name, an agent's title, a custom row label | every row |
-| `.Source` | `herdr`, `workspaces`, `zoxide`, `projects`, `sessions`, `agents`, `path` (a `--path` or `.` candidate) or a custom source name; empty for the tab and pane rows shep builds itself | every row |
+| `.Source` | `herdr`, `workspaces`, `commands`, `zoxide`, `projects`, `sessions`, `agents`, `path` (a `--path` or `.` candidate) or a custom source name; empty for the tab and pane rows shep builds itself | every row |
 | `.Kind` | One of the kinds below | every row |
 | `.Icon` | The icon a custom source row supplied (`icon` in its JSON) | `custom` |
 | `.Branch` | The checked-out branch; the short head, or `detached`, for a detached worktree | `worktree` |
@@ -768,9 +835,9 @@ Three kinds of text in shep are templates: everything it draws for a row (its ic
 | `.Workspace` | The label of the Herdr workspace the row belongs to | `tab`, `pane`, `agent` |
 | `.Meta` | Every key the provider attached, e.g. `.Meta.workspace_id` | every row |
 
-`.Kind` is one of `workspace` (an open Herdr workspace), `configured` (a `[[workspaces]]` entry), `group` (a `[[workspaces]]` entry with `type = "group"`), `folder` (a zoxide directory or a `--path`), `project`, `worktree`, `session`, `agent` (a row of the agents source or tab), `tab` and `pane` (the rows nested under an open workspace) and `custom`.
+`.Kind` is one of `workspace` (an open Herdr workspace), `configured` (a `[[workspaces]]` entry), `group` (a `[[workspaces]]` entry with `type = "group"`), `command` (a `[[commands]]` entry), `folder` (a zoxide directory or a `--path`), `project`, `worktree`, `session`, `agent` (a row of the agents source or tab), `tab` and `pane` (the rows nested under an open workspace) and `custom`.
 
-A field that does not apply to a row is empty (or `false`), and a missing `.Meta` key renders empty, so a template never fails on a row it does not describe. `shep list --format json` prints every candidate with its `meta` object, the exact keys `.Meta` holds. The keys by source: herdr `workspace_id`, `active_tab_id`; workspaces `entry_id`, `workspace_name`, `template`, `command`, `close_on_exit`, `group`, `group_sources`, `group_template`; projects (worktrees) `is_worktree`, `main_worktree`, `branch`, `head`, `repo`, `worktree_path`; sessions `session_name`, `running`, `default`, `session_dir`, `socket_path`; agents `workspace_id`, `workspace_label`, `tab_id`, `tab_label`, `pane_id`, `agent`, `agent_status`, `terminal_title`, `kind`, `focused`; tab rows `workspace_id`, `workspace_label`, `tab_id`, `tab_number`, `tab_label`, and pane rows add `pane_id`, `agent`, `agent_status`, `terminal_title`; custom rows carry their own `meta` plus `custom_source`, `custom_source_id`, `command`, `template` and `close_on_exit`.
+A field that does not apply to a row is empty (or `false`), and a missing `.Meta` key renders empty, so a template never fails on a row it does not describe. `shep list --format json` prints every candidate with its `meta` object, the exact keys `.Meta` holds. The keys by source: herdr `workspace_id`, `active_tab_id`; workspaces `entry_id`, `workspace_name`, `template`, `command`, `close_on_exit`, `group`, `group_sources`, `group_template`; commands `command`, `close_on_exit` (`true` or `false`), `command_id`; projects (worktrees) `is_worktree`, `main_worktree`, `branch`, `head`, `repo`, `worktree_path`; sessions `session_name`, `running`, `default`, `session_dir`, `socket_path`; agents `workspace_id`, `workspace_label`, `tab_id`, `tab_label`, `pane_id`, `agent`, `agent_status`, `terminal_title`, `kind`, `focused`; tab rows `workspace_id`, `workspace_label`, `tab_id`, `tab_number`, `tab_label`, and pane rows add `pane_id`, `agent`, `agent_status`, `terminal_title`; custom rows carry their own `meta` plus `custom_source`, `custom_source_id`, `command`, `template` and `close_on_exit`.
 
 ### Template functions
 
@@ -819,7 +886,7 @@ Every row is drawn from five keys:
 | `detail_format` | Dim context after the name | `row.detail` |
 | `marker_format` | Right-aligned text | `row.marker` |
 
-They can be set in `[sources.herdr]`, `[sources.herdr.tab]`, `[sources.herdr.pane]`, `[sources.sessions]`, `[sources.workspaces]`, `[sources.zoxide]`, `[sources.projects]`, `[sources.agents]`, every `[[sources.custom]]`, every `[[wildcards]]` rule and every `[[workspaces]]` entry. A key left out takes the next tier (see [Precedence](#precedence)); an explicit `""` blanks the part. Wildcards and entries apply to the rows built from candidates; the nested tab and pane rows are drawn from `[sources.herdr.tab]` and `[sources.herdr.pane]` only.
+They can be set in `[sources.herdr]`, `[sources.herdr.tab]`, `[sources.herdr.pane]`, `[sources.sessions]`, `[sources.workspaces]`, `[sources.commands]`, `[sources.zoxide]`, `[sources.projects]`, `[sources.agents]`, every `[[sources.custom]]`, every `[[wildcards]]` rule, every `[[workspaces]]` entry and every `[[commands]]` entry. A key left out takes the next tier (see [Precedence](#precedence)); an explicit `""` blanks the part. Wildcards and entries apply to the rows built from candidates (wildcards never to command rows); the nested tab and pane rows are drawn from `[sources.herdr.tab]` and `[sources.herdr.pane]` only.
 
 The label and detail are trimmed; the marker is trimmed and its inner runs of blanks collapse. Text that comes from data has its control characters removed before it is drawn. When a row does not fit, space is given up in this order: the detail shrinks from the left (keeping its end) down to 6 cells and is then dropped; the marker is cut to at most 30% of the row (keeping its start) and dropped when the label would go below 16 cells; finally the label is truncated, keeping its start — or its end when it reads as a path (it starts with `/` or `~` after any leading icon, or it is a relative path without blanks).
 
@@ -1029,13 +1096,13 @@ Every per-row setting — each presentation key separately, the preview sections
 
 | Tier | Where | Applies to |
 |---|---|---|
-| 0 | The row's own data: a `[[workspaces]]` entry's keys for the row it produced; the `template`, `command` and `close_on_exit` a configured workspace or custom row carries; the template of the group the row was picked through | presentation, preview, template or command |
-| 1 | The `[[workspaces]]` entries for the row's directory, in declaration order (a configured workspace row takes only its own entry) | preview only; never session rows |
-| 2 | The `[[wildcards]]` rules matching the row's path or base name, in declaration order | presentation, preview, template, `workspace_name`; never session rows |
+| 0 | The row's own data: a `[[workspaces]]` or `[[commands]]` entry's keys for the row it produced; the `template`, `command` and `close_on_exit` a configured workspace, command or custom row carries; the template of the group the row was picked through | presentation, preview, template or command |
+| 1 | The `[[workspaces]]` entries for the row's directory, in declaration order (a configured workspace row takes only its own entry) | preview only; never session or command rows |
+| 2 | The `[[wildcards]]` rules matching the row's path or base name, in declaration order | presentation, preview, template, `workspace_name`; never session or command rows |
 | 3 | The row's source table (`[sources.<name>]`, its `[[sources.custom]]`) | presentation, preview |
 | 4 | The built-in defaults: the row defaults above; the source's preview list, `session_info` for sessions, `[preview].default`, `identity`; `[defaults].template`; `[general].workspace_name` | every setting |
 
-A tier that does not define a setting never stops the scan for it, and an explicit empty value (`icon = ""`, `preview = []`) defines it. `[[workspaces]]` entries and source tables set no `workspace_name`.
+A tier that does not define a setting never stops the scan for it, and an explicit empty value (`icon = ""`, `preview = []`) defines it. `[[workspaces]]` entries and source tables set no `workspace_name`. A command row takes tier 0, then its source table and the built-in defaults: it always runs its own command, and a workspace it opens is named after its entry.
 
 <!-- example:precedence -->
 ```toml
@@ -1066,7 +1133,7 @@ The preview shows the sections the row's `preview` list names, in order. The bui
 
 | Section | Shows | In the picker |
 |---|---|---|
-| `identity` | Label, path, source, template | Title row and path line |
+| `identity` | Label, path, source, template; a command's command and where it runs | Title row and path line |
 | `git` | Branch and working tree changes | Summary line |
 | `agent_status` | The workspace's or agent's state | Summary line |
 | `workspace` | The open workspace's tabs and panes | **Tabs** |
@@ -1109,10 +1176,10 @@ Every command takes `--config <path>` to read another config file. `shep
 
 | Command | What it does |
 |---|---|
-| `shep open [query]` | Pick and open a workspace: the built-in picker, or, when the query (plain text, matched against labels, paths and aliases) finds a single entry, straight to it. `--view <id>` opens a view (`all`, `agents`, a source, a custom source or a group id) in the picker; `--target workspace\|tab\|pane` chooses where an entry opens (tab and pane need shep inside a Herdr pane); `--path <dir>` opens a directory without resolving a query; `shep open .` opens the current directory. |
-| `shep list [--format human\|tsv\|json]` | Print every candidate the enabled sources find. |
+| `shep open [query]` | Pick and open a workspace: the built-in picker, or, when the query (plain text, matched against labels, paths and aliases) finds a single entry, straight to it. A `[[commands]]` entry opens as a new tab of the current workspace (a workspace of its own when Herdr reports no focused pane). `--view <id>` opens a view (`all`, `agents`, a source, a custom source or a group id) in the picker; `--target workspace\|tab\|pane` chooses where an entry opens (tab and pane need shep inside a Herdr pane, and open in the row's own folder, else in the current pane's directory); `--path <dir>` opens a directory without resolving a query; `shep open .` opens the current directory. |
+| `shep list [--format human\|tsv\|json]` | Print every candidate the enabled sources find. A command without a path has an empty path. |
 | `shep preview <path> [--color]` | Print the preview of a path, as the picker draws it. |
-| `shep doctor` | Check configured workspace paths, report the picker's theme and where it came from, and what the published `shep` name resolves to. |
+| `shep doctor` | Check configured workspace and command paths, report the picker's theme and where it came from, and what the published `shep` name resolves to. |
 | `shep init [--force]` | Write the commented default config. |
 | `shep link` / `shep unlink` | Publish or remove a `shep` symlink on your `PATH` (see [Use `shep` from a shell](#use-shep-from-a-shell-shep-link)). |
 | `shep jump-back` | Focus the previous distinct workspace of the current Herdr session (see [`docs/jump-back.md`](docs/jump-back.md)). |

@@ -21,6 +21,17 @@ description = "open Shep picker"
 # type = "popup"
 # command = "shep open"
 
+# --- Option C: Open a [[commands]] entry directly, without the picker
+# (Requires shep on PATH via `shep link`, and a [[commands]] entry named
+# lazygit in shep's config.toml) ---
+# Herdr runs a type = "shell" command detached, in the background: this one
+# opens lazygit as a split pane beside the focused pane.
+# [[keys.command]]
+# key = "prefix+g" # Pick any key your config does not already bind.
+# type = "shell"
+# command = "shep open lazygit --target pane"
+# description = "lazygit beside this pane"
+
 # --- Workspace Jump-Back (A<->B Previous Workspace Toggle) ---
 # Toggles between the two most recently focused workspaces.
 [[keys.command]]

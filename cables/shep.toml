@@ -8,6 +8,8 @@
 # through `shep open --path`, which focuses an existing Herdr workspace for
 # that path (or creates one and applies its template) and falls back to
 # printing the normalised path when Herdr is unavailable.
+# A [[commands]] entry without a path cannot be opened through the cable: its
+# path field is empty.
 
 [metadata]
 name = "shep"
